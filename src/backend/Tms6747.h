@@ -1,15 +1,22 @@
 #pragma once
 
-// The TMS320C6747 (C674x, C6000 family) VLIW DSP, as a code-generation target
-// for cxx1 - the C++ half of the VM6747 line. This mirrors cc1's tms6747
-// backend; the only differences are cxx1's own backend shape (a gnuAsm flag on
-// codegen/emitsLineTable, microsoftNames() on the target, and the landingPad
-// hook C++ exceptions need). Output is C6000 assembly text only (-S).
+// The TMS320C6747 (C674x, C6000 family) VLIW DSP, as a code-generation target.
+// Output is C6000 assembly text only (-S). It is emitted the simple way the
+// other backends emit: a stack-machine over a primary register (A4), serial -
+// one instruction per execute packet, no || - with branch and load delay slots
+// filled by NOP. Correct, not fast; VLIW scheduling is a later concern.
 //
-// Emitted the simple way the other backends emit: a stack-machine over a
-// primary register, serial (no ||), delay slots filled with NOP. Milestone 1
-// stands the target up and returns integer constants; everything else calls
-// unsupported() until its milestone.
+// Milestones: (1) integer-constant returns; (2) locals, assignments, integer
+// arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
+// if/while/for with real return values - this file. Parameters and calls (the
+// ABI), globals, casts, division, floats and structs are later milestones and
+// call unsupported() until then.
+//
+// The asm uses only unambiguous forms - no functional-unit specifiers (the
+// assembler assigns them), zero-offset *reg loads and stores with the address
+// computed into a register first, A1 as the branch predicate, NOP 4 after every
+// load and NOP 5 after every branch. It is built to C6000 conventions but is
+// not checked against a real assembler; there is none on these machines.
 
 #include "Backend.h"
 #include "Walker.h"
@@ -25,7 +32,7 @@ public:
     bool plainCharIsSigned() const override { return true; }
     Kind sizeType() const override { return Kind::UInt; }
     Kind wcharType() const override { return Kind::Int; }
-    bool microsoftNames() const override { return false; }   // EABI, Itanium-style
+    bool microsoftNames() const override { return false; }
     const char *name() const override { return "tms6747"; }
 };
 
@@ -44,10 +51,10 @@ private:
 
 class Tms6747 final : public Walker {
 public:
-    // target and abi arrive for the milestones that need them; milestone 1
-    // needs neither, so they are accepted and ignored rather than stored unused.
+    // abi arrives for the calls milestone; milestone 2 needs the target (for
+    // type sizes and signedness) but not the abi, so the abi is ignored.
     Tms6747(std::ostream &sink, const Target &target, const Abi &abi)
-        : sink_(sink) { (void)target; (void)abi; }
+        : sink_(sink), target_(target) { (void)abi; }
 
     using Walker::visit;
     void run(const Program &program) override;
@@ -65,17 +72,16 @@ public:
     void visit(const VaArg &) override;
     void visit(const MemberAccess &) override;
     void visit(const Return &) override;
-
     void landingPad(int pointerSlot, int selectorSlot) override;
 
 private:
     std::ostringstream out_;
     std::ostream &sink_;
+    const Target &target_;
 
     std::string functionName_;
     std::string returnLabel_;
     std::string labelPrefix_;
-    int frame_ = 0;
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;
@@ -89,6 +95,14 @@ private:
 
     void unsupported(const char *what);
     void movImm(const char *reg, long long value);
+    void spAdjust(int delta);                 // B15 += delta (negative allocates)
+    void localAddr(int off, const char *dst); // dst = A15 - off
+    void push();                              // push A4
+    void pop(const char *reg);                // reg = top; SP += 8
+    void genAddr(const Expr &e);              // address of an lvalue -> A4
+    void load(const Type *t);                 // [A4] -> A4
+    void store(const Type *t, const char *addrReg);  // A4 -> [addrReg]
+    void narrowInt(const Type *t);            // truncate A4 to t's width
     void emitData(const Program &program);
     void emitFunction(const Function &fn);
 };
