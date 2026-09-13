@@ -1,7 +1,7 @@
 #!/bin/sh
 # The tms6747 backend, run on the VM6747 emulator against the corpus's own
 # expected output: every case in tests/cases that is meant to compile is
-# compiled with cxx1i for the C6000, run on vm6747, and its stdout and stderr
+# compiled with cpp11 for the C6000, run on vm6747, and its stdout and stderr
 # must match tests/cases/<case>.expected, as tests/run.sh requires of the
 # host target. The cases that are meant to fail to compile (<case>.error)
 # are the front end's and are not run here.
@@ -13,7 +13,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
-CXX1="${CXX1:-./cxx1i.exe}"
+CXX1="${CXX1:-./cpp11.exe}"
 VM="${VM:-../Emulator/vm6747.exe}"
 OUT=tests/out-tms6747
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -29,7 +29,7 @@ for src in tests/cases/*.cpp; do
     if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-lp64.txt; then skipLp=$((skipLp + 1)); continue; fi
 
     if ! ( ulimit -t 10; "$CXX1" -S -arch tms6747 -nologo "$src" -o "$OUT/$base.s" < /dev/null ) 2>"$OUT/$base.err"; then
-        echo "FAIL $base: cxx1i refused it"
+        echo "FAIL $base: cpp11 refused it"
         sed 's/^/      /' "$OUT/$base.err" | head -3
         fail=$((fail + 1))
         continue
