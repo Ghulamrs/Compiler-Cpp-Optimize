@@ -1021,6 +1021,11 @@ void Tms6747::emitFunction(const Function &fn) {
     // prologue: a call means B3 must be saved, and a call with more than six
     // arguments means A10/B10/A12/B12 must be too.
     fn.body().accept(*this);
+    // Falling off the end returns 0 - main's C99 meaning, and what the other
+    // backends do for every function - or the result pointer for a struct.
+    if (sretSlot_ != 0) { localAddr(sretSlot_, "A4"); out_ << "\tLDW\t*A4, A4\n\tNOP\t4\n"; }
+    else if (isWide(fn.returns())) out_ << "\tZERO\tA5:A4\n";
+    else out_ << "\tZERO\tA4\n";
     std::string body = out_.str();
     out_.str(std::string());
     if (usesSavedArgRegs_) linkBytes_ = 24;
