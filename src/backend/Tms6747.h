@@ -158,5 +158,6 @@ private:
     void emitGlobal(const Global &g, Segment seg);
     void emitData(const Program &program);
     void emitParams(const Function &fn);
+    void emitExceptionTable(const Function &fn, int frameBytes);
     void emitFunction(const Function &fn);
 };

@@ -292,7 +292,38 @@ void Tms6747::caseBranch(long long v, const std::string &l) {
     movImm("A0", v);
     out_ << "\tCMPEQ\tA0, A4, A1\n\t[A1]\tB\t" << l << "\n\tNOP\t5\n";
 }
-void Tms6747::landingPad(int, int) { unsupported("a C++ landing pad"); }
+// A landing pad: the unwinder arrives with the exception in A4 and the
+// selector in B4 - the parser's index of the handler type that matched, or
+// 0 for a cleanup - and the frame's A15 and B15 as the body had them.
+void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
+    localAddr(pointerSlot, "A0");
+    out_ << "\tSTW\tA4, *A0\n";
+    localAddr(selectorSlot, "A0");
+    out_ << "\tSTW\tB4, *A0\n";
+}
+
+// The function's exception table, in the emulator's own fixed-width form -
+// see VM6747/TMS6747.md, "Exceptions". One row per call-site range the
+// Walker collected: begin, end, pad, the frame's size in bytes (what B15 is
+// below A15 while the body runs), the cleanup flag, the number of handler
+// types, then each type's typeinfo (0 for catch (...)) and selector index.
+// The unwinder finds a row by the return address of the call that threw.
+void Tms6747::emitExceptionTable(const Function &fn, int frameBytes) {
+    const std::vector<CallSite> &rows = callSites();
+    if (rows.empty()) return;
+    out_ << "\t.sect\t\".vm6747.eh\"\n\t.align\t4\n";
+    for (std::size_t i = 0; i < rows.size(); i++) {
+        const CallSite &c = rows[i];
+        out_ << "\t.word\t" << c.begin << ", " << c.end << ", " << c.pad << ", " << frameBytes
+             << ", " << (c.cleanup || c.types.empty() ? 1 : 0) << ", " << c.types.size() << "\n";
+        for (std::size_t k = 0; k < c.types.size(); k++) {
+            int ix = k < c.indices.size() ? c.indices[k] : static_cast<int>(k) + 1;
+            out_ << "\t.word\t" << (c.types[k].empty() ? std::string("0") : c.types[k]) << ", " << ix << "\n";
+        }
+    }
+    out_ << "\t.text\n";
+    (void)fn;
+}
 // A4 = (value == 0) ? 1 : 0, for the value of type t in the accumulator. A
 // floating zero is compared as a number, so -0.0 is zero and NaN is not.
 void Tms6747::isZero(const Type *t) {
@@ -998,6 +1029,7 @@ void Tms6747::emitFunction(const Function &fn) {
     labelPrefix_ = "L." + fn.symbol() + ".";
     returnLabel_ = "L.return." + fn.symbol();
     hasCall_ = false;
+    clearCallSites();
     usesSavedArgRegs_ = false;
     linkBytes_ = 8;
 
@@ -1092,6 +1124,7 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(linkBytes_);                          // pop the link
     }
     out_ << "\tB\tB3\n\tNOP\t5\n";
+    emitExceptionTable(fn, frame);
 
     file_ += out_.str();
     out_.str(std::string());
