@@ -600,7 +600,7 @@ void Tms6747::wideBinary(const Binary &n) {
         }
         jump(done);
         defineLabel(big);
-        out_ << "\tNEG\tA0, A0\n";                               // count - 32
+        out_ << "\tSUB\tA6, A0, A0\n";                           // count - 32: A0 is still 32 here
         if (left) out_ << "\tSHL\tA4, A0, A5\n\tZERO\tA4\n";
         else if (sign) out_ << "\tSHR\tA5, A0, A4\n\tSHR\tA5, 31, A5\n";
         else out_ << "\tSHRU\tA5, A0, A4\n\tZERO\tA5\n";
