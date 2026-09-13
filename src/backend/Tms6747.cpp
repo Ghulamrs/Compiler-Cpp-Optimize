@@ -302,12 +302,9 @@ void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
     out_ << "\tSTW\tB4, *A0\n";
 }
 
-// The function's exception table, in the emulator's own fixed-width form -
-// see VM6747/TMS6747.md, "Exceptions". One row per call-site range the
-// Walker collected: begin, end, pad, the frame's size in bytes (what B15 is
-// below A15 while the body runs), the cleanup flag, the number of handler
-// types, then each type's typeinfo (0 for catch (...)) and selector index.
-// The unwinder finds a row by the return address of the call that threw.
+// The function's exception table in the emulator's fixed-width form (see
+// VM6747/TMS6747.md, "Exceptions"): a row per call-site range, found by the
+// unwinder by the return address of the call that threw.
 void Tms6747::emitExceptionTable(const Function &fn, int frameBytes) {
     const std::vector<CallSite> &rows = callSites();
     if (rows.empty()) return;
@@ -352,11 +349,9 @@ void Tms6747::visit(const Num &n) {
 void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
 
 // ---- bit-fields ----------------------------------------------------------
-// A bit-field lives in a storage unit at the member's offset, width bits from
-// bitOffset up. EXT/EXTU do the read in one instruction: shift the field to
-// the top of the word, then arithmetic or logical shift it back down. The
-// write clears the field in the unit with CLR, masks and shifts the new value
-// into place, ORs, and stores the unit.
+// A bit-field is width bits from bitOffset up in the unit at the member's
+// offset. EXT/EXTU read it in one instruction (up to the top of the word,
+// back down); a write is CLR, EXTU + SHL of the new value, OR, store.
 void Tms6747::bitFieldUnitAddr(const MemberAccess &m) {
     genAddr(m.object());
     addOffset(m.offset());
@@ -473,10 +468,9 @@ void Tms6747::visit(const Binary &n) {
         narrowInt(n.type());
         return;
     case BinOp::Div: case BinOp::Mod: {
-        // No divide instruction: the EABI's helper does it, taking the
-        // dividend in A4 and the divisor in B4 and returning in A4. It is
-        // called like any function - an area opened, B3 set - so nothing
-        // it may clobber is assumed to survive.
+        // No divide instruction: the EABI's helper takes A4 and B4 and
+        // returns in A4, called like any function - an area opened, B3 set -
+        // so nothing it may clobber is assumed to survive.
         const char *helper = n.op() == BinOp::Div ? (sign ? "__c6xabi_divi" : "__c6xabi_divu")
                                                   : (sign ? "__c6xabi_remi" : "__c6xabi_remu");
         spAdjust(-8);
@@ -500,12 +494,9 @@ void Tms6747::visit(const Binary &n) {
     }
 }
 
-// The C674x does single and double precision in hardware, each instruction
-// with its own delay slots (from the C674x data sheet: ADDSP/SUBSP/MPYSP 3,
-// ADDDP/SUBDP 6, MPYDP 9, the compares 1). There is no divide; the EABI's
-// __c6xabi_divf and __c6xabi_divd take A4/B4 and A5:A4/B5:B4. Only ==, <
-// and > are compares; <= and >= are two compares ORed, which keeps NaN
-// unordered where !(a > b) would not; != is !(==).
+// The C674x's own SP/DP instructions, each with its delay slots as NOPs
+// (TMS6747.md has the counts); division through the EABI helpers. <= and >=
+// are two compares ORed, which keeps NaN unordered where !(a > b) would not.
 void Tms6747::fpBinary(const Binary &n, bool dp) {
     const char *l = dp ? "A5:A4" : "A4", *r = dp ? "A7:A6" : "A6";
     const char *sfx = dp ? "DP" : "SP";
@@ -538,12 +529,9 @@ void Tms6747::fpBinary(const Binary &n, bool dp) {
     }
 }
 
-// 64-bit integers, lhs in A5:A4 and rhs in A7:A6, with only 32-bit
-// instructions: a carry or borrow is a CMPLTU of the low words, the low
-// product comes from MPY32U's 64-bit result plus the two cross products,
-// division is the EABI's, a comparison decides on the high words and falls
-// to the low ones when they tie, and a shift by a count under 32 splices
-// the words while one of 32 or more moves a word across.
+// 64-bit integers in A5:A4 and A7:A6 with 32-bit instructions: carry by
+// CMPLTU of the low words, MPY32U plus the cross products, division by the
+// EABI's helpers, compares on the high word falling to the low on a tie.
 void Tms6747::wideBinary(const Binary &n) {
     bool sign = n.lhs().type()->isSigned(target_);
     switch (n.op()) {
@@ -691,18 +679,9 @@ void Tms6747::wideCast(const Type *from, const Type *to) {
     else     narrowInt(to);
 }
 
-// A call under the C6000 EABI. Arguments are evaluated left to right onto the
-// expression stack and popped into A4, B4, A6, B6, A8, B8, A10, B10, A12, B12
-// (the last one straight from A4); the eleventh onward are stored above the
-// reserved word at *B15 in an area opened for the call. The return address is
-// built into B3 by hand and the branch takes its five delay slots as NOPs, a
-// form every C6000 accepts. The result is left in A4.
-//
-// A variadic callee is the exception: its last named argument and everything
-// after it go on the stack, in order, so that va_start can step from the
-// named one to the rest - the C6000 convention, and the reason `printf("%d",
-// x)` puts both the format and x on the stack. The ones before it ride in
-// registers as usual.
+// A call under the C6000 EABI: ten word arguments in registers, the rest
+// above the reserved word at *B15, B3 built by hand, B + NOP 5, result in A4.
+// A variadic callee takes its last named argument onward on the stack.
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
     bool sret = n.type()->isStructOrUnion();
@@ -727,9 +706,8 @@ void Tms6747::visit(const Call &n) {
     int onStack = static_cast<int>(args.size() - inRegs);
 
     // The area under the call: the reserved word, then the stack arguments,
-    // a word each and a double at the next 8-byte boundary. Opened even for a
-    // call with none, so that a value an enclosing expression has pushed is
-    // not what sits at *B15 during the call.
+    // a word each and a double 8-aligned. Opened even for a call with none,
+    // so a value an enclosing expression pushed is not what sits at *B15.
     std::vector<int> at(onStack);
     int end = 4;
     for (int k = 0; k < onStack; k++) {
@@ -771,12 +749,9 @@ void Tms6747::visit(const Call &n) {
     if (sret) localAddr(n.resultSlot(), "A4");    // the value: its address
 }
 
-// Where the stack-passed parameters of a function sit, relative to the
-// caller's B15: the same layout the Call visit lays them out by.
-// Parameters from firstStack_ on are on the stack: the eleventh onward, or
-// for a variadic function the last named one and everything after it.
-// Asking for i == ps.size() gives the word past the last parameter, where a
-// variadic function's unnamed arguments begin.
+// Where a stack-passed parameter (from firstStack_ on) sits relative to the
+// caller's B15 - the layout the Call visit uses. i == ps.size() names the
+// word past the last parameter, where a variadic function's extras begin.
 int Tms6747::stackParamOffset(const std::vector<Param> &ps, std::size_t i) {
     int end = 4;
     for (std::size_t k = firstStack_; k <= i; k++) {
@@ -803,10 +778,9 @@ void Tms6747::call(const std::string &target) {
     hasCall_ = true;
 }
 
-// A conversion between integers and pointers is a narrowing at most: A4 holds
-// every value sign- or zero-extended to the word, so widening is nothing and
-// an array decays to the address it already is. Floating-point and 64-bit
-// conversions wait for their types.
+// Between integers and pointers a conversion is a narrowing at most: A4
+// holds every value extended to the word, so widening is nothing and an
+// array decays to the address it already is.
 void Tms6747::visit(const Cast &n) {
     n.value().accept(*this);
     const Type *from = n.value().type(), *to = n.type();
@@ -847,9 +821,8 @@ void Tms6747::visit(const Cast &n) {
 }
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 // va_list is a char *: va_start points it at the word past the last named
-// parameter, which the caller put on the stack with everything after it;
-// va_arg reads the value there - an 8-byte one at the next 8-byte boundary,
-// a struct through the pointer the caller passed - and steps past it.
+// parameter, on the stack with everything after it; va_arg reads the value
+// there (8-byte ones 8-aligned, a struct through its pointer) and steps on.
 void Tms6747::visit(const VaStart &n) {
     n.list().accept(*this);                 // A4 = &ap
     regAdd("A15", linkBytes_ + vaStart_, "A6");
@@ -889,16 +862,11 @@ void Tms6747::visit(const MemberAccess &n) {
 // .word of a symbol with its addend for a relocated piece, .space for a gap.
 void Tms6747::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
-    // The type's own alignment: the x86/arm64 rule that lifts a 16-byte object
-    // to 16 is those ABIs', not TI's.
+    // The type's own alignment: lifting a 16-byte object to 16 is x86's rule.
     int align = g.type->align(target_);
-    // The symbol is the linker's name (Itanium leaves a variable's alone). An
-    // inline object - a vtable, a typeinfo, a template's static member - is
-    // one object across the program however many units define it: a weak
-    // definition, which the ELF linker keeps one of. TI's assembler spells
-    // that `.weak` on a symbol the module defines, in place of `.global`. A
-    // weak zero-filled object is laid out in .data with .space rather than by
-    // the .bss directive, which defines its symbol its own way.
+    // An inline object - a vtable, a typeinfo, a template's static member -
+    // is one object however many units define it: `.weak` in place of
+    // `.global`, and zero-filled ones in .data by .space, not the .bss form.
     if (g.isInline)       out_ << "\t.weak\t" << g.symbol << "\n";
     else if (!g.isStatic) out_ << "\t.global " << g.symbol << "\n";
 
@@ -943,10 +911,9 @@ void Tms6747::emitGlobal(const Global &g, Segment seg) {
     if (at < size) out_ << "\t.space\t" << (size - at) << "\n";
 }
 
-// String literals into .const as plain .byte lists - no escape syntax to get
-// wrong, and the same form serves wide strings, whose bytes the parser has
-// already laid out - then the globals by segment: constants (relocated or
-// not) in .const, initialised data in .data, and the rest as .bss.
+// String literals into .const as plain .byte lists - no escape syntax to
+// get wrong, and wide strings are the same form - then the globals by
+// segment: constants in .const, initialised data in .data, the rest .bss.
 void Tms6747::emitData(const Program &program) {
     bool inConst = !program.strings.empty();
     if (inConst) out_ << "\t.sect\t\".const\"\n";
@@ -978,10 +945,9 @@ void Tms6747::emitData(const Program &program) {
     }
 }
 
-// Parameters arrive in the argument registers and, from the eleventh, on the
-// stack above the caller's reserved word; each is copied to its own frame
-// slot, so the body sees every parameter as a local. Runs after the body has
-// been walked, when the size of the frame link is known.
+// Parameters arrive in the argument registers and, from the eleventh, on
+// the stack; each is copied to its own frame slot so the body sees a local.
+// Runs after the body has been walked, when the frame link's size is known.
 void Tms6747::emitParams(const Function &fn) {
     const std::vector<Param> &ps = fn.params();
     for (std::size_t i = 0; i < ps.size(); i++) {
@@ -1014,11 +980,9 @@ void Tms6747::emitParams(const Function &fn) {
     }
 }
 
-// The frame link, saved below the caller's stack and pointed at by A15:
-//   *B15+0  the caller's A15        *B15+4  the return address, B3
-//   *B15+8  A10   +12 B10   +16 A12   +20 B12   (only when the body loads them)
-// Locals lie below the link at A15 - offset. A leaf with no locals and no
-// parameters keeps no link at all.
+// The frame link A15 points at: the caller's A15, B3, then these four when
+// the body loads them for a call. Locals lie below it at A15 - offset.
+
 static const char *const kSavedArgRegs[] = { "A10", "B10", "A12", "B12" };
 
 void Tms6747::emitFunction(const Function &fn) {
@@ -1050,9 +1014,7 @@ void Tms6747::emitFunction(const Function &fn) {
         vaStart_ = stackParamOffset(fn.params(), named);
     }
 
-    // The body goes first, into its own text, because what it does decides the
-    // prologue: a call means B3 must be saved, and a call with more than six
-    // arguments means A10/B10/A12/B12 must be too.
+    // The body first, into its own text: what it does decides the prologue.
     fn.body().accept(*this);
     // Falling off the end returns 0 - main's C99 meaning, and what the other
     // backends do for every function - or the result pointer for a struct.

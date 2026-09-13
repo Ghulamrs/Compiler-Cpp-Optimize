@@ -1065,13 +1065,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         }
     } else if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
                kind != Kind::Union) {
-        // **The same rule on Itanium, and the same correction.** A class with
-        // no primary base to take a vptr from puts one at offset 0, in front
-        // of every base: clang lays `Z : A` as vptr 0, A 8, z 12. The vptr is
-        // one pointer wide - four bytes on the C6000 - and what follows it
-        // keeps its own alignment: a double after a four-byte vptr sits at
-        // 8, not 4, so the shift is the vptr rounded up to the widest
-        // alignment the members and bases already had.
+        // **The same rule on Itanium, and the same correction.** With no
+        // primary base to take a vptr from, one goes at offset 0, in front of
+        // every base (clang: `Z : A` is vptr 0, A 8, z 12).
+
+        // The vptr is one pointer wide - four on the C6000 - and what follows
+        // keeps its own alignment: a double after a four-byte vptr sits at 8,
+        // so the shift is the vptr rounded up to the widest alignment so far.
         const int vptr = pointerBytes();
         const int slot = alignTo(vptr, widest);
         for (std::size_t i = 0; i < members.size(); i++)

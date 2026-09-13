@@ -1,41 +1,8 @@
 #pragma once
 
-// The TMS320C6747 (C674x, C6000 family) VLIW DSP, as a code-generation target.
-// Output is C6000 assembly text only (-S). It is emitted the simple way the
-// other backends emit: a stack-machine over a primary register (A4), serial -
-// one instruction per execute packet, no || - with branch and load delay slots
-// filled by NOP. Correct, not fast; VLIW scheduling is a later concern.
-//
-// Milestones: (1) integer-constant returns; (2) locals, assignments, integer
-// arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
-// if/while/for with real return values; (3) parameters and calls under the
-// C6000 EABI, globals, string literals and integer casts; (4) variadic calls,
-// integer division through the EABI helpers, structs, bit-fields, floating
-// point, 64-bit integers and variadic functions - this file.
-//
-// Floating point is the C674x's own: single precision in A4, double in the
-// pair A5:A4, with the SP/DP instructions and their delay slots as NOPs;
-// division and float-to-unsigned through the EABI helpers. A long long
-// rides in the same pair and is done in 32-bit halves, its division and its
-// conversions to and from floating point through the helpers too.
-//
-// Structs go by address: a struct value in A4 is where it lives. An argument
-// is the address of a copy the caller makes; a result is written through the
-// pointer the caller passes in A3.
-//
-// The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
-// B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved
-// word at *B15 (the first at B15+4) - and for a variadic callee, the last
-// named argument and everything after it go on the stack, where va_start can
-// walk them; the result comes back in A4; B3 holds the return address. A10-A15 and B10-B15 are callee-saved, so a function that
-// loads A10/B10/A12/B12 for a call of its own saves them beside A15 and B3 in
-// its frame link.
-//
-// The asm uses only unambiguous forms - no functional-unit specifiers (the
-// assembler assigns them), zero-offset *reg loads and stores with the address
-// computed into a register first, A1 as the branch predicate, NOP 4 after every
-// load and NOP 5 after every branch. It is built to C6000 conventions but is
-// not checked against a real assembler; there is none on these machines.
+// The TMS320C6747 (C674x, C6000 family) as a code-generation target: C6000
+// assembly text only, serial, a stack machine over A4, delay slots as NOPs.
+// The conventions, the ABI as emitted and the milestones: VM6747/TMS6747.md.
 
 #include "Backend.h"
 #include "Walker.h"

@@ -575,10 +575,9 @@ private:
 
     // **Mark a signature that came out of `functions_` used, and the one place the pointer arithmetic this file warns about is written.**
     void markUsed(const Signature *f);
-    // **A vtable entry, a typeinfo field and the vptr itself are one pointer
-    // wide** - eight bytes on the three 64-bit targets, four on the C6000 -
-    // and an offset stored among them (offset-to-top, a vbase_offset) is a
-    // signed integer of that same width.
+    // **A vtable entry, a typeinfo field and the vptr are one pointer wide**
+    // - eight bytes on the 64-bit targets, four on the C6000 - and an offset
+    // stored among them (offset-to-top, a vbase_offset) is as wide, signed.
     int pointerBytes() const { return target_.sizeOf(Kind::Pointer); }
     const Type *ptrdiffType() const {
         return types_.get(pointerBytes() == 8 ? Kind::LongLong : Kind::Int);
