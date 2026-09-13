@@ -15,8 +15,9 @@
 //
 // The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
 // B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved
-// word at *B15 (the first at B15+4); the result comes back in A4; B3 holds the
-// return address. A10-A15 and B10-B15 are callee-saved, so a function that
+// word at *B15 (the first at B15+4) - and for a variadic callee, the last
+// named argument and everything after it go on the stack, where va_start can
+// walk them; the result comes back in A4; B3 holds the return address. A10-A15 and B10-B15 are callee-saved, so a function that
 // loads A10/B10/A12/B12 for a call of its own saves them beside A15 and B3 in
 // its frame link.
 //

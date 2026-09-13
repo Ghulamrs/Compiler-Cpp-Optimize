@@ -326,12 +326,17 @@ void Tms6747::visit(const Return &n) {
 // reserved word at *B15 in an area opened for the call. The return address is
 // built into B3 by hand and the branch takes its five delay slots as NOPs, a
 // form every C6000 accepts. The result is left in A4.
+//
+// A variadic callee is the exception: its last named argument and everything
+// after it go on the stack, in order, so that va_start can step from the
+// named one to the rest - the C6000 convention, and the reason `printf("%d",
+// x)` puts both the format and x on the stack. The ones before it ride in
+// registers as usual.
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
     if (n.type()->isStructOrUnion()) unsupported("a call returning a struct");
     if (n.type()->isFloating()) unsupported("a call returning a floating-point value");
     if (n.type()->size(target_) > 4) unsupported("a call returning a 64-bit value");
-    if (n.isVariadic()) unsupported("a call to a variadic function");
     for (const ExprPtr &a : args) {
         if (a->type()->isStructOrUnion()) unsupported("a struct argument");
         if (a->type()->isFloating()) unsupported("a floating-point argument");
@@ -340,6 +345,11 @@ void Tms6747::visit(const Call &n) {
 
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
     std::size_t inRegs = args.size() < regCount ? args.size() : regCount;
+    if (n.isVariadic()) {
+        std::size_t named = static_cast<std::size_t>(n.namedArgs());
+        std::size_t last = named > 0 ? named - 1 : 0;   // the anchor for va_start
+        if (last < inRegs) inRegs = last;
+    }
     int onStack = static_cast<int>(args.size() - inRegs);
 
     // The area under the call: the reserved word, then the stack arguments.
