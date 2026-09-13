@@ -35,8 +35,12 @@ const Abi &Tms6747Backend::abi() const {
     static const char *const kIntRegs[] = {
         "A4", "B4", "A6", "B6", "A8", "B8", "A10", "B10", "A12", "B12"
     };
+    // structReturnLimit 0 and aggregatesByReference false: every struct or
+    // union, whatever its size, is returned through the hidden pointer the
+    // caller hands over in A3 - TI's convention - and passed by the address
+    // of a copy (the parser gives each struct argument a slot for it).
     static const Abi kAbi = {
-        kIntRegs, 10, nullptr, 0, true, 0, 8, true, false, "A0", "A0", false, true
+        kIntRegs, 10, nullptr, 0, true, 0, 0, false, false, "A0", "A0", false, true
     };
     return kAbi;
 }
@@ -117,6 +121,29 @@ void Tms6747::localAddr(int off, const char *dst) {
     }
 }
 
+// A4 += bytes, for a member's offset.
+void Tms6747::addOffset(int bytes) {
+    if (bytes == 0) return;
+    regAdd("A4", bytes, "A4");
+}
+
+// A struct copy, word by word then halfword and byte, each through A3 with
+// the addresses formed in A0: the zero-offset forms, like every other access
+// here. from and to are A-file registers other than A0 and A3.
+void Tms6747::copyBlock(int size, const char *from, const char *to) {
+    int off = 0;
+    while (off < size) {
+        int step = size - off >= 4 ? 4 : size - off >= 2 ? 2 : 1;
+        const char *ld = step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
+        const char *st = step == 4 ? "STW" : step == 2 ? "STH" : "STB";
+        regAdd(from, off, "A0");
+        out_ << "\t" << ld << "\t*A0, A3\n\tNOP\t4\n";
+        regAdd(to, off, "A0");
+        out_ << "\t" << st << "\tA3, *A0\n";
+        off += step;
+    }
+}
+
 void Tms6747::push() {
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTW\tA4, *B15\n";
@@ -139,6 +166,19 @@ void Tms6747::genAddr(const Expr &e) {
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
         if (u->op() == '*') { u->operand().accept(*this); return; }
+    }
+    if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
+        if (m->isBitField()) unsupported("a bit-field");
+        genAddr(m->object());
+        addOffset(m->offset());
+        return;
+    }
+    // A struct-valued call or conditional: its value already is an address.
+    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+        if (c->type()->isStructOrUnion()) { c->accept(*this); return; }
+    }
+    if (const Conditional *q = dynamic_cast<const Conditional *>(&e)) {
+        if (q->type()->isStructOrUnion()) { q->accept(*this); return; }
     }
     unsupported("this address");
 }
@@ -210,12 +250,16 @@ void Tms6747::visit(const Num &n) {
 void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
 
 void Tms6747::visit(const Assign &n) {
-    if (n.type()->isStructOrUnion()) unsupported("a struct assignment");
-    n.value().accept(*this);        // A4 = value
+    n.value().accept(*this);        // A4 = value (a struct's is its address)
     push();                         // save the value
     genAddr(n.target());            // A4 = address
     out_ << "\tMV\tA4, A6\n";        // A6 = address
     pop("A4");                       // A4 = value again
+    if (n.type()->isStructOrUnion()) {
+        copyBlock(n.type()->size(target_), "A4", "A6");
+        out_ << "\tMV\tA6, A4\n";    // the result: the target, by address
+        return;
+    }
     store(n.type(), "A6");           // *A6 = A4 ; A4 stays the value (the result)
 }
 
@@ -325,8 +369,15 @@ void Tms6747::visit(const Postfix &n) {
 void Tms6747::visit(const Return &n) {
     markLine(n);
     if (n.hasValue()) {
-        if (n.value().type()->isStructOrUnion()) unsupported("returning a struct");
         n.value().accept(*this);    // result in A4
+        if (n.value().type()->isStructOrUnion()) {
+            // Copy it to where the caller asked (the pointer it passed in
+            // A3, kept in the sret slot) and answer with that address.
+            localAddr(sretSlot_, "A6");
+            out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n";
+            copyBlock(n.value().type()->size(target_), "A4", "A6");
+            out_ << "\tMV\tA6, A4\n";
+        }
     }
     jump(returnLabel_);
 }
@@ -345,13 +396,23 @@ void Tms6747::visit(const Return &n) {
 // registers as usual.
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
-    if (n.type()->isStructOrUnion()) unsupported("a call returning a struct");
+    bool sret = n.type()->isStructOrUnion();
     if (n.type()->isFloating()) unsupported("a call returning a floating-point value");
-    if (n.type()->size(target_) > 4) unsupported("a call returning a 64-bit value");
+    if (!sret && n.type()->size(target_) > 4) unsupported("a call returning a 64-bit value");
     for (const ExprPtr &a : args) {
-        if (a->type()->isStructOrUnion()) unsupported("a struct argument");
+        if (a->type()->isStructOrUnion()) continue;
         if (a->type()->isFloating()) unsupported("a floating-point argument");
         if (a->type()->size(target_) > 4) unsupported("a 64-bit argument");
+    }
+
+    // A struct argument is passed by the address of a copy: each is copied
+    // into the slot the parser gave it first, and the slot's address then
+    // stands in for the argument wherever it goes.
+    for (std::size_t i = 0; i < args.size(); i++) {
+        if (!args[i]->type()->isStructOrUnion()) continue;
+        args[i]->accept(*this);               // A4 = the struct's address
+        localAddr(n.argSlot(i), "A6");
+        copyBlock(args[i]->type()->size(target_), "A4", "A6");
     }
 
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
@@ -369,7 +430,7 @@ void Tms6747::visit(const Call &n) {
     int area = align8(4 + 4 * onStack);
     spAdjust(-area);
     for (int k = 0; k < onStack; k++) {
-        args[inRegs + k]->accept(*this);
+        genArg(n, inRegs + k);
         regAdd("B15", 4 + 4 * k, "B0");
         out_ << "\tSTW\tA4, *B0\n";
     }
@@ -379,20 +440,28 @@ void Tms6747::visit(const Call &n) {
         push();
     }
     for (std::size_t i = 0; i + 1 < inRegs; i++) {
-        args[i]->accept(*this);
+        genArg(n, i);
         push();
     }
     if (inRegs > 0) {
-        args[inRegs - 1]->accept(*this);
+        genArg(n, inRegs - 1);
         const char *last = abi_.intRegs[inRegs - 1];
         if (std::string(last) != "A4") out_ << "\tMV\tA4, " << last << "\n";
         for (std::size_t i = inRegs - 1; i-- > 0; ) pop(abi_.intRegs[i]);
     }
     if (inRegs > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
     if (n.callee() != nullptr) pop("B1");
+    if (sret) localAddr(n.resultSlot(), "A3");    // where the result goes
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
     spAdjust(area);
+    if (sret) localAddr(n.resultSlot(), "A4");    // the value: its address
+}
+
+// Argument i into A4: its value, or for a struct the address of its copy.
+void Tms6747::genArg(const Call &n, std::size_t i) {
+    if (n.args()[i]->type()->isStructOrUnion()) localAddr(n.argSlot(i), "A4");
+    else n.args()[i]->accept(*this);
 }
 
 // The call itself: the return address into B3, the branch - to a symbol or
@@ -421,7 +490,7 @@ void Tms6747::visit(const Cast &n) {
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
 void Tms6747::visit(const VaArg &) { unsupported("va_arg"); }
-void Tms6747::visit(const MemberAccess &) { unsupported("a member access"); }
+void Tms6747::visit(const MemberAccess &n) { genAddr(n); load(n.type()); }
 
 // ---- functions and the file ----------------------------------------------
 // Initialised data, in TI's directives: .byte, .short and .word (32 bits;
@@ -519,9 +588,9 @@ void Tms6747::emitParams(const Function &fn) {
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
     for (std::size_t i = 0; i < ps.size(); i++) {
         const Type *t = ps[i].type;
-        if (t->isStructOrUnion()) unsupported("a struct parameter");
+        bool byRef = t->isStructOrUnion();      // the address of the caller's copy
         if (t->isFloating()) unsupported("a floating-point parameter");
-        if (t->size(target_) > 4) unsupported("a 64-bit parameter");
+        if (!byRef && t->size(target_) > 4) unsupported("a 64-bit parameter");
         if (i < regCount) {
             const char *reg = abi_.intRegs[i];
             if (std::string(reg) != "A4") out_ << "\tMV\t" << reg << ", A4\n";
@@ -531,6 +600,11 @@ void Tms6747::emitParams(const Function &fn) {
             int k = static_cast<int>(i - regCount);
             regAdd("A15", linkBytes_ + 4 + 4 * k, "A0");
             out_ << "\tLDW\t*A0, A4\n\tNOP\t4\n";
+        }
+        if (byRef) {
+            localAddr(ps[i].offset, "A6");
+            copyBlock(t->size(target_), "A4", "A6");
+            continue;
         }
         localAddr(ps[i].offset, "A0");
         store(t, "A0");
@@ -555,8 +629,8 @@ void Tms6747::emitFunction(const Function &fn) {
     usesSavedArgRegs_ = false;
     linkBytes_ = 8;
 
-    if (fn.sretSlot() != 0) unsupported("a function returning a struct");
     if (fn.isVariadic()) unsupported("a variadic function");
+    sretSlot_ = fn.sretSlot();
 
     // The body goes first, into its own text, because what it does decides the
     // prologue: a call means B3 must be saved, and a call with more than six
@@ -566,6 +640,12 @@ void Tms6747::emitFunction(const Function &fn) {
     out_.str(std::string());
     if (usesSavedArgRegs_) linkBytes_ = 24;
     emitParams(fn);
+    if (sretSlot_ != 0) {
+        // The caller's pointer to where the result goes, from A3, kept in
+        // its slot for the return to find.
+        localAddr(sretSlot_, "A0");
+        out_ << "\tSTW\tA3, *A0\n";
+    }
     std::string params = out_.str();
     out_.str(std::string());
 
@@ -584,7 +664,7 @@ void Tms6747::emitFunction(const Function &fn) {
     }
 
     int frame = align8(fn.frameSize());
-    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty();
+    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0;
     if (needFrame) {
         spAdjust(-linkBytes_);
         out_ << "\tSTW\tA15, *B15\n";

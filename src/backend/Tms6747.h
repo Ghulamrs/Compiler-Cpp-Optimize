@@ -9,9 +9,13 @@
 // Milestones: (1) integer-constant returns; (2) locals, assignments, integer
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
 // if/while/for with real return values; (3) parameters and calls under the
-// C6000 EABI, globals, string literals and integer casts; (4) variadic calls
-// and integer division through the EABI helpers - this file. 64-bit
-// integers, floats and structs are later and call unsupported() until then.
+// C6000 EABI, globals, string literals and integer casts; (4) variadic calls,
+// integer division through the EABI helpers, and structs - this file. 64-bit
+// integers, floats and bit-fields are later and call unsupported() until then.
+//
+// Structs go by address: a struct value in A4 is where it lives. An argument
+// is the address of a copy the caller makes; a result is written through the
+// pointer the caller passes in A3.
 //
 // The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
 // B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved
@@ -98,6 +102,7 @@ private:
     bool hasCall_ = false;
     bool usesSavedArgRegs_ = false;
     int linkBytes_ = 8;                       // saved A15 + B3 (+ the four above)
+    int sretSlot_ = 0;                        // where the caller's A3 is kept
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;
@@ -115,6 +120,9 @@ private:
     void movSym(const char *reg, const std::string &sym);
     void regAdd(const char *base, int off, const char *dst); // dst = base + off
     void call(const std::string &target);     // B3 = return address; B target
+    void genArg(const Call &n, std::size_t i);   // argument i -> A4
+    void addOffset(int bytes);                // A4 += bytes
+    void copyBlock(int size, const char *from, const char *to);
     void spAdjust(int delta);                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
     void push();                              // push A4
