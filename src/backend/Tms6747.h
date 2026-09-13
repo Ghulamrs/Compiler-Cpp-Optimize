@@ -9,8 +9,8 @@
 // Milestones: (1) integer-constant returns; (2) locals, assignments, integer
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
 // if/while/for with real return values; (3) parameters and calls under the
-// C6000 EABI - this file. Globals, casts, division, floats and structs are
-// later and call unsupported() until then.
+// C6000 EABI, and globals and string literals - this file. Casts, division,
+// floats and structs are later and call unsupported() until then.
 //
 // The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
 // B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved
@@ -109,6 +109,7 @@ private:
 
     void unsupported(const char *what);
     void movImm(const char *reg, long long value);
+    static std::string symName(const std::string &sym);
     void movSym(const char *reg, const std::string &sym);
     void regAdd(const char *base, int off, const char *dst); // dst = base + off
     void spAdjust(int delta);                 // B15 += delta (negative allocates)
@@ -119,6 +120,7 @@ private:
     void load(const Type *t);                 // [A4] -> A4
     void store(const Type *t, const char *addrReg);  // A4 -> [addrReg]
     void narrowInt(const Type *t);            // truncate A4 to t's width
+    void emitGlobal(const Global &g, Segment seg);
     void emitData(const Program &program);
     void emitParams(const Function &fn);
     void emitFunction(const Function &fn);

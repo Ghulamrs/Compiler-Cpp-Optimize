@@ -68,10 +68,17 @@ void Tms6747::movImm(const char *reg, long long value) {
     out_ << "\tMVKH\t" << v << ", " << reg << "\n";
 }
 
+// A symbol as the assembler sees it. The parser names string literals
+// `.L.str.N`, GNU style; a leading dot reads as a directive to the TI
+// assembler, so it is dropped: `L.str.N`, beside the `L.` code labels.
+std::string Tms6747::symName(const std::string &sym) {
+    return sym[0] == '.' ? sym.substr(1) : sym;
+}
+
 // A symbol's address, the same two halves; the assembler and linker fill them.
 void Tms6747::movSym(const char *reg, const std::string &sym) {
-    out_ << "\tMVKL\t" << sym << ", " << reg << "\n";
-    out_ << "\tMVKH\t" << sym << ", " << reg << "\n";
+    out_ << "\tMVKL\t" << symName(sym) << ", " << reg << "\n";
+    out_ << "\tMVKH\t" << symName(sym) << ", " << reg << "\n";
 }
 
 // dst = base + off. A large offset goes through the scratch register of the
@@ -123,8 +130,12 @@ void Tms6747::pop(const char *reg) {
 void Tms6747::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) { localAddr(v->offset(), "A4"); return; }
-        if (v->type()->isFunction()) { movSym("A4", v->symbol()); return; }
-        unsupported("the address of a global");
+        movSym("A4", v->symbol());  // a global, or a function
+        return;
+    }
+    if (const StrLit *s = dynamic_cast<const StrLit *>(&e)) {
+        movSym("A4", s->label());
+        return;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
         if (u->op() == '*') { u->operand().accept(*this); return; }
@@ -370,15 +381,96 @@ void Tms6747::visit(const Call &n) {
 }
 
 void Tms6747::visit(const Cast &) { unsupported("a cast"); }
-void Tms6747::visit(const StrLit &) { unsupported("a string literal"); }
+void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
 void Tms6747::visit(const VaArg &) { unsupported("va_arg"); }
 void Tms6747::visit(const MemberAccess &) { unsupported("a member access"); }
 
 // ---- functions and the file ----------------------------------------------
+// Initialised data, in TI's directives: .byte, .short and .word (32 bits;
+// TI's .long is 32 bits too, so a 64-bit piece is two words, low first), a
+// .word of a symbol with its addend for a relocated piece, .space for a gap.
+void Tms6747::emitGlobal(const Global &g, Segment seg) {
+    int size = g.type->size(target_);
+    // The type's own alignment: the x86/arm64 rule that lifts a 16-byte object
+    // to 16 is those ABIs', not TI's.
+    int align = g.type->align(target_);
+    // The symbol is the linker's name (Itanium leaves a variable's alone). An
+    // inline object - a vtable, a typeinfo - wants a weak symbol the linker
+    // folds, and the prefix word is an 8-byte pointer laid before a label;
+    // neither has a TI spelling chosen yet, so both are refused, not guessed.
+    if (g.isInline) unsupported("an inline object (a weak symbol)");
+    if (!g.prefixWord.empty()) unsupported("an object with a prefix word");
+    if (!g.isStatic) out_ << "\t.global " << g.symbol << "\n";
+
+    if (seg == Segment::Bss) {
+        out_ << "\t.bss\t" << g.symbol << ", " << size << ", " << align << "\n";
+        return;
+    }
+
+    if (align > 1) out_ << "\t.align\t" << align << "\n";
+    out_ << g.symbol << ":\n";
+    int at = 0;
+    for (const GlobalPiece &p : g.init) {
+        if (p.offset > at) out_ << "\t.space\t" << (p.offset - at) << "\n";
+        if (!p.symbol.empty()) {
+            if (p.size != 4) unsupported("a relocated piece that is not a word");
+            out_ << "\t.word\t" << symName(p.symbol);
+            if (p.value > 0) out_ << "+" << p.value;
+            else if (p.value < 0) out_ << "-" << -p.value;
+            out_ << "\n";
+        } else {
+            switch (p.size) {
+            case 1: out_ << "\t.byte\t" << p.value << "\n"; break;
+            case 2: out_ << "\t.short\t" << p.value << "\n"; break;
+            case 4: out_ << "\t.word\t" << p.value << "\n"; break;
+            case 8: {
+                unsigned long long v = static_cast<unsigned long long>(p.value);
+                out_ << "\t.word\t" << (v & 0xffffffffu) << "\n";
+                out_ << "\t.word\t" << (v >> 32) << "\n";
+                break;
+            }
+            default: unsupported("a data piece of this size");
+            }
+        }
+        at = p.offset + p.size;
+    }
+    if (at < size) out_ << "\t.space\t" << (size - at) << "\n";
+}
+
+// String literals into .const as plain .byte lists - no escape syntax to get
+// wrong, and the same form serves wide strings, whose bytes the parser has
+// already laid out - then the globals by segment: constants (relocated or
+// not) in .const, initialised data in .data, and the rest as .bss.
 void Tms6747::emitData(const Program &program) {
-    if (!program.globals.empty()) unsupported("a global variable");
-    if (!program.strings.empty()) unsupported("a string literal");
+    bool inConst = !program.strings.empty();
+    if (inConst) out_ << "\t.sect\t\".const\"\n";
+    for (const StringLit &s : program.strings) {
+        if (s.width > 1) out_ << "\t.align\t" << s.width << "\n";
+        out_ << symName(s.label) << ":\n";
+        for (std::size_t i = 0; i < s.bytes.size(); i++) {
+            if (i % 16 == 0) out_ << "\t.byte\t";
+            out_ << static_cast<int>(static_cast<unsigned char>(s.bytes[i]));
+            out_ << ((i + 1 == s.bytes.size() || i % 16 == 15) ? "\n" : ", ");
+        }
+    }
+
+    struct Bucket { Segment seg; const char *open; };
+    const Bucket order[] = {
+        { Segment::Const,          "\t.sect\t\".const\"\n" },
+        { Segment::ConstRelocated, "\t.sect\t\".const\"\n" },
+        { Segment::Data,           "\t.data\n" },
+        { Segment::Bss,            nullptr },
+    };
+    for (const Bucket &b : order) {
+        bool opened = inConst && b.seg != Segment::Data;   // .const is open already
+        for (const Global &g : program.globals) {
+            if (segmentFor(g) != b.seg) continue;
+            if (!opened && b.open != nullptr) out_ << b.open;
+            opened = true;
+            emitGlobal(g, b.seg);
+        }
+    }
 }
 
 // Parameters arrive in the argument registers and, from the eleventh, on the
