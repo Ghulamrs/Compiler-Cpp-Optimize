@@ -10,13 +10,15 @@
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
 // if/while/for with real return values; (3) parameters and calls under the
 // C6000 EABI, globals, string literals and integer casts; (4) variadic calls,
-// integer division through the EABI helpers, structs, bit-fields and floating
-// point - this file. 64-bit integers and defining a variadic function are
-// later and call unsupported() until then.
+// integer division through the EABI helpers, structs, bit-fields, floating
+// point and 64-bit integers - this file. Defining a variadic function is
+// later and calls unsupported() until then.
 //
 // Floating point is the C674x's own: single precision in A4, double in the
 // pair A5:A4, with the SP/DP instructions and their delay slots as NOPs;
-// division and float-to-unsigned through the EABI helpers.
+// division and float-to-unsigned through the EABI helpers. A long long
+// rides in the same pair and is done in 32-bit halves, its division and its
+// conversions to and from floating point through the helpers too.
 //
 // Structs go by address: a struct value in A4 is where it lives. An argument
 // is the address of a copy the caller makes; a result is written through the
@@ -87,6 +89,7 @@ public:
     void visit(const VaStart &) override;
     void visit(const VaArg &) override;
     void visit(const MemberAccess &) override;
+    void visit(const Switch &) override;
     void visit(const Return &) override;
     void landingPad(int pointerSlot, int selectorSlot) override;
 
@@ -136,6 +139,7 @@ private:
     void push();                              // push A4
     void pop(const char *reg);                // reg = top; SP += 8
     bool isDouble(const Type *t) const;       // a 64-bit floating type
+    bool isWide(const Type *t) const;         // any 64-bit scalar: it rides in A5:A4
     static std::string pairOf(const char *reg);  // "A4" -> "A5:A4"
     void pushValue(const Type *t);            // push the accumulator, 4 or 8 bytes
     void popValue(const Type *t, const char *reg);
@@ -143,6 +147,8 @@ private:
     void fpConst(const Type *t, double v, const char *reg);
     void isZero(const Type *t);               // A4 = (accumulator == 0)
     void fpBinary(const Binary &n, bool dp);  // operands in A5:A4 / A7:A6
+    void wideBinary(const Binary &n);         // 64-bit integers, the same places
+    void wideCast(const Type *from, const Type *to);
     int stackParamOffset(const std::vector<Param> &ps, std::size_t i);
     void genAddr(const Expr &e);              // address of an lvalue -> A4
     void load(const Type *t);                 // [A4] -> A4
