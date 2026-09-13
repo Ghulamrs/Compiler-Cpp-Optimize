@@ -17,7 +17,7 @@
 # and a suite that refused one would be a suite people stopped recording.
 set -e
 cd "$(dirname "$0")/.."
-CXX1=./cxx1.exe
+CXX1="${CXX1:-./cxx1i.exe}"
 cxx1() { ( ulimit -t 10; $CXX1 "$@" < /dev/null ); }
 OUT=tests/out-emit
 GOLD=tests/out-emit.golden

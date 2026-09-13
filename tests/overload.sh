@@ -27,7 +27,7 @@
 # The Linux box has no clang and reports the skip rather than a pass.
 set -u
 cd "$(dirname "$0")/.."
-CXX1=./cxx1.exe
+CXX1="${CXX1:-./cxx1i.exe}"
 CLANG=${CLANG:-clang++}
 
 if ! command -v "$CLANG" > /dev/null 2>&1; then

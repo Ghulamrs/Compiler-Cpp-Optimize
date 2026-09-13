@@ -128,11 +128,13 @@ $(OBJDIR)/%.o: src/%.cpp
 # checks all three backends on any machine. Neither is a differential suite
 # yet - comparing cxx1's objects against clang's needs mangling and
 # extern "C", which are rung 2.
+# The suites are told which binary, since a BINDIR build puts cxx1i.exe
+# somewhere other than here; unset, each falls back to ./cxx1i.exe.
 test: $(TARGET)
-	@./tests/run.sh
-	@./tests/emit.sh
-	@./tests/names.sh
-	@./tests/overload.sh
+	@CXX1=$(TARGET) ./tests/run.sh
+	@CXX1=$(TARGET) ./tests/emit.sh
+	@CXX1=$(TARGET) ./tests/names.sh
+	@CXX1=$(TARGET) ./tests/overload.sh
 	@./tools/comment-lines --count
 
 # The comment-line policy, on its own, because it is about the source and not
@@ -156,18 +158,18 @@ help:
 # Before a change that is meant to emit exactly what it emits now: record, make
 # the change, run the suite, and it says how many files came out different.
 golden: $(TARGET)
-	@./tests/emit.sh --record
+	@CXX1=$(TARGET) ./tests/emit.sh --record
 
 # The inherited C corpus. Not part of `make test` and not a pass rate - see
 # tests/c-corpus/README, which says what each part of the failing set is.
 corpus: $(TARGET)
-	@./tests/corpus.sh
+	@CXX1=$(TARGET) ./tests/corpus.sh
 
 # The register of known-open defects. Not part of `make test` either, and for a
 # sharper reason: every program in it is a wrong answer, so it would be red by
 # construction. It says how many still differ from clang - see tests/open/README.
 open: $(TARGET)
-	@./tests/open.sh
+	@CXX1=$(TARGET) ./tests/open.sh
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
