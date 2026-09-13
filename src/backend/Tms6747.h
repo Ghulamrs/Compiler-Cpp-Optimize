@@ -8,9 +8,16 @@
 //
 // Milestones: (1) integer-constant returns; (2) locals, assignments, integer
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
-// if/while/for with real return values - this file. Parameters and calls (the
-// ABI), globals, casts, division, floats and structs are later milestones and
-// call unsupported() until then.
+// if/while/for with real return values; (3) parameters and calls under the
+// C6000 EABI - this file. Globals, casts, division, floats and structs are
+// later and call unsupported() until then.
+//
+// The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
+// B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved
+// word at *B15 (the first at B15+4); the result comes back in A4; B3 holds the
+// return address. A10-A15 and B10-B15 are callee-saved, so a function that
+// loads A10/B10/A12/B12 for a call of its own saves them beside A15 and B3 in
+// its frame link.
 //
 // The asm uses only unambiguous forms - no functional-unit specifiers (the
 // assembler assigns them), zero-offset *reg loads and stores with the address
@@ -51,10 +58,8 @@ private:
 
 class Tms6747 final : public Walker {
 public:
-    // abi arrives for the calls milestone; milestone 2 needs the target (for
-    // type sizes and signedness) but not the abi, so the abi is ignored.
     Tms6747(std::ostream &sink, const Target &target, const Abi &abi)
-        : sink_(sink), target_(target) { (void)abi; }
+        : sink_(sink), target_(target), abi_(abi) {}
 
     using Walker::visit;
     void run(const Program &program) override;
@@ -75,13 +80,22 @@ public:
     void landingPad(int pointerSlot, int selectorSlot) override;
 
 private:
-    std::ostringstream out_;
+    std::ostringstream out_;    // the piece being emitted (one function at a time)
+    std::string file_;          // the finished pieces, in order
     std::ostream &sink_;
     const Target &target_;
+    const Abi &abi_;
 
     std::string functionName_;
     std::string returnLabel_;
     std::string labelPrefix_;
+
+    // Gathered while the body is emitted, then used to shape the prologue: a
+    // function that calls saves B3, and one that loads the callee-saved
+    // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
+    bool hasCall_ = false;
+    bool usesSavedArgRegs_ = false;
+    int linkBytes_ = 8;                       // saved A15 + B3 (+ the four above)
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;
@@ -95,6 +109,8 @@ private:
 
     void unsupported(const char *what);
     void movImm(const char *reg, long long value);
+    void movSym(const char *reg, const std::string &sym);
+    void regAdd(const char *base, int off, const char *dst); // dst = base + off
     void spAdjust(int delta);                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
     void push();                              // push A4
@@ -104,5 +120,6 @@ private:
     void store(const Type *t, const char *addrReg);  // A4 -> [addrReg]
     void narrowInt(const Type *t);            // truncate A4 to t's width
     void emitData(const Program &program);
+    void emitParams(const Function &fn);
     void emitFunction(const Function &fn);
 };

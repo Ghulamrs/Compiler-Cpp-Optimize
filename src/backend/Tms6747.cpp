@@ -31,7 +31,7 @@ int Tms6747Target::alignOf(Kind k) const { return sizeOf(k); }
 
 // ---- the backend ---------------------------------------------------------
 const Abi &Tms6747Backend::abi() const {
-    // C6000 EABI argument registers, for the calls milestone; unused so far.
+    // C6000 EABI argument registers, in order; the result comes back in A4.
     static const char *const kIntRegs[] = {
         "A4", "B4", "A6", "B6", "A8", "B8", "A10", "B10", "A12", "B12"
     };
@@ -66,6 +66,24 @@ void Tms6747::movImm(const char *reg, long long value) {
     long long v = static_cast<int>(value);
     out_ << "\tMVKL\t" << v << ", " << reg << "\n";
     out_ << "\tMVKH\t" << v << ", " << reg << "\n";
+}
+
+// A symbol's address, the same two halves; the assembler and linker fill them.
+void Tms6747::movSym(const char *reg, const std::string &sym) {
+    out_ << "\tMVKL\t" << sym << ", " << reg << "\n";
+    out_ << "\tMVKH\t" << sym << ", " << reg << "\n";
+}
+
+// dst = base + off. A large offset goes through the scratch register of the
+// destination's file so the ADD stays on one side.
+void Tms6747::regAdd(const char *base, int off, const char *dst) {
+    if (off >= 0 && off <= 31) {
+        out_ << "\tADD\t" << base << ", " << off << ", " << dst << "\n";
+    } else {
+        const char *tmp = dst[0] == 'B' ? "B0" : "A0";
+        movImm(tmp, off);
+        out_ << "\tADD\t" << base << ", " << tmp << ", " << dst << "\n";
+    }
 }
 
 // B15 is the stack pointer. Small adjustments use the 5-bit immediate; larger
@@ -105,6 +123,7 @@ void Tms6747::pop(const char *reg) {
 void Tms6747::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) { localAddr(v->offset(), "A4"); return; }
+        if (v->type()->isFunction()) { movSym("A4", v->name()); return; }
         unsupported("the address of a global");
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
@@ -290,7 +309,66 @@ void Tms6747::visit(const Return &n) {
     jump(returnLabel_);
 }
 
-void Tms6747::visit(const Call &) { unsupported("a function call"); }
+// A call under the C6000 EABI. Arguments are evaluated left to right onto the
+// expression stack and popped into A4, B4, A6, B6, A8, B8, A10, B10, A12, B12
+// (the last one straight from A4); the eleventh onward are stored above the
+// reserved word at *B15 in an area opened for the call. The return address is
+// built into B3 by hand and the branch takes its five delay slots as NOPs, a
+// form every C6000 accepts. The result is left in A4.
+void Tms6747::visit(const Call &n) {
+    const std::vector<ExprPtr> &args = n.args();
+    if (n.type()->isStructOrUnion()) unsupported("a call returning a struct");
+    if (n.type()->isFloating()) unsupported("a call returning a floating-point value");
+    if (n.type()->size(target_) > 4) unsupported("a call returning a 64-bit value");
+    if (n.isVariadic()) unsupported("a call to a variadic function");
+    for (const ExprPtr &a : args) {
+        if (a->type()->isStructOrUnion()) unsupported("a struct argument");
+        if (a->type()->isFloating()) unsupported("a floating-point argument");
+        if (a->type()->size(target_) > 4) unsupported("a 64-bit argument");
+    }
+
+    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
+    std::size_t inRegs = args.size() < regCount ? args.size() : regCount;
+    int onStack = static_cast<int>(args.size() - inRegs);
+
+    // The area under the call: the reserved word, then the stack arguments.
+    // Opened even for a call with none, so that a value an enclosing
+    // expression has pushed is not what sits at *B15 during the call.
+    int area = align8(4 + 4 * onStack);
+    spAdjust(-area);
+    for (int k = 0; k < onStack; k++) {
+        args[inRegs + k]->accept(*this);
+        regAdd("B15", 4 + 4 * k, "B0");
+        out_ << "\tSTW\tA4, *B0\n";
+    }
+
+    if (n.callee() != nullptr) {
+        n.callee()->accept(*this);  // the function's address
+        push();
+    }
+    for (std::size_t i = 0; i + 1 < inRegs; i++) {
+        args[i]->accept(*this);
+        push();
+    }
+    if (inRegs > 0) {
+        args[inRegs - 1]->accept(*this);
+        const char *last = abi_.intRegs[inRegs - 1];
+        if (std::string(last) != "A4") out_ << "\tMV\tA4, " << last << "\n";
+        for (std::size_t i = inRegs - 1; i-- > 0; ) pop(abi_.intRegs[i]);
+    }
+    if (inRegs > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
+    if (n.callee() != nullptr) pop("B1");
+
+    std::string ret = label("ret", nextLabel());
+    movSym("B3", ret);
+    if (n.callee() != nullptr) out_ << "\tB\tB1\n";
+    else                       out_ << "\tB\t" << n.name() << "\n";
+    out_ << "\tNOP\t5\n";
+    defineLabel(ret);
+    spAdjust(area);
+    hasCall_ = true;
+}
+
 void Tms6747::visit(const Cast &) { unsupported("a cast"); }
 void Tms6747::visit(const StrLit &) { unsupported("a string literal"); }
 void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
@@ -303,43 +381,112 @@ void Tms6747::emitData(const Program &program) {
     if (!program.strings.empty()) unsupported("a string literal");
 }
 
+// Parameters arrive in the argument registers and, from the eleventh, on the
+// stack above the caller's reserved word; each is copied to its own frame
+// slot, so the body sees every parameter as a local. Runs after the body has
+// been walked, when the size of the frame link is known.
+void Tms6747::emitParams(const Function &fn) {
+    const std::vector<Param> &ps = fn.params();
+    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
+    for (std::size_t i = 0; i < ps.size(); i++) {
+        const Type *t = ps[i].type;
+        if (t->isStructOrUnion()) unsupported("a struct parameter");
+        if (t->isFloating()) unsupported("a floating-point parameter");
+        if (t->size(target_) > 4) unsupported("a 64-bit parameter");
+        if (i < regCount) {
+            const char *reg = abi_.intRegs[i];
+            if (std::string(reg) != "A4") out_ << "\tMV\t" << reg << ", A4\n";
+        } else {
+            // The caller's B15 was A15 + the link; its stack arguments start
+            // one word above that.
+            int k = static_cast<int>(i - regCount);
+            regAdd("A15", linkBytes_ + 4 + 4 * k, "A0");
+            out_ << "\tLDW\t*A0, A4\n\tNOP\t4\n";
+        }
+        localAddr(ps[i].offset, "A0");
+        store(t, "A0");
+    }
+}
+
+// The frame link, saved below the caller's stack and pointed at by A15:
+//   *B15+0  the caller's A15        *B15+4  the return address, B3
+//   *B15+8  A10   +12 B10   +16 A12   +20 B12   (only when the body loads them)
+// Locals lie below the link at A15 - offset. A leaf with no locals and no
+// parameters keeps no link at all.
+static const char *const kSavedArgRegs[] = { "A10", "B10", "A12", "B12" };
+
 void Tms6747::emitFunction(const Function &fn) {
     resetLabels();
     functionName_ = fn.name();
     labelPrefix_ = "L." + fn.name() + ".";
     returnLabel_ = "L.return." + fn.name();
+    hasCall_ = false;
+    usesSavedArgRegs_ = false;
+    linkBytes_ = 8;
+
+    if (fn.sretSlot() != 0) unsupported("a function returning a struct");
+    if (fn.isVariadic()) unsupported("a variadic function");
+
+    // The body goes first, into its own text, because what it does decides the
+    // prologue: a call means B3 must be saved, and a call with more than six
+    // arguments means A10/B10/A12/B12 must be too.
+    fn.body().accept(*this);
+    std::string body = out_.str();
+    out_.str(std::string());
+    if (usesSavedArgRegs_) linkBytes_ = 24;
+    emitParams(fn);
+    std::string params = out_.str();
+    out_.str(std::string());
 
     out_ << "\t.text\n";
     if (!fn.isStatic()) out_ << "\t.global " << fn.name() << "\n";
     out_ << fn.name() << ":\n";
 
-    if (fn.sretSlot() != 0 || fn.isVariadic() || !fn.params().empty())
-        unsupported("a function with parameters, a struct return, or varargs");
-
     int frame = align8(fn.frameSize());
-    bool needFrame = frame > 0;
+    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty();
     if (needFrame) {
-        // Save the caller's frame pointer (A15 is callee-saved), point A15 at
-        // our frame, then open the locals below it. B15 is the stack pointer.
-        out_ << "\tSUB\tB15, 8, B15\n";
+        spAdjust(-linkBytes_);
         out_ << "\tSTW\tA15, *B15\n";
+        if (hasCall_) {                         // a leaf leaves B3 alone
+            regAdd("B15", 4, "B0");
+            out_ << "\tSTW\tB3, *B0\n";
+        }
+        if (usesSavedArgRegs_)
+            for (int k = 0; k < 4; k++) {
+                regAdd("B15", 8 + 4 * k, "B0");
+                out_ << "\tSTW\t" << kSavedArgRegs[k] << ", *B0\n";
+            }
         out_ << "\tMV\tB15, A15\n";
         spAdjust(-frame);
     }
 
-    fn.body().accept(*this);
+    out_ << params << body;
 
     out_ << returnLabel_ << ":\n";
     if (needFrame) {
         out_ << "\tMV\tA15, B15\n";                 // drop the locals: SP = FP
-        out_ << "\tLDW\t*B15, A15\n\tNOP\t4\n";      // restore the caller's FP
-        out_ << "\tADD\tB15, 8, B15\n";             // pop the saved-FP slot
+        if (hasCall_) {
+            regAdd("B15", 4, "B0");
+            out_ << "\tLDW\t*B0, B3\n";
+        }
+        if (usesSavedArgRegs_)
+            for (int k = 0; k < 4; k++) {
+                regAdd("B15", 8 + 4 * k, "B0");
+                out_ << "\tLDW\t*B0, " << kSavedArgRegs[k] << "\n";
+            }
+        out_ << "\tLDW\t*B15, A15\n\tNOP\t4\n";      // the caller's FP, last
+        spAdjust(linkBytes_);                          // pop the link
     }
     out_ << "\tB\tB3\n\tNOP\t5\n";
+
+    file_ += out_.str();
+    out_.str(std::string());
 }
 
 void Tms6747::run(const Program &program) {
     emitData(program);
+    file_ += out_.str();
+    out_.str(std::string());
     for (const Function &fn : program.functions) emitFunction(fn);
-    sink_ << out_.str();
+    sink_ << file_;
 }
