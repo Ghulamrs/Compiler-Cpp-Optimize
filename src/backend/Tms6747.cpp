@@ -123,7 +123,7 @@ void Tms6747::pop(const char *reg) {
 void Tms6747::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) { localAddr(v->offset(), "A4"); return; }
-        if (v->type()->isFunction()) { movSym("A4", v->name()); return; }
+        if (v->type()->isFunction()) { movSym("A4", v->symbol()); return; }
         unsupported("the address of a global");
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
@@ -362,7 +362,7 @@ void Tms6747::visit(const Call &n) {
     std::string ret = label("ret", nextLabel());
     movSym("B3", ret);
     if (n.callee() != nullptr) out_ << "\tB\tB1\n";
-    else                       out_ << "\tB\t" << n.name() << "\n";
+    else                       out_ << "\tB\t" << n.symbol() << "\n";
     out_ << "\tNOP\t5\n";
     defineLabel(ret);
     spAdjust(area);
@@ -417,9 +417,11 @@ static const char *const kSavedArgRegs[] = { "A10", "B10", "A12", "B12" };
 
 void Tms6747::emitFunction(const Function &fn) {
     resetLabels();
-    functionName_ = fn.name();
-    labelPrefix_ = "L." + fn.name() + ".";
-    returnLabel_ = "L.return." + fn.name();
+    // The symbol, not the name: with C++ linkage that is the mangled name, and
+    // two overloads share a name but must not share a label.
+    functionName_ = fn.symbol();
+    labelPrefix_ = "L." + fn.symbol() + ".";
+    returnLabel_ = "L.return." + fn.symbol();
     hasCall_ = false;
     usesSavedArgRegs_ = false;
     linkBytes_ = 8;
@@ -439,8 +441,18 @@ void Tms6747::emitFunction(const Function &fn) {
     out_.str(std::string());
 
     out_ << "\t.text\n";
-    if (!fn.isStatic()) out_ << "\t.global " << fn.name() << "\n";
-    out_ << fn.name() << ":\n";
+    // An inline definition may appear in several translation units and needs
+    // a weak symbol the linker folds; that spelling is not settled for the TI
+    // tools yet, so the shape is refused rather than emitted strong.
+    if (fn.isInline()) unsupported("an inline function (a weak symbol)");
+    if (!fn.isStatic()) out_ << "\t.global " << fn.symbol() << "\n";
+    out_ << fn.symbol() << ":\n";
+    // A second name for the same code (Function::alias): a label at the same
+    // address, not a copy of the body.
+    if (!fn.alias().empty()) {
+        if (!fn.isStatic()) out_ << "\t.global " << fn.alias() << "\n";
+        out_ << fn.alias() << ":\n";
+    }
 
     int frame = align8(fn.frameSize());
     bool needFrame = frame > 0 || hasCall_ || !fn.params().empty();
