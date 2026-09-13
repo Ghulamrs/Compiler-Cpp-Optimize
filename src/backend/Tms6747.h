@@ -9,8 +9,9 @@
 // Milestones: (1) integer-constant returns; (2) locals, assignments, integer
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
 // if/while/for with real return values; (3) parameters and calls under the
-// C6000 EABI, and globals and string literals - this file. Casts, division,
-// floats and structs are later and call unsupported() until then.
+// C6000 EABI, globals, string literals and integer casts - this file.
+// Division, 64-bit integers, floats and structs are later and call
+// unsupported() until then.
 //
 // The ABI as emitted: the first ten word-sized arguments ride in A4, B4, A6,
 // B6, A8, B8, A10, B10, A12, B12, the rest on the stack above the reserved

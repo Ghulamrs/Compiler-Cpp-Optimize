@@ -380,7 +380,19 @@ void Tms6747::visit(const Call &n) {
     hasCall_ = true;
 }
 
-void Tms6747::visit(const Cast &) { unsupported("a cast"); }
+// A conversion between integers and pointers is a narrowing at most: A4 holds
+// every value sign- or zero-extended to the word, so widening is nothing and
+// an array decays to the address it already is. Floating-point and 64-bit
+// conversions wait for their types.
+void Tms6747::visit(const Cast &n) {
+    n.value().accept(*this);
+    const Type *from = n.value().type(), *to = n.type();
+    if (to->isVoid()) return;
+    if (from->isArray() || from->isFunction()) return;   // decay: the address it is
+    if (from->isFloating() || to->isFloating()) unsupported("a floating-point conversion");
+    if (from->size(target_) > 4 || to->size(target_) > 4) unsupported("a 64-bit conversion");
+    narrowInt(to);
+}
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
 void Tms6747::visit(const VaArg &) { unsupported("va_arg"); }
