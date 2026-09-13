@@ -734,11 +734,14 @@ void Tms6747::visit(const Call &n) {
 
 // Where the stack-passed parameters of a function sit, relative to the
 // caller's B15: the same layout the Call visit lays them out by.
+// Parameters from firstStack_ on are on the stack: the eleventh onward, or
+// for a variadic function the last named one and everything after it.
+// Asking for i == ps.size() gives the word past the last parameter, where a
+// variadic function's unnamed arguments begin.
 int Tms6747::stackParamOffset(const std::vector<Param> &ps, std::size_t i) {
-    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
     int end = 4;
-    for (std::size_t k = regCount; k <= i; k++) {
-        if (isWide(ps[k].type)) end = align8(end);
+    for (std::size_t k = firstStack_; k <= i; k++) {
+        if (k < ps.size() && isWide(ps[k].type)) end = align8(end);
         if (k == i) return end;
         end += isWide(ps[k].type) ? 8 : 4;
     }
@@ -804,8 +807,27 @@ void Tms6747::visit(const Cast &n) {
     narrowInt(to);
 }
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
-void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
-void Tms6747::visit(const VaArg &) { unsupported("va_arg"); }
+// va_list is a char *: va_start points it at the word past the last named
+// parameter, which the caller put on the stack with everything after it;
+// va_arg reads the value there - an 8-byte one at the next 8-byte boundary,
+// a struct through the pointer the caller passed - and steps past it.
+void Tms6747::visit(const VaStart &n) {
+    n.list().accept(*this);                 // A4 = &ap
+    regAdd("A15", linkBytes_ + vaStart_, "A6");
+    out_ << "\tSTW\tA6, *A4\n";
+}
+void Tms6747::visit(const VaArg &n) {
+    const Type *t = n.type();
+    bool byRef = t->isStructOrUnion();
+    int slot = isWide(t) ? 8 : 4;
+    n.list().accept(*this);                 // A4 = &ap
+    out_ << "\tLDW\t*A4, A6\n\tNOP\t4\n";  // A6 = ap
+    if (slot == 8) out_ << "\tADD\tA6, 7, A6\n\tAND\tA6, -8, A6\n";
+    out_ << "\tADD\tA6, " << slot << ", A3\n\tSTW\tA3, *A4\n";   // ap += slot
+    out_ << "\tMV\tA6, A4\n";
+    if (byRef) { out_ << "\tLDW\t*A4, A4\n\tNOP\t4\n"; return; }  // the struct's address
+    load(t);
+}
 void Tms6747::visit(const Switch &n) {
     if (isWide(n.cond().type())) unsupported("a switch on a 64-bit value");
     Walker::visit(n);
@@ -915,11 +937,10 @@ void Tms6747::emitData(const Program &program) {
 // been walked, when the size of the frame link is known.
 void Tms6747::emitParams(const Function &fn) {
     const std::vector<Param> &ps = fn.params();
-    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
     for (std::size_t i = 0; i < ps.size(); i++) {
         const Type *t = ps[i].type;
         bool byRef = t->isStructOrUnion();      // the address of the caller's copy
-        if (i < regCount) {
+        if (i < firstStack_) {
             const char *reg = abi_.intRegs[i];
             if (std::string(reg) != "A4") {
                 out_ << "\tMV\t" << reg << ", A4\n";
@@ -962,8 +983,22 @@ void Tms6747::emitFunction(const Function &fn) {
     usesSavedArgRegs_ = false;
     linkBytes_ = 8;
 
-    if (fn.isVariadic()) unsupported("a variadic function");
     sretSlot_ = fn.sretSlot();
+
+    // Which parameters the caller put on the stack, and where a variadic
+    // function's unnamed arguments start. A variadic function keeps the full
+    // link so that va_start, emitted inside the body, knows its size.
+    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
+    firstStack_ = regCount;
+    vaStart_ = 0;
+    if (fn.isVariadic()) {
+        std::size_t named = fn.params().size();
+        std::size_t last = named > 0 ? named - 1 : 0;
+        if (last < firstStack_) firstStack_ = last;
+        usesSavedArgRegs_ = true;
+        linkBytes_ = 24;
+        vaStart_ = stackParamOffset(fn.params(), named);
+    }
 
     // The body goes first, into its own text, because what it does decides the
     // prologue: a call means B3 must be saved, and a call with more than six

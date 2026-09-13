@@ -11,8 +11,7 @@
 // if/while/for with real return values; (3) parameters and calls under the
 // C6000 EABI, globals, string literals and integer casts; (4) variadic calls,
 // integer division through the EABI helpers, structs, bit-fields, floating
-// point and 64-bit integers - this file. Defining a variadic function is
-// later and calls unsupported() until then.
+// point, 64-bit integers and variadic functions - this file.
 //
 // Floating point is the C674x's own: single precision in A4, double in the
 // pair A5:A4, with the SP/DP instructions and their delay slots as NOPs;
@@ -111,6 +110,8 @@ private:
     bool usesSavedArgRegs_ = false;
     int linkBytes_ = 8;                       // saved A15 + B3 (+ the four above)
     int sretSlot_ = 0;                        // where the caller's A3 is kept
+    std::size_t firstStack_ = 0;              // the first parameter passed on the stack
+    int vaStart_ = 0;                         // the unnamed arguments, above the caller's B15
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;
