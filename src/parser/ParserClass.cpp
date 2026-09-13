@@ -1624,7 +1624,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         int vbHere = 0;
         for (std::size_t k = 0; k < bases.size(); k++)
             if (bases[k].isVirtual) vbHere++;
-        secondaryVptr_[tag + "::" + b->tag()] = at + (ms ? 0 : (vbHere + 2) * 8);
+        secondaryVptr_[tag + "::" + b->tag()] = at + (ms ? 0 : (vbHere + 2) * w);
 
         if (!ms) {
             // Its own `vbase_offset`, measured from its own address point:

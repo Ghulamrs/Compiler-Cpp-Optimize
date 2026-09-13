@@ -580,7 +580,7 @@ private:
     // and an offset stored among them (offset-to-top, a vbase_offset) is a
     // signed integer of that same width.
     int pointerBytes() const { return target_.sizeOf(Kind::Pointer); }
-    const Type *ptrdiffType() {
+    const Type *ptrdiffType() const {
         return types_.get(pointerBytes() == 8 ? Kind::LongLong : Kind::Int);
     }
     // **How far the address point sits past the table's first byte.**

@@ -138,7 +138,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
             for (std::size_t i = bs.size(); i-- > 0; ) {
                 if (!bs[i].isVirtual) continue;
                 if (bs[i].type == dstCls) {
-                    vbBack = -static_cast<long long>(nvb + 2 - seen) * 8;
+                    vbBack = -static_cast<long long>(nvb + 2 - seen) * pointerBytes();
                     break;
                 }
                 seen++;
@@ -173,7 +173,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         }
         if (vbBack != 0 && !target_.microsoftNames()) {
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
-            const Type *offType = types_.get(Kind::LongLong);
+            const Type *offType = ptrdiffType();
             ExprPtr asChars(new Cast(chars, std::move(e)));
             asChars->setType(chars);
             int slot = const_cast<Parser *>(this)->allocateFrameSlot(chars);
