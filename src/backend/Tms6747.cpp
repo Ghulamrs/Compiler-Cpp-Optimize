@@ -971,8 +971,10 @@ void Tms6747::emitParams(const Function &fn) {
             out_ << (isWide(t) ? "\tLDDW\t*A0, A5:A4\n\tNOP\t4\n" : "\tLDW\t*A0, A4\n\tNOP\t4\n");
         }
         if (byRef) {
-            localAddr(ps[i].offset, "A6");
-            copyBlock(t->size(target_), "A4", "A6");
+            // Through A1, not A6: A6 is the third argument's register, still
+            // to be read when an earlier struct parameter is being copied.
+            localAddr(ps[i].offset, "A1");
+            copyBlock(t->size(target_), "A4", "A1");
             continue;
         }
         localAddr(ps[i].offset, "A0");
