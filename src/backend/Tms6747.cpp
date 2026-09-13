@@ -1022,13 +1022,14 @@ void Tms6747::emitFunction(const Function &fn) {
     std::string body = out_.str();
     out_.str(std::string());
     if (usesSavedArgRegs_) linkBytes_ = 24;
-    emitParams(fn);
     if (sretSlot_ != 0) {
         // The caller's pointer to where the result goes, from A3, kept in
-        // its slot for the return to find.
+        // its slot for the return to find - before the parameters are copied
+        // in, since a struct parameter's copy goes through A3.
         localAddr(sretSlot_, "A0");
         out_ << "\tSTW\tA3, *A0\n";
     }
+    emitParams(fn);
     std::string params = out_.str();
     out_.str(std::string());
 
