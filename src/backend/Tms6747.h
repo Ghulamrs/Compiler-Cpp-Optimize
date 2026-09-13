@@ -131,7 +131,7 @@ private:
     void call(const std::string &target);     // B3 = return address; B target
     void genArg(const Call &n, std::size_t i);   // argument i -> A4
     void addOffset(int bytes);                // A4 += bytes
-    void copyBlock(int size, const char *from, const char *to);
+    void copyBlock(int size, const char *from, const char *to, int align);
     void bitFieldUnitAddr(const MemberAccess &m);   // the unit's address -> A4
     void bitFieldExtract(const MemberAccess &m);    // unit in A4 -> the field
     void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
