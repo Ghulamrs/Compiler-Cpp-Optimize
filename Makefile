@@ -68,8 +68,14 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
 # src/parser/Type.cpp would quietly overwrite the object made from src/Type.cpp.
 # It is the reason the parser's files kept their ParserXxx names on moving into
 # a directory that would have let them drop the prefix.
-SRCS     = $(wildcard src/*.cpp) $(wildcard src/parser/*.cpp) \
-           $(wildcard src/backend/*.cpp) $(wildcard src/optimizer/*.cpp)
+# Filtered on src/%.cpp rather than taken raw, as cc1's Makefile is. macOS
+# leaves "keep both" duplicates - `Tms6747 2.cpp` beside `Tms6747.cpp`, and two
+# of those appeared here mid-session - and $(wildcard) splits such a name into
+# two words before anything can test it for a space, so make would try to
+# build `src/backend/Tms6747` and `2.cpp` as sources. Requiring both the prefix
+# and the suffix drops both halves and keeps every real source.
+SRCS     = $(filter src/%.cpp,$(wildcard src/*.cpp) $(wildcard src/parser/*.cpp) \
+                              $(wildcard src/backend/*.cpp) $(wildcard src/optimizer/*.cpp))
 # Objects and their dependency files go under obj/ rather than beside the
 # sources they came from, so that a listing of src/ is the code and nothing
 # else. The tree under obj/ mirrors src/ - src/backend/X86_64.cpp becomes
