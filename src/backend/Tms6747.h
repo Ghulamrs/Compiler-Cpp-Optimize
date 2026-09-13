@@ -10,8 +10,8 @@
 // arithmetic/comparison/bitwise/shift/logical, unary, postfix ++/--, and
 // if/while/for with real return values; (3) parameters and calls under the
 // C6000 EABI, globals, string literals and integer casts; (4) variadic calls,
-// integer division through the EABI helpers, and structs - this file. 64-bit
-// integers, floats and bit-fields are later and call unsupported() until then.
+// integer division through the EABI helpers, structs and bit-fields - this
+// file. 64-bit integers and floats are later and call unsupported() until then.
 //
 // Structs go by address: a struct value in A4 is where it lives. An argument
 // is the address of a copy the caller makes; a result is written through the
@@ -123,6 +123,9 @@ private:
     void genArg(const Call &n, std::size_t i);   // argument i -> A4
     void addOffset(int bytes);                // A4 += bytes
     void copyBlock(int size, const char *from, const char *to);
+    void bitFieldUnitAddr(const MemberAccess &m);   // the unit's address -> A4
+    void bitFieldExtract(const MemberAccess &m);    // unit in A4 -> the field
+    void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
     void spAdjust(int delta);                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
     void push();                              // push A4

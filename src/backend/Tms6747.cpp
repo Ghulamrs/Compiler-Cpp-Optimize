@@ -168,7 +168,11 @@ void Tms6747::genAddr(const Expr &e) {
         if (u->op() == '*') { u->operand().accept(*this); return; }
     }
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
-        if (m->isBitField()) unsupported("a bit-field");
+        if (m->isBitField()) {
+            std::fprintf(stderr, "codegen: '%s' is a bit-field and has no address\n",
+                         m->name().c_str());
+            std::exit(1);
+        }
         genAddr(m->object());
         addOffset(m->offset());
         return;
@@ -249,12 +253,47 @@ void Tms6747::visit(const Num &n) {
 }
 void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
 
+// ---- bit-fields ----------------------------------------------------------
+// A bit-field lives in a storage unit at the member's offset, width bits from
+// bitOffset up. EXT/EXTU do the read in one instruction: shift the field to
+// the top of the word, then arithmetic or logical shift it back down. The
+// write clears the field in the unit with CLR, masks and shifts the new value
+// into place, ORs, and stores the unit.
+void Tms6747::bitFieldUnitAddr(const MemberAccess &m) {
+    genAddr(m.object());
+    addOffset(m.offset());
+}
+void Tms6747::bitFieldExtract(const MemberAccess &m) {    // unit in A4 -> field
+    int left = 32 - m.bitOffset() - m.width();
+    int right = 32 - m.width();
+    out_ << (m.type()->isSigned(target_) ? "\tEXT\tA4, " : "\tEXTU\tA4, ")
+         << left << ", " << right << ", A4\n";
+}
+void Tms6747::bitFieldInsert(const MemberAccess &m) {     // value A4 -> *A6
+    int low = m.bitOffset(), high = m.bitOffset() + m.width() - 1;
+    out_ << "\tMV\tA4, A3\n";                               // A3 = the value
+    out_ << "\tMV\tA6, A4\n";
+    load(m.type());                                          // A4 = the unit
+    out_ << "\tCLR\tA4, " << low << ", " << high << ", A4\n";
+    out_ << "\tEXTU\tA3, " << (32 - m.width()) << ", " << (32 - m.width())
+         << ", A3\n";                                       // the low width bits
+    if (low != 0) out_ << "\tSHL\tA3, " << low << ", A3\n";
+    out_ << "\tOR\tA4, A3, A4\n";
+    store(m.type(), "A6");
+    bitFieldExtract(m);                     // the expression's value: the field
+}
+
 void Tms6747::visit(const Assign &n) {
+    const MemberAccess *bf = dynamic_cast<const MemberAccess *>(&n.target());
+    if (bf != nullptr && !bf->isBitField()) bf = nullptr;
+
     n.value().accept(*this);        // A4 = value (a struct's is its address)
     push();                         // save the value
-    genAddr(n.target());            // A4 = address
+    if (bf) bitFieldUnitAddr(*bf);  // A4 = the unit's address
+    else    genAddr(n.target());    // A4 = address
     out_ << "\tMV\tA4, A6\n";        // A6 = address
     pop("A4");                       // A4 = value again
+    if (bf) { bitFieldInsert(*bf); return; }
     if (n.type()->isStructOrUnion()) {
         copyBlock(n.type()->size(target_), "A4", "A6");
         out_ << "\tMV\tA6, A4\n";    // the result: the target, by address
@@ -490,7 +529,16 @@ void Tms6747::visit(const Cast &n) {
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 void Tms6747::visit(const VaStart &) { unsupported("va_start"); }
 void Tms6747::visit(const VaArg &) { unsupported("va_arg"); }
-void Tms6747::visit(const MemberAccess &n) { genAddr(n); load(n.type()); }
+void Tms6747::visit(const MemberAccess &n) {
+    if (n.isBitField()) {
+        bitFieldUnitAddr(n);
+        load(n.type());
+        bitFieldExtract(n);
+        return;
+    }
+    genAddr(n);
+    load(n.type());
+}
 
 // ---- functions and the file ----------------------------------------------
 // Initialised data, in TI's directives: .byte, .short and .word (32 bits;
