@@ -14,6 +14,7 @@ static int align8(int n) { return (n + 7) / 8 * 8; }
 int Tms6747Target::sizeOf(Kind k) const {
     switch (k) {
     case Kind::Void:                                     return 1;
+    case Kind::Bool:                                     return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar: return 1;
     case Kind::Short: case Kind::UShort:                 return 2;
     case Kind::Int: case Kind::UInt:                     return 4;
@@ -21,7 +22,7 @@ int Tms6747Target::sizeOf(Kind k) const {
     case Kind::LongLong: case Kind::ULongLong:           return 8;
     case Kind::Float:                                    return 4;
     case Kind::Double: case Kind::LongDouble:            return 8;
-    case Kind::Pointer:                                  return 4;
+    case Kind::Pointer: case Kind::NullPtr:              return 4;
     default:
         std::fprintf(stderr, "target: no size for this type yet (tms6747)\n");
         std::exit(1);
