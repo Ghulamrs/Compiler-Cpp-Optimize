@@ -277,9 +277,20 @@ void Tms6747::visit(const Binary &n) {
         out_ << (sign ? "\tSHR\tA4, A6, A4\n" : "\tSHRU\tA4, A6, A4\n");
         narrowInt(n.type());
         return;
-    case BinOp::Div: case BinOp::Mod:
-        unsupported("integer division (the C6000 has no divide instruction)");
+    case BinOp::Div: case BinOp::Mod: {
+        // No divide instruction: the EABI's helper does it, taking the
+        // dividend in A4 and the divisor in B4 and returning in A4. It is
+        // called like any function - an area opened, B3 set - so nothing
+        // it may clobber is assumed to survive.
+        const char *helper = n.op() == BinOp::Div ? (sign ? "__c6xabi_divi" : "__c6xabi_divu")
+                                                  : (sign ? "__c6xabi_remi" : "__c6xabi_remu");
+        spAdjust(-8);
+        out_ << "\tMV\tA6, B4\n";
+        call(helper);
+        spAdjust(8);
+        narrowInt(n.type());
         return;
+    }
     case BinOp::Eq: out_ << "\tCMPEQ\tA4, A6, A4\n"; return;
     case BinOp::Ne: out_ << "\tCMPEQ\tA4, A6, A4\n\tXOR\t1, A4, A4\n"; return;
     case BinOp::Lt: out_ << (sign ? "\tCMPLT\tA4, A6, A4\n" : "\tCMPLTU\tA4, A6, A4\n"); return;
@@ -380,13 +391,17 @@ void Tms6747::visit(const Call &n) {
     if (inRegs > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
     if (n.callee() != nullptr) pop("B1");
 
+    call(n.callee() != nullptr ? "B1" : n.symbol());
+    spAdjust(area);
+}
+
+// The call itself: the return address into B3, the branch - to a symbol or
+// through B1 - and its five delay slots. The caller has opened the area.
+void Tms6747::call(const std::string &target) {
     std::string ret = label("ret", nextLabel());
     movSym("B3", ret);
-    if (n.callee() != nullptr) out_ << "\tB\tB1\n";
-    else                       out_ << "\tB\t" << n.symbol() << "\n";
-    out_ << "\tNOP\t5\n";
+    out_ << "\tB\t" << target << "\n\tNOP\t5\n";
     defineLabel(ret);
-    spAdjust(area);
     hasCall_ = true;
 }
 
