@@ -1067,8 +1067,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                kind != Kind::Union) {
         // **The same rule on Itanium, and the same correction.** A class with
         // no primary base to take a vptr from puts one at offset 0, in front
-        // of every base: clang lays `Z : A` as vptr 0, A 8, z 12.
-        const int slot = 8;
+        // of every base: clang lays `Z : A` as vptr 0, A 8, z 12. The vptr is
+        // one pointer wide - four bytes on the C6000.
+        const int slot = pointerBytes();
         for (std::size_t i = 0; i < members.size(); i++)
             members[i].offset += slot;
         type->shiftBaseOffsets(slot);

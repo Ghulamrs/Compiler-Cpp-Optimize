@@ -564,7 +564,7 @@ private:
     // `__vmi_class_type_info` a class with anything but a single base at
     // offset zero needs.
     static long long itaniumVmiFlags(const Type *cls);
-    static long long itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase);
+    long long itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase) const;
     std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
                                   std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
@@ -575,13 +575,21 @@ private:
 
     // **Mark a signature that came out of `functions_` used, and the one place the pointer arithmetic this file warns about is written.**
     void markUsed(const Signature *f);
+    // **A vtable entry, a typeinfo field and the vptr itself are one pointer
+    // wide** - eight bytes on the three 64-bit targets, four on the C6000 -
+    // and an offset stored among them (offset-to-top, a vbase_offset) is a
+    // signed integer of that same width.
+    int pointerBytes() const { return target_.sizeOf(Kind::Pointer); }
+    const Type *ptrdiffType() {
+        return types_.get(pointerBytes() == 8 ? Kind::LongLong : Kind::Int);
+    }
     // **How far the address point sits past the table's first byte.**
     int vtableHeaderBytes(const Type *cls) const {
         if (target_.microsoftNames()) return 0;
         int n = 0;
         const std::vector<Type::BaseSpec> &bs = cls->bases();
         for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) n++;
-        return (n + 2) * 8;
+        return (n + 2) * pointerBytes();
     }
 
     // Two parameter lists compared as C++ compares them - same length, same

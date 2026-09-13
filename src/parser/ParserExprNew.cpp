@@ -575,7 +575,7 @@ ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
     }
 
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
-    const Type *offsetType = types_.get(Kind::LongLong);
+    const Type *offsetType = ptrdiffType();
     const long long word = charPtr->size(target_);
 
     // The operand is read three times - tested, dereferenced for its vptr, and

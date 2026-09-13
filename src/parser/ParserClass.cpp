@@ -257,7 +257,7 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     // reading one loads from it, which stored the table's first word in the vptr and
     // crashed on the first call. Giving it the array type and decaying it is it.
     std::size_t entryCount = vtables_[cls].size() +
-                             (ms ? 0 : vtableHeaderBytes(memberOf) / 8);
+                             (ms ? 0 : vtableHeaderBytes(memberOf) / pointerBytes());
     {
         const std::vector<Type::BaseSpec> &all = memberOf->bases();
         for (std::size_t bi = 1; bi < all.size(); bi++)
@@ -1237,10 +1237,10 @@ ExprPtr Parser::virtualBaseMember(ExprPtr object, const Type *staticType,
         seen++;
     }
     if (slot < 0) return ExprPtr();
-    const long long back = -static_cast<long long>(nvb + 2 - slot) * 8;
+    const long long back = -static_cast<long long>(nvb + 2 - slot) * pointerBytes();
 
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
-    const Type *offType = types_.get(Kind::LongLong);
+    const Type *offType = ptrdiffType();
 
     ExprPtr addr(new Unary('&', std::move(object)));
     addr->setType(types_.pointerTo(owner));
@@ -1363,14 +1363,14 @@ long long Parser::itaniumVmiFlags(const Type *cls) {
 
 // Where a virtual base's `vbase_offset` sits in this class's vtable, which is
 // what the type_info names rather than the base's place in the object.
-long long Parser::itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase) {
+long long Parser::itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase) const {
     const std::vector<Type::BaseSpec> &bs = cls->bases();
     int nvb = 0, seen = 0;
     for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
     for (std::size_t i = bs.size(); i-- > 0; ) {
         if (!bs[i].isVirtual) continue;
         if (bs[i].type == vbase)
-            return -static_cast<long long>(nvb + 2 - seen) * 8;
+            return -static_cast<long long>(nvb + 2 - seen) * pointerBytes();
         seen++;
     }
     return 0;
@@ -1423,29 +1423,32 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                                         true, false, true,
                                         std::string(), true });
 
+    // Every field is a pointer or pointer-wide, except the two `unsigned int`
+    // of a vmi class, so the layout is written in pointer widths: w.
+    const int w = pointerBytes();
     std::vector<GlobalPiece> pieces;
     pieces.push_back(GlobalPiece{
-        0, 8, 16,
+        0, w, 2 * w,
         bases.empty() ? "_ZTVN10__cxxabiv117__class_type_infoE"
                       : simple ? "_ZTVN10__cxxabiv120__si_class_type_infoE"
                                : "_ZTVN10__cxxabiv121__vmi_class_type_infoE" });
-    pieces.push_back(GlobalPiece{ 8, 8, 0, ts });
-    int words = 2;
+    pieces.push_back(GlobalPiece{ w, w, 0, ts });
+    int bytes = 2 * w;
     if (simple) {
-        pieces.push_back(GlobalPiece{ 16, 8, 0, baseTypeInfo[0] });
-        words = 3;
+        pieces.push_back(GlobalPiece{ 2 * w, w, 0, baseTypeInfo[0] });
+        bytes = 3 * w;
     } else if (!bases.empty()) {
-        // Two `unsigned int` in the third word - the class's flags and the
+        // Two `unsigned int` after the header - the class's flags and the
         // number of bases - and then a pair of words per base: its `_ZTI` and
         // an offset with four flag bits under it.
-        pieces.push_back(GlobalPiece{ 16, 4, itaniumVmiFlags(cls),
+        pieces.push_back(GlobalPiece{ 2 * w, 4, itaniumVmiFlags(cls),
                                       std::string() });
-        pieces.push_back(GlobalPiece{ 20, 4,
+        pieces.push_back(GlobalPiece{ 2 * w + 4, 4,
                                       static_cast<long long>(bases.size()),
                                       std::string() });
-        int at = 24;
+        int at = 2 * w + 8;
         for (std::size_t i = 0; i < bases.size(); i++) {
-            pieces.push_back(GlobalPiece{ at, 8, 0, baseTypeInfo[i] });
+            pieces.push_back(GlobalPiece{ at, w, 0, baseTypeInfo[i] });
             // **`__public_mask` is 2 and `__virtual_mask` is 1**, and the offset above them is
             // where the base *is* - except for a virtual one, where it is where its `vbase_offset`
             // sits in the vtable, a negative number the runtime reads through the object's vptr.
@@ -1455,15 +1458,15 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                 flags |= 1;
                 where = itaniumVbaseOffsetSlot(cls, bases[i].type);
             }
-            pieces.push_back(GlobalPiece{ at + 8, 8, (where << 8) | flags,
+            pieces.push_back(GlobalPiece{ at + w, w, (where << 8) | flags,
                                           std::string() });
-            at += 16;
+            at += 2 * w;
         }
-        words = 3 + static_cast<int>(bases.size()) * 2;
+        bytes = at;
     }
 
     const Type *word = types_.pointerTo(types_.get(Kind::Void));
-    const Type *object = types_.arrayOf(word, static_cast<long long>(words));
+    const Type *object = types_.arrayOf(word, (bytes + w - 1) / w);
     current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
                                         true, false, true,
                                         std::string(), true });
@@ -1568,24 +1571,25 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
                                     : emitClassTypeInfo(cls, tag, pos);
 
     std::vector<GlobalPiece> pieces;
+    const int w = pointerBytes();                  // one entry
     int at = 0;
     if (!ms) {
         // **One `vbase_offset` per virtual base, ahead of the header.**
         const std::vector<Type::BaseSpec> &vb = cls->bases();
         for (std::size_t i = vb.size(); i-- > 0; ) {
             if (!vb[i].isVirtual) continue;
-            pieces.push_back(GlobalPiece{ at, 8,
+            pieces.push_back(GlobalPiece{ at, w,
                 static_cast<long long>(vb[i].offset), std::string() });
-            at += 8;
+            at += w;
         }
-        pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // offset-to-top
-        at += 8;
-        pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });       // typeinfo
-        at += 8;
+        pieces.push_back(GlobalPiece{ at, w, 0, std::string() });  // offset-to-top
+        at += w;
+        pieces.push_back(GlobalPiece{ at, w, 0, typeInfo });       // typeinfo
+        at += w;
     }
     for (std::size_t i = 0; i < slots.size(); i++) {
-        pieces.push_back(GlobalPiece{ at, 8, 0, slots[i].symbol });
-        at += 8;
+        pieces.push_back(GlobalPiece{ at, w, 0, slots[i].symbol });
+        at += w;
     }
 
     // **A secondary table for every polymorphic base after the first**, laid
@@ -1628,19 +1632,19 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
             // entered 16 bytes into the object.
             for (std::size_t k = bases.size(); k-- > 0; ) {
                 if (!bases[k].isVirtual) continue;
-                pieces.push_back(GlobalPiece{ at, 8,
+                pieces.push_back(GlobalPiece{ at, w,
                     static_cast<long long>(bases[k].offset - off),
                     std::string() });
-                at += 8;
+                at += w;
             }
-            pieces.push_back(GlobalPiece{ at, 8, -static_cast<long long>(off),
+            pieces.push_back(GlobalPiece{ at, w, -static_cast<long long>(off),
                                           std::string() });
-            at += 8;
+            at += w;
             // A secondary table names the *complete* object's type_info, the
             // same one the primary does - it is one object with two tables in
             // it, not two objects.
-            pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });
-            at += 8;
+            pieces.push_back(GlobalPiece{ at, w, 0, typeInfo });
+            at += w;
         }
         const std::vector<VSlot> &theirs = vtables_[b->tag()];
         for (std::size_t i = 0; i < theirs.size(); i++) {
@@ -1653,8 +1657,8 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
                     entry = synthesizeThunk(tag, cls, slots[k], off, pos);
                 break;
             }
-            pieces.push_back(GlobalPiece{ at, 8, 0, entry });
-            at += 8;
+            pieces.push_back(GlobalPiece{ at, w, 0, entry });
+            at += w;
         }
     }
 
