@@ -854,20 +854,28 @@ void Tms6747::emitGlobal(const Global &g, Segment seg) {
     // to 16 is those ABIs', not TI's.
     int align = g.type->align(target_);
     // The symbol is the linker's name (Itanium leaves a variable's alone). An
-    // inline object - a vtable, a typeinfo - wants a weak symbol the linker
-    // folds, and the prefix word is an 8-byte pointer laid before a label;
-    // neither has a TI spelling chosen yet, so both are refused, not guessed.
-    if (g.isInline) unsupported("an inline object (a weak symbol)");
-    if (!g.prefixWord.empty()) unsupported("an object with a prefix word");
-    if (!g.isStatic) out_ << "\t.global " << g.symbol << "\n";
+    // inline object - a vtable, a typeinfo, a template's static member - is
+    // one object across the program however many units define it: a weak
+    // definition, which the ELF linker keeps one of. TI's assembler spells
+    // that `.weak` on a symbol the module defines, in place of `.global`. A
+    // weak zero-filled object is laid out in .data with .space rather than by
+    // the .bss directive, which defines its symbol its own way.
+    if (g.isInline)       out_ << "\t.weak\t" << g.symbol << "\n";
+    else if (!g.isStatic) out_ << "\t.global " << g.symbol << "\n";
 
-    if (seg == Segment::Bss) {
+    if (seg == Segment::Bss && !g.isInline) {
         out_ << "\t.bss\t" << g.symbol << ", " << size << ", " << align << "\n";
         return;
     }
+    if (seg == Segment::Bss) out_ << "\t.data\n";
 
     if (align > 1) out_ << "\t.align\t" << align << "\n";
+    // The word in front, where there is one: after the alignment, so that it
+    // is the label and not the block that ends up aligned. A pointer here is
+    // a word.
+    if (!g.prefixWord.empty()) out_ << "\t.word\t" << symName(g.prefixWord) << "\n";
     out_ << g.symbol << ":\n";
+    if (seg == Segment::Bss) { out_ << "\t.space\t" << size << "\n"; return; }
     int at = 0;
     for (const GlobalPiece &p : g.init) {
         if (p.offset > at) out_ << "\t.space\t" << (p.offset - at) << "\n";
@@ -1018,16 +1026,17 @@ void Tms6747::emitFunction(const Function &fn) {
     out_.str(std::string());
 
     out_ << "\t.text\n";
-    // An inline definition may appear in several translation units and needs
-    // a weak symbol the linker folds; that spelling is not settled for the TI
-    // tools yet, so the shape is refused rather than emitted strong.
-    if (fn.isInline()) unsupported("an inline function (a weak symbol)");
-    if (!fn.isStatic()) out_ << "\t.global " << fn.symbol() << "\n";
+    // An inline definition may appear in several translation units, so the
+    // linker keeps one rather than rejecting the rest: a weak definition,
+    // `.weak` in place of `.global` for TI's assembler.
+    if (fn.isInline())       out_ << "\t.weak\t" << fn.symbol() << "\n";
+    else if (!fn.isStatic()) out_ << "\t.global " << fn.symbol() << "\n";
     out_ << fn.symbol() << ":\n";
     // A second name for the same code (Function::alias): a label at the same
     // address, not a copy of the body.
     if (!fn.alias().empty()) {
-        if (!fn.isStatic()) out_ << "\t.global " << fn.alias() << "\n";
+        if (fn.isInline())       out_ << "\t.weak\t" << fn.alias() << "\n";
+        else if (!fn.isStatic()) out_ << "\t.global " << fn.alias() << "\n";
         out_ << fn.alias() << ":\n";
     }
 
