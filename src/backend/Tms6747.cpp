@@ -431,7 +431,7 @@ void Tms6747::visit(const Binary &n) {
     switch (n.op()) {
     case BinOp::Add:    out_ << "\tADD\tA4, A6, A4\n";  narrowInt(n.type()); return;
     case BinOp::Sub:    out_ << "\tSUB\tA4, A6, A4\n";  narrowInt(n.type()); return;
-    case BinOp::Mul:    out_ << "\tMPY32\tA4, A6, A4\n"; narrowInt(n.type()); return;
+    case BinOp::Mul:    out_ << "\tMPY32\tA4, A6, A4\n\tNOP\t3\n"; narrowInt(n.type()); return;
     case BinOp::BitAnd: out_ << "\tAND\tA4, A6, A4\n";  narrowInt(n.type()); return;
     case BinOp::BitOr:  out_ << "\tOR\tA4, A6, A4\n";   narrowInt(n.type()); return;
     case BinOp::BitXor: out_ << "\tXOR\tA4, A6, A4\n";  narrowInt(n.type()); return;
