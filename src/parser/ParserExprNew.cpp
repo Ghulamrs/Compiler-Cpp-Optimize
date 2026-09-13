@@ -1074,7 +1074,11 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     const Type *pointer = types_.pointerTo(made);
-    ExprPtr raw = callAllocator(array ? "_Znam" : "_Znwm",
+    // operator new takes a size_t, and its name says which type that is:
+    // `m` on the LP64 targets, `y` on Windows, `j` on the C6000 (_Znwj).
+    const std::string alloc = std::string(array ? "_Zna" : "_Znw") +
+                              itaniumBuiltinCode(target_.sizeType());
+    ExprPtr raw = callAllocator(alloc.c_str(),
                                 array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
                                 types_.pointerTo(types_.get(Kind::Void)),
                                 std::move(bytes), pos);

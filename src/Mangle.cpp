@@ -1129,6 +1129,8 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     return true;
 }
 
+const char *itaniumBuiltinCode(Kind k) { return itaniumBuiltin(k); }
+
 std::string vtableSymbol(const std::string &tag, bool microsoft) {
     const std::vector<std::string> parts = scopeComponents(tag);
     if (microsoft) {
