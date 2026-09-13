@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ostream>
 #include <string>
 
@@ -154,6 +155,50 @@ void Tms6747::pop(const char *reg) {
     out_ << "\tADD\tB15, 8, B15\n";
 }
 
+// ---- doubles: a register pair, and 8-byte moves through the stack --------
+// A double lives in an even:odd pair, its high word in the odd register:
+// A5:A4 is the accumulator, A7:A6 the second operand, B5:B4 an argument.
+bool Tms6747::isDouble(const Type *t) const {
+    return t->isFloating() && t->size(target_) == 8;
+}
+std::string Tms6747::pairOf(const char *reg) {
+    int n = std::atoi(reg + 1);
+    return std::string(1, reg[0]) + std::to_string(n + 1) + ":" + reg;
+}
+// The value of type t in the accumulator, to and from the stack. A push slot
+// is already 8 bytes and B15 stays 8-aligned, which STDW and LDDW need.
+void Tms6747::pushValue(const Type *t) {
+    if (!isDouble(t)) { push(); return; }
+    out_ << "\tSUB\tB15, 8, B15\n";
+    out_ << "\tSTDW\tA5:A4, *B15\n";
+}
+void Tms6747::popValue(const Type *t, const char *reg) {
+    if (!isDouble(t)) { pop(reg); return; }
+    out_ << "\tLDDW\t*B15, " << pairOf(reg) << "\n\tNOP\t4\n";
+    out_ << "\tADD\tB15, 8, B15\n";
+}
+// The accumulator's value into reg (and its pair for a double).
+void Tms6747::moveValue(const Type *t, const char *reg) {
+    out_ << "\tMV\tA4, " << reg << "\n";
+    if (isDouble(t)) out_ << "\tMV\tA5, " << pairOf(reg).substr(0, pairOf(reg).find(':')) << "\n";
+}
+// A floating constant's bits: one word for a float, two for a double, the
+// low word in reg and the high in its pair.
+void Tms6747::fpConst(const Type *t, double v, const char *reg) {
+    if (isDouble(t)) {
+        unsigned long long bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        movImm(reg, static_cast<long long>(bits & 0xffffffffu));
+        std::string hi = pairOf(reg).substr(0, pairOf(reg).find(':'));
+        movImm(hi.c_str(), static_cast<long long>(bits >> 32));
+    } else {
+        float f = static_cast<float>(v);
+        unsigned int bits;
+        std::memcpy(&bits, &f, sizeof bits);
+        movImm(reg, static_cast<long long>(bits));
+    }
+}
+
 // ---- addresses, loads, stores --------------------------------------------
 void Tms6747::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
@@ -190,7 +235,7 @@ void Tms6747::genAddr(const Expr &e) {
 
 void Tms6747::load(const Type *t) {
     if (t->isArray() || t->isStructOrUnion()) return;   // the address is the value
-    if (t->isFloating()) unsupported("a floating-point load");
+    if (isDouble(t)) { out_ << "\tLDDW\t*A4, A5:A4\n\tNOP\t4\n"; return; }
     int sz = t->size(target_);
     if (sz > 4) unsupported("a 64-bit load");
     bool sign = t->isSigned(target_);
@@ -201,7 +246,7 @@ void Tms6747::load(const Type *t) {
 }
 
 void Tms6747::store(const Type *t, const char *addrReg) {
-    if (t->isFloating()) unsupported("a floating-point store");
+    if (isDouble(t)) { out_ << "\tSTDW\tA5:A4, *" << addrReg << "\n"; return; }
     int sz = t->size(target_);
     if (sz > 4) unsupported("a 64-bit store");
     const char *op = sz == 1 ? "STB" : sz == 2 ? "STH" : "STW";
@@ -239,17 +284,26 @@ void Tms6747::caseBranch(long long v, const std::string &l) {
     out_ << "\tCMPEQ\tA0, A4, A1\n\t[A1]\tB\t" << l << "\n\tNOP\t5\n";
 }
 void Tms6747::landingPad(int, int) { unsupported("a C++ landing pad"); }
+// A4 = (value == 0) ? 1 : 0, for the value of type t in the accumulator. A
+// floating zero is compared as a number, so -0.0 is zero and NaN is not.
+void Tms6747::isZero(const Type *t) {
+    if (isDouble(t)) {
+        out_ << "\tZERO\tA7:A6\n\tCMPEQDP\tA5:A4, A7:A6, A4\n\tNOP\t1\n";
+    } else if (t->isFloating()) {
+        out_ << "\tZERO\tA6\n\tCMPEQSP\tA4, A6, A4\n\tNOP\t1\n";
+    } else {
+        out_ << "\tCMPEQ\t0, A4, A4\n";
+    }
+}
 void Tms6747::genTruth(const Expr &e) {
     e.accept(*this);
-    if (e.type()->isFloating()) unsupported("a floating-point truth test");
-    // A4 = (A4 != 0) ? 1 : 0
-    out_ << "\tCMPEQ\t0, A4, A4\n";
-    out_ << "\tXOR\t1, A4, A4\n";
+    isZero(e.type());
+    out_ << "\tXOR\t1, A4, A4\n";  // A4 = (value != 0) ? 1 : 0
 }
 
 // ---- expressions ---------------------------------------------------------
 void Tms6747::visit(const Num &n) {
-    if (n.type()->isFloating()) unsupported("a floating-point constant");
+    if (n.type()->isFloating()) { fpConst(n.type(), static_cast<double>(n.dvalue()), "A4"); return; }
     movImm("A4", n.value());
 }
 void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
@@ -308,7 +362,13 @@ void Tms6747::visit(const Unary &n) {
     case '+': n.operand().accept(*this); return;
     case '-':
         n.operand().accept(*this);
-        if (n.type()->isFloating()) unsupported("floating-point negation");
+        if (n.type()->isFloating()) {
+            // Flip the sign bit, which is right for -0.0 and NaN where 0 - x
+            // would not be. The bit is in the high word of a double.
+            movImm("A0", 0x80000000LL);
+            out_ << "\tXOR\t" << (isDouble(n.type()) ? "A5, A0, A5" : "A4, A0, A4") << "\n";
+            return;
+        }
         out_ << "\tNEG\tA4, A4\n";
         return;
     case '~':
@@ -317,8 +377,7 @@ void Tms6747::visit(const Unary &n) {
         return;
     case '!':
         n.operand().accept(*this);
-        if (n.operand().type()->isFloating()) unsupported("a floating-point '!'");
-        out_ << "\tCMPEQ\t0, A4, A4\n";
+        isZero(n.operand().type());
         return;
     case '&': genAddr(n.operand()); return;
     case '*': n.operand().accept(*this); load(n.type()); return;
@@ -339,16 +398,16 @@ void Tms6747::visit(const Binary &n) {
         return;
     }
 
-    if (n.lhs().type()->isFloating() || n.rhs().type()->isFloating())
-        unsupported("a floating-point operator");
-
+    const Type *ot = n.lhs().type();        // the operands' common type
     n.lhs().accept(*this);          // A4 = lhs
-    push();
+    pushValue(ot);
     n.rhs().accept(*this);          // A4 = rhs
-    out_ << "\tMV\tA4, A6\n";        // A6 = rhs
-    pop("A4");                       // A4 = lhs   (now A4=lhs, A6=rhs)
+    moveValue(ot, "A6");             // A6 = rhs
+    popValue(ot, "A4");              // A4 = lhs   (now A4=lhs, A6=rhs)
 
-    bool sign = n.lhs().type()->isSigned(target_);
+    if (ot->isFloating()) { fpBinary(n, isDouble(ot)); return; }
+
+    bool sign = ot->isSigned(target_);
     switch (n.op()) {
     case BinOp::Add:    out_ << "\tADD\tA4, A6, A4\n";  narrowInt(n.type()); return;
     case BinOp::Sub:    out_ << "\tSUB\tA4, A6, A4\n";  narrowInt(n.type()); return;
@@ -389,21 +448,67 @@ void Tms6747::visit(const Binary &n) {
     }
 }
 
+// The C674x does single and double precision in hardware, each instruction
+// with its own delay slots (from the C674x data sheet: ADDSP/SUBSP/MPYSP 3,
+// ADDDP/SUBDP 6, MPYDP 9, the compares 1). There is no divide; the EABI's
+// __c6xabi_divf and __c6xabi_divd take A4/B4 and A5:A4/B5:B4. Only ==, <
+// and > are compares; <= and >= are two compares ORed, which keeps NaN
+// unordered where !(a > b) would not; != is !(==).
+void Tms6747::fpBinary(const Binary &n, bool dp) {
+    const char *l = dp ? "A5:A4" : "A4", *r = dp ? "A7:A6" : "A6";
+    const char *sfx = dp ? "DP" : "SP";
+    auto op3 = [&](const char *mnem, int slots) {
+        out_ << "\t" << mnem << sfx << "\t" << l << ", " << r << ", " << l
+             << "\n\tNOP\t" << slots << "\n";
+    };
+    auto cmp = [&](const char *mnem, const char *dst) {
+        out_ << "\t" << mnem << sfx << "\t" << l << ", " << r << ", " << dst
+             << "\n\tNOP\t1\n";
+    };
+    switch (n.op()) {
+    case BinOp::Add: op3("ADD", dp ? 6 : 3); return;
+    case BinOp::Sub: op3("SUB", dp ? 6 : 3); return;
+    case BinOp::Mul: op3("MPY", dp ? 9 : 3); return;
+    case BinOp::Div:
+        spAdjust(-8);
+        out_ << "\tMV\tA6, B4\n";
+        if (dp) out_ << "\tMV\tA7, B5\n";
+        call(dp ? "__c6xabi_divd" : "__c6xabi_divf");
+        spAdjust(8);
+        return;
+    case BinOp::Eq: cmp("CMPEQ", "A4"); return;
+    case BinOp::Ne: cmp("CMPEQ", "A4"); out_ << "\tXOR\t1, A4, A4\n"; return;
+    case BinOp::Lt: cmp("CMPLT", "A4"); return;
+    case BinOp::Gt: cmp("CMPGT", "A4"); return;
+    case BinOp::Le: cmp("CMPLT", "A0"); cmp("CMPEQ", "A4"); out_ << "\tOR\tA0, A4, A4\n"; return;
+    case BinOp::Ge: cmp("CMPGT", "A0"); cmp("CMPEQ", "A4"); out_ << "\tOR\tA0, A4, A4\n"; return;
+    default: unsupported("this floating-point operator");
+    }
+}
+
 void Tms6747::visit(const Postfix &n) {
-    if (n.type()->isFloating()) unsupported("a floating-point ++/--");
+    const Type *t = n.type();
     genAddr(n.target());            // A4 = address
     push();                         // save address
-    load(n.type());                 // A4 = old value
-    push();                         // save old value  (stack: top=old, next=addr)
+    load(t);                        // A4 = old value
+    pushValue(t);                   // save old value  (stack: top=old, next=addr)
     int step = n.step();
-    if (step >= 0 && step <= 31)
-        out_ << (n.increment() ? "\tADD\tA4, " : "\tSUB\tA4, ") << step << ", A4\n";
-    else { movImm("A0", step); out_ << (n.increment() ? "\tADD\tA4, A0, A4\n" : "\tSUB\tA4, A0, A4\n"); }
-    narrowInt(n.type());            // A4 = new value
-    pop("A6");                      // A6 = old value
+    if (t->isFloating()) {
+        bool dp = isDouble(t);
+        fpConst(t, static_cast<double>(step), "A6");   // the step, as a number
+        out_ << (n.increment() ? "\tADD" : "\tSUB") << (dp ? "DP\tA5:A4, A7:A6, A5:A4" : "SP\tA4, A6, A4")
+             << "\n\tNOP\t" << (dp ? 6 : 3) << "\n";
+    } else {
+        if (step >= 0 && step <= 31)
+            out_ << (n.increment() ? "\tADD\tA4, " : "\tSUB\tA4, ") << step << ", A4\n";
+        else { movImm("A0", step); out_ << (n.increment() ? "\tADD\tA4, A0, A4\n" : "\tSUB\tA4, A0, A4\n"); }
+        narrowInt(t);               // A4 = new value
+    }
+    popValue(t, "A6");              // A6 = old value
     pop("A3");                      // A3 = address
-    store(n.type(), "A3");          // *A3 = new value (A4)
+    store(t, "A3");                 // *A3 = new value (A4)
     out_ << "\tMV\tA6, A4\n";        // the expression's value is the old value
+    if (isDouble(t)) out_ << "\tMV\tA7, A5\n";
 }
 
 void Tms6747::visit(const Return &n) {
@@ -437,11 +542,10 @@ void Tms6747::visit(const Return &n) {
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
     bool sret = n.type()->isStructOrUnion();
-    if (n.type()->isFloating()) unsupported("a call returning a floating-point value");
-    if (!sret && n.type()->size(target_) > 4) unsupported("a call returning a 64-bit value");
+    if (!sret && !n.type()->isFloating() && n.type()->size(target_) > 4)
+        unsupported("a call returning a 64-bit value");
     for (const ExprPtr &a : args) {
-        if (a->type()->isStructOrUnion()) continue;
-        if (a->type()->isFloating()) unsupported("a floating-point argument");
+        if (a->type()->isStructOrUnion() || a->type()->isFloating()) continue;
         if (a->type()->size(target_) > 4) unsupported("a 64-bit argument");
     }
 
@@ -464,15 +568,25 @@ void Tms6747::visit(const Call &n) {
     }
     int onStack = static_cast<int>(args.size() - inRegs);
 
-    // The area under the call: the reserved word, then the stack arguments.
-    // Opened even for a call with none, so that a value an enclosing
-    // expression has pushed is not what sits at *B15 during the call.
-    int area = align8(4 + 4 * onStack);
+    // The area under the call: the reserved word, then the stack arguments,
+    // a word each and a double at the next 8-byte boundary. Opened even for a
+    // call with none, so that a value an enclosing expression has pushed is
+    // not what sits at *B15 during the call.
+    std::vector<int> at(onStack);
+    int end = 4;
+    for (int k = 0; k < onStack; k++) {
+        const Type *t = args[inRegs + k]->type();
+        if (isDouble(t)) end = align8(end);
+        at[k] = end;
+        end += isDouble(t) ? 8 : 4;
+    }
+    int area = align8(end);
     spAdjust(-area);
     for (int k = 0; k < onStack; k++) {
+        const Type *t = args[inRegs + k]->type();
         genArg(n, inRegs + k);
-        regAdd("B15", 4 + 4 * k, "B0");
-        out_ << "\tSTW\tA4, *B0\n";
+        regAdd("B15", at[k], "B0");
+        out_ << (isDouble(t) ? "\tSTDW\tA5:A4, *B0\n" : "\tSTW\tA4, *B0\n");
     }
 
     if (n.callee() != nullptr) {
@@ -481,13 +595,14 @@ void Tms6747::visit(const Call &n) {
     }
     for (std::size_t i = 0; i + 1 < inRegs; i++) {
         genArg(n, i);
-        push();
+        pushValue(args[i]->type());
     }
     if (inRegs > 0) {
+        // A double rides in the pair above its register: A5:A4, B5:B4, ...
         genArg(n, inRegs - 1);
         const char *last = abi_.intRegs[inRegs - 1];
-        if (std::string(last) != "A4") out_ << "\tMV\tA4, " << last << "\n";
-        for (std::size_t i = inRegs - 1; i-- > 0; ) pop(abi_.intRegs[i]);
+        if (std::string(last) != "A4") moveValue(args[inRegs - 1]->type(), last);
+        for (std::size_t i = inRegs - 1; i-- > 0; ) popValue(args[i]->type(), abi_.intRegs[i]);
     }
     if (inRegs > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
     if (n.callee() != nullptr) pop("B1");
@@ -496,6 +611,19 @@ void Tms6747::visit(const Call &n) {
     call(n.callee() != nullptr ? "B1" : n.symbol());
     spAdjust(area);
     if (sret) localAddr(n.resultSlot(), "A4");    // the value: its address
+}
+
+// Where the stack-passed parameters of a function sit, relative to the
+// caller's B15: the same layout the Call visit lays them out by.
+int Tms6747::stackParamOffset(const std::vector<Param> &ps, std::size_t i) {
+    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
+    int end = 4;
+    for (std::size_t k = regCount; k <= i; k++) {
+        if (isDouble(ps[k].type)) end = align8(end);
+        if (k == i) return end;
+        end += isDouble(ps[k].type) ? 8 : 4;
+    }
+    return end;
 }
 
 // Argument i into A4: its value, or for a struct the address of its copy.
@@ -523,8 +651,37 @@ void Tms6747::visit(const Cast &n) {
     const Type *from = n.value().type(), *to = n.type();
     if (to->isVoid()) return;
     if (from->isArray() || from->isFunction()) return;   // decay: the address it is
-    if (from->isFloating() || to->isFloating()) unsupported("a floating-point conversion");
-    if (from->size(target_) > 4 || to->size(target_) > 4) unsupported("a 64-bit conversion");
+    bool fromF = from->isFloating(), toF = to->isFloating();
+    if ((!fromF && from->size(target_) > 4) || (!toF && to->size(target_) > 4))
+        unsupported("a 64-bit conversion");
+    if (fromF && toF) {
+        // float <-> double; long double is double here.
+        bool fromD = isDouble(from), toD = isDouble(to);
+        if (fromD && !toD) out_ << "\tDPSP\tA5:A4, A4\n\tNOP\t1\n";
+        if (!fromD && toD) out_ << "\tSPDP\tA4, A5:A4\n\tNOP\t1\n";
+        return;
+    }
+    if (!fromF && toF) {
+        // Integer to floating: INTSP/INTDP, or their U forms for unsigned.
+        const char *u = from->isSigned(target_) ? "" : "U";
+        if (isDouble(to)) out_ << "\tINTDP" << u << "\tA4, A5:A4\n\tNOP\t4\n";
+        else              out_ << "\tINTSP" << u << "\tA4, A4\n\tNOP\t3\n";
+        return;
+    }
+    if (fromF && !toF) {
+        // Floating to integer, truncating toward zero as C says. SPTRUNC and
+        // DPTRUNC give a signed word; a full unsigned word is the helper's.
+        bool dp = isDouble(from);
+        if (to->size(target_) == 4 && !to->isSigned(target_)) {
+            spAdjust(-8);
+            call(dp ? "__c6xabi_fixdu" : "__c6xabi_fixfu");
+            spAdjust(8);
+        } else {
+            out_ << (dp ? "\tDPTRUNC\tA5:A4, A4" : "\tSPTRUNC\tA4, A4") << "\n\tNOP\t3\n";
+        }
+        narrowInt(to);
+        return;
+    }
     narrowInt(to);
 }
 void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
@@ -638,17 +795,21 @@ void Tms6747::emitParams(const Function &fn) {
     for (std::size_t i = 0; i < ps.size(); i++) {
         const Type *t = ps[i].type;
         bool byRef = t->isStructOrUnion();      // the address of the caller's copy
-        if (t->isFloating()) unsupported("a floating-point parameter");
-        if (!byRef && t->size(target_) > 4) unsupported("a 64-bit parameter");
+        if (!byRef && !t->isFloating() && t->size(target_) > 4) unsupported("a 64-bit parameter");
         if (i < regCount) {
             const char *reg = abi_.intRegs[i];
-            if (std::string(reg) != "A4") out_ << "\tMV\t" << reg << ", A4\n";
+            if (std::string(reg) != "A4") {
+                out_ << "\tMV\t" << reg << ", A4\n";
+                if (isDouble(t)) {
+                    std::string hi = pairOf(reg).substr(0, pairOf(reg).find(':'));
+                    out_ << "\tMV\t" << hi << ", A5\n";
+                }
+            }
         } else {
             // The caller's B15 was A15 + the link; its stack arguments start
             // one word above that.
-            int k = static_cast<int>(i - regCount);
-            regAdd("A15", linkBytes_ + 4 + 4 * k, "A0");
-            out_ << "\tLDW\t*A0, A4\n\tNOP\t4\n";
+            regAdd("A15", linkBytes_ + stackParamOffset(ps, i), "A0");
+            out_ << (isDouble(t) ? "\tLDDW\t*A0, A5:A4\n\tNOP\t4\n" : "\tLDW\t*A0, A4\n\tNOP\t4\n");
         }
         if (byRef) {
             localAddr(ps[i].offset, "A6");
