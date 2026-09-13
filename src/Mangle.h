@@ -25,8 +25,7 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
-// The one-letter Itanium code of a fundamental type - `j` for unsigned int,
-// `m` for unsigned long - which is how operator new's name says its size_t.
+// The one-letter Itanium code of a fundamental type: how `new` names its size_t.
 const char *itaniumBuiltinCode(Kind k);
 
 // The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a signature spells it.
