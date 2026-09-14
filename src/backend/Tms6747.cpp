@@ -3,11 +3,15 @@
 #include "../Abi.h"
 #include "../Ast.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ostream>
+#include <set>
+#include <sstream>
 #include <string>
+#include <vector>
 
 static int align8(int n) { return (n + 7) / 8 * 8; }
 
@@ -82,10 +86,84 @@ void Tms6747::movImm(const char *reg, long long value) {
 }
 
 // A symbol as the assembler sees it. The parser names string literals
-// `.L.str.N`, GNU style; a leading dot reads as a directive to the TI
-// assembler, so it is dropped: `L.str.N`, beside the `L.` code labels.
+// `.L.str.N`, GNU style; a leading dot reads as a directive, so it is dropped:
+// `L.str.N` beside the `L.` code labels, tiSpelling respelling the rest.
 std::string Tms6747::symName(const std::string &sym) {
     return sym[0] == '.' ? sym.substr(1) : sym;
+}
+
+// The TI assembler admits no dot inside a name, `$` it does: the finished text
+// is respelled once, every dot between two name characters (outside a quoted
+// string, a comment, or a number) becoming `$` - `L$return$main`, `f$arr`.
+static std::string tiSpelling(const std::string &text) {
+    std::string out = text;
+    bool quoted = false, comment = false, name = false;
+    for (size_t i = 0; i < out.size(); i++) {
+        char c = out[i];
+        if (c == '\n') { quoted = comment = name = false; continue; }
+        if (comment) continue;
+        if (quoted) { if (c == '\\') i++; else if (c == '"') quoted = false; continue; }
+        if (c == '"') { quoted = true; name = false; continue; }
+        if (c == ';') { comment = true; continue; }
+        bool word = std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+        char next = i + 1 < out.size() ? out[i + 1] : ' ';
+        if (c == '.' && name &&
+            (std::isalnum(static_cast<unsigned char>(next)) || next == '_' || next == '$'))
+            out[i] = '$';
+        else if (!word) name = false;
+        else if (!name && (std::isalpha(static_cast<unsigned char>(c)) || c == '_')) name = true;
+    }
+    return out;
+}
+
+// The TI assembler takes an undefined name for an error unless it is
+// declared: the finished text is read once more, and every name it uses but
+// neither defines nor declares - printf, the helpers, the runtime - gets a .ref.
+static std::string tiExternals(const std::string &text) {
+    std::set<std::string> defined, used;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t cut = line.find(';');
+        if (cut != std::string::npos) line.erase(cut);
+        size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        bool label = first == 0;
+        if (line[first] == '[') {                                   // a predicate
+            cut = line.find(']', first);
+            line = cut == std::string::npos ? std::string() : line.substr(cut + 1);
+        }
+        std::vector<std::string> words;
+        for (size_t i = 0; i < line.size();) {
+            char c = line[i];
+            if (c == '"') { cut = line.find('"', i + 1); i = cut == std::string::npos ? line.size() : cut + 1; continue; }
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '$' && c != '.') { i++; continue; }
+            size_t j = i;
+            while (j < line.size() && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_' ||
+                                       line[j] == '$' || line[j] == '.')) j++;
+            words.push_back(line.substr(i, j - i));
+            i = j;
+        }
+        size_t k = 0;
+        if (label && !words.empty()) { defined.insert(words[0]); k = 1; }
+        if (k >= words.size()) continue;
+        const std::string &m = words[k];
+        bool declares = m == ".global" || m == ".weak" || m == ".def" || m == ".ref" || m == ".bss";
+        if (declares) { if (k + 1 < words.size()) defined.insert(words[k + 1]); continue; }
+        if (m[0] == '.' && m != ".word") continue;
+        for (size_t w = k + 1; w < words.size(); w++) {
+            const std::string &t = words[w];
+            if (std::isdigit(static_cast<unsigned char>(t[0]))) continue;
+            if ((t[0] == 'A' || t[0] == 'B') && t.size() <= 3 && t.size() > 1 &&
+                std::isdigit(static_cast<unsigned char>(t[1])) && (t.size() == 2 || std::isdigit(static_cast<unsigned char>(t[2]))))
+                continue;                                           // a register
+            used.insert(t);
+        }
+    }
+    std::string out = text;
+    for (const std::string &n : used)
+        if (!defined.count(n)) out += "\t.ref\t" + n + "\n";
+    return out;
 }
 
 // A symbol's address, the same two halves; the assembler and linker fill them.
@@ -639,7 +717,7 @@ void Tms6747::wideBinary(const Binary &n) {
         std::string big = label("wide", id), done = label("widend", id);
         bool left = n.op() == BinOp::Shl;
         const char *shr = sign ? "SHR" : "SHRU";
-        out_ << "\tAND\tA6, 63, A6\n";
+        out_ << "\tEXTU\tA6, 26, 26, A6\n";                       // count & 63: AND takes no 6-bit constant
         movImm("A0", 32);
         out_ << "\tCMPLTU\tA6, A0, A1\n\t[!A1]\tB\t" << big << "\n\tNOP\t5\n";
         out_ << "\tSUB\tA0, A6, A0\n";                           // 32 - count
@@ -886,7 +964,7 @@ void Tms6747::visit(const VaArg &n) {
     int slot = isWide(t) ? 8 : 4;
     n.list().accept(*this);                 // A4 = &ap
     out_ << "\tLDW\t*A4, A6\n\tNOP\t4\n";  // A6 = ap
-    if (slot == 8) out_ << "\tADD\tA6, 7, A6\n\tAND\tA6, -8, A6\n";
+    if (slot == 8) out_ << "\tADD\tA6, 7, A6\n\tCLR\tA6, 0, 2, A6\n";   // round up to 8: AND puts no constant second
     out_ << "\tADD\tA6, " << slot << ", A3\n\tSTW\tA3, *A4\n";   // ap += slot
     out_ << "\tMV\tA6, A4\n";
     if (byRef) { out_ << "\tLDW\t*A4, A4\n\tNOP\t4\n"; return; }  // the struct's address
@@ -1159,5 +1237,5 @@ void Tms6747::run(const Program &program) {
         file_ += out_.str();
         out_.str(std::string());
     }
-    sink_ << file_;
+    sink_ << tiExternals(tiSpelling(file_));
 }
