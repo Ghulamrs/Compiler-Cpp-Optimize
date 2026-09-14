@@ -17,7 +17,7 @@ public:
     int alignOf(Kind) const override;
     bool plainCharIsSigned() const override { return true; }
     Kind sizeType() const override { return Kind::UInt; }
-    Kind wcharType() const override { return Kind::Int; }
+    Kind wcharType() const override { return Kind::UShort; }   // 16-bit and unsigned: TI, measured
     int stackAlign() const override { return 8; }
     bool microsoftNames() const override { return false; }
     const char *name() const override { return "tms6747"; }
