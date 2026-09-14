@@ -1,6 +1,6 @@
-// Placement new needs a constructor to be worth having, and that is rung 3.
-// A parenthesised type-id after 'new' reads the same way to the parser, so
-// both are refused with one message that says how to write the other.
+// `new (int)` - a parenthesised type-id where a placement is read. The two
+// are the same tokens to the parser, and placement new is the form that is
+// built (operator-new.cpp), so this one is refused with the spelling to use.
 int main(void) {
     int *p = new (int);
     return p == 0;

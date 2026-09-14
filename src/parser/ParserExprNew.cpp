@@ -958,10 +958,28 @@ ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,
 }
 
 ExprPtr Parser::newExpression(std::size_t pos) {
-    if (peek().is("("))
-        src_.fail(peek().pos, "placement new is not supported yet - and a "
-                              "parenthesised type after 'new' is read the same "
-                              "way, so write 'new int' rather than 'new (int)'");
+    // **`new (p) T` builds T where p points** - [expr.new]/15 with the
+    // library's placement `operator new(size_t, void *)`, which returns its
+    // argument, so the address is used as it stands; one pointer argument.
+    ExprPtr placement;
+    if (peek().is("(")) {
+        const std::size_t ppos = peek().pos;
+        at_++;
+        if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }())
+            src_.fail(ppos, "a parenthesised type after 'new' is read as a "
+                            "placement here, so write 'new int' rather than "
+                            "'new (int)'");
+        placement = decay(assign());
+        if (peek().is(","))
+            src_.fail(peek().pos, "placement new with more than one argument "
+                                  "is not supported yet - only 'new (p) T', "
+                                  "which builds T at p");
+        expect(")");
+        if (!placement->type()->unqualified()->isPointer())
+            src_.fail(ppos, "the placement argument of 'new' is '" +
+                            placement->type()->describe() + "', and only a "
+                            "pointer - the address to build at - is supported");
+    }
 
     StorageClass sc = StorageNone;
     const Type *made = specifiers(&sc);
@@ -1074,14 +1092,29 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     const Type *pointer = types_.pointerTo(made);
-    // operator new takes a size_t, and its name says which type that is:
-    // `m` on the LP64 targets, `y` on Windows, `j` on the C6000 (_Znwj).
-    const std::string alloc = std::string(array ? "_Zna" : "_Znw") +
-                              itaniumBuiltinCode(target_.sizeType());
-    ExprPtr raw = callAllocator(alloc.c_str(),
-                                array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
-                                types_.pointerTo(types_.get(Kind::Void)),
-                                std::move(bytes), pos);
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    ExprPtr raw;
+    if (placement != nullptr) {
+        if (array)
+            src_.fail(pos, "placement 'new (p) T[n]' is not supported yet");
+        raw.reset(new Cast(voidPtr, std::move(placement)));
+        raw->setType(voidPtr);
+    } else if (const Signature *own = array ? nullptr : classAllocator(made, "operatornew")) {
+        // [class.free]/2: a class's own `operator new` allocates its objects.
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(bytes));
+        raw = completeCall(own->name, own->symbol, nullptr, own->returns,
+                           own->params, false, pos, std::move(args));
+    } else {
+        // operator new takes a size_t, and its name says which type that is:
+        // `m` on the LP64 targets, `y` on Windows, `j` on the C6000 (_Znwj).
+        const std::string alloc = std::string(array ? "_Zna" : "_Znw") +
+                                  itaniumBuiltinCode(target_.sizeType());
+        raw = callAllocator(alloc.c_str(),
+                            array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
+                            voidPtr, std::move(bytes), pos);
+    }
     ExprPtr typed(new Cast(pointer, std::move(raw)));
     typed->setType(pointer);
 
@@ -1349,9 +1382,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         const Type *vp = types_.pointerTo(types_.get(Kind::Void));
         ExprPtr freed(new Cast(vp, std::move(again)));
         freed->setType(vp);
-        ExprPtr release = callAllocator("_ZdlPv", "??3@YAXPEAX@Z",
-                                        types_.get(Kind::Void),
-                                        std::move(freed), pos);
+        ExprPtr release = deallocate(t->pointee(), std::move(freed), pos);
         ExprPtr all(new Comma(std::move(both), std::move(release)));
         all->setType(types_.get(Kind::Void));
         return all;
@@ -1361,9 +1392,38 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     ExprPtr raw(new Cast(voidPtr, std::move(what)));
     raw->setType(voidPtr);
 
-    return callAllocator(array ? "_ZdaPv" : "_ZdlPv",
-                         array ? "??_V@YAXPEAX@Z" : "??3@YAXPEAX@Z",
-                         types_.get(Kind::Void), std::move(raw), pos);
+    if (array)
+        return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
+                             std::move(raw), pos);
+    return deallocate(t->pointee(), std::move(raw), pos);
+}
+
+// A class's own `operator new` or `operator delete`, else null - looked up
+// in the class and then its bases, as [class.free] finds them.
+const Parser::Signature *Parser::classAllocator(const Type *made,
+                                                const char *which) {
+    const Type *cls = made->unqualified();
+    while (cls != nullptr && cls->isStructOrUnion() && !cls->tag().empty()) {
+        if (const std::vector<std::size_t> *set = overloadsOf(cls->tag() + "::" + which))
+            return &functions_[(*set)[0]];
+        const std::vector<Type::BaseSpec> &bs = cls->bases();
+        cls = bs.empty() ? nullptr : bs[0].type->unqualified();
+    }
+    return nullptr;
+}
+
+// What `delete p` frees with: the class's own `operator delete` where it
+// declared one, else the platform's.
+ExprPtr Parser::deallocate(const Type *pointee, ExprPtr raw, std::size_t pos) {
+    if (const Signature *own = classAllocator(pointee, "operatordelete")) {
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(raw));
+        return completeCall(own->name, own->symbol, nullptr, own->returns,
+                            own->params, false, pos, std::move(args));
+    }
+    return callAllocator("_ZdlPv", "??3@YAXPEAX@Z", types_.get(Kind::Void),
+                         std::move(raw), pos);
 }
 
 // **[expr.delete]/2: deleting a null pointer has no effect**, and running the

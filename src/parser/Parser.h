@@ -1466,6 +1466,8 @@ private:
                                      std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
+    const Signature *classAllocator(const Type *made, const char *which);
+    ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;

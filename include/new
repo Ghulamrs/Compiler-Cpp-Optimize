@@ -1,0 +1,10 @@
+// <new> - the placement pair, as the library declares it. A new-expression
+// here reads `new (p) T` as a built-in that builds T at p and calls
+// nothing, which is what this pair does; the replaceable `operator
+// new(size_t)` and `operator delete(void *)` need no declaration to be
+// replaced, a definition of either being the replacement.
+#pragma once
+#include <cstddef>
+
+inline void *operator new(std::size_t, void *where) throw() { return where; }
+inline void operator delete(void *, void *) throw() {}
