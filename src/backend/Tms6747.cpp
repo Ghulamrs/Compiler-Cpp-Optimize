@@ -198,8 +198,12 @@ void Tms6747::spAdjust(int delta) {
     }
 }
 
-// dst = A15 - off, where A15 is the frame pointer. dst is an A-file register.
+static const int kSaveBytes = 24;   // under A15 whatever is saved, so a local's address does not wait on the body
+
+// dst = A15 - kSaveBytes - off, past the saved registers; the stack
+// parameters lie at A15 + 4 on. dst is an A-file register.
 void Tms6747::localAddr(int off, const char *dst) {
+    off += kSaveBytes;
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
     } else {
@@ -1003,7 +1007,7 @@ void Tms6747::visit(const StrLit &n) { genAddr(n); }  // an array: its address
 // there (8-byte ones 8-aligned, a struct through its pointer) and steps on.
 void Tms6747::visit(const VaStart &n) {
     n.list().accept(*this);                 // A4 = &ap
-    regAdd("A15", linkBytes_ + vaStart_, "A6");
+    regAdd("A15", vaStart_, "A6");
     out_ << "\tSTW\tA6, *A4\n";
 }
 void Tms6747::visit(const VaArg &n) {
@@ -1143,9 +1147,9 @@ void Tms6747::emitParams(const Function &fn) {
                 }
             }
         } else {
-            // The caller's B15 was A15 + the link; its stack arguments start
-            // one word above that.
-            regAdd("A15", linkBytes_ + stackParamOffset(ps, i), "A0");
+            // The caller's B15 was A15; its stack arguments start one word
+            // above that.
+            regAdd("A15", stackParamOffset(ps, i), "A0");
             out_ << (isWide(t) || inPairWide(t) ? "\tLDDW\t*A0, A5:A4\n\tNOP\t4\n" : "\tLDW\t*A0, A4\n\tNOP\t4\n");
         }
         if (inPair(t)) {
@@ -1166,10 +1170,32 @@ void Tms6747::emitParams(const Function &fn) {
     }
 }
 
-// The frame link A15 points at: the caller's A15, B3, then these four when
-// the body loads them for a call. Locals lie below it at A15 - offset.
+// A15 points at the caller's B15 word - the ABI leaves it to the callee -
+// and holds the caller's A15 there; the other saved registers sit below it
+// in the order TI's unwinder pops them, so its index entry fits this frame.
 
-static const char *const kSavedArgRegs[] = { "A10", "B10", "A12", "B12" };
+// In TI's pop order; the position in the list is the word below A15.
+std::vector<std::string> Tms6747::savedRegs() const {
+    std::vector<std::string> r;
+    r.push_back("A15");
+    if (usesSavedArgRegs_) { r.push_back("B12"); r.push_back("B10"); }
+    if (hasCall_) r.push_back("B3");
+    if (usesSavedArgRegs_) { r.push_back("A12"); r.push_back("A10"); }
+    return r;
+}
+// The frame as the second word of TI's exception index entry (tdeh_pr_c6000):
+// personality 3, SP restored from A15 (0x7f), the pop bitmask in the order
+// A15, B15-B10, B3, A14-A10 from bit 12 down, and B3 the return register.
+unsigned Tms6747::unwindWord(bool needFrame) const {
+    static const struct { const char *reg; int bit; } bits[] = {
+        { "A15", 12 }, { "B12", 8 }, { "B10", 6 }, { "B3", 5 }, { "A12", 2 }, { "A10", 0 } };
+    unsigned mask = 0;
+    if (needFrame)
+        for (const std::string &r : savedRegs())
+            for (size_t k = 0; k < sizeof bits / sizeof bits[0]; k++)
+                if (r == bits[k].reg) mask |= 1u << bits[k].bit;
+    return 0x83000000u | (needFrame ? 0x7fu << 17 : 0u) | (mask << 4) | 7u;
+}
 
 void Tms6747::emitFunction(const Function &fn) {
     resetLabels();
@@ -1181,13 +1207,11 @@ void Tms6747::emitFunction(const Function &fn) {
     hasCall_ = false;
     clearCallSites();
     usesSavedArgRegs_ = false;
-    linkBytes_ = 8;
 
     sretSlot_ = fn.sretSlot();
 
     // Which parameters the caller put on the stack, and where a variadic
-    // function's unnamed arguments start. A variadic function keeps the full
-    // link so that va_start, emitted inside the body, knows its size.
+    // function's unnamed arguments start.
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
     firstStack_ = regCount;
     vaStart_ = 0;
@@ -1195,8 +1219,6 @@ void Tms6747::emitFunction(const Function &fn) {
         std::size_t named = fn.params().size();
         std::size_t last = named > 0 ? named - 1 : 0;
         if (last < firstStack_) firstStack_ = last;
-        usesSavedArgRegs_ = true;
-        linkBytes_ = 24;
         vaStart_ = stackParamOffset(fn.params(), named);
     }
 
@@ -1209,7 +1231,6 @@ void Tms6747::emitFunction(const Function &fn) {
     else out_ << "\tZERO\tA4\n";
     std::string body = out_.str();
     out_.str(std::string());
-    if (usesSavedArgRegs_) linkBytes_ = 24;
     if (sretSlot_ != 0) {
         // The caller's pointer to where the result goes, from A3, kept in
         // its slot for the return to find - before the parameters are copied
@@ -1238,41 +1259,31 @@ void Tms6747::emitFunction(const Function &fn) {
 
     int frame = align8(fn.frameSize());
     bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0;
+    std::vector<std::string> saved = savedRegs();
     if (needFrame) {
-        spAdjust(-linkBytes_);
-        out_ << "\tSTW\tA15, *B15\n";
-        if (hasCall_) {                         // a leaf leaves B3 alone
-            regAdd("B15", 4, "B0");
-            out_ << "\tSTW\tB3, *B0\n";
-        }
-        if (usesSavedArgRegs_)
-            for (int k = 0; k < 4; k++) {
-                regAdd("B15", 8 + 4 * k, "B0");
-                out_ << "\tSTW\t" << kSavedArgRegs[k] << ", *B0\n";
-            }
+        out_ << "\tSTW\tA15, *B15\n";               // in the caller's word
         out_ << "\tMV\tB15, A15\n";
-        spAdjust(-frame);
+        for (size_t k = 1; k < saved.size(); k++)     // a leaf leaves B3 alone
+            out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
+        spAdjust(-(kSaveBytes + frame));
     }
 
     out_ << params << body;
 
     out_ << returnLabel_ << ":\n";
     if (needFrame) {
-        out_ << "\tMV\tA15, B15\n";                 // drop the locals: SP = FP
-        if (hasCall_) {
-            regAdd("B15", 4, "B0");
-            out_ << "\tLDW\t*B0, B3\n";
-        }
-        if (usesSavedArgRegs_)
-            for (int k = 0; k < 4; k++) {
-                regAdd("B15", 8 + 4 * k, "B0");
-                out_ << "\tLDW\t*B0, " << kSavedArgRegs[k] << "\n";
-            }
-        out_ << "\tLDW\t*B15, A15\n\tNOP\t4\n";      // the caller's FP, last
-        spAdjust(linkBytes_);                          // pop the link
+        for (size_t k = 1; k < saved.size(); k++)
+            out_ << "\tLDW\t*-A15(" << 4 * k << "), " << saved[k] << "\n";
+        out_ << "\tMV\tA15, B15\n";                 // drop the frame: SP = FP
+        out_ << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
     out_ << "\tB\tB3\n\tNOP\t5\n";
-    emitExceptionTable(fn, frame);
+    // TI's index entry for every function: any return address on the stack.
+    char word[16];
+    std::snprintf(word, sizeof word, "0x%08x", unwindWord(needFrame));
+    out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n"
+         << "\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t" << word << "\n\t.text\n";
+    emitExceptionTable(fn, kSaveBytes + frame);
 
     file_ += out_.str();
     out_.str(std::string());
@@ -1291,5 +1302,9 @@ void Tms6747::run(const Program &program) {
         file_ += out_.str();
         out_.str(std::string());
     }
+    // The personality routine the index entries name by number, which the
+    // linker cannot otherwise see them need.
+    if (!program.functions.empty())
+        file_ += "\t.global\t__c6xabi_unwind_cpp_pr3\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.exidx:.text\"\n";
     sink_ << tiExternals(tiSpelling(file_));
 }

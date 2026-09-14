@@ -76,7 +76,8 @@ private:
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
     bool usesSavedArgRegs_ = false;
-    int linkBytes_ = 8;                       // saved A15 + B3 (+ the four above)
+    std::vector<std::string> savedRegs() const;
+    unsigned unwindWord(bool needFrame) const;
     int sretSlot_ = 0;                        // where the caller's A3 is kept
     std::size_t firstStack_ = 0;              // the first parameter passed on the stack
     int vaStart_ = 0;                         // the unnamed arguments, above the caller's B15
