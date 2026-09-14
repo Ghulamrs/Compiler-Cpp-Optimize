@@ -491,7 +491,7 @@ static bool isPromotion(const Type *from, const Type *to) {
     if (to->kind() == Kind::Int) {
         switch (from->kind()) {
             case Kind::Bool: case Kind::Char: case Kind::SChar: case Kind::UChar:
-            case Kind::Short: case Kind::UShort:
+            case Kind::Short: case Kind::UShort: case Kind::WChar:
                 return true;
             default:
                 return false;

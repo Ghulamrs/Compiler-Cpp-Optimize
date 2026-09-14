@@ -1547,7 +1547,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     }
 
     // wchar_t is a type of its own in C++, not the typedef C makes it.
-    if (consume("wchar_t")) return types_.get(target_.wcharType());
+    if (consume("wchar_t")) return types_.get(Kind::WChar);
     // **`Point::Point(...)` has no type before the name, and the name is a type.**
     if (atUntypedMemberDefinition()) return types_.get(Kind::Void);
 
