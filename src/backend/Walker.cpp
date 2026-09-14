@@ -273,9 +273,16 @@ void Walker::visit(const Try &n) {
     // because something nested inside had to be cut out of the range.
     std::vector<std::string> chain = n.types();
     std::vector<int> chainIx = n.typeIndices();
+    // A segment of a try's body carries the try's own types already, so a
+    // handler the chain has - the same type under the same index - is not
+    // added again: TI's personality reads every row it is given.
     for (std::size_t k = open_.size(); k-- > 0; ) {
         const OpenRegion &outer = open_[k];
         for (std::size_t t = 0; t < outer.types.size(); t++) {
+            bool have = false;
+            for (std::size_t c = 0; c < chain.size() && c < chainIx.size(); c++)
+                if (t < outer.indices.size() && chain[c] == outer.types[t] && chainIx[c] == outer.indices[t]) have = true;
+            if (have) continue;
             chain.push_back(outer.types[t]);
             if (t < outer.indices.size()) chainIx.push_back(outer.indices[t]);
         }
