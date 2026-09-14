@@ -46,6 +46,12 @@ struct MicrosoftRtti {
     std::string locator;         // ??_R4Base@@6B@
 };
 
+// cl's vcall thunk for a virtual function taken by `&S::f`: `??_9S@@$B7AA`
+// for the slot 8 bytes into the vftable - the class as a scope, `$B`, the
+// offset as a number, and `AA` for the flat convention. Measured.
+bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
+                             std::string *problem);
+
 bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
                              std::string *problem);
 

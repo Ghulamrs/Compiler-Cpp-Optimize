@@ -1012,6 +1012,79 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
     return name;
 }
 
+// The body is the virtual call `this->f(a0, a1, ...)` as memberCall builds
+// one - the vptr read, the slot at its index - forwarding every parameter.
+std::string Parser::synthesizeVcallThunk(const Type *cls, const Signature &f,
+                                         int index, std::size_t pos) {
+    std::string name, why;
+    if (!microsoftVcallThunkName(cls, index * pointerBytes(), &name, &why))
+        src_.fail(pos, "'&" + cls->tag() + "::" + f.name + "' cannot be named: " + why);
+    for (std::size_t i = 0; i < current_->functions.size(); i++)
+        if (current_->functions[i].symbol() == name) return name;   // one per slot
+
+    const Type *self = types_.pointerTo(cls);
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+    std::vector<int> argSlots;
+    for (std::size_t i = 0; i < f.params.size(); i++)
+        argSlots.push_back(allocateFrameSlot(f.params[i]));
+    for (std::size_t i = 0; i < f.params.size(); i++)
+        params.push_back(Param{ f.params[i], argSlots[i] });
+
+    std::vector<const Type *> full;
+    full.push_back(self);
+    for (std::size_t i = 0; i < f.params.size(); i++) full.push_back(f.params[i]);
+    const Type *fnType = types_.functionType(f.returns, full, f.variadic);
+    const Type *fnPtr = types_.pointerTo(fnType);
+    const Type *table = types_.pointerTo(fnPtr);
+
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(self);
+    ExprPtr forLoad(new Cast(types_.pointerTo(table), std::move(me)));
+    forLoad->setType(types_.pointerTo(table));
+    ExprPtr vptr(new Unary('*', std::move(forLoad)));
+    vptr->setType(table);
+    if (index != 0) {
+        ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
+        at->setType(types_.intType());
+        ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
+        moved->setType(table);
+        vptr = std::move(moved);
+    }
+    ExprPtr entry(new Unary('*', std::move(vptr)));
+    entry->setType(fnPtr);
+
+    std::vector<ExprPtr> args;
+    ExprPtr again(Var::local("this", thisSlot));
+    again->setType(self);
+    args.push_back(std::move(again));
+    for (std::size_t i = 0; i < f.params.size(); i++) {
+        ExprPtr a(Var::local("a" + std::to_string(i), argSlots[i]));
+        a->setType(f.params[i]);
+        args.push_back(std::move(a));
+    }
+    ExprPtr call = completeCall(f.name, f.symbol, std::move(entry), f.returns,
+                                full, f.variadic, pos, std::move(args), true);
+    std::vector<StmtPtr> body;
+    if (f.returns->isVoid()) {
+        body.push_back(StmtPtr(new ExprStmt(std::move(call))));
+        body.push_back(StmtPtr(new Return(nullptr)));
+    } else {
+        body.push_back(StmtPtr(new Return(std::move(call))));
+    }
+    current_->functions.push_back(Function(name, f.returns, std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(name);
+    current_->functions.back().setInline(true);
+    frameSize_ = savedFrame;
+    return name;
+}
+
 void Parser::markSymbolUsed(const std::string &symbol) {
     if (symbol.empty()) return;
     for (std::size_t i = 0; i < functions_.size(); i++)

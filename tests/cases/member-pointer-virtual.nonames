@@ -1,0 +1,1 @@
+x86_64-linux  cxx1 emits the C1 and D1 forms of the in-class constructors and destructors beside the C2/D2 where clang emits only the ones a use asks for - the COMDAT difference implicit-move.nonames records. The vcall dispatch adds no name on Itanium; on x86_64-windows all 29 names agree, the thunk `??_9S@@$BA@AA` among them.

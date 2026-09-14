@@ -646,6 +646,11 @@ private:
     // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.
     std::string synthesizeThunk(const std::string &cls, const Type *type,
                                 const VSlot &slot, int offset, std::size_t pos);
+    // cl's vcall thunk: `&S::f` on a virtual f is the address of a function
+    // that dispatches through the object's vftable, since the Microsoft
+    // member pointer is one code pointer with no room for a slot index.
+    std::string synthesizeVcallThunk(const Type *cls, const Signature &f,
+                                     int index, std::size_t pos);
 
     // How well one argument matches one parameter, in the order [over.ics.scs]
     // ranks them - the values are compared, so do not reorder this enum.
@@ -1814,8 +1819,11 @@ private:
     ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
                                bool constObject);
     // `&S::f` - the ABI's pair, built into a slot of this frame.
+    // `vtableCode` is Itanium's 1 + slot offset for a virtual function, 0 for
+    // a plain one; `code` names the function - or cl's vcall thunk - to hold.
     ExprPtr boundMemberPointer(const Type *cls, const Signature &f,
-                               std::size_t pos);
+                               std::size_t pos, long long vtableCode = 0,
+                               const std::string &code = std::string());
     // **`o.*p` for a member *function* pointer has to carry two things to the call** -
     // the object's address and the code pointer - and no expression holds a pair. The
     // address is left here and the `(` in `postfix` picks it up. One token wide.

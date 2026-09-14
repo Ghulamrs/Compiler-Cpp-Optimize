@@ -1880,16 +1880,28 @@ ExprPtr Parser::unary() {
                                            " functions, and which one this is "
                                            "cannot be told from the use alone");
                         const Signature &f = functions_[(*set)[0]];
-                        // **A virtual one is refused by name.** Itanium keeps the
-                        // vtable index in the low bit and branches on it at every
-                        // call; Microsoft calls a thunk. Neither is written.
-                        if (f.isVirtual)
-                            src_.fail(pos, "'" + key + "' is virtual, and a "
-                                           "pointer to a virtual member "
-                                           "function is not supported yet - it "
-                                           "holds a vtable index where this "
-                                           "holds an address");
                         at_ += 3;
+                        // **A virtual one holds the slot, not the function.**
+                        // Itanium: 1 + the slot's byte offset, tested at the
+                        // call; Microsoft: the address of a vcall thunk.
+                        if (f.isVirtual) {
+                            int index = -1;
+                            const std::vector<VSlot> &slots = vtables_[cls->tag()];
+                            for (std::size_t i = 0; i < slots.size(); i++)
+                                if (overrides(slots[i], f.name, f.params, f.constThis))
+                                    index = static_cast<int>(i);
+                            if (index < 0)
+                                src_.fail(pos, "'" + key + "' is virtual but has "
+                                               "no slot in '" + cls->describe() +
+                                               "'s own vtable - a function of a "
+                                               "base after the first is not "
+                                               "supported here yet");
+                            if (target_.microsoftNames())
+                                return boundMemberPointer(cls, f, pos, 0,
+                                                          synthesizeVcallThunk(cls, f, index, pos));
+                            return boundMemberPointer(cls, f, pos,
+                                                      1 + static_cast<long long>(index) * pointerBytes());
+                        }
                         return boundMemberPointer(cls, f, pos);
                     }
                 }

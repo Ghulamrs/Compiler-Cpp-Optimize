@@ -598,6 +598,8 @@ public:
     // **The class as a type descriptor spells it**, `?AUBase@@`.
     void classAsTypeName(const Type *t) { returnType(t); }
 
+    void vtableOffset(int offset) { number(offset); }   // a vcall thunk's vftable offset
+
     // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
     // `this`, the calling convention - with every enclosing class innermost first,
     // closed by '@'. A local class's owner goes in as `?1?` and the whole name.
@@ -1262,6 +1264,17 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) 
     m.typeInfoFor(t);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
+    return true;
+}
+
+bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
+                             std::string *problem) {
+    Microsoft scope;
+    scope.scopeOf(cls, cls->tag());
+    if (!scope.ok) { *problem = scope.problem; return false; }
+    Microsoft n;
+    n.vtableOffset(offset);
+    *out = "??_9" + scope.out + "$B" + n.out + "AA";
     return true;
 }
 

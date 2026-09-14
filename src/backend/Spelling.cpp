@@ -58,6 +58,10 @@ void GnuSpelling::functionBegin(const std::string &name, bool exported,
     (void)mergeable;
     if (exported) globl(name);
     textSection();
+    // **A function starts on a 16-byte boundary**, as gcc and clang place
+    // them: the Itanium member pointer keeps "virtual" in a code word's low
+    // bit, and a function at an odd address read as a vtable offset.
+    o_ += "  .p2align 4\n";
     defLabel(name);
 }
 
