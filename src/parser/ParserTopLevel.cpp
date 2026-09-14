@@ -481,7 +481,9 @@ void Parser::topLevel(Program &program) {
                     src_.fail(d.pos, "'" + d.name + "' is given an initialiser twice");
                 if (hasInit) prev->hasInit = true;
 
-                if (sc != StorageExtern) {
+                // `extern` with an initialiser defines - [dcl.stc]/6 - and
+                // keeps external linkage a const object would otherwise lose.
+                if (sc != StorageExtern || hasInit) {
                     if (!prev->emitted) {
                         prev->emitted = true;
                         program.globals.push_back(Global{ d.name, prev->symbol,
@@ -515,11 +517,11 @@ void Parser::topLevel(Program &program) {
             refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
             globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
-                                          sc != StorageExtern, hasInit,
+                                          sc != StorageExtern || hasInit, hasInit,
                                           constantKnown, constantValue });
             globals_.back().isConstantDouble = constantDoubleKnown;
             globals_.back().constantDouble = constantDoubleValue;
-            if (sc != StorageExtern) {
+            if (sc != StorageExtern || hasInit) {
                 program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
                                                   internal, objectIsConst });
