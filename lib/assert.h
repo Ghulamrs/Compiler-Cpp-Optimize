@@ -34,6 +34,12 @@ extern "C" {
 void _assert(const char *expr, const char *file, unsigned line);
 #elif defined(__APPLE__)
 void __assert_rtn(const char *func, const char *file, int line, const char *expr);
+#elif defined(__TMS320C6X__)
+/* TI's assert builds the whole message in the macro and hands it to this,
+   which its runtime defines and the VM6747 emulator answers to. */
+void __c6xabi_abort_msg(const char *msg);
+#define _CC1_STR(x) _CC1_STR2(x)
+#define _CC1_STR2(x) #x
 #else
 void __assert_fail(const char *expr, const char *file, unsigned line,
                    const char *func);
@@ -64,6 +70,8 @@ void __assert_fail(const char *expr, const char *file, unsigned line,
 #define assert(e) ((e) ? (void)0 : _assert(#e, __FILE__, __LINE__))
 #elif defined(__APPLE__)
 #define assert(e) ((e) ? (void)0 : __assert_rtn("(unknown)", __FILE__, __LINE__, #e))
+#elif defined(__TMS320C6X__)
+#define assert(e) ((e) ? (void)0 : __c6xabi_abort_msg("Assertion failed, (" #e "), file " __FILE__ ", line " _CC1_STR(__LINE__) "\n"))
 #else
 #define assert(e) ((e) ? (void)0 : __assert_fail(#e, __FILE__, __LINE__, "(unknown)"))
 #endif
