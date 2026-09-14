@@ -257,19 +257,19 @@ std::string Tms6747::pairOf(const char *reg) {
 // The value of type t in the accumulator, to and from the stack. A push slot
 // is already 8 bytes and B15 stays 8-aligned, which STDW and LDDW need.
 void Tms6747::pushValue(const Type *t) {
-    if (!isWide(t)) { push(); return; }
+    if (!isWide(t) && !inPairWide(t)) { push(); return; }
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTDW\tA5:A4, *B15\n";
 }
 void Tms6747::popValue(const Type *t, const char *reg) {
-    if (!isWide(t)) { pop(reg); return; }
+    if (!isWide(t) && !inPairWide(t)) { pop(reg); return; }
     out_ << "\tLDDW\t*B15, " << pairOf(reg) << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
 // The accumulator's value into reg (and its pair for a double).
 void Tms6747::moveValue(const Type *t, const char *reg) {
     out_ << "\tMV\tA4, " << reg << "\n";
-    if (isWide(t)) out_ << "\tMV\tA5, " << pairOf(reg).substr(0, pairOf(reg).find(':')) << "\n";
+    if (isWide(t) || inPairWide(t)) out_ << "\tMV\tA5, " << pairOf(reg).substr(0, pairOf(reg).find(':')) << "\n";
 }
 // A floating constant's bits: one word for a float, two for a double, the
 // low word in reg and the high in its pair.
@@ -771,10 +771,12 @@ void Tms6747::visit(const Postfix &n) {
 }
 
 // A struct of 8 bytes or less whose copy and destruction are not calls
-// comes back in A5:A4 - the parser gave such a function no sret slot.
-bool Tms6747::returnsInPair(const Type *t) const {
+// travels in registers like a scalar of its size - one up to 4 bytes, the
+// pair A5:A4 up to 8 - as an argument and as a result: TI's rule, measured.
+bool Tms6747::inPair(const Type *t) const {
     return t->isStructOrUnion() && !t->nonTrivialCopy() && !t->hasDestructor() && t->size(target_) <= abi_.structReturnLimit;
 }
+bool Tms6747::inPairWide(const Type *t) const { return inPair(t) && t->size(target_) > 4; }
 
 // A5:A4 from the struct at *A4, and the struct at *A3 from A5:A4, in pieces
 // no wider than the struct's alignment: a struct of three chars sits at any
@@ -810,7 +812,7 @@ void Tms6747::visit(const Return &n) {
     markLine(n);
     if (n.hasValue()) {
         n.value().accept(*this);    // result in A4
-        if (returnsInPair(n.value().type())) {
+        if (inPair(n.value().type())) {
             loadPair(n.value().type()->size(target_), n.value().type()->align(target_));
         } else if (n.value().type()->isStructOrUnion()) {
             // Copy it to where the caller asked (the pointer it passed in
@@ -855,7 +857,7 @@ void Tms6747::wideCast(const Type *from, const Type *to) {
 // A variadic callee takes its last named argument onward on the stack.
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
-    bool pair = returnsInPair(n.type());
+    bool pair = inPair(n.type());
     bool sret = n.type()->isStructOrUnion() && !pair;
 
     // A struct argument is passed by the address of a copy: each is copied
@@ -884,9 +886,10 @@ void Tms6747::visit(const Call &n) {
     int end = 4;
     for (int k = 0; k < onStack; k++) {
         const Type *t = args[inRegs + k]->type();
-        if (isWide(t)) end = align8(end);
+        bool wide = isWide(t) || inPairWide(t);
+        if (wide) end = align8(end);
         at[k] = end;
-        end += isWide(t) ? 8 : 4;
+        end += wide ? 8 : 4;
     }
     int area = align8(end);
     spAdjust(-area);
@@ -894,7 +897,7 @@ void Tms6747::visit(const Call &n) {
         const Type *t = args[inRegs + k]->type();
         genArg(n, inRegs + k);
         regAdd("B15", at[k], "B0");
-        out_ << (isWide(t) ? "\tSTDW\tA5:A4, *B0\n" : "\tSTW\tA4, *B0\n");
+        out_ << (isWide(t) || inPairWide(t) ? "\tSTDW\tA5:A4, *B0\n" : "\tSTW\tA4, *B0\n");
     }
 
     if (n.callee() != nullptr) {
@@ -928,16 +931,18 @@ void Tms6747::visit(const Call &n) {
 int Tms6747::stackParamOffset(const std::vector<Param> &ps, std::size_t i) {
     int end = 4;
     for (std::size_t k = firstStack_; k <= i; k++) {
-        if (k < ps.size() && isWide(ps[k].type)) end = align8(end);
+        if (k < ps.size() && (isWide(ps[k].type) || inPairWide(ps[k].type))) end = align8(end);
         if (k == i) return end;
-        end += isWide(ps[k].type) ? 8 : 4;
+        end += (isWide(ps[k].type) || inPairWide(ps[k].type)) ? 8 : 4;
     }
     return end;
 }
 
 // Argument i into A4: its value, or for a struct the address of its copy.
 void Tms6747::genArg(const Call &n, std::size_t i) {
-    if (n.args()[i]->type()->isStructOrUnion()) localAddr(n.argSlot(i), "A4");
+    const Type *t = n.args()[i]->type();
+    if (inPair(t)) { localAddr(n.argSlot(i), "A4"); loadPair(t->size(target_), t->align(target_)); }
+    else if (t->isStructOrUnion()) localAddr(n.argSlot(i), "A4");
     else n.args()[i]->accept(*this);
 }
 
@@ -1003,8 +1008,8 @@ void Tms6747::visit(const VaStart &n) {
 }
 void Tms6747::visit(const VaArg &n) {
     const Type *t = n.type();
-    bool byRef = t->isStructOrUnion();
-    int slot = isWide(t) ? 8 : 4;
+    bool byRef = t->isStructOrUnion() && !inPair(t);
+    int slot = isWide(t) || inPairWide(t) ? 8 : 4;
     n.list().accept(*this);                 // A4 = &ap
     out_ << "\tLDW\t*A4, A6\n\tNOP\t4\n";  // A6 = ap
     if (slot == 8) out_ << "\tADD\tA6, 7, A6\n\tCLR\tA6, 0, 2, A6\n";   // round up to 8: AND puts no constant second
@@ -1127,12 +1132,12 @@ void Tms6747::emitParams(const Function &fn) {
     const std::vector<Param> &ps = fn.params();
     for (std::size_t i = 0; i < ps.size(); i++) {
         const Type *t = ps[i].type;
-        bool byRef = t->isStructOrUnion();      // the address of the caller's copy
+        bool byRef = t->isStructOrUnion() && !inPair(t);   // the address of the caller's copy
         if (i < firstStack_) {
             const char *reg = abi_.intRegs[i];
             if (std::string(reg) != "A4") {
                 out_ << "\tMV\t" << reg << ", A4\n";
-                if (isWide(t)) {
+                if (isWide(t) || inPairWide(t)) {
                     std::string hi = pairOf(reg).substr(0, pairOf(reg).find(':'));
                     out_ << "\tMV\t" << hi << ", A5\n";
                 }
@@ -1141,7 +1146,13 @@ void Tms6747::emitParams(const Function &fn) {
             // The caller's B15 was A15 + the link; its stack arguments start
             // one word above that.
             regAdd("A15", linkBytes_ + stackParamOffset(ps, i), "A0");
-            out_ << (isWide(t) ? "\tLDDW\t*A0, A5:A4\n\tNOP\t4\n" : "\tLDW\t*A0, A4\n\tNOP\t4\n");
+            out_ << (isWide(t) || inPairWide(t) ? "\tLDDW\t*A0, A5:A4\n\tNOP\t4\n" : "\tLDW\t*A0, A4\n\tNOP\t4\n");
+        }
+        if (inPair(t)) {
+            // The value itself, into the parameter's slot, in its own bytes.
+            localAddr(ps[i].offset, "A3");
+            storePair(t->size(target_), t->align(target_));
+            continue;
         }
         if (byRef) {
             // Through A1, not A6: A6 is the third argument's register, still

@@ -1,0 +1,1 @@
+x86_64-linux  the C1 and D1 forms of Cpy's constructors and Dtor's destructor, which cxx1 emits beside C2/D2 where clang emits the base forms alone with aliases; every declared name agrees, and the other two targets agree wholly.

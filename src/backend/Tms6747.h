@@ -104,7 +104,8 @@ private:
     void genArg(const Call &n, std::size_t i);   // argument i -> A4
     void addOffset(int bytes);                // A4 += bytes
     void copyBlock(int size, const char *from, const char *to, int align);
-    bool returnsInPair(const Type *t) const;  // a struct of 8 bytes or less: A5:A4
+    bool inPair(const Type *t) const;         // a struct of 8 bytes or less: in registers, argument or result
+    bool inPairWide(const Type *t) const;     // and one of 5 to 8 takes the pair
     void loadPair(int size, int align);       // A5:A4 = the struct at *A4
     void storePair(int size, int align);      // the struct at *A3 = A5:A4
     void bitFieldUnitAddr(const MemberAccess &m);   // the unit's address -> A4
