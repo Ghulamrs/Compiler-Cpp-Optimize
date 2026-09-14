@@ -872,21 +872,23 @@ StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
         releaseGuarded(steps, temps[k]);
     emitDestructors(steps, from, pos, -1, to);
 
-    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
-    std::vector<ExprPtr> args;
-    ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
-    ptr->setType(voidPtr);
-    args.push_back(std::move(ptr));
     // **A segment of a `try` body hands over rather than resuming.** Its row
     // carries the `try`'s catch types, so the selector may name a handler -
     // and the one chain that tests it lives in the `try`'s own pad.
-    if (chainLabel.empty())
-        steps.push_back(StmtPtr(new ExprStmt(
-            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                        std::move(args)))));
-    else
-        steps.push_back(StmtPtr(new Goto(chainLabel)));
+    if (chainLabel.empty()) steps.push_back(resumeUnwinding(pointerSlot));
+    else                    steps.push_back(StmtPtr(new Goto(chainLabel)));
     return unwindPad(std::move(steps));
+}
+
+StmtPtr Parser::resumeUnwinding(int pointerSlot) {
+    std::vector<ExprPtr> args;
+    if (target_.resumeTakesException()) {
+        ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
+        ptr->setType(types_.pointerTo(types_.get(Kind::Void)));
+        args.push_back(std::move(ptr));
+        return StmtPtr(new ExprStmt(runtimeCall("_Unwind_Resume", types_.get(Kind::Void), std::move(args))));
+    }
+    return StmtPtr(new ExprStmt(runtimeCall("__cxa_end_cleanup", types_.get(Kind::Void), std::move(args))));
 }
 
 StmtPtr Parser::unwindPad(std::vector<StmtPtr> steps) {
@@ -3266,6 +3268,9 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
     program.globals.push_back(Global{ d.qualifier + "::" + d.name, s->symbol,
                                       s->type, std::move(pieces), hasInit, false,
                                       s->type->isConst() });
+    // A template's static member is defined by every unit that uses it, and
+    // the linker keeps one - a weak object, as its vtable is.
+    program.globals.back().isInline = owner->isSpecialization();
 }
 
 // Naming a static member, however it was reached. A folded one is its value

@@ -502,6 +502,10 @@ public:
     virtual int stackAlign() const { return 16; }
     // Whether a word may sit at any address: the hosts' loads do, the C6000's LDW faults.
     virtual bool loadsUnaligned() const { return true; }
+    // **How a cleanup pad hands the exception back**: `_Unwind_Resume(exception)`, or TI's `__cxa_end_cleanup()`.
+    virtual bool resumeTakesException() const { return true; }
+    // **Whether `__cxa_get_exception_ptr` exists** - TI's runtime copies from what `__cxa_begin_catch` returns.
+    virtual bool hasGetExceptionPtr() const { return true; }
 
     virtual const char *name() const = 0;
 };

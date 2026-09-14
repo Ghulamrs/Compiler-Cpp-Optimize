@@ -18,6 +18,8 @@ public:
     bool plainCharIsSigned() const override { return true; }
     Kind sizeType() const override { return Kind::UInt; }
     Kind wcharType() const override { return Kind::UShort; }   // 16-bit and unsigned: TI, measured
+    bool resumeTakesException() const override { return false; }   // __cxa_end_cleanup(), measured from cl6x
+    bool hasGetExceptionPtr() const override { return false; }     // not in rts6740_elf_eh.lib
     int stackAlign() const override { return 8; }
     bool microsoftNames() const override { return false; }
     const char *name() const override { return "tms6747"; }
@@ -77,6 +79,7 @@ private:
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
     bool usesSavedArgRegs_ = false;
+    bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12
     int frame_ = 0;                           // the locals, 8-aligned
     std::vector<std::string> savedRegs() const;
     unsigned unwindWord(bool needFrame) const;
@@ -130,6 +133,8 @@ private:
     void wideBinary(const Binary &n);         // 64-bit integers, the same places
     void wideCast(const Type *from, const Type *to);
     int stackParamOffset(const std::vector<Param> &ps, std::size_t i);
+    int stackArg(const Type *t, int &end);
+    std::string stackArgAccess(const Type *t, bool store, const char *reg);
     void genAddr(const Expr &e);              // address of an lvalue -> A4
     void load(const Type *t);                 // [A4] -> A4
     void store(const Type *t, const char *addrReg);  // A4 -> [addrReg]

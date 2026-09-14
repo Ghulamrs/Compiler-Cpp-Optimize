@@ -1336,7 +1336,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // block copy**.
                 const Signature *cc = copyConstructorOf(caught->unqualified());
                 ExprPtr fromPtr;
-                if (cc != nullptr) {
+                // **With no `__cxa_get_exception_ptr`** the copy is made from what `__cxa_begin_catch` returns, as cl6x does.
+                const bool copyAfterBegin = cc != nullptr && !target_.hasGetExceptionPtr();
+                if (cc != nullptr && !copyAfterBegin) {
                     std::vector<ExprPtr> ptrArgs;
                     ExprPtr raw(Var::local(".ex.ptr", pointerSlot));
                     raw->setType(voidPtr);
@@ -1401,7 +1403,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // **The catch is entered after the copy** where a constructor
                 // ran, which is the order the two calls exist to make
                 // possible.
-                if (cc != nullptr)
+                if (cc != nullptr && !copyAfterBegin)
                     steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
                 // **An object of this scope from here on.**
                 if (destructorOf(caught->unqualified()) != nullptr)
@@ -1476,13 +1478,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // **Handed on rather than resumed.**
                 padSteps.push_back(StmtPtr(new Goto(beyond)));
             } else {
-                std::vector<ExprPtr> resumeArgs;
-                ExprPtr held(Var::local(".ex.ptr", padPtr));
-                held->setType(voidPtr);
-                resumeArgs.push_back(std::move(held));
-                padSteps.push_back(StmtPtr(new ExprStmt(
-                    runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                                std::move(resumeArgs)))));
+                padSteps.push_back(resumeUnwinding(padPtr));
             }
             // Behind the label a region inside this handler jumps to.
             StmtPtr padLabelled(new Label(endCatchLabel, unwindPad(std::move(padSteps))));
@@ -1527,10 +1523,6 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     }
 
     // **Nothing matched, so this frame unwinds like any other.**
-    std::vector<ExprPtr> resumeArgs;
-    ExprPtr again(Var::local(".ex.ptr", pointerSlot));
-    again->setType(voidPtr);
-    resumeArgs.push_back(std::move(again));
     std::vector<StmtPtr> resume;
     // **A nested `try` hands over instead of resuming.**
     int outPtr = 0, outSel = 0;
@@ -1539,12 +1531,8 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                              beyondTry.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
-    if (beyondTry.empty())
-        resume.push_back(StmtPtr(new ExprStmt(
-            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                        std::move(resumeArgs)))));
-    else
-        resume.push_back(StmtPtr(new Goto(beyondTry)));
+    if (beyondTry.empty()) resume.push_back(resumeUnwinding(pointerSlot));
+    else                   resume.push_back(StmtPtr(new Goto(beyondTry)));
     StmtPtr chain = unwindPad(std::move(resume));
 
     for (std::size_t i = handlers.size(); i-- > 0; ) {
