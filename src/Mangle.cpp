@@ -1241,6 +1241,14 @@ std::string itaniumClassTypeNameSymbol(const Type *cls) {
     return "_ZTS" + itaniumClassNameString(cls);
 }
 
+bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem) {
+    Itanium m;
+    m.typeInfoFor(t);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
     if (itaniumBuiltin(t->kind()) == nullptr) {
         *problem = "only a fundamental type has a type_info object the "

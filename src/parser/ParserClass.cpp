@@ -1306,6 +1306,7 @@ std::string Parser::typeInfoSymbolFor(const Type *t, std::size_t pos,
     const Type *u = t->unqualified();
     std::string name;
     if (itaniumTypeInfoName(u, &name, why)) return name;
+    if (u->isPointer()) return emitPointerTypeInfo(u, pos, why);
 
     if (u->isStructOrUnion() && !u->tag().empty()) {
         // More than one base wants `__vmi_class_type_info`, which is not built
@@ -1317,6 +1318,56 @@ std::string Parser::typeInfoSymbolFor(const Type *t, std::size_t pos,
         return std::string();
     }
     return std::string();
+}
+
+// **A pointer's type_info is a `__pointer_type_info`** - [ABI 2.9.5]: vptr,
+// name, the pointee's cv-qualifiers as flags, the pointee's own type_info.
+// One to a fundamental type - `_ZTIPi`, `_ZTIPKc` - is the library's.
+std::string Parser::emitPointerTypeInfo(const Type *ptr, std::size_t pos,
+                                        std::string *why) {
+    const Type *pointee = ptr->pointee();
+    const Type *plain = pointee->unqualified();
+    if (plain->isFunction() || plain->isMemberPointer() || plain->isMemberFunctionPointer()) {
+        *why = "a pointer to a function has no type_info this compiler can "
+               "emit - '" + ptr->describe() + "' would need a "
+               "__function_type_info for what it points at";
+        return std::string();
+    }
+    std::string spelt;
+    if (!itaniumTypeSpelling(ptr, &spelt, why)) return std::string();
+    const bool builtin = itaniumBuiltinCode(plain->kind()) != nullptr;
+    if (builtin) return "_ZTI" + spelt;                   // the library's
+
+    const std::string ti = "_ZTI" + spelt;
+    for (std::size_t i = 0; i < current_->globals.size(); i++)
+        if (current_->globals[i].symbol == ti) return ti;
+    const std::string inner = typeInfoSymbolFor(plain, pos, why);
+    if (inner.empty()) return std::string();
+
+    const std::string ts = "_ZTS" + spelt;
+    std::vector<GlobalPiece> letters;
+    for (std::size_t i = 0; i <= spelt.size(); i++)
+        letters.push_back(GlobalPiece{ static_cast<int>(i), 1,
+                                       i < spelt.size() ? spelt[i] : 0,
+                                       std::string() });
+    const Type *chars = types_.arrayOf(types_.get(Kind::Char),
+                                       static_cast<long long>(spelt.size() + 1));
+    current_->globals.push_back(Global{ ts, ts, chars, std::move(letters),
+                                        true, false, true, std::string(), true });
+
+    // vptr, name, flags (const 1, volatile 2 - only const is in this type
+    // system), the pointee's type_info at the next pointer boundary.
+    const int w = pointerBytes();
+    std::vector<GlobalPiece> pieces;
+    pieces.push_back(GlobalPiece{ 0, w, 2 * w, "_ZTVN10__cxxabiv119__pointer_type_infoE" });
+    pieces.push_back(GlobalPiece{ w, w, 0, ts });
+    pieces.push_back(GlobalPiece{ 2 * w, 4, pointee->isConst() ? 1 : 0, std::string() });
+    pieces.push_back(GlobalPiece{ 3 * w, w, 0, inner });
+    const Type *word = types_.pointerTo(types_.get(Kind::Void));
+    const Type *object = types_.arrayOf(word, 4);
+    current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
+                                        true, false, true, std::string(), true });
+    return ti;
 }
 
 // **The flags word of a `__vmi_class_type_info`**, [ABI 2.9.5]: bit 0 says a
