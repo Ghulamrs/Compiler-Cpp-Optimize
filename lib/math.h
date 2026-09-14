@@ -83,6 +83,9 @@ double ceil(double);
 double fabs(double);
 double floor(double);
 double fmod(double, double);
+/* C99 */
+double trunc(double);
+double round(double);
 
 
 }  // extern "C"

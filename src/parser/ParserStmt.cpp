@@ -558,9 +558,9 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(")");
 
     const Type *rt = range->type();
-    if (d.type->isReference())
-        src_.fail(d.pos, "a reference in a range-based 'for' is not supported "
-                         "yet - the loop variable is copied for now");
+    if (d.type->kind() == Kind::RValueRef)
+        src_.fail(d.pos, "an rvalue reference in a range-based 'for' is not "
+                         "supported yet - write 'const T &' or 'T &'");
 
     // **The two ends of the loop, and the only thing the two kinds of range
     // disagree about.**
@@ -640,12 +640,23 @@ StmtPtr Parser::rangeForStatement(int scope) {
     const int vSlot = declare(d.name, d.type, d.pos, quals.alignAs);
     ExprPtr through(Var::local(bName, bSlot));
     through->setType(elemPtr);
-    ExprPtr at(new Unary('*', std::move(through)));
-    at->setType(elem);
-    ExprPtr var(Var::local(d.name, vSlot));
-    var->setType(d.type);
-    ExprPtr take(new Assign(std::move(var), convert(std::move(at), d.type)));
-    take->setType(d.type);
+    ExprPtr take;
+    if (d.type->isReference()) {
+        // **`T &x : a` binds x to the element** - [stmt.ranged]/1 - so the
+        // slot holds `__b` itself, read through as every reference is.
+        const Type *slotType = types_.pointerTo(d.type->referent());
+        ExprPtr var(Var::local(d.name, vSlot));
+        var->setType(slotType);
+        take.reset(new Assign(std::move(var), convert(std::move(through), slotType)));
+        take->setType(slotType);
+    } else {
+        ExprPtr at(new Unary('*', std::move(through)));
+        at->setType(elem);
+        ExprPtr var(Var::local(d.name, vSlot));
+        var->setType(d.type);
+        take.reset(new Assign(std::move(var), convert(std::move(at), d.type)));
+        take->setType(d.type);
+    }
 
     std::vector<StmtPtr> body;
     body.push_back(StmtPtr(new ExprStmt(std::move(take))));

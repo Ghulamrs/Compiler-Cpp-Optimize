@@ -1,0 +1,3 @@
+x86_64-linux  the mangling oracle cross-compiles with no standard headers, and this case includes <string> and <vector> for what the runtime asked of them; clang refuses it there. On the host the differences are the internal-linkage `std::to_string` overloads this compiler's <string> defines as static functions, which clang's inline ones are not: the names the case declares agree.
+x86_64-windows  the same: no headers for the cross target.
+arm64-darwin  `__ZLNSt9to_stringE*`, the five static overloads of this compiler's own <string>, beside names that agree.

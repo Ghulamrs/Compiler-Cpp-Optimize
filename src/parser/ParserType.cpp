@@ -1011,9 +1011,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // not name this member in its own list reads them again.
             if (peek().is("=")) {
                 at_++;
-                if (peek().is("{"))
-                    src_.fail(peek().pos, "a braced member initialiser is not "
-                                          "supported yet - write the value");
+                // **`= {}` and `= {0}` zero the member** - [dcl.init.list]/3
+                // for an array or a scalar - and are the braced forms read;
+                // a list with values in it is refused by name.
+                if (peek().is("{")) {
+                    const bool zeroing = peekAt(1).is("}") ||
+                        (peekAt(1).kind == TokenKind::Num && !peekAt(1).isFloat && peekAt(1).value == 0 &&
+                         peekAt(2).is("}"));
+                    const Type *inner = d.type;
+                    while (inner->isArray()) inner = inner->pointee();
+                    if (!zeroing || d.type->isReference() ||
+                        inner->unqualified()->isStructOrUnion())
+                        src_.fail(peek().pos, "a braced member initialiser with "
+                                              "values is not supported yet - "
+                                              "'= {}' and '= {0}' zero an array "
+                                              "or a scalar member; write the "
+                                              "rest as a value");
+                }
                 memberInit_[tag + "::" + d.name] = at_;
                 skipMemberInitialiser();
             }
@@ -1478,6 +1492,23 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         if (peek().is("alignas")) {
             int a = alignasSpecifier();
             if (a > quals->alignAs) quals->alignAs = a;
+            continue;
+        }
+        // **The two C++11 attributes are read and change nothing** - a
+        // promise about the function, a memory order - `[[deprecated]]` is
+        // C++14 and anything else is not standard: both refused by name.
+        if (peek().is("[") && peekAt(1).is("[")) {
+            const std::size_t apos = peek().pos;
+            at_ += 2;
+            const std::string which = peek().kind == TokenKind::Ident ? peek().text : "";
+            if (which != "noreturn" && which != "carries_dependency")
+                src_.fail(apos, "the attribute '[[" + which + "]]' is not "
+                                "supported - C++11 has '[[noreturn]]' and "
+                                "'[[carries_dependency]]', which are read; "
+                                "'[[deprecated]]' is C++14");
+            at_++;
+            expect("]");
+            expect("]");
             continue;
         }
         if (consume("static"))  { *storage = StorageStatic; continue; }

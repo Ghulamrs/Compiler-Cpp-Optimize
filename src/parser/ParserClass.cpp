@@ -3761,12 +3761,47 @@ StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
         memberInit_.find(tag + "::" + m.name);
     if (it == memberInit_.end()) return nullptr;
 
-    // Read where it was written, with the constructor's locals put aside:
-    // an initialiser on a member is in the class's scope, not the body's.
+    // Read where it was written, with the constructor's locals put aside and
+    // the class current: an initialiser on a member is in the class's scope,
+    // where its enumerators and static members answer unqualified.
     const std::size_t resume = at_;
     std::vector<Local> outer;
     outer.swap(locals_);
+    const Type *outerClass = currentClass_;
+    currentClass_ = type;
+    struct RestoreClass {
+        Parser *p; const Type *was;
+        ~RestoreClass() { p->currentClass_ = was; }
+    } restoreClass{ this, outerClass };
     at_ = it->second;
+
+    // `= {}` or `= {0}`: the member's bytes zeroed by memset, an array or a
+    // scalar alike, which is what [dcl.init.list]/3 comes to for either.
+    if (peek().is("{")) {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr field = thisMember(thisSlot, type, m);
+        ExprPtr addr(new Unary('&', std::move(field)));
+        addr->setType(types_.pointerTo(m.type));
+        ExprPtr asVoid(new Cast(voidPtr, std::move(addr)));
+        asVoid->setType(voidPtr);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(asVoid));
+        ExprPtr zero(new Num(0LL));
+        zero->setType(types_.intType());
+        args.push_back(std::move(zero));
+        ExprPtr n(new Num(static_cast<long long>(m.type->size(target_))));
+        n->setType(types_.get(target_.sizeType()));
+        args.push_back(std::move(n));
+        std::vector<int> argSlots(args.size(), 0);
+        Call *fill = new Call("memset", nullptr, std::move(args), false, 0, -1,
+                              std::move(argSlots));
+        fill->setSymbol("memset");
+        ExprPtr filled(fill);
+        filled->setType(voidPtr);
+        locals_.swap(outer);
+        at_ = resume;
+        return StmtPtr(new ExprStmt(std::move(filled)));
+    }
     ExprPtr value = decay(assign());
 
     // **A class-typed member is *built* from its initialiser, not assigned

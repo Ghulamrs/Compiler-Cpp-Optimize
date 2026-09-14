@@ -904,7 +904,18 @@ ExprPtr Parser::primary(Program *program) {
         if (peek().kind == TokenKind::Ident && isTemplateName(peek().text, true))
             return templateCall(program);
 
-        const std::string full = scope + "::" + expectIdent("a name");
+        std::string full = scope + "::" + expectIdent("a name");
+        // **A member of N's unnamed namespace is reached as `N::x`** -
+        // [namespace.unnamed]/1 puts a using-directive for it in N, which a
+        // qualified lookup honours: what N itself lacks is asked of it.
+        {
+            const std::string inner = scope + "::_GLOBAL__N_1::" + full.substr(scope.size() + 2);
+            if (overloadsOf(full) == nullptr && findGlobalToUpdate(full) == nullptr &&
+                findEnum(full) == nullptr && namespaces_.count(scope + "::_GLOBAL__N_1") &&
+                (overloadsOf(inner) != nullptr || findGlobalToUpdate(inner) != nullptr ||
+                 findEnum(inner) != nullptr))
+                full = inner;
+        }
         if (consume("(")) {
             std::vector<ExprPtr> args;
             parseArguments(args);
@@ -1113,9 +1124,13 @@ ExprPtr Parser::primary(Program *program) {
             callee != nullptr && (callee->isFunctionPointer() ||
                                   callee->unqualified()->isStructOrUnion());
 
-        // **An unqualified static member, inside a member function or a lambda
-        // written in one.** It needs no object; a nearer local or global won above.
-        const Type *staticScopes[2] = { currentClass_, lambdaScope() };
+        // **An unqualified static member, inside a member function, the class's
+        // own body, or a lambda written in either** - `static const int n = 8;`
+        // as an array bound. It needs no object; a nearer local or global won above.
+        const Type *staticScopes[2] = {
+            currentClass_ != nullptr ? currentClass_
+                                     : classStack_.empty() ? nullptr : classStack_.back(),
+            lambdaScope() };
         for (const Type *staticScope : staticScopes) {
             if (l != nullptr || g != nullptr || staticScope == nullptr ||
                 peekAt(1).is("("))
