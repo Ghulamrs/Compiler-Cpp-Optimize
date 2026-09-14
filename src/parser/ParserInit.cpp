@@ -734,6 +734,21 @@ void Parser::flattenScalar(const Type *type, Init &in, int base,
         std::string sym;
         long long off = 0;
         if (foldAddress(*value, &sym, &off)) {
+            // **A derived object's address as a base pointer moves to the base
+            // subobject** - `V3 *p = &v4;` with V3 the second base is v4 + 8 -
+            // and a virtual base is not at a constant offset at all.
+            const Expr *inner = value.get();
+            while (const Cast *c = dynamic_cast<const Cast *>(inner)) inner = &c->value();
+            if (inner->type()->isPointer() && inner->type()->pointee()->isStructOrUnion() &&
+                type->pointee()->isStructOrUnion()) {
+                const Type *from = inner->type()->pointee()->unqualified();
+                const Type *to = type->pointee()->unqualified();
+                const int adjust = publicBaseOffset(from, to);
+                if (adjust > 0) off += adjust;
+                if (adjust < 0 && from != to && from->hasVirtualBase())
+                    src_.fail(in.pos, "expected a constant initialiser: the address of a "
+                                      "virtual base is read from the object at run time");
+            }
             out.push_back(GlobalPiece{ base, type->size(target_), off, sym });
             return;
         }
