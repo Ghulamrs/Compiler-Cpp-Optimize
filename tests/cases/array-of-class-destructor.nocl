@@ -1,0 +1,1 @@
+cl destroys an array from `delete[]` through the class's vector deleting destructor - `??_ET@@QEAAPEAXI@Z`, `??_ED8@@QEAAPEAXI@Z` - where cxx1 loops the destructor in a file-local function of its own and frees in the open; the same shape array-of-class.nocl records for construction. Every name the program declares agrees.

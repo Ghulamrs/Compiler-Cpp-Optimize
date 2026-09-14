@@ -1,0 +1,3 @@
+x86_64-linux  the loops are functions here and inline code in clang: `__cxx1_vec_new_1T`, `__cxx1_vec_del_1T`, `__cxx1_vec_del_2D8` are cxx1's own file-local element loops, once per class, where clang unrolls each construction and destruction in place. Beside them the C1/D1 forms of the in-class constructors and destructors - the COMDAT difference implicit-move.nonames records. Every name the program declares agrees.
+arm64-darwin  the same loops under the leading underscore, and the same C1/D1 forms.
+x86_64-windows  the same three loops, `__cxx1_vec_new_1T`, `__cxx1_vec_del_1T`, `__cxx1_vec_del_2D8`, against clang's inline code; every declared name agrees.

@@ -325,29 +325,27 @@ void Parser::topLevel(Program &program) {
                 continue;
             }
 
-            // **An array of a class with a constructor** at file scope: each
-            // element would need registering, and the destructor walk knows one
-            // object per entry. Refused by name rather than laid out as bytes.
+            // **An array of a class with a constructor** at file scope goes
+            // the way one object does: built before main by the class's loop,
+            // destroyed at exit by a helper - buildStaticArrayConstruction.
+            const Type *arrayClass = nullptr;
             {
                 const Type *elem = d.type;
                 while (elem->isArray()) elem = elem->pointee();
                 const Type *plain = elem->unqualified();
                 if (d.type->isArray() && plain->isStructOrUnion() &&
-                    !plain->tag().empty() && sc != StorageExtern &&
+                    !plain->tag().empty() &&
                     overloadsOf(constructorKey(plain->tag())) != nullptr)
-                    src_.fail(d.pos, "'" + d.name + "' is an array of '" +
-                                     plain->describe() + "', which has a "
-                                     "constructor - an array with static "
-                                     "storage duration whose elements have a "
-                                     "constructor is not supported yet");
+                    arrayClass = plain;
             }
 
             // **A class with a constructor, at file scope.** This path had no test at
             // all, so the object was laid out as bytes and the constructor never ran.
             // The braced form is asked first: C++11 makes such a class no aggregate.
-            if (d.type->isStructOrUnion() && !d.type->tag().empty()) {
+            if (arrayClass != nullptr ||
+                (d.type->isStructOrUnion() && !d.type->tag().empty())) {
                 const bool braced = peek().is("=") && peekAt(1).is("{");
-                if (braced && hasMemberInitialiser(d.type->tag()))
+                if (braced && arrayClass == nullptr && hasMemberInitialiser(d.type->tag()))
                     src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
                                      "initialiser on a member, so in C++11 it "
                                      "is not an aggregate and a braced list "
@@ -356,7 +354,8 @@ void Parser::topLevel(Program &program) {
                 // **Built before main**, [basic.start.init]/2, in the init
                 // function and in declaration order; destroyed at exit in
                 // reverse. `extern S s;` alone declares and builds nothing.
-                if (overloadsOf(constructorKey(d.type->tag())) != nullptr &&
+                if ((arrayClass != nullptr ||
+                     overloadsOf(constructorKey(d.type->tag())) != nullptr) &&
                     sc != StorageExtern) {
                     const std::string gname =
                         (namespaceStack_.empty() || cLinkage_ > 0)

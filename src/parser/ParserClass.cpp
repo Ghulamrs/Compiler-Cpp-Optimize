@@ -923,6 +923,19 @@ void Parser::destroyObject(std::vector<StmtPtr> &into, const Alive &a,
     const Signature *dtor = destructorOf(a.cls);
     if (dtor == nullptr) return;
 
+    // An array: its elements last first, by the class's loop.
+    if (a.count > 0) {
+        ExprPtr first(Var::local(a.name, a.offset));
+        first->setType(a.cls);
+        ExprPtr base(new Unary('&', std::move(first)));
+        base->setType(types_.pointerTo(a.cls));
+        ExprPtr n(new Num(a.count));
+        n->setType(types_.get(target_.sizeType()));
+        into.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+            vectorDestructor(a.cls, pos), a.cls, std::move(base), std::move(n), pos))));
+        return;
+    }
+
     ExprPtr addr;
     if (a.byAddress) {
         // The slot holds the caller's pointer, and that pointer IS the
@@ -2043,6 +2056,154 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
     return eachElement(indexSlot, count, std::move(one));
 }
 
+// The loop functions: the first element's address and a count, a frame of
+// their own, once per class and unit, file-local - `__cxx1_vec_new_<class>`
+// and `_del_`, the class spelled as the Itanium mangler spells a nested one.
+std::string Parser::vectorLoopName(const char *which, const Type *cls,
+                                   std::size_t pos) {
+    std::string spelt, why;
+    if (!itaniumTypeSpelling(cls, &spelt, &why))
+        src_.fail(pos, "an array of '" + cls->describe() + "' cannot be named: " + why);
+    return std::string("__cxx1_vec_") + which + "_" + spelt;
+}
+
+ExprPtr Parser::callVectorLoop(const std::string &fn, const Type *cls,
+                               ExprPtr base, ExprPtr count, std::size_t pos) {
+    std::vector<const Type *> ps;
+    ps.push_back(types_.pointerTo(cls));
+    ps.push_back(types_.get(target_.sizeType()));
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(base));
+    args.push_back(convert(std::move(count), ps[1]));
+    return completeCall(fn, fn, nullptr, types_.get(Kind::Void), ps, false,
+                        pos, std::move(args));
+}
+
+std::string Parser::vectorConstructor(const Type *cls, std::size_t pos) {
+    const std::string name = vectorLoopName("new", cls, pos);
+    for (std::size_t i = 0; i < current_->functions.size(); i++)
+        if (current_->functions[i].symbol() == name) return name;
+
+    const Signature *ctor = defaultConstructorOf(cls);
+    if (ctor == nullptr)
+        src_.fail(pos, "'" + cls->describe() + "' has constructors but none "
+                       "that takes nothing, and an array of it has no way to "
+                       "say what to pass");
+    if (ctor->access != Access::Public && !insideAccessOf(cls, ctor->access) &&
+        !isFriendOf(cls))
+        src_.fail(pos, "'" + cls->describe() + "' has no public default "
+                       "constructor, and an array of it needs one");
+    markUsed(ctor);
+    const Signature chosen = *ctor;
+
+    const Type *ptr = types_.pointerTo(cls);
+    const Type *sizeT = types_.get(target_.sizeType());
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const int baseSlot = allocateFrameSlot(ptr);
+    const int countSlot = allocateFrameSlot(sizeT);
+    const int indexSlot = allocateFrameSlot(types_.intType());
+    std::vector<Param> params;
+    params.push_back(Param{ ptr, baseSlot });
+    params.push_back(Param{ sizeT, countSlot });
+
+    std::vector<ExprPtr> defaults;
+    applyDefaults(chosen, defaults, pos);
+    ExprPtr base(Var::local("base", baseSlot));
+    base->setType(ptr);
+    ExprPtr at = indexBytes(types_, std::move(base), cls, indexSlot, target_);
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(at));
+    std::vector<const Type *> ps;
+    ps.push_back(ptr);
+    for (std::size_t i = 0; i < defaults.size(); i++) {
+        args.push_back(std::move(defaults[i]));
+        ps.push_back(chosen.params[i]);
+    }
+    StmtPtr one(new ExprStmt(completeCall(cls->tag(), chosen.symbol, nullptr,
+                                          types_.get(Kind::Void), ps, false,
+                                          pos, std::move(args))));
+    ExprPtr n(Var::local("n", countSlot));
+    n->setType(sizeT);
+    std::vector<StmtPtr> body;
+    body.push_back(eachElement(indexSlot, convert(std::move(n), types_.intType()), std::move(one)));
+    body.push_back(StmtPtr(new Return(nullptr)));
+    current_->functions.push_back(Function(name, types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), true, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(name);
+    frameSize_ = savedFrame;
+    return name;
+}
+
+// `i = n; while (i > 0) { i = i - 1; ~T(base + i); }` - last first, [class.dtor].
+std::string Parser::vectorDestructor(const Type *cls, std::size_t pos) {
+    const std::string name = vectorLoopName("del", cls, pos);
+    for (std::size_t i = 0; i < current_->functions.size(); i++)
+        if (current_->functions[i].symbol() == name) return name;
+    const Signature *dtor = destructorOf(cls);
+    if (dtor == nullptr) return name;
+    markUsed(dtor);
+
+    const Type *ptr = types_.pointerTo(cls);
+    const Type *sizeT = types_.get(target_.sizeType());
+    const Type *idx = types_.intType();
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const int baseSlot = allocateFrameSlot(ptr);
+    const int countSlot = allocateFrameSlot(sizeT);
+    const int indexSlot = allocateFrameSlot(idx);
+    std::vector<Param> params;
+    params.push_back(Param{ ptr, baseSlot });
+    params.push_back(Param{ sizeT, countSlot });
+
+    auto index = [&]() { ExprPtr e(Var::local("$i", indexSlot)); e->setType(idx); return e; };
+    ExprPtr n(Var::local("n", countSlot));
+    n->setType(sizeT);
+    ExprPtr init(new Assign(index(), convert(std::move(n), idx)));
+    init->setType(idx);
+    ExprPtr zero(new Num(0LL));
+    zero->setType(idx);
+    ExprPtr cond(new Binary(BinOp::Gt, index(), std::move(zero)));
+    cond->setType(idx);
+    ExprPtr one(new Num(1LL));
+    one->setType(idx);
+    ExprPtr less(new Binary(BinOp::Sub, index(), std::move(one)));
+    less->setType(idx);
+    ExprPtr step(new Assign(index(), std::move(less)));
+    step->setType(idx);
+    ExprPtr base(Var::local("base", baseSlot));
+    base->setType(ptr);
+    ExprPtr at = indexBytes(types_, std::move(base), cls, indexSlot, target_);
+    std::vector<StmtPtr> inner;
+    inner.push_back(StmtPtr(new ExprStmt(std::move(step))));
+    inner.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(at), *dtor, pos))));
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(std::move(init))));
+    body.push_back(StmtPtr(new While(std::move(cond), StmtPtr(new Block(std::move(inner))))));
+    body.push_back(StmtPtr(new Return(nullptr)));
+    current_->functions.push_back(Function(name, types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), true, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(name);
+    frameSize_ = savedFrame;
+    return name;
+}
+
+// [expr.new]/12 as the Itanium ABI fixes it: a class delete[] must destroy
+// keeps its count in the last size_t of a cookie in front of the array, as
+// wide as the larger of size_t and the element's alignment; else none.
+int Parser::arrayCookie(const Type *elem) const {
+    if (destructorOf(elem->unqualified()) == nullptr) return 0;
+    const int sizeT = types_.get(target_.sizeType())->size(target_);
+    const int align = elem->align(target_);
+    return align > sizeT ? align : sizeT;
+}
+
 // **A default constructor is one that can be called with no arguments, not one whose
 // parameter list is empty** - [class.ctor]/5, so `S(int a = 1)` is one. Whoever calls
 // this still supplies the defaults; two that both take nothing answer nullptr.
@@ -2627,6 +2788,12 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
 }
 
 StmtPtr Parser::eachElement(int indexSlot, long long count, StmtPtr one) {
+    ExprPtr n(new Num(count));
+    n->setType(types_.intType());
+    return eachElement(indexSlot, std::move(n), std::move(one));
+}
+
+StmtPtr Parser::eachElement(int indexSlot, ExprPtr n, StmtPtr one) {
     const Type *idx = types_.intType();
 
     ExprPtr i0(Var::local("$i", indexSlot));
@@ -2638,8 +2805,6 @@ StmtPtr Parser::eachElement(int indexSlot, long long count, StmtPtr one) {
 
     ExprPtr i1(Var::local("$i", indexSlot));
     i1->setType(idx);
-    ExprPtr n(new Num(count));
-    n->setType(idx);
     ExprPtr cond(new Binary(BinOp::Lt, std::move(i1), std::move(n)));
     cond->setType(idx);
 
