@@ -76,6 +76,7 @@ private:
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
     bool usesSavedArgRegs_ = false;
+    int frame_ = 0;                           // the locals, 8-aligned
     std::vector<std::string> savedRegs() const;
     unsigned unwindWord(bool needFrame) const;
     int sretSlot_ = 0;                        // where the caller's A3 is kept
@@ -135,6 +136,6 @@ private:
     void emitGlobal(const Global &g, Segment seg);
     void emitData(const Program &program);
     void emitParams(const Function &fn);
-    void emitExceptionTable(const Function &fn, int frameBytes);
+    void emitExceptionTable(const Function &fn);
     void emitFunction(const Function &fn);
 };

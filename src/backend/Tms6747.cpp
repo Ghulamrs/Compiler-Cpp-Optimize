@@ -150,10 +150,10 @@ static std::string tiExternals(const std::string &text) {
         const std::string &m = words[k];
         bool declares = m == ".global" || m == ".weak" || m == ".def" || m == ".ref" || m == ".bss";
         if (declares) { if (k + 1 < words.size()) defined.insert(words[k + 1]); continue; }
-        if (m[0] == '.' && m != ".word") continue;
+        if (m[0] == '.' && m != ".word" && m != ".ulong" && m != ".half") continue;
         for (size_t w = k + 1; w < words.size(); w++) {
             const std::string &t = words[w];
-            if (std::isdigit(static_cast<unsigned char>(t[0]))) continue;
+            if (std::isdigit(static_cast<unsigned char>(t[0])) || t[0] == '$') continue;   // a number, an operator
             if ((t[0] == 'A' || t[0] == 'B') && t.size() <= 3 && t.size() > 1 &&
                 std::isdigit(static_cast<unsigned char>(t[1])) && (t.size() == 2 || std::isdigit(static_cast<unsigned char>(t[2]))))
                 continue;                                           // a register
@@ -406,34 +406,62 @@ void Tms6747::shiftPairRight(int count, bool sign) {
     out_ << "\tSHRU\tA4, " << count << ", A4\n\tSHL\tA5, " << (32 - count)
          << ", A3\n\tOR\tA4, A3, A4\n\t" << shr << "\tA5, " << count << ", A5\n";
 }
-// A landing pad: the unwinder arrives with the exception in A4 and the
-// selector in B4 - the parser's index of the handler type that matched, or
-// 0 for a cleanup - and the frame's A15 and B15 as the body had them.
+// A landing pad: the exception in A4, and in B4 - from the trampoline the
+// table names - the parser's index of the handler type that matched, or 0
+// for a cleanup; B15 is the throwing call's and goes back to the base.
 void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
     localAddr(pointerSlot, "A0");
     out_ << "\tSTW\tA4, *A0\n";
     localAddr(selectorSlot, "A0");
     out_ << "\tSTW\tB4, *A0\n";
+    out_ << "\tMV\tA15, B15\n";
+    spAdjust(-(kSaveBytes + frame_));
 }
 
-// The function's exception table in the emulator's fixed-width form (see
-// VM6747/TMS6747.md, "Exceptions"): a row per call-site range, found by the
-// unwinder by the return address of the call that threw.
-void Tms6747::emitExceptionTable(const Function &fn, int frameBytes) {
+// The function's exception table in TI's form (lib/src/tdeh_pr_common.cpp):
+// the compact unwind word, then the scope descriptors the personality
+// routine reads in order, and a zero.
+
+// A descriptor: the range's length and its offset in the function (+2, so
+// a return address at the range's end is in and one at its start is not),
+// the low bits telling a catch from a cleanup; the pad; a catch's type.
+
+// A row's catches come first, one per type in its chain, its cleanup last:
+// phase 2 then lands once, on the pad of the barrier phase 1 found, whose
+// selector walks the chain of pads the parser built.
+void Tms6747::emitExceptionTable(const Function &fn) {
     const std::vector<CallSite> &rows = callSites();
     if (rows.empty()) return;
-    out_ << "\t.sect\t\".vm6747.eh\"\n\t.align\t4\n";
+    const std::string table = "__c6xabi_extab$" + fn.symbol();
+    std::ostringstream pads;
+    std::set<std::string> made;
+    // The trampoline for (pad, selector), made once and named by both.
+    auto trampoline = [&](const std::string &pad, int selector) {
+        std::string l = pad + ".s" + std::to_string(selector);
+        if (made.insert(l).second)
+            pads << l << ":\n\tMVK\t" << selector << ", B4\n\tB\t" << pad << "\n\tNOP\t5\n";
+        return l;
+    };
+    std::ostringstream t;
+    char word[16];
+    std::snprintf(word, sizeof word, "0x%08x", unwindWord(true));
+    t << "\t.sect\t\"" << ".c6xabi.extab:" << fn.symbol() << "\"\n\t.align\t4\n" << table << ":\n\t.ulong\t" << word << "\n";
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
-        out_ << "\t.word\t" << c.begin << ", " << c.end << ", " << c.pad << ", " << frameBytes
-             << ", " << (c.cleanup || c.types.empty() ? 1 : 0) << ", " << c.types.size() << "\n";
+        std::string len = "$EXTAB_SCOPE(" + c.end + ") - $EXTAB_SCOPE(" + c.begin + ")";
+        std::string off = "$EXTAB_SCOPE(" + c.begin + ") - $EXTAB_SCOPE(" + fn.symbol() + ") + 2";
         for (std::size_t k = 0; k < c.types.size(); k++) {
             int ix = k < c.indices.size() ? c.indices[k] : static_cast<int>(k) + 1;
-            out_ << "\t.word\t" << (c.types[k].empty() ? std::string("0") : c.types[k]) << ", " << ix << "\n";
+            t << "\t.half\t" << len << " + 1\n\t.half\t" << off << "\n"
+              << "\t.ulong\t$EXTAB_LP(" << trampoline(c.pad, ix) << ")\n"
+              << "\t.ulong\t" << (c.types[k].empty() ? std::string("0xffffffff") : "$EXTAB_RTTI(" + c.types[k] + ")") << "\n";
         }
+        if (c.cleanup || c.types.empty())
+            t << "\t.half\t" << len << "\n\t.half\t" << off << "\n"
+              << "\t.ulong\t$EXTAB_LP(" << trampoline(c.pad, 0) << ")\n";
     }
-    out_ << "\t.text\n";
-    (void)fn;
+    t << "\t.ulong\t0\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
+    out_ << pads.str() << t.str() << "\t.text\n";
 }
 // A4 = (value == 0) ? 1 : 0, for the value of type t in the accumulator. A
 // floating zero is compared as a number, so -0.0 is zero and NaN is not.
@@ -1207,6 +1235,7 @@ void Tms6747::emitFunction(const Function &fn) {
     hasCall_ = false;
     clearCallSites();
     usesSavedArgRegs_ = false;
+    frame_ = align8(fn.frameSize());
 
     sretSlot_ = fn.sretSlot();
 
@@ -1257,7 +1286,7 @@ void Tms6747::emitFunction(const Function &fn) {
         out_ << fn.alias() << ":\n";
     }
 
-    int frame = align8(fn.frameSize());
+    int frame = frame_;
     bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0;
     std::vector<std::string> saved = savedRegs();
     if (needFrame) {
@@ -1278,12 +1307,14 @@ void Tms6747::emitFunction(const Function &fn) {
         out_ << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
     out_ << "\tB\tB3\n\tNOP\t5\n";
-    // TI's index entry for every function: any return address on the stack.
+    // TI's index entry for every function - any return address on the stack
+    // - naming the table when there are handlers, holding the word itself
+    // when there are none.
+    emitExceptionTable(fn);
     char word[16];
     std::snprintf(word, sizeof word, "0x%08x", unwindWord(needFrame));
-    out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n"
-         << "\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t" << word << "\n\t.text\n";
-    emitExceptionTable(fn, kSaveBytes + frame);
+    out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
+         << (callSites().empty() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
 
     file_ += out_.str();
     out_.str(std::string());
