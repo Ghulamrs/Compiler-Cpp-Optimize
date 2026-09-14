@@ -431,7 +431,7 @@ void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
 // selector walks the chain of pads the parser built.
 void Tms6747::emitExceptionTable(const Function &fn) {
     const std::vector<CallSite> &rows = callSites();
-    if (rows.empty()) return;
+    if (rows.empty() && !fn.isNoexcept()) return;
     const std::string table = "__c6xabi_extab$" + fn.symbol();
     std::ostringstream pads;
     std::set<std::string> made;
@@ -464,8 +464,16 @@ void Tms6747::emitExceptionTable(const Function &fn) {
             t << "\t.half\t" << len << "\n\t.half\t" << off << "\n"
               << "\t.ulong\t$EXTAB_LP(" << trampoline(c.pad, 0) << ")\n";
     }
+    // A noexcept function's exception specification, over the whole of it
+    // and last: no type allowed, no pad, so TI's runtime calls
+    // __cxa_call_unexpected - cl6x's row, with the offset's low bit set.
+    const std::string fnEnd = "L." + fn.symbol() + ".fnend";
+    if (fn.isNoexcept())
+        t << "\t.half\t$EXTAB_SCOPE(" << fnEnd << ") - $EXTAB_SCOPE(" << fn.symbol() << ")\n\t.half\t3\n\t.ulong\t0\n"
+          << "\t.symdepend\t\"__cxa_call_unexpected\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
     t << "\t.ulong\t0\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
-    out_ << pads.str() << t.str() << "\t.text\n";
+    out_ << pads.str() << fnEnd << ":\n" << t.str() << "\t.text\n";
+    if (fn.isNoexcept()) needsUnexpected_ = true;
 }
 // A4 = (value == 0) ? 1 : 0, for the value of type t in the accumulator. A
 // floating zero is compared as a number, so -0.0 is zero and NaN is not.
@@ -813,6 +821,12 @@ bool Tms6747::inPair(const Type *t) const {
     return t->isStructOrUnion() && !t->nonTrivialCopy() && !t->hasDestructor() && t->size(target_) <= abi_.structReturnLimit;
 }
 bool Tms6747::inPairWide(const Type *t) const { return inPair(t) && t->size(target_) > 4; }
+// A class whose copy or destruction is a call comes back through a pointer
+// that is the first parameter, A4, never null; a trivially copyable one
+// over 8 bytes through A3, null from a caller that discards it (cl6x).
+bool Tms6747::hiddenInA4(const Type *t) const {
+    return t->isStructOrUnion() && (t->nonTrivialCopy() || t->hasDestructor());
+}
 
 // A5:A4 from the struct at *A4, and the struct at *A3 from A5:A4, in pieces
 // no wider than the struct's alignment: a struct of three chars sits at any
@@ -851,12 +865,13 @@ void Tms6747::visit(const Return &n) {
         if (inPair(n.value().type())) {
             loadPair(n.value().type()->size(target_), n.value().type()->align(target_));
         } else if (n.value().type()->isStructOrUnion()) {
-            // Copy it to where the caller asked (the pointer it passed in
-            // A3, kept in the sret slot) and answer with that address - unless
-            // the caller passed none, which TI's callers do for an unused result.
+            // Copy it to where the caller asked (the pointer kept in the sret
+            // slot) and answer with that address - unless the caller passed
+            // none, as TI's do for an unused trivially copyable result.
             std::string skip = label("noresult", nextLabel());
             localAddr(sretSlot_, "A6");
-            out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n\tMV\tA6, A1\n\t[!A1]\tB\t" << skip << "\n\tNOP\t5\n";
+            out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n";
+            if (sretShift_ == 0) out_ << "\tMV\tA6, A1\n\t[!A1]\tB\t" << skip << "\n\tNOP\t5\n";
             copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_));
             defineLabel(skip);
             out_ << "\tMV\tA6, A4\n";
@@ -895,6 +910,7 @@ void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
     bool pair = inPair(n.type());
     bool sret = n.type()->isStructOrUnion() && !pair;
+    const std::size_t shift = sret && hiddenInA4(n.type()) ? 1 : 0;   // the hidden pointer takes A4
 
     // A struct argument is passed by the address of a copy: each is copied
     // into the slot the parser gave it first, and the slot's address then
@@ -906,7 +922,7 @@ void Tms6747::visit(const Call &n) {
         copyBlock(args[i]->type()->size(target_), "A4", "A6", args[i]->type()->align(target_));
     }
 
-    std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
+    std::size_t regCount = static_cast<std::size_t>(abi_.intCount) - shift;
     std::size_t inRegs = args.size() < regCount ? args.size() : regCount;
     if (n.isVariadic()) {
         std::size_t named = static_cast<std::size_t>(n.namedArgs());
@@ -940,15 +956,15 @@ void Tms6747::visit(const Call &n) {
     if (inRegs > 0) {
         // A double rides in the pair above its register: A5:A4, B5:B4, ...
         genArg(n, inRegs - 1);
-        const char *last = abi_.intRegs[inRegs - 1];
+        const char *last = abi_.intRegs[inRegs - 1 + shift];
         if (std::string(last) != "A4") moveValue(args[inRegs - 1]->type(), last);
-        for (std::size_t i = inRegs - 1; i-- > 0; ) popValue(args[i]->type(), abi_.intRegs[i]);
+        for (std::size_t i = inRegs - 1; i-- > 0; ) popValue(args[i]->type(), abi_.intRegs[i + shift]);
     }
-    if (inRegs > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
-    for (std::size_t i = 6; i < inRegs; i++)   // and so are the partners a 64-bit argument writes
-        if (isWide(args[i]->type()) || inPairWide(args[i]->type())) usesSavedPairRegs_ = true;
+    if (inRegs + shift > 6) usesSavedArgRegs_ = true;  // A10, B10, A12, B12 are callee-saved
+    for (std::size_t i = 6; i < inRegs + shift; i++)   // and so are the partners a 64-bit argument writes
+        if (isWide(args[i - shift]->type()) || inPairWide(args[i - shift]->type())) usesSavedPairRegs_ = true;
     if (n.callee() != nullptr) pop("B1");
-    if (sret) localAddr(n.resultSlot(), "A3");    // where the result goes
+    if (sret) localAddr(n.resultSlot(), shift != 0 ? "A4" : "A3");    // where the result goes
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
     spAdjust(area);
@@ -1179,7 +1195,7 @@ void Tms6747::emitParams(const Function &fn) {
         const Type *t = ps[i].type;
         bool byRef = t->isStructOrUnion() && !inPair(t);   // the address of the caller's copy
         if (i < firstStack_) {
-            const char *reg = abi_.intRegs[i];
+            const char *reg = abi_.intRegs[i + sretShift_];
             if (std::string(reg) != "A4") {
                 out_ << "\tMV\t" << reg << ", A4\n";
                 if (isWide(t) || inPairWide(t)) {
@@ -1259,11 +1275,13 @@ void Tms6747::emitFunction(const Function &fn) {
     frame_ = align8(fn.frameSize());
 
     sretSlot_ = fn.sretSlot();
+    sretShift_ = sretSlot_ != 0 && hiddenInA4(fn.returns()) ? 1 : 0;
 
     // Which parameters the caller put on the stack, and where a variadic
-    // function's unnamed arguments start.
+    // function's unnamed arguments start. The hidden pointer in A4 takes a
+    // register from the explicit parameters.
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount);
-    firstStack_ = regCount;
+    firstStack_ = regCount - sretShift_;
     vaStart_ = 0;
     if (fn.isVariadic()) {
         std::size_t named = fn.params().size();
@@ -1282,11 +1300,11 @@ void Tms6747::emitFunction(const Function &fn) {
     std::string body = out_.str();
     out_.str(std::string());
     if (sretSlot_ != 0) {
-        // The caller's pointer to where the result goes, from A3, kept in
-        // its slot for the return to find - before the parameters are copied
-        // in, since a struct parameter's copy goes through A3.
+        // The caller's pointer to where the result goes - A4 for a class
+        // non-trivial for calls, A3 otherwise - kept in its slot for the
+        // return to find, before the parameters are copied in.
         localAddr(sretSlot_, "A0");
-        out_ << "\tSTW\tA3, *A0\n";
+        out_ << (sretShift_ != 0 ? "\tSTW\tA4, *A0\n" : "\tSTW\tA3, *A0\n");
     }
     emitParams(fn);
     std::string params = out_.str();
@@ -1335,7 +1353,7 @@ void Tms6747::emitFunction(const Function &fn) {
     char word[16];
     std::snprintf(word, sizeof word, "0x%08x", unwindWord(needFrame));
     out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
-         << (callSites().empty() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
+         << (callSites().empty() && !fn.isNoexcept() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
 
     file_ += out_.str();
     out_.str(std::string());
@@ -1358,5 +1376,6 @@ void Tms6747::run(const Program &program) {
     // linker cannot otherwise see them need.
     if (!program.functions.empty())
         file_ += "\t.global\t__c6xabi_unwind_cpp_pr3\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.exidx:.text\"\n";
+    if (needsUnexpected_) file_ += "\t.global\t__cxa_call_unexpected\n";
     sink_ << tiExternals(tiSpelling(file_));
 }

@@ -81,9 +81,11 @@ private:
     bool usesSavedArgRegs_ = false;
     bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12
     int frame_ = 0;                           // the locals, 8-aligned
+    bool needsUnexpected_ = false;            // a noexcept function's table names __cxa_call_unexpected
     std::vector<std::string> savedRegs() const;
     unsigned unwindWord(bool needFrame) const;
-    int sretSlot_ = 0;                        // where the caller's A3 is kept
+    int sretSlot_ = 0;                        // where the caller's result pointer is kept
+    std::size_t sretShift_ = 0;               // 1 when that pointer is A4 and the parameters start at B4
     std::size_t firstStack_ = 0;              // the first parameter passed on the stack
     int vaStart_ = 0;                         // the unnamed arguments, above the caller's B15
 
@@ -112,6 +114,7 @@ private:
     void copyBlock(int size, const char *from, const char *to, int align);
     bool inPair(const Type *t) const;         // a struct of 8 bytes or less: in registers, argument or result
     bool inPairWide(const Type *t) const;     // and one of 5 to 8 takes the pair
+    bool hiddenInA4(const Type *t) const;     // a class non-trivial for calls: its result pointer is the first parameter
     void loadPair(int size, int align);       // A5:A4 = the struct at *A4
     void storePair(int size, int align);      // the struct at *A3 = A5:A4
     void bitFieldUnitAddr(const MemberAccess &m);   // the unit's address -> A4
