@@ -12,8 +12,15 @@ int main() {
     int (S::*pf)() = &S::twice;
     S s; s.a = 3; s.b = 4;
     H h; h.f = &S::get; h.d = &S::a; h.tag = 'x';
-    const int w = (int)sizeof(void *);
+    // Itanium: a ptrdiff_t and a pair of them. Microsoft, single inheritance:
+    // an int and one code pointer - measured with cl, 4 and 8 on x64.
+#ifdef _WIN32
+    const int wantPm = 4, wantPf = 8;
+#else
+    const int wantPm = (int)sizeof(void *), wantPf = 2 * (int)sizeof(void *);
+#endif
     printf("%d %d %d %d %c\n", s.*pm, (s.*pf)(), (s.*h.f)(), s.*h.d, h.tag);
-    printf("%d %d %d\n", (int)sizeof(pm) / w, (int)sizeof(pf) / w, (int)sizeof(H) / w);
+    printf("%d %d %d\n", (int)sizeof(pm) == wantPm, (int)sizeof(pf) == wantPf,
+           (int)sizeof(H) == 2 * wantPf);
     return 0;
 }
