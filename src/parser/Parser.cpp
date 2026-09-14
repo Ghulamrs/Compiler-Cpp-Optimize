@@ -20,7 +20,7 @@ const char *notYetSupported(const std::string &word) {
         "asm",
         "char16_t", "char32_t",
         "export",
-        "thread_local", "typeid"
+        "thread_local"
     };
     for (const char *k : pending)
         if (word == k) return k;
