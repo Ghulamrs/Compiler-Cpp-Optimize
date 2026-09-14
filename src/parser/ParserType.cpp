@@ -1354,8 +1354,15 @@ const Type *Parser::enumSpecifier() {
         std::string name = expectIdent("an enumerator");
         if (findEnum(prefix + name))
             src_.fail(npos, "'" + name + "' is declared twice");
-        if (consume("="))
-            next = narrowTo(constantExpression("a constant"), narrowAs);
+        if (consume("=")) {
+            const long long given = constantExpression("a constant");
+            next = narrowTo(given, narrowAs);
+            // [dcl.enum]/5: a value the base cannot hold is ill-formed, not wrapped.
+            if (underlying != nullptr && next != given)
+                src_.fail(npos, "'" + name + " = " + std::to_string(given) +
+                                "' does not fit the enum-base '" +
+                                underlying->describe() + "'");
+        }
         enumIndex_[prefix + name] = enums_.size();
         enums_.push_back(EnumConst{ prefix + name, next, valueType });
         next = next + 1;
@@ -1869,13 +1876,18 @@ std::string Parser::operatorName() {
 // list, so it is asked once that is read. Accepting one leaves an uncallable function.
 void Parser::checkOperatorDeclarable(const std::string &name,
                                      const std::vector<const Type *> &params,
-                                     bool member, std::size_t pos) {
+                                     bool member, std::size_t pos,
+                                     bool internal) {
     const std::string spelling = operatorSpelling(name);
     if (spelling.empty() || findOperator(spelling) == nullptr) return;
     // **An allocation function is an operator in name only** - [basic.stc.dynamic]:
     // `operator new` takes a size_t and `operator delete` a `void *`, member or
     // not, and nothing below applies to them.
     if (spelling == "new" || spelling == "delete") {
+        if (!member && internal)
+            src_.fail(pos, "'" + name + "' at namespace scope cannot be "
+                           "static - [basic.stc.dynamic]/2 makes the "
+                           "replacement the one the whole program calls");
         const bool sized = spelling == "new";
         const Type *first = params.empty() ? nullptr : params[0]->unqualified();
         const bool ok = first != nullptr &&

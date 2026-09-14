@@ -1252,7 +1252,9 @@ bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem) 
 }
 
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
-    if (itaniumBuiltin(t->kind()) == nullptr) {
+    // An enumeration is its integer here, but its type_info is its own - an
+    // __enum_type_info the compiler emits, not the library's fundamental one.
+    if (itaniumBuiltin(t->kind()) == nullptr || t->isEnumeration()) {
         *problem = "only a fundamental type has a type_info object the "
                    "standard library already carries; one for '" +
                    t->describe() + "' would have to be emitted here, and that "
