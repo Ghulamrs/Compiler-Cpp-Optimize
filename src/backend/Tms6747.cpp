@@ -41,13 +41,13 @@ static const char *const kTiIntRegs[] = {
     "A4", "B4", "A6", "B6", "A8", "B8", "A10", "B10", "A12", "B12"
 };
 
-// Set by name, as the host ABIs are. structReturnLimit 0 and aggregatesByReference
-// false: every struct comes back through the pointer the caller hands over in A3 -
-// TI's convention - and goes by the address of a copy (the parser's arg slot).
+// Set by name, as the host ABIs are. structReturnLimit 8: a class of 8 bytes or less
+// comes back in A5:A4, a larger one through the pointer the caller hands over in A3 -
+// TI's rule, measured against cl6x - and goes in by the address of a copy.
 static Abi ti() {
     Abi a;
     a.intRegs = kTiIntRegs;             a.intCount = 10;
-    a.positional = true;
+    a.positional = true;                a.structReturnLimit = 8;
     a.scratch = "A0";                   a.scratch32 = "A0";
     a.elfSymbolAttributes = true;
     return a;
@@ -770,16 +770,57 @@ void Tms6747::visit(const Postfix &n) {
     if (isWide(t)) out_ << "\tMV\tA7, A5\n";
 }
 
+// A struct of 8 bytes or less whose copy and destruction are not calls
+// comes back in A5:A4 - the parser gave such a function no sret slot.
+bool Tms6747::returnsInPair(const Type *t) const {
+    return t->isStructOrUnion() && !t->nonTrivialCopy() && !t->hasDestructor() && t->size(target_) <= abi_.structReturnLimit;
+}
+
+// A5:A4 from the struct at *A4, and the struct at *A3 from A5:A4, in pieces
+// no wider than the struct's alignment: a struct of three chars sits at any
+// address, so it goes byte by byte, and nothing reaches past its last byte.
+void Tms6747::loadPair(int size, int align) {
+    int w = align >= 4 ? 4 : align;
+    out_ << "\tMV\tA4, A3\n\tZERO\tA5:A4\n";
+    for (int at = 0; at < size; at += w) {
+        const char *reg = at < 4 ? "A4" : "A5";
+        int shift = (at % 4) * 8;
+        std::string base = at == 0 ? "*A3" : "*+A3(" + std::to_string(at) + ")";
+        const char *ld = w == 4 ? "LDW" : w == 2 ? "LDHU" : "LDBU";
+        if (w == 4) { out_ << "\t" << ld << "\t" << base << ", " << reg << "\n\tNOP\t4\n"; continue; }
+        out_ << "\t" << ld << "\t" << base << ", A0\n\tNOP\t4\n";
+        if (shift > 0) out_ << "\tSHL\tA0, " << shift << ", A0\n";
+        out_ << "\tOR\t" << reg << ", A0, " << reg << "\n";
+    }
+}
+
+void Tms6747::storePair(int size, int align) {
+    int w = align >= 4 ? 4 : align;
+    for (int at = 0; at < size; at += w) {
+        const char *reg = at < 4 ? "A4" : "A5";
+        int shift = (at % 4) * 8;
+        std::string base = at == 0 ? "*A3" : "*+A3(" + std::to_string(at) + ")";
+        const char *st = w == 4 ? "STW" : w == 2 ? "STH" : "STB";
+        if (shift > 0) { out_ << "\tSHRU\t" << reg << ", " << shift << ", A0\n"; reg = "A0"; }
+        out_ << "\t" << st << "\t" << reg << ", " << base << "\n";
+    }
+}
+
 void Tms6747::visit(const Return &n) {
     markLine(n);
     if (n.hasValue()) {
         n.value().accept(*this);    // result in A4
-        if (n.value().type()->isStructOrUnion()) {
+        if (returnsInPair(n.value().type())) {
+            loadPair(n.value().type()->size(target_), n.value().type()->align(target_));
+        } else if (n.value().type()->isStructOrUnion()) {
             // Copy it to where the caller asked (the pointer it passed in
-            // A3, kept in the sret slot) and answer with that address.
+            // A3, kept in the sret slot) and answer with that address - unless
+            // the caller passed none, which TI's callers do for an unused result.
+            std::string skip = label("noresult", nextLabel());
             localAddr(sretSlot_, "A6");
-            out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n";
+            out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n\tMV\tA6, A1\n\t[!A1]\tB\t" << skip << "\n\tNOP\t5\n";
             copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_));
+            defineLabel(skip);
             out_ << "\tMV\tA6, A4\n";
         }
     }
@@ -814,7 +855,8 @@ void Tms6747::wideCast(const Type *from, const Type *to) {
 // A variadic callee takes its last named argument onward on the stack.
 void Tms6747::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
-    bool sret = n.type()->isStructOrUnion();
+    bool pair = returnsInPair(n.type());
+    bool sret = n.type()->isStructOrUnion() && !pair;
 
     // A struct argument is passed by the address of a copy: each is copied
     // into the slot the parser gave it first, and the slot's address then
@@ -876,7 +918,8 @@ void Tms6747::visit(const Call &n) {
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
     spAdjust(area);
-    if (sret) localAddr(n.resultSlot(), "A4");    // the value: its address
+    if (pair) { localAddr(n.resultSlot(), "A3"); storePair(n.type()->size(target_), n.type()->align(target_)); }
+    if (sret || pair) localAddr(n.resultSlot(), "A4");    // the value: its address
 }
 
 // Where a stack-passed parameter (from firstStack_ on) sits relative to the
