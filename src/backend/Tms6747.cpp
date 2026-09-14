@@ -290,7 +290,39 @@ void Tms6747::branchIfNotZero(const std::string &l) {
 }
 void Tms6747::caseBranch(long long v, const std::string &l) {
     movImm("A0", v);
-    out_ << "\tCMPEQ\tA0, A4, A1\n\t[A1]\tB\t" << l << "\n\tNOP\t5\n";
+    out_ << "\tCMPEQ\tA0, A4, A1\n";
+    if (wideSwitch_) {                       // both halves, A2 the second predicate
+        movImm("A0", v >> 32);
+        out_ << "\tCMPEQ\tA0, A5, A2\n\tAND\tA1, A2, A1\n";
+    }
+    out_ << "\t[A1]\tB\t" << l << "\n\tNOP\t5\n";
+}
+
+// The pair by a constant: 32 or more moves a word across, less splices the
+// two through A3; 0 is nothing. The right shift fills from the sign or 0.
+void Tms6747::shiftPairLeft(int count) {
+    if (count == 0) return;
+    if (count >= 32) {
+        if (count > 32) out_ << "\tSHL\tA4, " << (count - 32) << ", A5\n";
+        else            out_ << "\tMV\tA4, A5\n";
+        out_ << "\tZERO\tA4\n";
+        return;
+    }
+    out_ << "\tSHL\tA5, " << count << ", A5\n\tSHRU\tA4, " << (32 - count)
+         << ", A3\n\tOR\tA5, A3, A5\n\tSHL\tA4, " << count << ", A4\n";
+}
+void Tms6747::shiftPairRight(int count, bool sign) {
+    if (count == 0) return;
+    const char *shr = sign ? "SHR" : "SHRU";
+    if (count >= 32) {
+        if (count > 32) out_ << "\t" << shr << "\tA5, " << (count - 32) << ", A4\n";
+        else            out_ << "\tMV\tA5, A4\n";
+        if (sign) out_ << "\tSHR\tA5, 31, A5\n";
+        else      out_ << "\tZERO\tA5\n";
+        return;
+    }
+    out_ << "\tSHRU\tA4, " << count << ", A4\n\tSHL\tA5, " << (32 - count)
+         << ", A3\n\tOR\tA4, A3, A4\n\t" << shr << "\tA5, " << count << ", A5\n";
 }
 // A landing pad: the unwinder arrives with the exception in A4 and the
 // selector in B4 - the parser's index of the handler type that matched, or
@@ -357,7 +389,12 @@ void Tms6747::bitFieldUnitAddr(const MemberAccess &m) {
     addOffset(m.offset());
 }
 void Tms6747::bitFieldExtract(const MemberAccess &m) {    // unit in A4 -> field
-    if (isWide(m.type())) unsupported("a bit-field in a 64-bit unit");
+    // A 64-bit unit is the pair A5:A4: the field goes to the top and back.
+    if (isWide(m.type())) {
+        shiftPairLeft(64 - m.bitOffset() - m.width());
+        shiftPairRight(64 - m.width(), m.type()->isSigned(target_));
+        return;
+    }
     int left = 32 - m.bitOffset() - m.width();
     int right = 32 - m.width();
     out_ << (m.type()->isSigned(target_) ? "\tEXT\tA4, " : "\tEXTU\tA4, ")
@@ -365,6 +402,21 @@ void Tms6747::bitFieldExtract(const MemberAccess &m) {    // unit in A4 -> field
 }
 void Tms6747::bitFieldInsert(const MemberAccess &m) {     // value A4 -> *A6
     int low = m.bitOffset(), high = m.bitOffset() + m.width() - 1;
+    if (isWide(m.type())) {
+        // The value A5:A4 is masked to its width and moved into place while
+        // it is still the pair, then held in A9:A8 (no call intervenes) as
+        // the unit is loaded, cleared a half at a time, and merged.
+        shiftPairLeft(64 - m.width());
+        shiftPairRight(64 - m.width() - low, false);
+        out_ << "\tMV\tA4, A8\n\tMV\tA5, A9\n\tMV\tA6, A4\n";
+        load(m.type());
+        if (low <= 31) out_ << "\tCLR\tA4, " << low << ", " << (high < 31 ? high : 31) << ", A4\n";
+        if (high >= 32) out_ << "\tCLR\tA5, " << (low > 32 ? low - 32 : 0) << ", " << (high - 32) << ", A5\n";
+        out_ << "\tOR\tA4, A8, A4\n\tOR\tA5, A9, A5\n";
+        store(m.type(), "A6");
+        bitFieldExtract(m);
+        return;
+    }
     out_ << "\tMV\tA4, A3\n";                               // A3 = the value
     out_ << "\tMV\tA6, A4\n";
     load(m.type());                                          // A4 = the unit
@@ -841,8 +893,10 @@ void Tms6747::visit(const VaArg &n) {
     load(t);
 }
 void Tms6747::visit(const Switch &n) {
-    if (isWide(n.cond().type())) unsupported("a switch on a 64-bit value");
+    const bool outer = wideSwitch_;
+    wideSwitch_ = isWide(n.cond().type());
     Walker::visit(n);
+    wideSwitch_ = outer;
 }
 
 void Tms6747::visit(const MemberAccess &n) {

@@ -1,0 +1,3 @@
+x86_64-linux  clang calls `memcpy` to copy the eight-element `long long` initialiser into `probe`, where cxx1 stores the words in place; nothing the program declares differs.
+x86_64-windows  the same `memcpy`.
+arm64-darwin  the same `_memcpy`.

@@ -87,6 +87,10 @@ private:
     void branchIfZero(const std::string &l) override;
     void branchIfNotZero(const std::string &l) override;
     void caseBranch(long long v, const std::string &l) override;
+    bool wideSwitch_ = false;      // the switch's value is in A5:A4
+    // A5:A4 shifted by a constant, the pair's halves spliced through A3.
+    void shiftPairLeft(int count);
+    void shiftPairRight(int count, bool sign);
     void genTruth(const Expr &e) override;
     std::string label(const char *kind, int id) const override;
     std::string userLabel(const std::string &name) const override;
