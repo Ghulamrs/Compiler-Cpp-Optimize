@@ -166,7 +166,7 @@ StmtPtr Parser::declarationBody() {
                                      "to be destroyed in reverse when the scope "
                                      "ends - an array of a class with only "
                                      "constructors works");
-                int off = declare(d.name, d.type, d.pos);
+                int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
                 int indexSlot = allocateFrameSlot(types_.intType());
                 inits.push_back(constructLocalArray(d, off, indexSlot));
@@ -185,7 +185,7 @@ StmtPtr Parser::declarationBody() {
             }
             CtorInit ci = readConstructorInitialiser(d);
 
-            int off = declare(d.name, d.type, d.pos);
+            int off = declare(d.name, d.type, d.pos, quals.alignAs);
             locals_.back().guardsJump = true;
 
             // The backing array and the list object, before the constructor
@@ -237,7 +237,7 @@ StmtPtr Parser::declarationBody() {
                                      d.type->describe() + "' - and this gives " +
                                      std::to_string(args.size()) + " arguments");
                 checkAssignable(*args[0], d.type, d.pos, "'" + d.name + "'");
-                const int off = declare(d.name, d.type, d.pos);
+                const int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
                 ExprPtr target(Var::local(d.name, off));
                 target->setType(d.type);
@@ -298,7 +298,7 @@ StmtPtr Parser::declarationBody() {
                                  "writes through it");
             at_++;
             ExprPtr init = assign();
-            int off = declare(d.name, d.type, d.pos);
+            int off = declare(d.name, d.type, d.pos, quals.alignAs);
             locals_.back().guardsJump = true;
             const Type *slot = types_.pointerTo(d.type->referent());
             ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
@@ -346,6 +346,7 @@ StmtPtr Parser::declarationBody() {
             current_->globals.push_back(Global{ symbol, symbol, d.type,
                                                 std::move(pieces), hasInit, true,
                                                 locals_.back().isConst });
+            current_->globals.back().align = quals.alignAs;
             continue;
         }
 
@@ -367,7 +368,7 @@ StmtPtr Parser::declarationBody() {
         }
 
         if (!hasInit) refuseDeletedDefaultInit(d.type, d.name, d.pos);
-        const int off = declare(d.name, d.type, d.pos);
+        const int off = declare(d.name, d.type, d.pos, quals.alignAs);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
         // An initialiser to skip, or a destructor that would run on what was
@@ -630,7 +631,7 @@ StmtPtr Parser::rangeForStatement(int scope) {
     // The body, with the loop variable built from `*__b` in front of it.
     enterScope();
     const int inner = enterBlock();
-    const int vSlot = declare(d.name, d.type, d.pos);
+    const int vSlot = declare(d.name, d.type, d.pos, quals.alignAs);
     ExprPtr through(Var::local(bName, bSlot));
     through->setType(elemPtr);
     ExprPtr at(new Unary('*', std::move(through)));
@@ -721,7 +722,7 @@ ExprPtr Parser::whileConditionDeclaration() {
                          "condition of a loop is not supported yet - "
                          "[stmt.iter] builds it afresh on every turn, and only "
                          "a scalar can be written where the test is");
-    const int slot = declare(d.name, d.type, d.pos);
+    const int slot = declare(d.name, d.type, d.pos, quals.alignAs);
     locals_.back().isConst = d.type->isConst();
     ExprPtr x(Var::local(d.name, slot));
     x->setType(d.type);

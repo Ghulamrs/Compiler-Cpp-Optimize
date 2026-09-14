@@ -17,7 +17,7 @@ int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 // identifier and the error lands on whatever follows it.
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
-        "alignas", "alignof", "asm",
+        "asm",
         "char16_t", "char32_t",
         "export",
         "thread_local", "typeid"
@@ -465,7 +465,7 @@ bool Parser::atDeclarationStart() const {
     // is a declaration and nothing else - or an expression is asked for instead.
     return atTypeName() || peek().is("static") || peek().is("extern")
         || peek().is("register") || peek().is("auto") || peek().is("typedef")
-        || peek().is("constexpr");
+        || peek().is("constexpr") || peek().is("alignas");
 }
 
 // From the '{' to the '}' that closes it, counting depth.
@@ -700,17 +700,31 @@ void Parser::leaveScope() {
     scopeStarts_.pop_back();
 }
 
-int Parser::allocateFrameSlot(const Type *type) {
+int Parser::allocateFrameSlot(const Type *type, int alignAtLeast) {
     // What a reference occupies is a pointer, even though sizeof asks about
     // what it refers to. This is the one place the difference shows.
     const Type *stored = type->isReference()
                        ? types_.pointerTo(type->referent()) : type;
+    int align = objectAlign(stored, target_);
+    if (alignAtLeast > align) align = alignAtLeast;
     frameSize_ += stored->size(target_);
-    frameSize_ = alignTo(frameSize_, objectAlign(stored, target_));
+    frameSize_ = alignTo(frameSize_, align);
     return frameSize_;
 }
 
-int Parser::declare(const std::string &name, const Type *type, std::size_t pos) {
+int Parser::declare(const std::string &name, const Type *type, std::size_t pos,
+                    int alignAtLeast) {
+    refuseWeakAlignas(alignAtLeast, type, pos);
+    // A frame slot is only as aligned as the stack it hangs from; past that
+    // the frame would have to be realigned, which no backend here does.
+    const int typeAlign = type->isReference() ? 0 : type->align(target_);
+    if (alignAtLeast > target_.stackAlign() || typeAlign > target_.stackAlign())
+        src_.fail(pos, "'alignas(" + std::to_string(alignAtLeast > typeAlign ? alignAtLeast : typeAlign) + ")' on a "
+                       "local is not supported yet: the stack is kept " +
+                       std::to_string(target_.stackAlign()) + "-aligned on " +
+                       target_.name() + ", and a local past that would need "
+                       "the frame realigned. A global or a member may ask for "
+                       "more");
     if (type->isVoid())
         src_.fail(pos, "'" + name + "' cannot have type void");
     std::size_t from = scopeStarts_.empty() ? 0 : scopeStarts_.back();
@@ -718,7 +732,7 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos) 
         if (locals_[i].name == name)
             src_.fail(pos, "'" + name + "' is declared twice in this block");
 
-    int offset = allocateFrameSlot(type);
+    int offset = allocateFrameSlot(type, alignAtLeast);
     locals_.push_back(Local{ name, offset, type, false, std::string() });
     locals_.back().isParameter = inParams_;
     // The debug record describes the storage, which for a reference is the

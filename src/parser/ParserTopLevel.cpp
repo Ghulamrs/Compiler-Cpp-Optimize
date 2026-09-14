@@ -407,6 +407,7 @@ void Parser::topLevel(Program &program) {
                     program.globals.push_back(Global{ gname, symbol, d.type,
                                                       std::vector<GlobalPiece>(),
                                                       false, internal, false });
+                    program.globals.back().align = quals.alignAs;
                     if (!consume(",")) break;
                     d = declarator(base);
                     continue;
@@ -518,10 +519,13 @@ void Parser::topLevel(Program &program) {
                                           constantKnown, constantValue });
             globals_.back().isConstantDouble = constantDoubleKnown;
             globals_.back().constantDouble = constantDoubleValue;
-            if (sc != StorageExtern)
+            if (sc != StorageExtern) {
                 program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
                                                   internal, objectIsConst });
+                program.globals.back().align = quals.alignAs;
+                refuseWeakAlignas(quals.alignAs, d.type, d.pos);
+            }
             if (!consume(",")) break;
             d = declarator(base);
         }

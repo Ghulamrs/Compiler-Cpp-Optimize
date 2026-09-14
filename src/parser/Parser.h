@@ -688,6 +688,7 @@ private:
         // translation units, so it is emitted as a weak/COMDAT definition the
         // linker folds - the same treatment a template specialization gets.
         bool isInline = false;
+        int alignAs = 0;   // `alignas(N)` among the specifiers: the largest, else 0
     };
 
     struct TypedefName {
@@ -698,6 +699,8 @@ private:
     struct EnumConst {
         std::string name;
         long long value;
+        // The enumeration's type when an enum-base chose one, else null: int.
+        const Type *type = nullptr;
     };
 
     const Source &src_;
@@ -1321,8 +1324,11 @@ private:
     void checkAssignable(const Expr &from, const Type *to, std::size_t pos,
                          const std::string &what) const;
 
-    int declare(const std::string &name, const Type *type, std::size_t pos);
-    int allocateFrameSlot(const Type *type);
+    int declare(const std::string &name, const Type *type, std::size_t pos,
+                int alignAtLeast = 0);
+    int allocateFrameSlot(const Type *type, int alignAtLeast = 0);
+    int alignasSpecifier();
+    void refuseWeakAlignas(int asked, const Type *t, std::size_t pos);
     void declareStaticLocal(const std::string &name, const Type *type,
                             std::size_t pos, const std::string &symbol);
     void requireAssignable(const Expr &e, std::size_t pos, const char *what);

@@ -18,6 +18,7 @@ public:
     bool plainCharIsSigned() const override { return true; }
     Kind sizeType() const override { return Kind::UInt; }
     Kind wcharType() const override { return Kind::Int; }
+    int stackAlign() const override { return 8; }
     bool microsoftNames() const override { return false; }
     const char *name() const override { return "tms6747"; }
 };

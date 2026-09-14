@@ -326,10 +326,10 @@ Type *TypeTable::structType(Kind kind, const std::string &tag) {
     return t;
 }
 
-Type *TypeTable::enumType(const std::string &tag) {
+Type *TypeTable::enumType(const std::string &tag, Kind underlying) {
     for (Type *d : derived_)
-        if (!d->isConst() && d->kind() == Kind::Int && d->tag_ == tag) return d;
-    Type *t = new Type(Kind::Int);
+        if (!d->isConst() && d->isEnumeration() && d->tag_ == tag) return d;
+    Type *t = new Type(underlying);
     t->tag_ = tag;
     derived_.push_back(t);
     return t;

@@ -56,6 +56,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         static int to(int a, int cap) { return cap != 0 && a > cap ? cap : a; }
     };
 
+    // `struct alignas(16) S` - the class's own alignment, folded into the
+    // layout below as if a member had asked for it.
+    int classAlign = 0;
+    while (peek().is("alignas")) {
+        int a = alignasSpecifier();
+        if (a > classAlign) classAlign = a;
+    }
+
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
@@ -961,6 +969,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const Type *slot = d.type->isReference()
                              ? types_.pointerTo(d.type->referent()) : d.type;
             int a = Packed::to(slot->align(target_), pack);
+            refuseWeakAlignas(mquals.alignAs, slot, d.pos);
+            if (mquals.alignAs > a) a = mquals.alignAs;
             if (a > widest) widest = a;
             const long long openEnd = (msBits && msUnitBits != 0)
                 ? msUnitStart + msUnitBits : bitCursor;
@@ -1175,10 +1185,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                        "compiler can lay out: its members need " +
                        std::to_string((totalBits + 7) / 8) + " bytes, past "
                        "the 2147483647 an object here is measured in");
+    if (classAlign > widest) widest = classAlign;
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     if (sizeFloor > size) size = static_cast<int>(alignTo(static_cast<int>(sizeFloor), widest));
     int align = widest;
     if (members.empty() && totalBits == 0 && sizeFloor == 0) { size = 1; align = 1; }
+    if (classAlign > align) { align = classAlign; size = static_cast<int>(alignTo(size, align)); }
     // **An empty class has sizeof 1 and a data size of 0**, which is the empty base
     // optimisation Itanium requires and both oracles do. **And tail padding is reused
     // only where the ABI says**: Itanium for a non-POD base, never on Microsoft.
@@ -1249,6 +1261,36 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     return type;
 }
 
+// [dcl.align]/5: an alignment weaker than the type's own is ill-formed, not
+// ignored - clang refuses it, and a program that asks is mistaken.
+void Parser::refuseWeakAlignas(int asked, const Type *t, std::size_t pos) {
+    if (asked == 0 || asked >= t->align(target_)) return;
+    src_.fail(pos, "'alignas(" + std::to_string(asked) + ")' is weaker than "
+                   "the " + std::to_string(t->align(target_)) + " that '" +
+                   t->describe() + "' already needs");
+}
+
+// `alignas(N)` or `alignas(T)`: the alignment asked for, a power of two.
+// [dcl.align]/2 - one weaker than the type's own is ignored, not an error.
+int Parser::alignasSpecifier() {
+    std::size_t pos = peek().pos;
+    expect("alignas");
+    expect("(");
+    long long asked;
+    if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
+        StorageClass sc;
+        const Type *t = declarator(specifiers(&sc), true).type;
+        asked = t->align(target_);
+    } else {
+        asked = constantExpression("an alignment");
+    }
+    expect(")");
+    if (asked < 0 || asked > 4096 || (asked & (asked - 1)) != 0)
+        src_.fail(pos, "an alignment must be a power of two up to 4096, and " +
+                       std::to_string(asked) + " is not");
+    return static_cast<int>(asked);
+}
+
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
 
@@ -1265,13 +1307,18 @@ const Type *Parser::enumSpecifier() {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
-    // **An enum-base fixes the underlying type**, `enum E : unsigned char`,
-    // which is what makes the enumeration's size and range something the
-    // program chose.
-    if (peek().is(":"))
-        src_.fail(peek().pos, "an enum-base - 'enum E : T' - is not supported "
-                              "yet: every enumeration is an int here, so the "
-                              "underlying type cannot be chosen");
+    // **An enum-base fixes the underlying type** - `enum E : unsigned char` -
+    // and with it the enumeration's size, signedness and the type of each
+    // enumerator; [dcl.enum]/5 wants an integral type that is not bool.
+    const Type *underlying = nullptr;
+    if (consume(":")) {
+        std::size_t upos = peek().pos;
+        StorageClass usc;
+        underlying = specifiers(&usc)->unqualified();
+        if (!underlying->isInteger() || underlying->kind() == Kind::Bool)
+            src_.fail(upos, "an enum-base must be an integral type other than "
+                            "bool, and '" + underlying->describe() + "' is not");
+    }
 
     // **An enum is named through what encloses it**, the same way a class is:
     // `C::Kind` inside a class and `n::Kind` inside a namespace.
@@ -1281,12 +1328,21 @@ const Type *Parser::enumSpecifier() {
     else if (!namespaceStack_.empty()) prefix = namespacePrefix();
 
     // The tag names a type, as a class tag does. What it does not yet name is
-    // a *distinct* type: an enumeration is still int here, so the conversions
-    // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
-    if (!tag.empty())
-        declareTypeName(prefix + tag, types_.enumType(prefix + tag));
+    // a *distinct* type: an enumeration is still its integer here, so the
+    // conversions C++ refuses in both directions are accepted (CONFORMANCE.md).
+    const Type *self = nullptr;
+    if (!tag.empty()) {
+        self = types_.enumType(prefix + tag,
+                               underlying != nullptr ? underlying->kind() : Kind::Int);
+        declareTypeName(prefix + tag, self);
+    }
+    // What a based enumeration's values are: its own type, so that `sizeof(A)`
+    // and the promotions come out as the base says. An int enum stays int.
+    const Type *valueType = underlying == nullptr ? nullptr
+                          : self != nullptr ? self : underlying;
+    const Type *narrowAs = underlying != nullptr ? underlying : types_.intType();
 
-    if (!peek().is("{")) return types_.intType();
+    if (!peek().is("{")) return valueType != nullptr ? valueType : types_.intType();
     at_++;
 
     long long next = 0;
@@ -1296,15 +1352,15 @@ const Type *Parser::enumSpecifier() {
         if (findEnum(prefix + name))
             src_.fail(npos, "'" + name + "' is declared twice");
         if (consume("="))
-            next = narrowTo(constantExpression("a constant"), types_.intType());
+            next = narrowTo(constantExpression("a constant"), narrowAs);
         enumIndex_[prefix + name] = enums_.size();
-        enums_.push_back(EnumConst{ prefix + name, next });
+        enums_.push_back(EnumConst{ prefix + name, next, valueType });
         next = next + 1;
         if (!consume(",")) break;
     }
     expect("}");
     if (enums_.empty()) src_.fail(pos, "enum has no enumerators");
-    return types_.intType();
+    return valueType != nullptr ? valueType : types_.intType();
 }
 
 // The specifiers are read without their qualifiers here, and specifiers() folds the
@@ -1409,6 +1465,11 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     }
 
     for (;;) {
+        if (peek().is("alignas")) {
+            int a = alignasSpecifier();
+            if (a > quals->alignAs) quals->alignAs = a;
+            continue;
+        }
         if (consume("static"))  { *storage = StorageStatic; continue; }
         // **`extern template` suppresses an implicit instantiation** in this
         // translation unit and promises one elsewhere. Every specialization
