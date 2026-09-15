@@ -713,11 +713,9 @@ bool Driver::parseArguments(int argc, char **argv) {
         if (inputs.empty() && alreadyObjects_.empty()) { usage(argv[0]); return false; }
     }
 
-    // **A C suffix is turned away by name**, the mirror of cc1 refusing a .cpp.
-    // cxx1 compiles C++; a .c is C, and a C source read as C++ can be quietly
-    // miscompiled where the two languages disagree rather than stopped. Say so
-    // and point at cc1, the C compiler of this line. (.cpp/.cc/.cxx and the
-    // object suffixes above are cxx1's own and are left alone.)
+    // A .c is turned away by name - the mirror of cc1 refusing a .cpp. cxx1
+    // compiles C++, and C read as C++ miscompiles where they disagree rather
+    // than stopping; say so and point at cc1. (.cpp/.cc/.cxx are cxx1's own.)
     for (std::size_t k = 0; k < inputs.size(); k++) {
         const std::size_t dot = inputs[k].find_last_of('.');
         if (dot != std::string::npos && inputs[k].substr(dot) == ".c") {
