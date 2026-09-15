@@ -364,7 +364,76 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // constructor and the destructor walk this list.
     for (std::size_t bi = 0; bi < written.size(); bi++)
         if (!written[bi].isVirtual)
-            type->addBase(written[bi].type, baseAt[bi], written[bi].access);
+            type->addBase(written[bi].type, baseAt[bi], written[bi].access,
+                          false, true, static_cast<int>(bi));
+    const std::size_t nonVirtualBases = type->bases().size();
+    // **The virtual bases, one each, and the set is transitive.**
+    struct Gather {
+        // `Dia : D1, D2` writes no `virtual` yet lays V down, "most derived"
+        // being about the object; and the walk is clang's preorder: each
+        // direct base as written, a virtual one as met, then those behind it.
+        static void of(const Type *t, std::vector<const Type *> &out,
+                       std::vector<Access> &how, Access through) {
+            const std::vector<const Type::BaseSpec *> bs = t->directBases();
+            for (std::size_t i = 0; i < bs.size(); i++) {
+                Access a = (bs[i]->access == Access::Private ||
+                            through == Access::Private) ? Access::Private
+                         : (bs[i]->access == Access::Protected ||
+                            through == Access::Protected) ? Access::Protected
+                                                          : Access::Public;
+                if (bs[i]->isVirtual) {
+                    bool seen = false;
+                    for (std::size_t k = 0; k < out.size(); k++)
+                        if (out[k] == bs[i]->type) seen = true;
+                    if (!seen) { out.push_back(bs[i]->type); how.push_back(a); }
+                }
+                of(bs[i]->type, out, how, a);
+            }
+        }
+    };
+    std::vector<const Type *> vbases;
+    std::vector<Access> vaccess;
+    for (std::size_t bi = 0; bi < written.size(); bi++) {
+        if (written[bi].isVirtual) {
+            bool seen = false;
+            for (std::size_t k = 0; k < vbases.size(); k++)
+                if (vbases[k] == written[bi].type) seen = true;
+            if (!seen) { vbases.push_back(written[bi].type);
+                         vaccess.push_back(written[bi].access); }
+        }
+        Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
+    }
+    // The ones this class *wrote* `virtual` for keep the access it wrote and
+    // are its direct bases; the rest are laid down here all the same but
+    // are not - see BaseSpec::direct.
+    std::vector<int> vwritten(vbases.size(), -1);
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (written[bi].isVirtual)
+            for (std::size_t k = 0; k < vbases.size(); k++)
+                if (vbases[k] == written[bi].type && vwritten[k] < 0) {
+                    vwritten[k] = static_cast<int>(bi);
+                    vaccess[k] = written[bi].access;
+                }
+
+    // **A polymorphic virtual base is refused for the Microsoft ABI**: cl
+    // reaches its functions through vtordisp fields and thunks measured for
+    // no class yet, and the Itanium machinery below is not that.
+    if (target_.microsoftNames())
+        for (std::size_t bi = 0; bi < vbases.size(); bi++)
+            if (vbases[bi]->polymorphic())
+                src_.fail(pos, "'" + tag + "' has a virtual base '" +
+                               vbases[bi]->tag() + "' with virtual functions, "
+                               "and the Microsoft ABI dispatches through that "
+                               "base with vtordisp fields and thunks of its "
+                               "own - not supported for this target yet; the "
+                               "Itanium targets and the C6000 compile it");
+    // **Recorded now, at no offset yet**, so that a member function declared
+    // below is seen to override one of theirs; where each sits is settled
+    // once the non-virtual part is measured.
+    for (std::size_t bi = 0; bi < vbases.size(); bi++)
+        type->addBase(vbases[bi], 0, vaccess[bi], true, vwritten[bi] >= 0,
+                      vwritten[bi]);
+
 
     // **A vptr sits at offset 0**, so the members start after it - measured.
     const bool inheritsVptr = primary != nullptr;
@@ -1129,47 +1198,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (anyVirtualBase)
         type->setNvDataSize(static_cast<int>((totalBits + 7) / 8));
 
-    // **The virtual bases, one each, after all the non-virtual data**, and the set is transitive:
-    // `Dia : D1, D2` writes no `virtual` itself yet is the class that has to lay V down, because
-    // "most derived" is about the object being built and not about who wrote the keyword.
-    struct Gather {
-        static void of(const Type *t, std::vector<const Type *> &out,
-                       std::vector<Access> &how, Access through) {
-            const std::vector<Type::BaseSpec> &bs = t->bases();
-            for (std::size_t i = 0; i < bs.size(); i++) {
-                Access a = (bs[i].access == Access::Private ||
-                            through == Access::Private) ? Access::Private
-                         : (bs[i].access == Access::Protected ||
-                            through == Access::Protected) ? Access::Protected
-                                                          : Access::Public;
-                if (bs[i].isVirtual) {
-                    bool seen = false;
-                    for (std::size_t k = 0; k < out.size(); k++)
-                        if (out[k] == bs[i].type) seen = true;
-                    if (!seen) { out.push_back(bs[i].type); how.push_back(a); }
-                }
-                of(bs[i].type, out, how, a);
-            }
-        }
-    };
-    std::vector<const Type *> vbases;
-    std::vector<Access> vaccess;
-    // The ones this class *wrote* `virtual` for. The gather below adds those
-    // it only inherits, which are laid down here all the same but are not
-    // direct bases of it - see BaseSpec::direct.
-    std::size_t vbasesWritten = 0;
-    for (std::size_t bi = 0; bi < written.size(); bi++)
-        if (written[bi].isVirtual) {
-            bool seen = false;
-            for (std::size_t k = 0; k < vbases.size(); k++)
-                if (vbases[k] == written[bi].type) seen = true;
-            if (!seen) { vbases.push_back(written[bi].type);
-                         vaccess.push_back(written[bi].access); }
-        }
-    vbasesWritten = vbases.size();
-    for (std::size_t bi = 0; bi < written.size(); bi++)
-        Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
-
     for (std::size_t bi = 0; bi < vbases.size(); bi++) {
         const Type *b = vbases[bi];
         const long long byteCursor = (totalBits + 7) / 8;
@@ -1179,6 +1207,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         for (std::size_t i = 0; i < inherited.size(); i++) {
             Member m = inherited[i];
             m.offset += at;
+            // Its own virtual bases are this class's to lay down, once each:
+            // the members it holds past its non-virtual part are theirs.
+            if (b->hasVirtualBase() && m.offset >= b->nvDataSize() + at) continue;
             if (m.declaredIn == nullptr) m.declaredIn = b;
             if (m.access == Access::Private) m.access = Access::Private;
             else if (vaccess[bi] == Access::Private) m.access = Access::Private;
@@ -1186,8 +1217,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (m.inVirtualBase == nullptr) m.inVirtualBase = b;
             members.push_back(m);
         }
-        type->addBase(b, at, vaccess[bi], true, bi < vbasesWritten);
-        totalBits = static_cast<long long>(at + b->dataSize()) * 8;
+        type->setBaseOffset(nonVirtualBases + bi, at);
+        totalBits = static_cast<long long>(at + b->nvDataSize()) * 8;
         if (balign > widest) widest = balign;
     }
 

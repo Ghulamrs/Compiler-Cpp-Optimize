@@ -1,0 +1,2 @@
+x86_64-linux  One name cxx1 emits and clang does not: `_ZN1VC1Ev`, V's complete-object constructor, where V is only ever a base and only its C2 is called. Every other name agrees, `_ZTT1D` and `_ZTC1D16_1W` among them.
+arm64-darwin  The same one with Mach-O's leading underscore.

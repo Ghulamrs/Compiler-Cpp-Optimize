@@ -1,0 +1,2 @@
+x86_64-linux  Seven names cxx1 emits and clang does not, all definitions nothing here calls: `_ZN2E1C1Ev` and `_ZN2E2C1Ev` where E1 and E2 are only ever bases, `_ZN3TwoC2Ev` where nothing derives from Two, and E1's and E2's own groups `_ZTV2E1`, `_ZTV2E2`, `_ZTT2E1`, `_ZTT2E2`, which clang never wants because it builds them only as Two's bases, through the construction vtables `_ZTC3Two0_2E1` and `_ZTC3Two16_2E2` both compilers emit. Every name this case is about agrees.
+arm64-darwin  The same seven with Mach-O's leading underscore.

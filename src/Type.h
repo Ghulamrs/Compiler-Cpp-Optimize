@@ -263,16 +263,28 @@ public:
         Access access;
         // **One subobject however many paths reach it**, laid down by the
         bool isVirtual = false;
-        // **Written in this class's base-clause, rather than reached through
-        // one.**
+        // **Written in this class's base-clause**, not reached through one.
         bool direct = true;
+        // Its place in that base-clause, -1 for one reached through another.
+        int written = -1;
     };
     const std::vector<BaseSpec> &bases() const {
         return cls().bases_;
     }
     void addBase(const Type *b, int offset, Access how, bool isVirtual = false,
-                 bool direct = true) {
-        bases_.push_back(BaseSpec{ b, offset, how, isVirtual, direct });
+                 bool direct = true, int written = -1) {
+        bases_.push_back(BaseSpec{ b, offset, how, isVirtual, direct, written });
+    }
+    // **The direct bases in the order the base-clause wrote them**, virtual
+    // and non-virtual together: the Itanium ABI's every walk is that order.
+    std::vector<const BaseSpec *> directBases() const {
+        const std::vector<BaseSpec> &b = bases();
+        std::vector<const BaseSpec *> out;
+        for (std::size_t n = 0; n < b.size(); n++)
+            for (std::size_t i = 0; i < b.size(); i++)
+                if (b[i].direct && b[i].written == static_cast<int>(n))
+                    out.push_back(&b[i]);
+        return out;
     }
     bool hasVirtualBase() const {
         const std::vector<BaseSpec> &b = bases();
@@ -329,6 +341,8 @@ public:
     const Type *primaryBase() const { return cls().primaryBase_; }
     void setPrimaryBase(const Type *t) { primaryBase_ = t; }
 
+    // A virtual base is recorded before the members and placed after them.
+    void setBaseOffset(std::size_t i, int offset) { bases_[i].offset = offset; }
     // **A pointer the class introduces at offset 0 pushes every base down.**
     void shiftBaseOffsets(int by) {
         for (std::size_t i = 0; i < bases_.size(); i++) bases_[i].offset += by;

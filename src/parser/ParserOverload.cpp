@@ -130,20 +130,8 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         // rather than one written here.
         const Type *srcCls = e->type()->pointee()->unqualified();
         const Type *dstCls = to->pointee()->unqualified();
-        long long vbBack = 0;
-        {
-            const std::vector<Type::BaseSpec> &bs = srcCls->bases();
-            int nvb = 0, seen = 0;
-            for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
-            for (std::size_t i = bs.size(); i-- > 0; ) {
-                if (!bs[i].isVirtual) continue;
-                if (bs[i].type == dstCls) {
-                    vbBack = -static_cast<long long>(nvb + 2 - seen) * pointerBytes();
-                    break;
-                }
-                seen++;
-            }
-        }
+        const long long vbBack = target_.microsoftNames()
+                               ? 0 : itaniumVbaseOffsetSlot(srcCls, dstCls);
         // **The same walk on the Microsoft ABI, through the vbtable.**
         if (target_.microsoftNames() && srcCls->vbptrOffset() >= 0 &&
             virtualBaseSlot(srcCls, dstCls, nullptr) > 0) {

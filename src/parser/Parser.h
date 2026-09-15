@@ -124,8 +124,136 @@ private:
     static bool overrides(const VSlot &s, const std::string &name,
                           const std::vector<const Type *> &params,
                           bool constThis);
-    // Where a class's secondary vptr for a given base points into its table, keyed "Derived::Base".
-    std::map<std::string, int> secondaryVptr_;
+    // **The Itanium vtable group and its address points**: for each base
+    // subobject with a table in it, by (class, offset in the object), how
+    // far into the symbol that table's address point sits.
+    struct VtableGroup {
+        std::vector<GlobalPiece> pieces;
+        std::map<std::pair<const Type *, int>, int> points;
+    };
+    // Every group written, by symbol: a `_ZTV`, or a construction `_ZTC`.
+    std::map<std::string, VtableGroup> groups_;
+    // **The VTT of a class with virtual bases**, by tag: where its own
+    // constructor finds the sub-VTT for a base, the secondary virtual
+    // pointer for a subobject, and the virtual VTT for a virtual base.
+    struct VttLayout {
+        std::vector<GlobalPiece> pieces;
+        std::map<const Type *, int> subVtt;
+        std::map<std::pair<const Type *, int>, int> secondary;
+        std::map<const Type *, int> virtualVtt;
+    };
+    std::map<std::string, VttLayout> vtts_;
+    // The hidden VTT parameter of the C2 or D2 being emitted, -1 outside one.
+    int vttSlot_ = -1;
+    const Type *vttType() const {
+        return types_.pointerTo(types_.pointerTo(types_.get(Kind::Void)));
+    }
+    // One subobject with a vptr, as the constructor's walk finds it.
+    struct VptrSite {
+        const Type *cls;
+        int offset;             // in the complete object being laid out
+        bool morallyVirtual;    // reached through a virtual base
+        const Type *nearestVBase;
+        int fromVBase;          // its distance from that virtual base
+    };
+    void vptrSites(const Type *cls, int at, bool morally, const Type *vbase,
+                   int fromVBase, const Type *layout,
+                   std::set<const Type *> &seen,
+                   std::vector<VptrSite> &out) const;
+    // The virtual bases of a class in the order their `vbase_offset`
+    // entries are built, each with its offset in the layout class.
+    void vbaseComponents(const Type *cls, const Type *layout, int clsAt,
+                         std::set<const Type *> &seen,
+                         std::vector<std::pair<const Type *, int> > &out)
+        const;
+    static int virtualBaseAt(const Type *layout, const Type *vbase);
+    // The final overrider of a base's slot in `root`, and where it sits.
+    struct Overrider { const Type *cls; int at; std::string symbol; bool pure; };
+    // One `vcall_offset` in a virtual base's table, and whose function it is for.
+    struct VcallEntry {
+        const Type *cls;
+        std::string name;
+        std::vector<const Type *> params;
+        bool constThis;
+        long long value;
+    };
+    void vcallEntries(const Type *y, int yAt, const Type *vbase, int vbaseAt,
+                      const Type *root, int rootAt, const Type *layout,
+                      std::vector<VcallEntry> &out, std::size_t pos);
+    const VSlot *declaredSlot(const Type *cls, const VSlot &s) const;
+    Overrider finalOverrider(const Type *root, int rootAt, const VSlot &s,
+                             const Type *target, int targetAt,
+                             const Type *layout, std::size_t pos);
+    std::string synthesizeVirtualThunk(const Type *type, const VSlot &slot,
+                                       long long fixed, long long vcallBack,
+                                       std::size_t pos);
+    // The class whose subobjects are being enumerated, with a fresh visited
+    // set per walk: a virtual base is one subobject however it is reached.
+    struct Subobject { const Type *cls; int at; };
+    void subobjectsOf(const Type *x, int xAt, const Type *layout,
+                      std::set<const Type *> &seen,
+                      std::vector<Subobject> &out) const;
+    bool containsSubobject(const Type *y, int yAt, const Type *x, int xAt,
+                           const Type *layout) const;
+    void layoutOneVtable(VtableGroup &g, const Type *x, int xAt,
+                         bool xIsVirtual, const Type *vbase, int vbaseAt,
+                         const Type *root, int rootAt, const Type *layout,
+                         const std::string &typeInfo, std::size_t pos);
+    void layoutSecondaryVtables(VtableGroup &g, const Type *x, int xAt,
+                                const Type *vbase, int vbaseAt,
+                                const Type *root, int rootAt,
+                                const Type *layout, bool construction,
+                                const std::string &typeInfo, std::size_t pos);
+    void layoutVirtualBaseVtables(VtableGroup &g, const Type *x,
+                                  const Type *root, int rootAt,
+                                  const Type *layout, bool construction,
+                                  const std::string &typeInfo,
+                                  std::set<const Type *> &seen,
+                                  std::size_t pos);
+    VtableGroup buildVtableGroup(const Type *cls, int clsAt,
+                                 bool clsIsVirtual, const Type *layout,
+                                 const std::string &typeInfo,
+                                 std::size_t pos);
+    // A group written out under `symbol`, its address points recorded.
+    void emitVtableGroup(const std::string &symbol, VtableGroup g);
+    std::string constructionVtable(const Type *base, int at,
+                                   bool baseIsVirtual, const Type *layout,
+                                   const std::string &typeInfo,
+                                   std::size_t pos);
+    void emitItaniumVtables(const Type *cls, const std::string &tag,
+                            const std::string &symbol, std::size_t pos);
+    void vttPart(const Type *cls, int clsAt, const std::string &group,
+                 const Type *layout, bool top, const std::string &typeInfo,
+                 VttLayout &out, std::size_t pos);
+    void vttSecondaryPointers(const Type *x, int xAt, bool morally,
+                              const std::string &group, const Type *layout,
+                              bool top, std::set<const Type *> &seen,
+                              VttLayout &out, int from, std::size_t pos);
+    void vttVirtualParts(const Type *x, const Type *layout,
+                         const std::string &typeInfo,
+                         std::set<const Type *> &seen, VttLayout &out,
+                         std::size_t pos);
+    // The class's mangled name alone - what `_ZTV`, `_ZTT` and `_ZTC` share.
+    std::string itaniumClassEncoding(const Type *cls) const;
+    // The VTT argument a call to a C2 or D2 carries: the sub-VTT for a
+    // non-virtual base from this function's own VTT, or an entry of the
+    // class's `_ZTT` for the complete object's calls.
+    ExprPtr vttForBase(const Type *cls, const Type *base);
+    ExprPtr vttOfClass(const Type *cls, int entry);
+    bool takesVtt(const Type *cls) const {
+        return !target_.microsoftNames() && cls != nullptr &&
+               cls->hasVirtualBase();
+    }
+    // `*(vtt + n)`, the address point an entry holds.
+    ExprPtr vttEntry(ExprPtr vtt, int entry);
+    // The offset to a virtual base read through the object's vptr.
+    ExprPtr vbaseOffsetRead(ExprPtr objectChars, const Type *cls,
+                            const Type *vbase);
+    // The vptrs a constructor or destructor of `cls` stores, the whole
+    // object's - its own, every non-primary base's at any depth, every
+    // virtual base's - and where each comes from.
+    std::vector<StmtPtr> itaniumVptrStores(const std::string &cls,
+                                           const Type *memberOf, int thisSlot);
 
     // **cl's hidden most-derived flag, and who wants it.**
     std::set<std::string> msVbaseCtors_;

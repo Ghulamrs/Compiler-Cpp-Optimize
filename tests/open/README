@@ -31,7 +31,7 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-Three are here now (open.sh counts), and both halves of the movement below are the point. **Five of
+None is here now (open.sh counts), and both halves of the movement below are the point. **Five of
 the original fourteen have been mended and moved out** with their .expected,
 which is the movement the rule above asks for: capture-default-this,
 polymorphic-class-template-zts, catch-return-end-catch, and then
@@ -45,9 +45,12 @@ legal shape beside it in refusals-that-must-not-fire.cpp. two-d-array-member,
 the only *miscompile* the register ever held, went with them. A register that only ever
 grows is a list of complaints, and one that only ever shrinks is finished.
 **virtual-base-dispatch arrived on 2026-09-15** from the third review: a
-class with a virtual base has no function slots in its vtable, no secondary
+class with a virtual base had no function slots in its vtable, no secondary
 vtable, VTT or virtual thunk, and no deleting destructor - the Itanium
-machinery of virtual inheritance, which no target has yet.
+machinery of virtual inheritance. **It left the same evening with
+virtual-base-second-base and virtual-dtor-through-virtual-base**, the three
+that were that machinery seen from three sides, when it was written
+(CLAUDE.md, "Virtual inheritance proper"); all three sit in tests/cases.
 **wchar-distinct left on 2026-09-15**, wchar_t being a Kind of its own now,
 mangled `w`, an overload apart from int - the third review's T8, seen from
 the link. **One arrived from the fourth target and left the same day** (2026-09-15):
@@ -63,3 +66,21 @@ the fourteen refusals of ordinary code, the twenty-seven over-acceptances and
 the _ZTS assembler failure, none of which went with the roots. That report says
 its own programs live in the reviewers' scratch directories; these are in the
 repository, which is the difference between a finding and a test.
+
+**The five that were left went on 2026-09-17**, each to tests/cases with its
+.expected: mem-init-template-id-base (a template-id base is read as a type,
+as the base-clause reads it), lambda-class-scope-names (closureScope_ records
+the class a lambda was written in, `this` captured or not), catch-copy-throws
+(a terminate scope over the catch's copy - and the program itself was
+rewritten, since `throw E(1)` copied a temporary clang elides and cxx1 does
+not, so the copy that threw was the throw's own and the outer handler was the
+right answer; `throw g` from a static is nobody's to elide),
+lambda-return-through-try (the whole body is read, every `return` reporting
+its type) and constexpr-double (fold() hands a floating operand to foldDouble
+where an integer comes out of it). **One arrived the same day and left the
+same day**, found by the fourth of those: lambda-static-local, a static local
+inside a lambda's body named `operator().n`, which no assembler takes - and
+`~S.d` in a destructor, and one `f.n` for S::f, T::f, f(int) and f(double)
+alike. A static local is named by its function's mangled symbol now, and the
+case in tests/cases holds all of those shapes. An empty register is not a
+finished one: the next program that answers differently from clang goes here.

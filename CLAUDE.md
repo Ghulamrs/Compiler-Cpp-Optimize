@@ -9487,10 +9487,11 @@ Verified by running on the Linux box - five shapes, all matching clang,
 including the three that segfaulted. The emit golden read 2 of 735 changed,
 both of them the new case, so nothing else in the tree moved.
 
-**Still refused:** the VTT and the construction vtables, which nothing needs
+**Still refused, then:** the VTT and the construction vtables, which nothing needs
 until a virtual function is called from inside a base constructor - that is the
-one `names.sh` difference the new case carries, clang emitting `_ZTT2D1` and
-`_ZTC3Dia0_2D1` where this emits neither. And the whole feature on
+one `names.sh` difference the new case carried, clang emitting `_ZTT2D1` and
+`_ZTC3Dia0_2D1` where this emitted neither. Written on 2026-09-15 - "Virtual
+inheritance proper" below. And the whole feature on
 x86_64-windows, where a virtual base is a vbtable: **cl says `sizeof(D)` is 24
 where cxx1 says 16**, and reading a member of one stops with `codegen: this has
 no address` - a message naming no feature, which is the invisible bucket again.
@@ -9833,6 +9834,103 @@ to - Windows exceptions, the Microsoft RTTI for a base away from offset 0, and
 the Itanium VTT - and two lessons worth more than any of them: a golden that
 does not move proves nothing about coverage, and a subagent's numbers are
 re-measured outside its own tree or not believed.
+
+## Virtual inheritance proper: the Itanium group, its thunks and the VTT
+
+**Until 2026-09-15 a virtual base was layout only.** A class with one got a
+vtable holding the `vbase_offset` and its type_info and nothing else: no slot
+for a function overriding the base's, no secondary table for the base
+subobject, no VTT, no `_ZTv` thunk, no deleting destructor - so a call through
+the virtual base reached the base's function and `delete` through it freed the
+wrong address. Fable's third review (VM6747/TMS6747-REVIEW.md, T9) proved it
+with cl6x's own tables, and `tests/open` held it as virtual-base-dispatch,
+virtual-base-second-base and virtual-dtor-through-virtual-base. All three are
+in tests/cases now, with three more beside them.
+
+**What is written, all of it in `src/parser/ParserVtable.cpp`**, and every
+word of it checked against clang's `-fdump-vtable-layouts` and its `_ZTV`,
+`_ZTT`, `_ZTC` symbols on x86_64 (scratchpad/ti/t9/tables.py diffs the two
+listings) and against cl6x's on the C6000 (the review's layout.cpp and
+mangle.cpp probes: every table identical, the VTT addends included):
+
+  - **A virtual base is recorded before the class body is read** - at no
+    offset, placed once the non-virtual part is measured (`Type::setBaseOffset`)
+    - so that `declareMember` and `registerDestructor` see an override of its
+    functions. Such an override takes a **new slot** in this class's primary
+    table, as an override of any base off the primary chain does; the
+    destructor likewise. The search runs over every base now, `bases()[0]`
+    included, which the old `bi = 1` skipped when the primary was not written
+    first.
+  - **The group.** `_ZTV` is one symbol: the primary table, a secondary table
+    for every non-primary base at any depth (`layoutSecondaryVtables`
+    recurses through a primary base to its own non-primary ones, where the old
+    code stopped at the direct bases), and one for every virtual base with a
+    vptr in inheritance-graph preorder (`layoutVirtualBaseVtables`). A
+    virtual base's table opens with **vcall offsets**, one per function in
+    clang's AddVCallOffsets order - the primary chain's, the class's own new
+    ones, its non-primary bases' - the last declared lowest; a destructor
+    counts once and its D0 shares the entry. Then the vbase offsets: **the
+    primary base's components first, then this class's in preorder**, laid
+    down reversed - `Y : virtual V2, A` with `A : virtual V1` has V1 at -24
+    and V2 at -32, which `itaniumVbaseOffsetSlot` now answers for every
+    reader (the member walk, `convert`, the type_info's flags word) from the
+    one list. Then offset-to-top, the *group's* type_info, and the slots.
+  - **The final overrider** of a base's slot, [class.virtual]/2: of the
+    subobjects of the group's class that contain the target subobject and
+    declare an override (`declaredSlot` - the class's own declaration, not
+    an inherited one), the one no other contains; none means the base's own
+    entry, two means the program is ill-formed and says so. Where it sits
+    elsewhere than the table's subobject, a thunk: `_ZThn<n>_` when the
+    step is a constant, and `_ZTv<nv>_n<N>_` when the path from the
+    overrider to the target crosses a virtual base - `this` moves by the
+    fixed part to the virtual base whose table holds the vcall offset at
+    `-N`, then by what it reads there. `_ZTv0_n24_N2VD1fEv` and
+    `_ZTv0_n32_N2VDD1Ev` on the hosts, `n12`/`n16` on the C6000. Both
+    thunks are emitted once per name; a construction vtable names them again.
+  - **Construction vtables and the VTT.** A class with virtual bases gets
+    `_ZTT<cls>` - [2.6.2]'s order: the primary pointer, a sub-VTT per direct
+    non-virtual base that has virtual bases, the secondary virtual pointers
+    (every base with virtual bases or reached through one, the non-virtual
+    primary bases excepted, in preorder), and the virtual VTTs. A sub-VTT
+    points into `_ZTC<layout><offset>_<base>`: the base's group as if it were
+    the complete object, with the layout class's virtual-base offsets and the
+    base's own type_info. cl6x spells that group as one symbol per table
+    (`_ZTV2V5__2V7`, `_ZTV2V1__2V5__2V7`) where clang and cxx1 write one
+    `_ZTC` holding both; the words and the VTT's addends are the same, and
+    the name is internal to the unit that writes the VTT.
+  - **C2 and D2 take the VTT** as their second parameter (`vttSlot_`, the
+    way `msVbInitSlot_` carries cl's flag), and every caller hands one over:
+    C1 and D1 pass `_ZTT<cls>`, a base call passes `vtt + subVtt[base]`, a
+    virtual base's C2 gets the virtual VTT. `itaniumVptrStores` then walks
+    every vptr in the object as clang's getVTablePointers does: its own from
+    `vtt[0]`, one below a virtual base from the VTT through the vbase offset
+    just stored, every other from the class's own group - the same in every
+    object the class is part of, which is why those need no construction
+    table. The ordinary vtable group is emitted at class completion, so the
+    VTT exists before any constructor body wants it.
+  - **Two orders that differ**, both clang's: the *layout* of virtual bases
+    is the graph's preorder (`Gather` in ParserType.cpp), each contributing
+    its non-virtual part only - `D : virtual W`, `W : virtual V` lays W at 16
+    and V at 32, where laying W by its full size put V at 48 and copied
+    W's `v` in twice; the *construction* is [class.base.init]/10's, a base's
+    own virtual bases before it (`virtualBaseCalls`), V before W, which is why
+    W's constructor reads a 0 rather than the stack.
+  - **Two reads that went by a constant**: a virtual base's member named
+    inside a member function with no object written (`v` for `this->v`) went
+    through `thisMember` at the class's own offset; and a virtual call to a
+    function of a base off the primary chain (`c.g()` where g is a second
+    base's and not overridden) found no slot in the class's own table and was
+    refused. Both go through the base's own vptr now.
+
+**x86_64-windows refuses a polymorphic virtual base by name** - cl dispatches
+through one with vtordisp fields and thunks measured for no class yet - so the
+new cases carry a `.notarget` for it; a virtual base with no virtual function
+compiles there as before, through the vbtable.
+
+**Measured, not run.** TI's tools assemble and link every case and the emulator
+runs them all identically on the three machines, but the C6747 itself is
+still not on the desk; what "byte compatible" means here is that cl6x's tables
+and ours are the same words.
 
 ## Comments in src/ are at most three lines, and now there is an oracle
 

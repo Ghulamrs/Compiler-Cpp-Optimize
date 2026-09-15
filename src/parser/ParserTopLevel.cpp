@@ -814,6 +814,17 @@ void Parser::topLevel(Program &program) {
             thisOffset_ = declare("this", thisType, d.pos);
             inParams_ = false;
             paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+            // **Itanium's VTT, second**: a C2 or D2 of a class with virtual
+            // bases is handed the tables its vptrs come from - [2.6.2].
+            vttSlot_ = -1;
+            if (takesVtt(memberOf) && (d.name == localOf(d.qualifier) ||
+                                       d.name == "~" + localOf(d.qualifier))) {
+                inParams_ = true;
+                vttSlot_ = declare(".vtt", vttType(), d.pos);
+                inParams_ = false;
+                paramSlots.insert(paramSlots.begin() + 1,
+                                  Param{ vttType(), vttSlot_ });
+            }
             // **cl's hidden most-derived flag, last of all.**
             msVbInitSlot_ = -1;
             if (target_.microsoftNames() && memberOf->hasVirtualBase() &&
@@ -827,6 +838,7 @@ void Parser::topLevel(Program &program) {
     } else {
         inStaticMember_ = false;
         msVbInitSlot_ = -1;
+        vttSlot_ = -1;
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
         // Which function's body is about to be read, so that an access check inside it
@@ -1340,6 +1352,11 @@ void Parser::topLevel(Program &program) {
             args.push_back(std::move(me));
             std::vector<const Type *> params2;
             params2.push_back(basePtr);
+            // A base with virtual bases takes its sub-VTT out of this one's.
+            if (takesVtt(base)) {
+                args.push_back(vttForBase(memberOf, base));
+                params2.push_back(vttType());
+            }
             for (std::size_t i = 0; i < chosen.params.size(); i++) {
                 args.push_back(std::move(chosenArgs[i]));
                 params2.push_back(chosen.params[i]);
