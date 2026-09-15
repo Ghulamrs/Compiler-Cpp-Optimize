@@ -1,4 +1,4 @@
-c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+©2026 G. R. Akhtar - ISO C++ 11,  Compiler
 ==========================================
 
 READ THIS FIRST.  It is the whole of what a user of this compiler needs: how to
@@ -45,7 +45,7 @@ Run it with no arguments for the same list.
 multi-file build then says how many source files it has and how many threads it
 is compiling them on, one line per file as each thread takes it:
 
-    c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+    ©2026 G. R. Akhtar - ISO C++ 11,  Compiler
     6 source files, 6 compilation threads
       [thread 1] main.cpp
       [thread 2] parser.cpp
@@ -272,7 +272,7 @@ so that the link step is the same program as the compile step.
 
     $ make one
     cxx1.exe demo.cpp report.cpp -o demo
-    c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+    ©2026 G. R. Akhtar - ISO C++ 11,  Compiler
     2 source files, 1 compilation thread
       [thread 1] demo.cpp
       [thread 1] report.cpp

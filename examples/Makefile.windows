@@ -1,6 +1,6 @@
 # examples\Makefile.windows - this project, built for Windows on x86-64.
 #
-# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+# ©2026 G. R. Akhtar - ISO C++ 11,  Compiler
 #
 # **This one is for NMAKE**, which ships with Visual Studio, and its syntax is
 # not GNU make's: inference rules are written `.cpp.obj:`, there is no

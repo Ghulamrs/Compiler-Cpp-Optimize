@@ -1,6 +1,6 @@
 # examples/Makefile.linux - this project, built for Linux on x86-64.
 #
-# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+# ©2026 G. R. Akhtar - ISO C++ 11,  Compiler
 #
 #   make -f Makefile.linux            build ./demo
 #   make -f Makefile.linux run

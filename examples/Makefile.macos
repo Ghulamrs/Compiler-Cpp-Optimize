@@ -1,6 +1,6 @@
 # examples/Makefile.macos - this project, built for macOS on arm64.
 #
-# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+# ©2026 G. R. Akhtar - ISO C++ 11,  Compiler
 #
 #   make -f Makefile.macos            build ./demo
 #   make -f Makefile.macos run
