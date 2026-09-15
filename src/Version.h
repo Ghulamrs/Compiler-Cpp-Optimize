@@ -7,6 +7,6 @@
 #define CXX1_SEAL_FILE    "cxx1-1.4.dat"
 
 // The line every run prints before it starts. First line, and exactly this.
-#define CXX1_BANNER "©2026 G. R. Akhtar - ISO C++ 11,  Compiler"
+#define CXX1_BANNER "©2026 G. R. Akhtar - ISO C++ 11"
 
 #endif
