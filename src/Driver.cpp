@@ -652,8 +652,8 @@ bool Driver::parseArguments(int argc, char **argv) {
                    std::strcmp(argv[i], "--version") == 0) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
-            std::printf("%s\nVersion %s, sealed %s - see %s\n", CXX1_BANNER,
-                        CXX1_VERSION, CXX1_SEAL_DATE, CXX1_SEAL_FILE);
+            std::printf("%s\nVersion %s, sealed %s\n", CXX1_BANNER,
+                        CXX1_VERSION, CXX1_SEAL_DATE);
             std::exit(0);
         } else if (std::strcmp(argv[i], "-nologo") == 0) {
             quiet_ = true;
