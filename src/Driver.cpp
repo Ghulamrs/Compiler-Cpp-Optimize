@@ -713,6 +713,22 @@ bool Driver::parseArguments(int argc, char **argv) {
         if (inputs.empty() && alreadyObjects_.empty()) { usage(argv[0]); return false; }
     }
 
+    // **A C suffix is turned away by name**, the mirror of cc1 refusing a .cpp.
+    // cxx1 compiles C++; a .c is C, and a C source read as C++ can be quietly
+    // miscompiled where the two languages disagree rather than stopped. Say so
+    // and point at cc1, the C compiler of this line. (.cpp/.cc/.cxx and the
+    // object suffixes above are cxx1's own and are left alone.)
+    for (std::size_t k = 0; k < inputs.size(); k++) {
+        const std::size_t dot = inputs[k].find_last_of('.');
+        if (dot != std::string::npos && inputs[k].substr(dot) == ".c") {
+            std::fprintf(stderr,
+                "%s: %s looks like C (.c), and cxx1 compiles C++, not C - "
+                "compile it with cc1\n",
+                argv[0], inputs[k].c_str());
+            return false;
+        }
+    }
+
     if (assemblyOnly_ && objectOnly_) {
         std::fprintf(stderr, "%s: -S and -c ask for different things - -S stops "
                              "at assembly, -c goes one step further to an "
