@@ -446,16 +446,31 @@ ExprPtr Parser::convertMemberPointer(ExprPtr e, const Type *to, int shift) const
     return made;
 }
 
+// **An array's cv-qualification is its element's** ([conv.qual]/1), so
+// `char (*)[3]` converts to `const char (*)[3]` as `char **` does to
+// `const char *const *` (review A19); the step through an array keeps the extent.
+static const Type *cvOwner(const Type *t) {
+    while (t->isArray()) t = t->pointee();
+    return t;
+}
+
 static bool qualificationConvertible(const Type *from, const Type *to) {
     bool prefixConst = true;
     for (;;) {
         if (from->unqualified() == to->unqualified()) return true;
+        if (from->isArray() && to->isArray()) {
+            if (from->length() != to->length()) return false;
+            from = from->pointee();
+            to = to->pointee();
+            continue;
+        }
         if (!from->isPointer() || !to->isPointer()) return false;
         from = from->pointee();
         to = to->pointee();
-        if (from->isConst() && !to->isConst()) return false;
-        if (!from->isConst() && to->isConst() && !prefixConst) return false;
-        prefixConst = prefixConst && to->isConst();
+        const bool fromConst = cvOwner(from)->isConst(), toConst = cvOwner(to)->isConst();
+        if (fromConst && !toConst) return false;
+        if (!fromConst && toConst && !prefixConst) return false;
+        prefixConst = prefixConst && toConst;
     }
 }
 
