@@ -922,6 +922,16 @@ public:
             return;
         }
         type(u);
+        // **A member pointer's storage class repeats the class**, `EQ<class>@`
+        // after the type: cl's `?gpm@@3PEQNest@@HEQ1@` (the review's A7); Q is
+        // the member's cv-code, R for const, as a pointer's A/B are.
+        if (u->isMemberPointer() || u->isMemberFunctionPointer()) {
+            const Type *cls = u->enclosing();
+            out += 'E';
+            out += t->isConst() ? 'R' : 'Q';
+            scopeOf(cls, cls->tag());
+            return;
+        }
         // A reference follows the pointer's rule, measured: `?r@@3AEAHEA`,
         // `?cr@@3AEBHEB`, `?sr@@3AEAUS@@EA`.
         if (u->isPointer() || u->isReference()) {

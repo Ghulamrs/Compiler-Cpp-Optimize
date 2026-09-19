@@ -839,15 +839,11 @@ ExprPtr Parser::assign() {
     checkAssignable(*value, to, pos, "the left of '='");
 
     // **A class with a copy assignment of its own is assigned by calling it**,
-    // not by moving its bytes. Where the copy is trivial no such function was
-    // declared, and this is the struct assignment it has always been.
+    // not by moving its bytes - the one for the value's category, an lvalue
+    // taking `const T &` and an xvalue or prvalue `T &&` (review A22).
     if (const Signature *op = copyAssignOf(to->unqualified())) {
-        // **The one for the value's category.** A class may declare both a
-        // copy and a move assignment; an lvalue takes the `const T &` one and
-        // an xvalue or prvalue the `T &&` one, whichever was declared first
-        // (the cl review's A22: `e = b` went to `operator=(Buf &&)` and was
-        // then refused for having an address).
-        if (const std::vector<std::size_t> *set = overloadsOf(assignmentKey(to->unqualified()->tag()))) {
+        const std::vector<std::size_t> *set = overloadsOf(assignmentKey(to->unqualified()->tag()));
+        if (set != nullptr) {
             const bool wantMove = !isLvalue(*value);
             for (std::size_t i = 0; i < set->size(); i++) {
                 const Signature &cand = functions_[(*set)[i]];

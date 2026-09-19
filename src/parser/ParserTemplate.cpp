@@ -322,12 +322,9 @@ bool Parser::skipTemplatedDefinition(bool *sawInit, bool *sawParen) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this template's definition is never closed");
         // **An `=` at depth zero is an initialiser**, so what is being skipped is a definition even
-        // though it has no braces: a static data member of a class template is defined out of line
-        // as `template <class T> const R C<T>::k = R();`, which ends at a `;`.
+        // though it has no braces - `template <class T> const R C<T>::k = R();` - and a `(` is a
+        // parameter list or a construction; neither, and no braces, is `T Tm<T>::st;`, a definition.
         if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
-        // A `(` at depth zero is a function's parameter list (or a construction);
-        // without one, `=` or braces, the line defines a data member - [temp.static],
-        // `template <class T> T Tm<T>::st;` (the cl review's A14).
         if (sawParen != nullptr && depth == 0 && peek().is("(")) *sawParen = true;
         if (peek().is("{")) { depth++; body = true; at_++; continue; }
         if (peek().is("}")) {

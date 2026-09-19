@@ -222,10 +222,8 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
                        "order - only '==' and '!=' are written with 'nullptr'");
     if (null || lhs->type()->isPointer() || rhs->type()->isPointer() ||
         lhs->type()->isMemberPointer() || rhs->type()->isMemberPointer()) {
-        // **A pointer beside an integer: only a null pointer constant.** [expr.eq]
-        // and [expr.rel] compare two pointers, or a pointer with the constant
-        // zero; `p == 1` was accepted here as C would not either (cl C2446,
-        // the review's A26).
+        // **A pointer beside an integer: only a null pointer constant** -
+        // [expr.eq], [expr.rel]; `p == 1` was accepted (cl C2446, review A26).
         for (int side = 0; side < 2; side++) {
             const Expr &ptr = side == 0 ? *lhs : *rhs;
             const Expr &other = side == 0 ? *rhs : *lhs;
