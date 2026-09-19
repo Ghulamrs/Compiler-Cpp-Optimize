@@ -36,9 +36,19 @@ once, `-g` writes a line table for a debugger (x86_64-linux and arm64-darwin
 only), `-masm` picks `masm` or `gnu` syntax for x86_64-windows, and `-time`
 reports each phase. `cxx1` with no input prints the whole list.
 
-Targets are named `x86_64-linux`, `x86_64-windows` and `arm64-darwin`. A
-target that is not this machine implies `-S`: the compiler will not ask the
-local assembler to build for hardware it is not on.
+Targets are named `x86_64-linux`, `x86_64-windows`, `arm64-darwin` and
+`tms6747`. A host target that is not this machine implies `-S`: the compiler
+will not ask the local assembler to build for hardware it is not on. `tms6747`
+is different, since no host is a C6747: `-c` assembles what the compiler wrote
+with asm6x, the project's own C6000 assembler (`CPP11_AS` names it, else the
+one beside `cpp11`, else `asm6x` on PATH), into a TI object on any machine;
+without `-c` the objects go to TI's `lnk6x` against `rts6740_elf.lib` - or
+`rts6740_elf_eh.lib`, which a C++ program that throws needs - into a `.out`,
+which needs CCS: `CPP11_TI` names its C6000 compiler directory, `CPP11_TILIB` a
+directory holding the exception-handling runtime, `CPP11_LD` the linker itself.
+`tests/asm6x.sh` holds every case's driver-made object to asm6x's own;
+`tools/windows/ti-link.cmd` links every case on the box, and `verify-three`
+runs both.
 
 ## The library
 

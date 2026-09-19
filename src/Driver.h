@@ -60,7 +60,7 @@ private:
     static unsigned availableCores();
 
     static std::string assemblyNameFor(const std::string &source);
-    static std::string objectNameFor(const std::string &source);
+    std::string objectNameFor(const std::string &source) const;
     static std::string temporaryName(int index);
     static const char *hostCompiler();
     static const char *hostAssembler(Syntax syntax);
@@ -68,6 +68,12 @@ private:
     // different program from ml64 rather than the same one with a flag.
     static const char *hostGnuAssembler();
     static const char *hostLinker();
+    // **The tms6747 target is assembled and linked on any host**: by asm6x,
+    // the project's own C6000 assembler, and by TI's lnk6x where CCS is.
+    bool targetIsTi() const;
+    std::string tiAssembler() const;
+    std::string tiLinker() const;
+    bool linkTi();
     static void usage(char *);
     // The one line every run prints, and the switch that stops it - see
     // Driver.cpp, where both are explained.

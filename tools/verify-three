@@ -77,7 +77,8 @@ if [ "$WHICH" = all ] || [ "$WHICH" = linux ]; then
     ssh -i "$KEY" -o BatchMode=yes "$LINUX" '
         rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
         tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
-        cd ~/cxx1-verify && ./build -j2 >/dev/null && make test' || STATUS=1
+        cd ~/cxx1-verify && ./build -j2 >/dev/null && make test &&
+        ASM6X=$HOME/asm6x-build/asm6x.exe sh tests/asm6x.sh' || STATUS=1
 fi
 
 if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
@@ -100,6 +101,11 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     # The two-half programs, linked across the boundary with cl both ways:
     # the ABI at the seam, which nothing compiled by cxx1 alone can see.
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\winlink-check.cmd $REMOTE" || STATUS=1
+    # The tms6747 target to a TI program: asm6x on what cxx1 wrote, lnk6x
+    # over that, for every case - the linker as the judge of the objects.
+    TILOG=$(mktemp -t cxx1ti)
+    ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\ti-link.cmd $REMOTE" > "$TILOG" 2>&1 || STATUS=1
+    grep -v "^$" "$TILOG" | tail -8; rm -f "$TILOG"
 
     # The comparison happens here, not there - see run-cases.cmd for why.
     OUT=$(mktemp -d)
