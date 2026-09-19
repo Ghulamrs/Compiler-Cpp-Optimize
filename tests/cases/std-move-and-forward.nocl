@@ -1,0 +1,1 @@
+there is nothing to compare here, by construction: a case that includes a C++ standard library header is compiled by cl against Microsoft's library, not this one, so the two objects hold the symbols of two different implementations of move, forward and reverse. Behaviour is the oracle for these, and run.sh asks it on all three machines.
