@@ -157,10 +157,22 @@ ExprPtr Parser::lambdaExpression() {
 
     // Already built on an earlier reading of these same tokens: hand back
     // another object of the one class rather than making a second.
-    std::map<std::size_t, MadeLambda>::const_iterator had = lambdaAt_.find(lamAt);
+    std::map<std::pair<std::string, std::size_t>, MadeLambda>::const_iterator had =
+        lambdaAt_.find(std::make_pair(currentFunction_, lamAt));
     if (had != lambdaAt_.end()) {
         at_ = had->second.end;
         return buildClosure(had->second, pos);
+    }
+    // Inside a closure's call operator, one the deducing reading already built
+    // at this very `[` - the owner is the function that reading ran in.
+    if (deducingReturn_ == nullptr && currentClass_ != nullptr) {
+        const std::string &owner = currentClass_->unqualified()->localOwner();
+        std::map<std::pair<std::string, std::size_t>, MadeLambda>::const_iterator made =
+            deducedAt_.find(std::make_pair(owner, pos));
+        if (made != deducedAt_.end()) {
+            at_ = lamAt + made->second.span;
+            return buildClosure(made->second, pos);
+        }
     }
 
     at_++;                                    // '['
@@ -321,7 +333,7 @@ ExprPtr Parser::lambdaExpression() {
 
     // The closure type, named `$_0` upward within the enclosing function, as
     // clang names one. **One met while an enclosing lambda's body is read for
-    // its return type is named apart and never replayed** - see deducing.
+    // its return type is named apart**, that reading's count being thrown away.
     const bool deducing = deducingReturn_ != nullptr;
     const std::string local = deducing
         ? "$deduced_" + std::to_string(deducedClosures_++)
@@ -403,19 +415,23 @@ ExprPtr Parser::lambdaExpression() {
     for (std::size_t i = bodyFrom; i < bodyTo; i++) tokens_.push_back(tokens_[i]);
     t.kind = TokenKind::End;    t.text = "";           tokens_.push_back(t);
 
+    // Replayed on the deducing reading too: that closure is the one the real
+    // reading hands back (A21), so it needs its call operator like any other.
     std::vector<PendingBody> mine;
     mine.push_back(PendingBody{ tag, start, local, tag + "::operator()",
                                 PendingBody::npos() });
-    if (!deducing) replayInlineBodies(std::move(mine));
+    replayInlineBodies(std::move(mine));
 
     // The object itself: a slot in this frame, and the expression is its name.
     MadeLambda record;
     record.type = closure;
     record.end = at_;
+    record.span = at_ - lamAt;
     record.names = capNames;
     record.types = capTypes;
     record.offsets = capOffsets;
-    lambdaAt_[lamAt] = record;
+    lambdaAt_[std::make_pair(currentFunction_, lamAt)] = record;
+    if (deducing) deducedAt_[std::make_pair(currentFunction_, pos)] = record;
     return buildClosure(record, pos);
 }
 
@@ -442,11 +458,15 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
                                      made.offsets[i], 0, 0));
         ExprPtr src;
         if (made.names[i] == capturedThis()) {
-            // The enclosing function's own `this`, copied in as a pointer.
-            const Local *self = findLocal("this");
-            src.reset(Var::local("this", self != nullptr ? self->offset
-                                                         : thisOffset_));
-            src->setType(self != nullptr ? self->type : made.types[i]);
+            // The enclosing function's own `this`, copied in as a pointer -
+            // or, inside a closure that captured it, that closure's copy.
+            src = capturedThisPointer();
+            if (src == nullptr) {
+                const Local *self = findLocal("this");
+                src.reset(Var::local("this", self != nullptr ? self->offset
+                                                             : thisOffset_));
+                src->setType(self != nullptr ? self->type : made.types[i]);
+            }
         } else {
             src = objectRef(made.names[i]);
             if (src == nullptr) src = outerCaptureAccess(made.names[i]);

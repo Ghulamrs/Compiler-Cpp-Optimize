@@ -1,0 +1,3 @@
+x86_64-linux  cxx1-only names, none differing: the three constexpr functions, which clang folds at every call and never emits as functions, and the four constexpr doubles at namespace scope, which clang folds into every use and never lays down as objects - the same as constexpr-double.nonames records. Every use in this case reads the folded value, or the static_assert would not have held.
+x86_64-windows  the same seven, as cl's would be.
+arm64-darwin  the same seven, with Mach-O's leading underscore.

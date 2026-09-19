@@ -201,9 +201,6 @@ SFINAE and variadic packs. What is left:
   — `src/parser/ParserTemplate.cpp:401`
 - **naming a function template without calling it** —
   `src/parser/ParserTemplate.cpp:1789`, `src/parser/ParserTemplate.cpp:1868`
-- **naming a member through a template's argument list**, `A<int>::n` — a
-  `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1872`
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1841`
 - **`sizeof` of a template parameter in a signature** — the linker name would
@@ -315,8 +312,10 @@ Dynamic initialisation runs now - [basic.start.init]/2 in the file's own
 `_GLOBAL__sub_I_<file>`, [stmt.dcl]/4 under the ABI's guard, and
 [basic.start.term] through `__cxa_atexit` or `atexit` - so a file-scope
 object with a constructor, a static data member of one, a static local with
-one, and a reference at either scope all work. What is left is the shapes
-where one object is many:
+one, and a reference at either scope all work - and, since 2026-09-19, a
+scalar or trivial class whose initialiser does not fold (`int g = init(1);`,
+`P g = P();`, `T Tm<T>::st = T();`), stored by the same function in
+declaration order. What is left is the shapes where one object is many:
 
 - **an array with static storage duration whose elements have a
   constructor** — each element would need its constructor before main and

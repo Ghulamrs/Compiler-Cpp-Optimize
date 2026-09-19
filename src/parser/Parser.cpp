@@ -455,10 +455,16 @@ bool Parser::atDeclarationStart() const {
             else if (t.is(">")) { if (--depth == 0) { after++; break; } }
             else if (t.is(">>")) { depth -= 2; if (depth <= 0) { after++; break; } }
         }
+        // And `Tm<P>::st.a = 3;` names a static member: a declaration goes on
+        // from the member with a declarator - a name, `*`, `&`, `::` or `<` -
+        // and anything else is an expression built on it (the cl review's A13).
         if (after != 0 && peekAt(after).is("::") &&
-            peekAt(after + 1).kind == TokenKind::Ident &&
-            peekAt(after + 2).is("("))
-            return false;
+            peekAt(after + 1).kind == TokenKind::Ident) {
+            const Token &next = peekAt(after + 2);
+            if (next.kind != TokenKind::Ident && !next.is("*") && !next.is("&") &&
+                !next.is("&&") && !next.is("::") && !next.is("<"))
+                return false;
+        }
     }
 
     // The same empty pair, for a type named without a qualifier: `P().get();`

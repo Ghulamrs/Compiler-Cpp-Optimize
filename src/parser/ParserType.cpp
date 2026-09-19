@@ -284,6 +284,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         }
     };
 
+    std::size_t membersFromBases = 0;
     for (std::size_t li = 0; li < layOrder.size(); li++) {
         // A virtual base is not in that order at all: it goes after every
         // non-virtual byte, which is not known until the members have been read.
@@ -350,8 +351,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (m.access == Access::Private) m.access = Access::Private;
             else if (how == Access::Private) m.access = Access::Private;
             else if (how == Access::Protected) m.access = Access::Protected;
+            // The same name already copied down from an earlier base: both
+            // are ambiguous in this class - [class.member.lookup] - though a
+            // member the class writes itself, added after, hides them both.
+            for (std::size_t j = 0; j < membersFromBases; j++)
+                if (members[j].name == m.name) { members[j].ambiguous = true; m.ambiguous = true; }
             members.push_back(m);
         }
+        membersFromBases = members.size();
         baseAt[bi] = at;
         endsZero = b->endsWithZeroSized();
         if (!leadsKnown) { leadsZero = b->leadsWithZeroSized(); leadsKnown = true; }
@@ -1603,11 +1610,24 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // **`typename` is a hint this compiler does not need, so it is read and dropped.**
     // It tells a parser that a dependent qualified name is a type, which matters only
     // where a body is parsed before its arguments; this one replays at instantiation.
+    bool sawTypename = false;
     if (consume("typename")) {
+        sawTypename = true;
         if (peek().kind != TokenKind::Ident)
             src_.fail(peek().pos, "'typename' introduces a qualified type "
                                   "name, and this is not one");
     }
+    // **`X::type` with X a template parameter needs the `typename`** -
+    // [temp.res]/3, cl's C7510. The body is replayed with X bound, so the
+    // member is found either way; the rule is kept because cl keeps it (A27).
+    if (!sawTypename && peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        peekAt(2).kind == TokenKind::Ident &&
+        boundTypeParams_.find(peek().text) != boundTypeParams_.end())
+        src_.fail(peek().pos, "'" + peek().text + "::" + peekAt(2).text +
+                              "' names a member of the template parameter '" +
+                              peek().text + "', and whether that is a type "
+                              "depends on the argument - write 'typename " +
+                              peek().text + "::" + peekAt(2).text + "'");
 
     // A class template with its arguments *is* a type. A function template
     // named where a type was expected is not, and is refused by name.
@@ -2113,10 +2133,11 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         std::size_t open = at_;
         at_++;
         // `int (*p)()` and `int (S::*p)()` are the same shape to this branch: what is
-        // inside the parentheses points at something, so what follows them is a
-        // parameter list and not an array bound - or the inner base is wrong.
-        const bool wrapsMemberPointer = peek().kind == TokenKind::Ident &&
-                                        peekAt(1).is("::") && peekAt(2).is("*");
+        // inside the parentheses points at something, so what follows them is a parameter
+        // list, not an array bound. The class may be nested: `(Nest::In::*m)` (A20).
+        std::size_t q = 0;
+        while (peekAt(q).kind == TokenKind::Ident && peekAt(q + 1).is("::")) q += 2;
+        const bool wrapsMemberPointer = q > 0 && peekAt(q).is("*");
         bool wrapsAPointer = peek().is("*") || wrapsMemberPointer;
 
         declarator(types_.intType(), true, true);

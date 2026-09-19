@@ -3188,7 +3188,7 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
         }
 
     std::vector<GlobalPiece> pieces;
-    bool hasInit = false;
+    bool hasInit = false, stored = false;
     if (consume("=") || atBracedInitialiser(d.name)) {
         Init in = parseInitialiser();
         // Read while the initialiser tree is still in scope, as the
@@ -3209,14 +3209,23 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
             }
             if (rec.known || rec.dknown) staticConsts_[s->symbol] = rec;
         }
-        flattenInit(s->type, in, 0, pieces);
-        hasInit = true;
+        // `T Tm<T>::st = T();` with T a trivial class, or an initialiser that
+        // does not fold: stored before main, as the namespace-scope path does
+        // (A13). A template's member is stored under its once-guard.
+        if (staticallyInitialisable(s->type, in)) {
+            flattenInit(s->type, in, 0, pieces);
+            hasInit = true;
+        } else {
+            dynamicInitialiseStaticMember(d.qualifier + "::" + d.name, s->symbol,
+                                          s->type, in, owner->isSpecialization());
+            stored = true;
+        }
     }
     expect(";");
 
     program.globals.push_back(Global{ d.qualifier + "::" + d.name, s->symbol,
                                       s->type, std::move(pieces), hasInit, false,
-                                      s->type->isConst() });
+                                      s->type->isConst() && !stored });
     // A template's static member is defined by every unit that uses it, and
     // the linker keeps one - a weak object, as its vtable is.
     program.globals.back().isInline = owner->isSpecialization();

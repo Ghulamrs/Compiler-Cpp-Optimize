@@ -87,6 +87,8 @@ struct Member {
     const Type *inVirtualBase = nullptr;
     // **Which class declared it**, null for one the class wrote itself.
     const Type *declaredIn = nullptr;
+    // In two base subobjects of the copying class (A25): unqualified, refused.
+    bool ambiguous = false;
 
     bool isBitField() const { return width != 0; }
 };

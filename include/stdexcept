@@ -28,6 +28,8 @@
 
 #include <exception>
 #include <string>
+#include <cstdio>
+#include <cstdlib>
 
 namespace std {
 
@@ -90,6 +92,20 @@ public:
     explicit underflow_error(const string &what_arg) : runtime_error(what_arg) {}
     explicit underflow_error(const char *what_arg) : runtime_error(what_arg) {}
 };
+
+// What `string::at` calls - declared in <string>, above the class that
+// `out_of_range` needs complete. **On x86_64-windows a class cannot be thrown
+// yet** (EXCLUSIONS: the ThrowInfo chain), so there the failure is reported
+// and the program stopped, the way a failed check is with no handler for it.
+#ifdef _WIN32
+static void __throw_out_of_range(const char *what) {
+    std::fputs(what, stderr);
+    std::fputs(": out of range\n", stderr);
+    std::abort();
+}
+#else
+static void __throw_out_of_range(const char *what) { throw out_of_range(what); }
+#endif
 
 }  // namespace std
 
