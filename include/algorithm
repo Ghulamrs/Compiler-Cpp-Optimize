@@ -98,6 +98,26 @@ static void sort(It from, It to) {
 
 #endif
 
+// **reverse - [alg.reverse].** Swaps from both ends until they meet; the
+// element type is deduced from a pointer to one, this header having no
+// iterator_traits.
+template <class It, class T>
+static void reverseSwap(It a, It b, T *) {
+    T held(*a);
+    *a = *b;
+    *b = held;
+}
+
+template <class It>
+static void reverse(It from, It to) {
+    while (from != to) {
+        --to;
+        if (from == to) break;
+        reverseSwap(from, to, &*from);
+        ++from;
+    }
+}
+
 // **max_element and min_element - [alg.min.max].** The first iterator whose
 // element no other beats, which is what makes them stable: `<` is asked in the
 // order the standard fixes, so an earlier equal element wins for max_element

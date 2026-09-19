@@ -217,6 +217,18 @@ void Parser::topLevel(Program &program) {
     if (constexprFunction && !d.type->isFunction())
         d.type = types_.withoutConst(d.type);
 
+    // **`int ns::f(int)` defines the `f` declared in namespace `ns`**: the
+    // qualifier names a namespace, not a class, so it is folded into the name
+    // - a function in a namespace is keyed `ns::f` throughout - and the
+    // definition proceeds as one written inside the namespace (the cl
+    // review's A17: every declare-inside, define-outside header met "'ns' is
+    // not a class").
+    if (!d.qualifier.empty() && namespaces_.find(d.qualifier) != namespaces_.end() &&
+        findTypedef(d.qualifier) == nullptr) {
+        d.name = d.qualifier + "::" + d.name;
+        d.qualifier.clear();
+    }
+
     // **`S g(1);` at file scope is a construction, not a prototype**: a
     // parameter list begins with a type name or is empty, the local path's own
     // question, and `S g();` is the function C++ says it is.

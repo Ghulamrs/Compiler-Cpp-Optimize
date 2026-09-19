@@ -455,10 +455,15 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     if (slot != 0 && destructorOf(returns) != nullptr)
         pendingTemps_.push_back(Temporary{ slot, returns->unqualified(), 0 });
 
-    // A call that returns a reference is an lvalue, and useReference is what
+    // A call that returns a reference is a glvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
-    // around it is what the caller actually named.
-    return useReference(std::move(n));
+    // around it is what the caller actually named. An lvalue for `T &`; for
+    // `T &&` an xvalue, [expr.call]/10 - which is what lets `std::move(x)` bind
+    // to a move constructor's parameter (the cl review's A22).
+    const bool xvalue = n->type()->isReference() && n->type()->isRValueReference();
+    ExprPtr made = useReference(std::move(n));
+    if (xvalue) made->setXvalue();
+    return made;
 }
 
 void Parser::claimCallResult(Call &c, int slot) {

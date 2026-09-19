@@ -222,6 +222,19 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
                        "order - only '==' and '!=' are written with 'nullptr'");
     if (null || lhs->type()->isPointer() || rhs->type()->isPointer() ||
         lhs->type()->isMemberPointer() || rhs->type()->isMemberPointer()) {
+        // **A pointer beside an integer: only a null pointer constant.** [expr.eq]
+        // and [expr.rel] compare two pointers, or a pointer with the constant
+        // zero; `p == 1` was accepted here as C would not either (cl C2446,
+        // the review's A26).
+        for (int side = 0; side < 2; side++) {
+            const Expr &ptr = side == 0 ? *lhs : *rhs;
+            const Expr &other = side == 0 ? *rhs : *lhs;
+            if ((ptr.type()->isPointer() || ptr.type()->isMemberPointer()) &&
+                other.type()->isArithmetic() && !isNullConstant(other))
+                src_.fail(pos, "'" + ptr.type()->describe() + "' is compared with '" +
+                               other.type()->describe() + "' - a pointer compares with "
+                               "a pointer, or with 0; a cast says you meant the integer");
+        }
         // The null a data member pointer holds is -1, so nullptr becomes that first.
         if (lhs->type()->isNullPtr() && rhs->type()->isMemberPointer()) lhs = convert(std::move(lhs), rhs->type());
         if (rhs->type()->isNullPtr() && lhs->type()->isMemberPointer()) rhs = convert(std::move(rhs), lhs->type());

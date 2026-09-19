@@ -842,6 +842,22 @@ ExprPtr Parser::assign() {
     // not by moving its bytes. Where the copy is trivial no such function was
     // declared, and this is the struct assignment it has always been.
     if (const Signature *op = copyAssignOf(to->unqualified())) {
+        // **The one for the value's category.** A class may declare both a
+        // copy and a move assignment; an lvalue takes the `const T &` one and
+        // an xvalue or prvalue the `T &&` one, whichever was declared first
+        // (the cl review's A22: `e = b` went to `operator=(Buf &&)` and was
+        // then refused for having an address).
+        if (const std::vector<std::size_t> *set = overloadsOf(assignmentKey(to->unqualified()->tag()))) {
+            const bool wantMove = !isLvalue(*value);
+            for (std::size_t i = 0; i < set->size(); i++) {
+                const Signature &cand = functions_[(*set)[i]];
+                if (cand.params.empty()) continue;
+                if (cand.params[0]->isReference() && cand.params[0]->isRValueReference() == wantMove) {
+                    op = &cand;
+                    break;
+                }
+            }
+        }
         markUsed(op);
         const Type *selfPtr = types_.pointerTo(to->unqualified());
         ExprPtr addr(new Unary('&', std::move(n)));

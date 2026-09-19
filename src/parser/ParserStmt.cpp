@@ -867,13 +867,12 @@ StmtPtr Parser::caseLabel() {
                         : "'case " + std::to_string(value) + ":'",
               "the 'switch'");
 
-    if (atDeclarationStart())
-        src_.fail(peek().pos, "a label cannot be followed by a declaration - "
-                              "put it in a block");
+    // A declaration is a statement in C++, so a label may stand before one;
+    // the rule that it may not was C's (the cl review's A10).
     if (peek().is("}"))
         src_.fail(peek().pos, "a label must be followed by a statement");
 
-    StmtPtr body = statement();
+    StmtPtr body = atDeclarationStart() ? declaration() : statement();
 
     Case *node = new Case(value, isDefault, caseIds_++, std::move(body));
     StmtPtr owned(node);
@@ -893,13 +892,12 @@ StmtPtr Parser::gotoLabel() {
             src_.fail(pos, "label '" + name + "' is defined twice in this function");
     labels_.push_back(LabelDef{ name, pos, jumpGuards(), alive_, nullptr });
 
-    if (atDeclarationStart())
-        src_.fail(peek().pos, "a label cannot be followed by a declaration - "
-                              "put it in a block");
+    // A declaration is a statement in C++, so a label may stand before one;
+    // the rule that it may not was C's (the cl review's A10).
     if (peek().is("}"))
         src_.fail(peek().pos, "a label must be followed by a statement");
 
-    return StmtPtr(new Label(std::move(name), statement()));
+    return StmtPtr(new Label(std::move(name), atDeclarationStart() ? declaration() : statement()));
 }
 
 // **[stmt.dcl]/3: a jump may not enter the scope of an initialised object.** All three
