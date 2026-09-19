@@ -98,13 +98,13 @@ public:
 // yet** (EXCLUSIONS: the ThrowInfo chain), so there the failure is reported
 // and the program stopped, the way a failed check is with no handler for it.
 #ifdef _WIN32
-static void __throw_out_of_range(const char *what) {
+inline void __throw_out_of_range(const char *what) {
     std::fputs(what, stderr);
     std::fputs(": out of range\n", stderr);
     std::abort();
 }
 #else
-static void __throw_out_of_range(const char *what) { throw out_of_range(what); }
+inline void __throw_out_of_range(const char *what) { throw out_of_range(what); }
 #endif
 
 }  // namespace std

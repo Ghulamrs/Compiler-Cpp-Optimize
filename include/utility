@@ -28,12 +28,12 @@ struct pair {
 };
 
 template <class T1, class T2>
-static pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
+pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
     return pair<T1, T2>(a, b);
 }
 
 template <class T>
-static void swap(T &a, T &b) {
+void swap(T &a, T &b) {
     T held(a);
     a = b;
     b = held;
@@ -50,22 +50,22 @@ static void swap(T &a, T &b) {
 // the same shape; a forwarding reference of the program's own still cannot
 // be written (CONFORMANCE).
 template <class T>
-static T &&move(T &t) {
+T &&move(T &t) {
     return static_cast<T &&>(t);
 }
 
 template <class T>
-static T &&move(T &&t) {
+T &&move(T &&t) {
     return static_cast<T &&>(t);
 }
 
 template <class T>
-static T &&forward(T &t) {
+T &&forward(T &t) {
     return static_cast<T &&>(t);
 }
 
 template <class T>
-static T &&forward(T &&t) {
+T &&forward(T &&t) {
     return static_cast<T &&>(t);
 }
 

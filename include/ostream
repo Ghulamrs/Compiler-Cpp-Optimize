@@ -271,30 +271,29 @@ public:
 // A newline and a flush, which is the whole of what endl is - and the reason
 // it is slower than writing '\n', which is worth knowing rather than guessing.
 //
-// **`static`, not `inline`.** This compiler refuses `inline`, and a header-only
-// library needs these to have internal linkage anyway or two translation units
-// would collide on them - which is the same reason the stream objects in
-// <iostream> are static.
-static ostream &endl(ostream &o) { return o.put('\n').flush(); }
+// **`inline`, as the standard has them** - mergeable across translation units;
+// see the note above the operators in <string> for when that became possible.
+// The stream *objects* in <iostream> stay `static` for a different reason.
+inline ostream &endl(ostream &o) { return o.put('\n').flush(); }
 
 // **fixed, scientific and defaultfloat set the float format.** They are the
 // manipulators <ostream> owns that take no argument, so `os << std::fixed`
 // reaches the `ostream &(*)(ostream &)` overload the same way endl does. The
 // standard puts them in <ios>; there is no separate <ios> here.
-static ostream &fixed(ostream &o)        { o.fmt_ = 1; return o; }
-static ostream &scientific(ostream &o)   { o.fmt_ = 2; return o; }
-static ostream &defaultfloat(ostream &o) { o.fmt_ = 0; return o; }
-static ostream &flush(ostream &o) { return o.flush(); }
-static ostream &ends(ostream &o) { return o.put('\0'); }
+inline ostream &fixed(ostream &o)        { o.fmt_ = 1; return o; }
+inline ostream &scientific(ostream &o)   { o.fmt_ = 2; return o; }
+inline ostream &defaultfloat(ostream &o) { o.fmt_ = 0; return o; }
+inline ostream &flush(ostream &o) { return o.flush(); }
+inline ostream &ends(ostream &o) { return o.put('\0'); }
 
 // **The base manipulators**, which the `operator<<` taking a function pointer
 // already knew how to apply - `ss << std::hex << n` is that overload calling
 // this. The base is sticky, as the standard makes it: it holds until `dec` or
 // `oct` says otherwise, which is why a program that writes one usually writes
 // its partner afterwards.
-static ostream &hex(ostream &o) { o.base_ = 16; return o; }
-static ostream &dec(ostream &o) { o.base_ = 10; return o; }
-static ostream &oct(ostream &o) { o.base_ = 8; return o; }
+inline ostream &hex(ostream &o) { o.base_ = 16; return o; }
+inline ostream &dec(ostream &o) { o.base_ = 10; return o; }
+inline ostream &oct(ostream &o) { o.base_ = 8; return o; }
 
 }  // namespace std
 

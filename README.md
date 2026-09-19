@@ -113,8 +113,11 @@ what a program *means*:
   the iterator both ways, which is all any iterator here can promise.
 - **`numeric_limits` means something only where it is specialised.** The primary
   template answers `T()` to every query.
-- The functions in `<algorithm>`, `<numeric>` and `<utility>` are `static`, so
-  each translation unit gets its own copy.
+- The library's free functions are `inline` and its function templates plain,
+  as the standard has them - one definition merged across translation units
+  (since 2026-09-19; they were `static` while cxx1 had no weak linkage). Only
+  the four stream objects in `<iostream>` stay `static`: an `inline` variable
+  is C++17, and there is no object file to define them in.
 
 ### What is absent
 

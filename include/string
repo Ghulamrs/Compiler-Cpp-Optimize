@@ -29,7 +29,7 @@ namespace std {
 // the end of <stdexcept>, which the end of this header includes: the same
 // shape libstdc++ gives it, with the definition in every unit rather than in
 // a library, as the operators below are.
-static void __throw_out_of_range(const char *what);
+inline void __throw_out_of_range(const char *what);
 
 class string {
 public:
@@ -267,45 +267,44 @@ private:
 // lets `"a" + s` work as well as `s + "a"`: a member would need the left side
 // to be the class.
 //
-// **`static` and not `inline`, and that is a compiler limit rather than a
-// choice.** These want to be `inline`: one definition, merged across every
-// translation unit that includes this. cxx1 has no `inline` and no weak or
-// linkonce linkage to give it, so the honest spelling is internal linkage -
-// each file that includes this gets its own copy of these eleven functions,
-// which is correct because they hold no state, and wasteful in a way nothing
-// here can measure. When COMDAT lands, these become `inline`.
-static bool operator==(const string &a, const string &b) { return a.compare(b) == 0; }
-static bool operator==(const string &a, const char *b) { return a.compare(b) == 0; }
-static bool operator==(const char *a, const string &b) { return b.compare(a) == 0; }
-static bool operator!=(const string &a, const string &b) { return a.compare(b) != 0; }
-static bool operator!=(const string &a, const char *b) { return a.compare(b) != 0; }
-static bool operator!=(const char *a, const string &b) { return b.compare(a) != 0; }
-static bool operator<(const string &a, const string &b) { return a.compare(b) < 0; }
-static bool operator>(const string &a, const string &b) { return a.compare(b) > 0; }
-static bool operator<=(const string &a, const string &b) { return a.compare(b) <= 0; }
-static bool operator>=(const string &a, const string &b) { return a.compare(b) >= 0; }
+// **`inline`, since 2026-09-19: one definition, merged across every translation
+// unit that includes this.** They were `static` until then - a copy per unit -
+// because cxx1 had no weak or linkonce linkage to give an inline function.
+// Now it does on every target: `.weak` on the two GNU targets and the C6000,
+// `.weak_def_can_be_hidden` on Mach-O, a COMDAT section on Windows in both
+// spellings (the project's own MASM assembler took COMDAT on 2026-09-18).
+inline bool operator==(const string &a, const string &b) { return a.compare(b) == 0; }
+inline bool operator==(const string &a, const char *b) { return a.compare(b) == 0; }
+inline bool operator==(const char *a, const string &b) { return b.compare(a) == 0; }
+inline bool operator!=(const string &a, const string &b) { return a.compare(b) != 0; }
+inline bool operator!=(const string &a, const char *b) { return a.compare(b) != 0; }
+inline bool operator!=(const char *a, const string &b) { return b.compare(a) != 0; }
+inline bool operator<(const string &a, const string &b) { return a.compare(b) < 0; }
+inline bool operator>(const string &a, const string &b) { return a.compare(b) > 0; }
+inline bool operator<=(const string &a, const string &b) { return a.compare(b) <= 0; }
+inline bool operator>=(const string &a, const string &b) { return a.compare(b) >= 0; }
 
-static string operator+(const string &a, const string &b) {
+inline string operator+(const string &a, const string &b) {
     string r(a);
     r += b;
     return r;
 }
-static string operator+(const string &a, const char *b) {
+inline string operator+(const string &a, const char *b) {
     string r(a);
     r += b;
     return r;
 }
-static string operator+(const char *a, const string &b) {
+inline string operator+(const char *a, const string &b) {
     string r(a);
     r += b;
     return r;
 }
-static string operator+(const string &a, char b) {
+inline string operator+(const string &a, char b) {
     string r(a);
     r += b;
     return r;
 }
-static string operator+(char a, const string &b) {
+inline string operator+(char a, const string &b) {
     string r(1, a);
     r += b;
     return r;
@@ -317,7 +316,7 @@ static string operator+(char a, const string &b) {
 // each remainder round with `'0' - x % 10`. C++11 fixed `%` to truncate toward
 // zero, so a negative dividend gives a non-positive remainder and the
 // subtraction is the digit.
-static string to_string(long long v) {
+inline string to_string(long long v) {
     char buf[24];
     int n = 0;
     bool neg = v < 0;
@@ -333,10 +332,10 @@ static string to_string(long long v) {
     return r;
 }
 
-static string to_string(int v) { return to_string((long long)v); }
-static string to_string(long v) { return to_string((long long)v); }
-static string to_string(unsigned v) { return to_string((long long)v); }
-static string to_string(unsigned long v) { return to_string((long long)v); }
+inline string to_string(int v) { return to_string((long long)v); }
+inline string to_string(long v) { return to_string((long long)v); }
+inline string to_string(unsigned v) { return to_string((long long)v); }
+inline string to_string(unsigned long v) { return to_string((long long)v); }
 
 }  // namespace std
 
