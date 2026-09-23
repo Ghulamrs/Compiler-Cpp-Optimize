@@ -52,6 +52,7 @@ struct IrSem {
     unsigned use = 0;        // read, at any width, base registers included
     unsigned def = 0;        // written whole, and not read
     unsigned part = 0;       // written in part - also in `use`
+    unsigned callee = 0;     // a call: what its own operand reads, `call *%r11`'s r11
     // A read that a rename may not touch: an implicit operand, the shift
     // count, the destination of a read-modify-write.
     unsigned fixed = 0;
@@ -104,8 +105,9 @@ public:
      *  the optimizer can see that a value moved out of rax before a call is
      *  dead at it - which is what lets retargetDefs fold
      *  `mov rax,X ; mov r8,rax` into `mov r8,X`. */
-    void wrap(Spelling *under, int level, bool callReads = true) {
+    void wrap(Spelling *under, int level, bool callReads = true, bool microsoftAbi = false) {
         under_ = under; level_ = level; callReadsAccumulator_ = callReads;
+        microsoftAbi_ = microsoftAbi;
     }
     bool active() const { return under_ != nullptr; }
 
@@ -171,6 +173,7 @@ private:
     unsigned initLive_ = 0;
     bool initFlags_ = false;
     bool callReadsAccumulator_ = true;
+    bool microsoftAbi_ = false;
     bool rdxLive_ = true;
     std::vector<std::pair<long long, int> > scalars_;
     // The prologue, held until the body is known so the saves can be named.

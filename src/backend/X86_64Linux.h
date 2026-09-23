@@ -48,7 +48,7 @@ public:
     void setOptimize(int level) override {
         level_ = level;
         if (level < 1) return;
-        opt_.wrap(a_, level, abi_.variadicSseCountInAl);
+        opt_.wrap(a_, level, abi_.variadicSseCountInAl, target_.microsoftNames());
         a_ = &opt_;
     }
     void loopHead() override { if (level_ >= 2) a_->loopAlign(); }

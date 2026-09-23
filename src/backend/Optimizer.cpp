@@ -445,7 +445,10 @@ IrSem describe(const IrIns &i) {
         }
         break;
     case IrSem::Call:
+        // Everything, here: this has no ABI to hand. Optimizer::semantics()
+        // narrows it to what the convention says a call reads and writes.
         if (i.operands == 1) d.read(i.a, false);
+        s.callee = s.use;
         s.use = kAll; s.fixed = kAll;
         s.memWrite = true;
         break;
@@ -694,11 +697,35 @@ void Optimizer::semantics(IrIns &x) const {
      *  range. Deleting the instruction was right and cost 4,336 bytes of .text
      *  in a build of Compiler++, because 851 folds per unit went with it. The
      *  Microsoft ABI passes nothing in rax, so on that target the liveness was
-     *  wrong, not the fold. System V stays as it was: its variadic call really
-     *  does read AL, and that is the one call still setting it. */
-    if (x.sem.cls == IrSem::Call && !callReadsAccumulator_) {
-        x.sem.use &= ~bit(kRax);
-        x.sem.fixed &= ~bit(kRax);
+     *  wrong, not the fold. System V's variadic call really does read AL.
+     *
+     *  **And the rest of the registers, the same way.** rax was the one
+     *  carved out; every other register stayed live in front of every call,
+     *  so no pass could drop or fold a value before one - on Compiler++,
+     *  three quarters of the lea fusions refused were refused for that. A
+     *  call reads its argument registers, rsp and rbp, and what its own
+     *  operand names; it writes what the convention lets a callee clobber,
+     *  and what the callee preserves passes through it untouched. Memory is
+     *  not tracked register by register: a call writes it, as before. */
+    if (x.sem.cls == IrSem::Call) {
+        unsigned args, clobber;
+        if (microsoftAbi_) {
+            args = bit(kRcx) | bit(kRdx) | bit(8) | bit(9);
+            for (int k = 0; k < 4; k++) args |= bit(kXmm0 + k);
+            clobber = bit(kRax) | bit(kRcx) | bit(kRdx) | bit(8) | bit(9) | bit(10) | bit(11);
+            for (int k = 0; k < 6; k++) clobber |= bit(kXmm0 + k);
+        } else {
+            args = bit(kRdi) | bit(kRsi) | bit(kRdx) | bit(kRcx) | bit(8) | bit(9);
+            for (int k = 0; k < 8; k++) args |= bit(kXmm0 + k);
+            clobber = bit(kRax) | bit(kRcx) | bit(kRdx) | bit(kRsi) | bit(kRdi) |
+                      bit(8) | bit(9) | bit(10) | bit(11);
+            for (int k = 0; k < 16; k++) clobber |= bit(kXmm0 + k);
+        }
+        if (callReadsAccumulator_) args |= bit(kRax);
+        x.sem.use = args | bit(kRsp) | bit(kRbp) | x.sem.callee;
+        x.sem.def = clobber & ~x.sem.use;
+        x.sem.part = clobber & x.sem.use;
+        x.sem.fixed = x.sem.use;
     }
 }
 
