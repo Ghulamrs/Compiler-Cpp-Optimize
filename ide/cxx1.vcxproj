@@ -27,7 +27,7 @@
   <PropertyGroup>
     <OutDir>$(ProjectDir)build\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)build\$(Configuration)\obj\</IntDir>
-    <TargetName>cxx1</TargetName>
+    <TargetName>cpp11</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

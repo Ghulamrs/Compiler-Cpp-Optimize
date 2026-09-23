@@ -188,7 +188,7 @@ void Optimizer::returnsPair(bool pair) {
 
 // **The passes, through the manager.** What ran here as hand-written loops
 // is the pipeline in OptPipeline.cpp; the manager runs it, checks what each
-// pass requires, and dumps after any pass CXX1_DUMP_MIR names.
+// pass requires, and dumps after any pass CPP11_DUMP_MIR names.
 void Optimizer::improve(opt::Function &fn) { manager_.run(*pipeline_, fn); }
 
 // **The function, then its funclets**, the frame's final size having been

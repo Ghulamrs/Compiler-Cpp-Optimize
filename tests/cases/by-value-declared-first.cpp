@@ -6,7 +6,7 @@
 // x86_64-windows. Until 2026-09-17 it did so for a prototype too, and a
 // prototype has no body to pop it: the entry stayed on the list and the next
 // definition - the same function or any other - destroyed that slot as its
-// own, a second `??1` on the normal path. cl prints one `~NT` per copy; cxx1i
+// own, a second `??1` on the normal path. cl prints one `~NT` per copy; cpp11
 // printed nothing and died. The ledger counts constructions and destructions,
 // and the three shapes are: declared then defined; a prototype of another
 // function ahead of a definition; and a prototype of two by-value parameters

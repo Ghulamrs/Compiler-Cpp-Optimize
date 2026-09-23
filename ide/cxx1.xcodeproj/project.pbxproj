@@ -89,7 +89,7 @@
 		C681B0D6A27FF7AEF4F8EF84 /* Walker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Walker.h; path = "../src/backend/Walker.h"; sourceTree = "<group>"; };
 		12A5F71977D26CEE2AF1E2A4 /* X86_64Linux.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Linux.h; path = "../src/backend/X86_64Linux.h"; sourceTree = "<group>"; };
 		D9E2165876940A054181ABEA /* X86_64Windows.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Windows.h; path = "../src/backend/X86_64Windows.h"; sourceTree = "<group>"; };
-		38A007151ABE87CC01A5B6E9 /* cxx1 */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cxx1; sourceTree = BUILT_PRODUCTS_DIR; };
+		38A007151ABE87CC01A5B6E9 /* cpp11 */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cpp11; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -106,7 +106,7 @@
 		1EE63A94BAD0DF0FCB0E7B8C /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				38A007151ABE87CC01A5B6E9 /* cxx1 */,
+				38A007151ABE87CC01A5B6E9 /* cpp11 */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -185,16 +185,16 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		0E8A3AD980EC179856012B7E /* cxx1 */ = {
+		0E8A3AD980EC179856012B7E /* cpp11 */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B0F3D20354BE0C20B8849EC6;
 			buildPhases = (
 				BCE16DD0260827ECF338C787 /* Sources */,
 			);
 			dependencies = ();
-			name = cxx1;
-			productName = cxx1;
-			productReference = 38A007151ABE87CC01A5B6E9 /* cxx1 */;
+			name = cpp11;
+			productName = cpp11;
+			productReference = 38A007151ABE87CC01A5B6E9 /* cpp11 */;
 			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
@@ -216,7 +216,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				0E8A3AD980EC179856012B7E /* cxx1 */,
+				0E8A3AD980EC179856012B7E /* cpp11 */,
 			);
 		};
 /* End PBXProject section */
@@ -279,11 +279,11 @@
 					"-pedantic",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
-					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/lib\\\"",
-					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/include\\\"",
+					"CXX1_INCLUDE_DIR=\\\"$(SRCROOT)/../lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"$(SRCROOT)/../include\\\"",
 				);
-				PRODUCT_NAME = "cxx1";
-				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++/src";
+				PRODUCT_NAME = "cpp11";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src";
 				GCC_OPTIMIZATION_LEVEL = 0;
 			};
 			name = Debug;
@@ -305,11 +305,11 @@
 					"-pedantic",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
-					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/lib\\\"",
-					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/include\\\"",
+					"CXX1_INCLUDE_DIR=\\\"$(SRCROOT)/../lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"$(SRCROOT)/../include\\\"",
 				);
-				PRODUCT_NAME = "cxx1";
-				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++/src";
+				PRODUCT_NAME = "cpp11";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src";
 				GCC_OPTIMIZATION_LEVEL = 2;
 			};
 			name = Release;
@@ -317,14 +317,14 @@
 		5CDC95DACFA699F887E94779 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				PRODUCT_NAME = "cxx1";
+				PRODUCT_NAME = "cpp11";
 			};
 			name = Debug;
 		};
 		3DD8C2C9CEEB943FC16BC582 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				PRODUCT_NAME = "cxx1";
+				PRODUCT_NAME = "cpp11";
 			};
 			name = Release;
 		};

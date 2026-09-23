@@ -1,4 +1,5 @@
 #include "Driver.h"
+#include "Name.h"
 #include "Version.h"
 #include "backend/X86_64Windows.h"
 
@@ -109,8 +110,8 @@ static bool directoryHas(const std::string &dir, const char *name) {
 
 // **Where the standard headers are, asked in the order a release wants.**
 void Driver::standardIncludeDirectories(const std::string &argv0) {
-    const char *envCxx = std::getenv("CXX1_INCLUDE");
-    const char *envC = std::getenv("CXX1_LIB");
+    const char *envCxx = std::getenv(program::env("INCLUDE").c_str());
+    const char *envC = std::getenv(program::env("LIB").c_str());
     if (envCxx != nullptr && envCxx[0] != '\0') {
         searchPath_.push_back(envCxx);
         if (envC != nullptr && envC[0] != '\0') searchPath_.push_back(envC);
@@ -119,7 +120,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
 
     // Beside the binary or one directory up. include/ is this compiler's when it
     // holds `cstddef`, a name only this library spells; the C headers <cstddef>
-    // reaches are there too (an installation) or in lib/ (a checkout, or cc1's).
+    // reaches are there too (an installation) or in lib/ (a checkout, or c90's).
     const std::string here = programDirectory(argv0);
     const std::string candidates[2] = { here, here + "/.." };
     for (const std::string &at : candidates) {
@@ -193,7 +194,7 @@ static std::string askVswhere() {
     char temp[MAX_PATH];
     char folder[MAX_PATH];
     if (GetTempPathA(MAX_PATH, folder) == 0) return std::string();
-    if (GetTempFileNameA(folder, "cxx1", 0, temp) == 0) return std::string();
+    if (GetTempFileNameA(folder, program::kName, 0, temp) == 0) return std::string();
 
     std::string command =
         "\"\"C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe\""
@@ -295,7 +296,7 @@ static int runTool(const std::string &command) {
     char folder[MAX_PATH];
     char script[MAX_PATH];
     if (GetTempPathA(MAX_PATH, folder) == 0) return runShell(command);
-    if (GetTempFileNameA(folder, "cxx1", 0, script) == 0) {
+    if (GetTempFileNameA(folder, program::kName, 0, script) == 0) {
         return runShell(command);
     }
     std::string batch = script;
@@ -329,12 +330,12 @@ static void noteWindowsToolchain() {
 // four allocation operators are in libc++ or libstdc++ and the C driver links
 // neither; `c++` assembles a .s exactly as `cc` does, and rung 6 wants it too.
 const char *Driver::hostCompiler() {
-    const char *env = std::getenv("CXX1_CC");
+    const char *env = std::getenv(program::env("CC").c_str());
     return (env != nullptr && env[0] != '\0') ? env : "c++";
 }
 
 const char *Driver::hostAssembler(Syntax syntax) {
-    const char *env = std::getenv("CXX1_AS");
+    const char *env = std::getenv(program::env("AS").c_str());
     if (env != nullptr && env[0] != '\0') return env;
     return syntax == Syntax::Ml64 ? "ml64.exe" : "masm.exe";
 }
@@ -346,7 +347,7 @@ const char *Driver::hostGnuAssembler() {
     static std::string found;
     if (!found.empty()) return found.c_str();
 
-    const char *env = std::getenv("CXX1_AS");
+    const char *env = std::getenv(program::env("AS").c_str());
     if (env != nullptr && env[0] != '\0') { found = env; return found.c_str(); }
 
 #ifdef _WIN32
@@ -372,7 +373,7 @@ const char *Driver::hostGnuAssembler() {
 }
 
 const char *Driver::hostLinker() {
-    const char *env = std::getenv("CXX1_LD");
+    const char *env = std::getenv(program::env("LD").c_str());
     return (env != nullptr && env[0] != '\0') ? env : "link.exe";
 }
 
@@ -384,7 +385,7 @@ std::string Driver::temporaryName(int index) {
     while (!base.empty() && (base[base.size() - 1] == '/' ||
                              base[base.size() - 1] == '\\'))
         base.erase(base.size() - 1);
-    return base + (hostIsWindows() ? "\\" : "/") + "cxx1-" +
+    return base + (hostIsWindows() ? "\\" : "/") + program::kName + "-" +
            std::to_string(static_cast<long>(getpid())) + "-" +
            std::to_string(index) + ".s";
 }

@@ -28,7 +28,7 @@
 # and only the balance says anything.
 set -e
 cd "$(dirname "$0")/.."
-CXX1="${CXX1:-./cxx1i.exe}"
+CXX1="${CXX1:-./cpp11.exe}"
 
 # The same CPU limit every other suite compiles under: a parser that loops on
 # bad input is a real failure mode here, and these are programs that already

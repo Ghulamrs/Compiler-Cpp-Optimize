@@ -1,4 +1,5 @@
 #include "OptPass.h"
+#include "../Name.h"
 
 #include "Mir.h"
 
@@ -11,7 +12,7 @@
 namespace opt {
 
 PassManager::PassManager() {
-    const char *want = std::getenv("CXX1_DUMP_MIR");
+    const char *want = std::getenv(program::env("DUMP_MIR").c_str());
     if (!want) return;
     std::stringstream in(want);
     std::string name;

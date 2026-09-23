@@ -57,7 +57,7 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
            -DCXX1_CXX_INCLUDE_DIR='"$(CXXINCDIR)"'
 # src/backend holds one file per platform: the sizes its types measure, the ABI
 # facts the front end has to know, and the code generator when there is one.
-# src/parser holds the eleven files one class is split over - see its Parser.cpp.
+# src/parser holds the twelve files one class is split over - see its Parser.cpp.
 #
 # src/optimizer holds the passes over one function and the Optimizer that runs
 # them in front of the real Spelling - see docs/OPTIMIZER-ARCHITECTURE.md.
@@ -97,7 +97,10 @@ BINDIR  ?= .
 # cxx1.exe on every machine, not only Windows. The programs in this family -
 # RStudio, cc1, shc and this one - carry one name each wherever they are, and a
 # suffix that changes by platform is one more thing a script has to know.
-TARGET   = $(BINDIR)/cxx1.exe
+# The program's name, once - src/Name.h and the project files RIDE's
+# tools/make-projects.py writes spell it the same.
+PROGRAM  = cpp11
+TARGET   = $(BINDIR)/$(PROGRAM).exe
 
 .PHONY: all test golden corpus open comments clean help
 
@@ -128,8 +131,8 @@ $(OBJDIR)/%.o: src/%.cpp
 # checks all three backends on any machine. Neither is a differential suite
 # yet - comparing cxx1's objects against clang's needs mangling and
 # extern "C", which are rung 2.
-# The suites are told which binary, since a BINDIR build puts cxx1i.exe
-# somewhere other than here; unset, each falls back to ./cxx1i.exe.
+# The suites are told which binary, since a BINDIR build puts cpp11.exe
+# somewhere other than here; unset, each falls back to ./cpp11.exe.
 test: $(TARGET)
 	@CXX1=$(TARGET) ./tests/run.sh
 	@CXX1=$(TARGET) ./tests/emit.sh
