@@ -865,8 +865,37 @@ unsigned Optimizer::promote() {
     std::map<long long, long> count;
     std::map<long long, bool> refused;
 
-    for (IrChunk &c : chunks_)
-        for (IrIns &x : c.ins) {
+    // **A use counts for its loop depth.** The save and the restore are paid
+    // once a call; a use inside a loop is paid once an iteration, so it is
+    // worth eight straight-line ones a level, three levels at most. The walker
+    // lays a loop out as one run of chunks from its head to the last jump back
+    // to it, so a jump to a chunk at or before its own marks that run. Jumps
+    // back are gathered by head first: a `while` sends its `continue` to the
+    // head as well, and counting each jump would put the start of the body a
+    // level deeper than it is.
+    // -O2 admits a slot on the weighted count. -O1 only orders by it and
+    // admits on the plain one, which is what a slot saves in bytes: the loop
+    // variables get the two registers, and no more of them are taken.
+    std::vector<long> weight(chunks_.size(), 1);
+    {
+        std::map<std::size_t, std::size_t> latch;   // loop head -> its last jump back
+        for (std::size_t k = 0; k < chunks_.size(); k++) {
+            const int t = chunks_[k].target;
+            if (t < 0 || static_cast<std::size_t>(t) > k) continue;
+            std::size_t &l = latch[static_cast<std::size_t>(t)];
+            l = std::max(l, k);
+        }
+        std::vector<int> depth(chunks_.size(), 0);
+        for (std::map<std::size_t, std::size_t>::const_iterator it = latch.begin();
+             it != latch.end(); ++it)
+            for (std::size_t j = it->first; j <= it->second; j++) depth[j]++;
+        for (std::size_t k = 0; k < chunks_.size(); k++)
+            weight[k] = 1L << (3 * std::min(depth[k], 3));
+    }
+    std::map<long long, long> plain;
+
+    for (std::size_t ci = 0; ci < chunks_.size(); ci++)
+        for (IrIns &x : chunks_[ci].ins) {
             if (x.dead) continue;
             if (!x.semValid) semantics(x);
             for (int k = 0; k < x.operands; k++) {
@@ -883,8 +912,10 @@ unsigned Optimizer::promote() {
                 // `lea` takes the address; any other mnemonic must name a width.
                 if (x.m == "lea" || accessWidth(x, o) != it->second || x.sem.cls == IrSem::Unknown)
                     refused[d] = true;
-                else
-                    count[d]++;
+                else {
+                    count[d] += weight[ci];
+                    plain[d]++;
+                }
             }
         }
 
@@ -909,10 +940,12 @@ unsigned Optimizer::promote() {
     const long least = 4;
     std::map<long long, int> home;
     unsigned saved = 0;
-    for (std::size_t i = 0; i < best.size() && i < most; i++) {
+    for (std::size_t i = 0, n = 0; i < best.size() && n < most; i++) {
         if (best[i].first < least) break;
-        home[best[i].second] = kHome[i];
-        saved |= bit(kHome[i]);
+        if (level_ < 2 && plain[best[i].second] < least) continue;
+        home[best[i].second] = kHome[n];
+        saved |= bit(kHome[n]);
+        n++;
     }
     if (home.empty()) return 0;
 
