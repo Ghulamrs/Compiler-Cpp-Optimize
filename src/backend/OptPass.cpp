@@ -115,7 +115,7 @@ std::string operandText(const Operand &o) {
 // **The stream, one entry a line**: its index, a `-` for a dead entry, the
 // instruction, `label:` or `<event>`; a block boundary where the flow has
 // one, with what is live in and out of it when that has been solved.
-void dumpStream(std::ostream &o, const Function &fn) {
+void dumpStream(std::ostream &o, Function &fn) {
     std::vector<int> blockAt(fn.stream.size() + 1, -1);
     if (fn.has(kPropFlow))
         for (std::size_t b = 0; b < fn.flow.blocks.size(); ++b) blockAt[fn.flow.blocks[b].begin] = static_cast<int>(b);
@@ -124,6 +124,7 @@ void dumpStream(std::ostream &o, const Function &fn) {
             const Block &blk = fn.flow.blocks[blockAt[k]];
             o << ";;   block " << blockAt[k] << " [" << blk.begin << ", " << blk.end << ")";
             if (!fn.flow.solutionsDirty) o << " live in " << std::hex << blk.in.regs << " out " << blk.out.regs << std::dec;
+            if (fn.loops().depthOf(blockAt[k]) > 0) o << " loop depth " << fn.loops().depthOf(blockAt[k]);
             for (int e : blk.succs) {
                 static const char *const kinds[] = {"fall", "jump", "ret", "leave", "eh"};
                 const Edge &edge = fn.flow.edges[e];

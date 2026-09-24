@@ -34,8 +34,11 @@ classDiagram
         +locals promotable whole jumpOnly
         +prologueAt frameSize inlineTop lsda outgoing saves size
         +regions : Region[]
-        +frameBase() has() buildFlow()
+        +frameBase() has() buildFlow() loops()
     }
+    class Loops { count() all() depthOf(block); -bodyOf() }
+    Function *-- Loops : loops_, on request
+    Loops ..> Flow : dominators()
     class Region { begin end target }
     Function *-- Region
     Optimizer *-- Function
@@ -130,6 +133,7 @@ Files, all under `src/backend/`:
 | `OptCore.h` | `RegSet`, `Effects`, `Control`, `Region`, `EntryOf`, `Edge`, `Live`, `Block`, `FlowOf` (build, liveness, dominators), `removeDeadIn`, `removeUnreachableIn` |
 | `OptFlow.{h,cpp}` | `controlOf` for x86; `Flow` = `FlowOf<Entry>` with the x86 effects |
 | `OptDataflow.{h,cpp}` | `ReachingDefs` |
+| `OptLoops.{h,cpp}` | `Loops`: the natural loops from the dominators |
 | `OptCosts.h` | `Costs`, `SizeCosts`, `SpeedCosts` |
 | `Inliner.{h,cpp}` | `Inliner`: which calls the walker walks in place, by the costs' budgets |
 | `OptFunction.h` | `Prop`, `Function` |
@@ -195,6 +199,16 @@ fills `Block::idom` on request. A rebuild clears both.
 
 **`Block`, `Edge`.** Data; see the diagram. `succs`/`preds` are indices
 into `Flow::edges`; `Edge::to == kExit` leaves the function.
+
+**`Loops`.** The natural loops of the flow graph, from its dominators, as
+GCC's `loop-init` finds them: each back edge `b -> h` whose target
+dominates its source heads a loop of `h` and every block that reaches `b`
+without passing `h`; `depthOf(block)` is how many loops hold a block.
+Owned by the `Function` and computed on request (`Function::loops()`, GCC's
+`loops_for_fn`), dropped when the flow is rebuilt; the dominators' first
+client. The dump shows each block's depth. Tried as `promote-locals`'
+weights in place of its label-and-backward-jump count: 89 outputs changed
+for 2 bytes either way, so not taken; the allocator will weigh by them.
 
 **`ReachingDefs`.** A forward dataflow problem: per block and register, the
 definitions that may reach the block's entry. The caller numbers the
@@ -357,8 +371,8 @@ say yes - and the size-or-speed choice for if-conversion and tail calls.
   (`Function::promotable`): a local kept in a callee-saved register would
   need the unwinder to restore it into the pad, and the prologue's saves
   carry no CFI for that yet.
-- `Flow::dominators()` and `dominates()` are built and cleared correctly but
-  no pass reads them; session 2's value numbering is their first client.
+- `Flow::dominators()` and `dominates()` have `Loops` as their client;
+  value numbering over the dominator tree is still to come.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
   session 2's.
 - `Costs` answers the inliner and the passes of today; the allocator's

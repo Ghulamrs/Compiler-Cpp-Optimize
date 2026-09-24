@@ -8,9 +8,11 @@
 
 #include "OptCosts.h"
 #include "OptFlow.h"
+#include "OptLoops.h"
 #include "OptPasses.h"
 #include "Spelling.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -37,6 +39,13 @@ struct Function {
     // The level's answers: what a pass asks instead of the level.
     const Costs &costs() const { return *costs_; }
 
+    // **The natural loops, on request**, kept until the flow is rebuilt -
+    // GCC's loops_for_fn. Needs the flow to describe the stream.
+    const Loops &loops() {
+        if (!loops_) loops_.reset(new Loops(flow));
+        return *loops_;
+    }
+
     // What the walker said of the function.
     std::vector<Local> locals;      // its scalar locals, rbp-relative
     bool promotable = false;        // whether any may be kept in a register
@@ -61,11 +70,13 @@ struct Function {
 
     void buildFlow() {
         flow.build(stream, convention, regions);
+        loops_.reset();
         props |= kPropFlow;
     }
 
 private:
     const Costs *costs_;
+    std::unique_ptr<Loops> loops_;
 };
 
 }

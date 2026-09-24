@@ -91,7 +91,9 @@ private:
 // each joins its block to the one before, so what is known flows through.
 void dropUnnamedLabels(Function &fn);
 
-// One function's stream as text, for the dumps.
-void dumpStream(std::ostream &o, const Function &fn);
+// One function's stream as text, for the dumps: each block with its
+// edges, what is live at its ends, and the loops that hold it - the
+// analyses asked for as a pass would ask.
+void dumpStream(std::ostream &o, Function &fn);
 
 }
