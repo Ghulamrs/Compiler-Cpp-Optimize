@@ -35,8 +35,11 @@ struct Function {
     Convention convention;
     Flow flow;
     unsigned props = kPropPhysical;
-    // The register each pseudo was found in, while the stream names pseudos.
+    // While the stream names pseudos: the register each web's was found in,
+    // and after those, the frame slot each promoted local's stood in.
     std::vector<int> homes;
+    std::vector<Local> slots;
+    bool promoted = false;          // whether any local left its slot for a register
 
     // The level's answers: what a pass asks instead of the level.
     const Costs &costs() const { return *costs_; }

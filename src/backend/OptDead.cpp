@@ -9,7 +9,7 @@ bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0
 // `movslq %eax, %rax` and `mov %eax, %eax`: the low half stays as it was.
 bool extendsInPlace(const Instr &i) {
     if (!gpr(i.a) || !gpr(i.b) || i.a.reg.id != i.b.reg.id || i.a.reg.width != 4) return false;
-    return (i.m == "movslq" && i.b.reg.width == 8) || (i.m == "mov" && i.b.reg.width == 4);
+    return (i.m == "movslq" && i.b.reg.width == 8) || (isMovQL(i.m) && i.b.reg.width == 4);
 }
 
 }

@@ -79,6 +79,7 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     fn_.prologueAt = -1;
     fn_.inlineTop = 0;
     fn_.saves.clear();
+    fn_.promoted = false;
     fn_.shared = opt::SharedSlots();
     inlining_ = false;
 }

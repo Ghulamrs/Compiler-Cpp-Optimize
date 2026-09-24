@@ -11,11 +11,11 @@
 namespace mir {
 
 // **Every pseudo given a register, and the copies that then copy a register
-// to itself dropped.** The homes - where each was found - are a colouring
-// known to work: the answer where no better is found, and the graph's check.
+// to itself dropped.** A web's home is a colouring known to work - the
+// answer where no better is found, and the graph's check; a local has its slot.
 class Allocator {
 public:
-    Allocator(opt::Function &fn, const std::vector<int> &homes);
+    explicit Allocator(opt::Function &fn);
 
     // Colours and writes the registers back; whether the stream changed.
     bool run();
@@ -43,11 +43,14 @@ private:
         std::vector<int> adj;       // the pseudos it interferes with
         opt::RegSet forbid = 0;     // the physical registers it may not take
         long weight = 0;            // its references, weighted by the level
-        int home = 0;
+        long slotWeight = 0;        // a promoted local's accesses, in minWeight's unit
+        int home = -1;              // a web's register; a promoted local has none
+        bool slot = false;          // holds a promoted local, whose slot could serve
     };
 
     opt::Function &fn_;
     const std::vector<int> &homes_;
+    int nHomes_ = 0;                        // the webs' pseudos; the promoted locals' follow
     int n_ = 0;
     int words_ = 0;
     std::vector<std::vector<Use>> uses_;    // per entry
@@ -56,15 +59,20 @@ private:
     Bits matrix_;                           // n_ by n_: whether two pseudos interfere
     std::vector<Copy> copies_;
     std::vector<int> colour_;
+    std::vector<bool> demoted_;             // a promoted local given its slot back
     int coalesced_ = 0;
     bool fellBack_ = false;
-    // The colouring's state: the registers on offer, each node's
+    // The colouring's state: the registers on offer - the caller-saved
+    // ones, and the preserved ones a save can be charged for - each node's
     // representative once coalesced, its degree, and its copies.
     opt::RegSet palette_ = 0;
+    opt::RegSet offered_ = 0;
+    opt::RegSet taken_ = 0;
     std::vector<int> order_;
     std::vector<int> rep_;
     std::vector<int> degree_;
     std::vector<bool> removed_;
+    std::vector<bool> freshFor_;            // may take a preserved register nobody has yet
     std::vector<std::vector<int>> copiesOf_;
     std::vector<std::vector<Copy>> physCopies_;   // per node: its copies to or from a physical register
 
@@ -73,21 +81,25 @@ private:
     void buildInterference();
     void collectCosts();
     bool valid(const std::vector<int> &colour) const;
-    bool colour();
+    int colour();
     void coalesce();
     void simplify(std::vector<int> &stack);
-    bool select(const std::vector<int> &stack);
+    int select(const std::vector<int> &stack);
     int find(int p);
     void merge(int u, int v);
     int significant(int u, int v) const;
     long bestPreference(const std::vector<Copy> &prefs, opt::RegSet forbid) const;
     int pick(int p);
+    void reserveFresh();
+    bool demote(int failed);
+    void addSaves();
 
+    bool isSlot(int p) const { return p >= nHomes_; }
     bool interferes(int p, int q) const { return (matrix_[static_cast<std::size_t>(p) * words_ + q / 64] >> (q % 64)) & 1; }
     unsigned long long *row(int p) { return &matrix_[static_cast<std::size_t>(p) * words_]; }
     const unsigned long long *row(int p) const { return &matrix_[static_cast<std::size_t>(p) * words_]; }
     void addEdge(int p, int q);
-    bool alive(int p) const { return rep_[p] == p && !removed_[p]; }
+    bool alive(int p) const { return rep_[p] == p && !removed_[p] && !demoted_[p]; }
     static void set(Bits &b, int p) { b[p / 64] |= 1ull << (p % 64); }
     static void clear(Bits &b, int p) { b[p / 64] &= ~(1ull << (p % 64)); }
     static bool has(const Bits &b, int p) { return (b[p / 64] >> (p % 64)) & 1; }

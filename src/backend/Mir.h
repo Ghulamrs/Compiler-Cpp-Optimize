@@ -41,7 +41,10 @@ public:
     // How many webs the instructions pinned, of those built.
     int pinned() const { return pinned_; }
 
-    // Every pseudo named in the stream given its register: `colour[p - kFirstPseudo]`.
+    // Every pseudo named in the stream given its register, `colour[p -
+    // kFirstPseudo]`: kToSlot sends a promoted local back to its frame slot,
+    // kAsIs leaves the pseudo standing.
+    enum { kToSlot = -1, kAsIs = -2 };
     static void assign(opt::Function &fn, const std::vector<int> &colour);
     // A whole copy of a register to itself, which an assignment leaves where
     // a split was made or a copy coalesced, goes; a four-byte one

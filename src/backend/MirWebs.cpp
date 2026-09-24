@@ -274,8 +274,13 @@ void Webs::assign(Function &fn, const std::vector<int> &colour) {
         Entry &e = fn.stream[k];
         if (e.kind != Entry::Ins) continue;
         bool renamed = false;
-        for (Operand *o : {&e.ins.a, &e.ins.b})
-            if (isPseudo(o->reg.id)) { o->reg.id = colour[o->reg.id - kFirstPseudo]; renamed = true; }
+        for (Operand *o : {&e.ins.a, &e.ins.b}) {
+            if (!isPseudo(o->reg.id) || colour[o->reg.id - kFirstPseudo] == kAsIs) continue;
+            const int c = colour[o->reg.id - kFirstPseudo];
+            if (c >= 0) o->reg.id = c;
+            else *o = Operand::ofMem(RBP, fn.slots[o->reg.id - kFirstPseudo - fn.homes.size()].disp);
+            renamed = true;
+        }
         if (renamed) fn.flow.effects[k] = effectsOf(e.ins, fn.convention);
     }
     fn.flow.touch();

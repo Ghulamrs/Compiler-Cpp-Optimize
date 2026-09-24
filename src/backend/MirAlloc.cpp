@@ -1,5 +1,7 @@
 #include "MirAlloc.h"
 
+#include "OptPasses.h"
+
 #include <algorithm>
 #include <cassert>
 
@@ -33,15 +35,16 @@ int popcount(unsigned long long x) {
     return n;
 }
 
-// The registers offered, cheapest encoding first: the frame's never, and
-// the preserved ones not until a save can be charged for.
+// The registers offered, cheapest encoding first; the frame's never, and
+// the preserved ones only for a save charged.
 const int kOffer[] = {RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11,
                       RBX, R12, R13, R14, R15};
 
 }
 
-Allocator::Allocator(Function &fn, const std::vector<int> &homes) : fn_(fn), homes_(homes) {
-    n_ = static_cast<int>(homes.size());
+Allocator::Allocator(Function &fn) : fn_(fn), homes_(fn.homes) {
+    nHomes_ = static_cast<int>(fn.homes.size());
+    n_ = nHomes_ + static_cast<int>(fn.slots.size());
     words_ = (n_ + 63) / 64;
 }
 
@@ -96,6 +99,9 @@ void Allocator::solveLiveness() {
             for (int e : blk.succs)
                 if (f.edges[e].kind != Edge::Eh && f.edges[e].to != Edge::kExit)
                     for (int w = 0; w < words_; ++w) live[w] |= liveIn_[f.edges[e].to][w];
+            // A local may be read wherever a jump this function cannot see lands.
+            if (blk.leaves)
+                for (int p = nHomes_; p < n_; ++p) if (!demoted_[p]) set(live, p);
             liveOut_[b] = live;
             for (int k = blk.end - 1; k >= blk.begin; --k) {
                 if (s[k].kind != Entry::Ins || s[k].dead) continue;
@@ -124,12 +130,28 @@ void Allocator::addEdge(int p, int q) {
 void Allocator::buildInterference() {
     const Stream &s = fn_.stream;
     Flow &f = fn_.flow;
-    // The physical liveness is the flow's: a pseudo's write kills no
-    // physical register, which one it kills being what is decided here.
+    // The physical liveness is the flow's, in which a pseudo's write kills
+    // no physical register, which one it kills being what is decided here.
     f.live(s);
     nodes_.assign(n_, Node());
     matrix_.assign(static_cast<std::size_t>(n_) * words_, 0);
-    for (int p = 0; p < n_; ++p) nodes_[p].home = homes_[p];
+    for (int p = 0; p < n_; ++p) {
+        nodes_[p].home = p < nHomes_ ? homes_[p] : -1;
+        nodes_[p].slot = isSlot(p);
+    }
+    // A preserved register the stream never names is offered with a save
+    // and a restore, so its life from the entry to the return does not count.
+    RegSet mentioned = 0;
+    for (const Entry &e : s) {
+        if (e.kind != Entry::Ins || e.dead) continue;
+        for (const Operand *o : {&e.ins.a, &e.ins.b})
+            if ((o->kind == Operand::Register || o->kind == Operand::Memory || o->kind == Operand::Indirect) &&
+                o->reg.id >= 0 && o->reg.id < kPhysical)
+                mentioned |= bit(o->reg.id);
+    }
+    offered_ = 0;
+    for (int r = 0; r < kGprs; ++r)
+        if (candidate(r) && (fn_.convention.preserved & bit(r)) && !(mentioned & bit(r))) offered_ |= bit(r);
     std::vector<int> live;
     for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
         const Block &blk = f.blocks[b];
@@ -152,7 +174,7 @@ void Allocator::buildInterference() {
                 if (!u.write) continue;
                 for (int q : live)
                     if (!(isPseudo(src) && q == indexOf(src) && u.pseudo == indexOf(dst))) addEdge(u.pseudo, q);
-                RegSet physLive = phys.regs;
+                RegSet physLive = phys.regs & ~offered_;
                 if (!isPseudo(src) && src >= 0 && u.pseudo == indexOf(dst)) physLive &= ~bit(src);
                 nodes_[u.pseudo].forbid |= physLive | written;
             }
@@ -167,7 +189,7 @@ void Allocator::buildInterference() {
         live.clear();
         for (int p = 0; p < n_; ++p) if (has(liveIn_[b], p)) live.push_back(p);
         for (int p : live) {
-            nodes_[p].forbid |= blk.in.regs;
+            nodes_[p].forbid |= blk.in.regs & ~offered_;
             for (int q : live) addEdge(p, q);
         }
     }
@@ -184,9 +206,13 @@ void Allocator::collectCosts() {
     std::size_t c = 0;
     for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
         const long w = costs.referenceWeight(loops.depthOf(b));
+        const long lw = costs.loopWeight(loops.depthOf(b));
         for (int k = f.blocks[b].begin; k < f.blocks[b].end; ++k) {
             if (s[k].kind != Entry::Ins || s[k].dead) continue;
-            for (const Use &u : uses_[k]) nodes_[u.pseudo].weight += w;
+            for (const Use &u : uses_[k]) {
+                nodes_[u.pseudo].weight += w;
+                if (isSlot(u.pseudo)) nodes_[u.pseudo].slotWeight += lw;
+            }
             while (c < copies_.size() && copies_[c].entry < k) ++c;
             if (c < copies_.size() && copies_[c].entry == k) copies_[c++].weight = w;
         }
@@ -194,9 +220,10 @@ void Allocator::collectCosts() {
 }
 
 // Whether a colouring honours the graph: no interfering pair shares a
-// register, and no pseudo has one it may not take.
+// register, and no pseudo has one it may not take; a slot is always right.
 bool Allocator::valid(const std::vector<int> &colour) const {
     for (int p = 0; p < n_; ++p) {
+        if (colour[p] < 0) { if (isSlot(p)) continue; return false; }
         if (!candidate(colour[p]) || (nodes_[p].forbid & bit(colour[p]))) return false;
         for (int q : nodes_[p].adj) if (colour[q] == colour[p]) return false;
     }
@@ -221,8 +248,10 @@ void Allocator::merge(int u, int v) {
     rep_[v] = u;
     physCopies_[u].insert(physCopies_[u].end(), physCopies_[v].begin(), physCopies_[v].end());
     nodes_[u].forbid |= nodes_[v].forbid;
-    if (nodes_[v].weight > nodes_[u].weight) nodes_[u].home = nodes_[v].home;
+    if (nodes_[u].home < 0 || (nodes_[v].home >= 0 && nodes_[v].weight > nodes_[u].weight)) nodes_[u].home = nodes_[v].home;
+    nodes_[u].slot = nodes_[u].slot || nodes_[v].slot;
     nodes_[u].weight += nodes_[v].weight;
+    nodes_[u].slotWeight += nodes_[v].slotWeight;
 }
 
 // **Briggs' test**: the neighbours of significant degree the two would have
@@ -231,7 +260,7 @@ int Allocator::significant(int u, int v) const {
     const int k = popcount(palette_);
     int count = popcount((nodes_[u].forbid | nodes_[v].forbid) & palette_);
     for (int q = 0; q < n_; ++q)
-        if ((interferes(u, q) || interferes(v, q)) && rep_[q] == q && degree_[q] >= k) ++count;
+        if ((interferes(u, q) || interferes(v, q)) && alive(q) && degree_[q] >= k) ++count;
     return count;
 }
 
@@ -292,54 +321,82 @@ void Allocator::simplify(std::vector<int> &stack) {
 }
 
 // **The register for a node, its neighbours coloured**: the one its copies
-// prefer most, by weight, then its home, then the cheapest on offer; -1
-// when every one is taken.
+// prefer most, then its home, then the cheapest on offer - a preserved one
+// last, and a fresh one only where reserveFresh said so.
 int Allocator::pick(int p) {
-    RegSet allowed = (palette_ | bit(nodes_[p].home)) & ~nodes_[p].forbid;
+    const Node &nd = nodes_[p];
+    RegSet allowed = palette_ & ~nd.forbid;
+    if (nd.home >= 0) allowed |= bit(nd.home) & ~nd.forbid;
     for (int q = 0; q < n_; ++q)
         if (interferes(p, q) && colour_[q] >= 0) allowed &= ~bit(colour_[q]);
+    const bool fresh = freshFor_[p];
     long score[kGprs] = {0};
     for (int c : copiesOf_[p]) {
         const int other = isPseudo(copies_[c].src) && find(indexOf(copies_[c].src)) == p ? copies_[c].dst : copies_[c].src;
         const int reg = isPseudo(other) ? colour_[find(indexOf(other))] : other;
         if (reg >= 0 && (allowed & bit(reg))) score[reg] += copies_[c].weight;
     }
-    int best = -1;
     std::vector<int> offer = order_;
-    if (!(palette_ & bit(nodes_[p].home))) offer.push_back(nodes_[p].home);
+    if (nd.home >= 0 && !(palette_ & bit(nd.home))) offer.push_back(nd.home);
+    for (int r : kOffer) if ((offered_ & taken_ & bit(r))) offer.push_back(r);
+    if (fresh) for (int r : kOffer) if ((offered_ & ~taken_ & bit(r))) offer.push_back(r);
+    int best = -1;
     for (int r : offer)
-        if ((allowed & bit(r)) && (best < 0 || score[r] > score[best] || (score[r] == score[best] && r == nodes_[p].home)))
+        if ((allowed & bit(r)) && (best < 0 || score[r] > score[best] || (score[r] == score[best] && r == nd.home)))
             best = r;
+    if (best >= 0 && (offered_ & bit(best))) taken_ |= bit(best);
     return best;
 }
 
-bool Allocator::select(const std::vector<int> &stack) {
+// **The level's preserved registers go to the locals that need one most**:
+// a node no caller-saved register can hold, its accesses earning the save,
+// the heaviest first up to the level's count.
+void Allocator::reserveFresh() {
+    freshFor_.assign(n_, false);
+    std::vector<int> needy;
+    for (int p = 0; p < n_; ++p)
+        if (alive(p) && nodes_[p].slot && (palette_ & ~offered_ & ~nodes_[p].forbid) == 0 &&
+            nodes_[p].slotWeight >= fn_.costs().minWeight())
+            needy.push_back(p);
+    std::stable_sort(needy.begin(), needy.end(),
+                     [&](int x, int y) { return nodes_[x].slotWeight > nodes_[y].slotWeight; });
+    for (std::size_t i = 0; i < needy.size() && static_cast<int>(i) < fn_.costs().registers(); ++i) freshFor_[needy[i]] = true;
+}
+
+// The node select could not colour, or -1.
+int Allocator::select(const std::vector<int> &stack) {
     colour_.assign(n_, -1);
     for (int i = static_cast<int>(stack.size()) - 1; i >= 0; --i) {
         const int p = stack[i];
         const int reg = pick(p);
-        if (reg < 0) return false;
+        if (reg < 0) return p;
         colour_[p] = reg;
     }
-    for (int p = 0; p < n_; ++p) colour_[p] = colour_[find(p)];
-    return true;
+    for (int p = 0; p < n_; ++p)
+        if (!demoted_[p]) colour_[p] = colour_[find(p)];
+    return -1;
 }
 
-// Chaitin-Briggs over the graph; the homes if a pseudo ends without a register.
-bool Allocator::colour() {
+// Chaitin-Briggs over the graph; the node left without a register, or -1.
+int Allocator::colour() {
     palette_ = 0;
     order_.clear();
+    taken_ = 0;
     for (int r : kOffer)
         if (candidate(r) && !(fn_.convention.preserved & bit(r))) { palette_ |= bit(r); order_.push_back(r); }
+    palette_ |= offered_;
     rep_.resize(n_);
     for (int p = 0; p < n_; ++p) rep_[p] = p;
+    removed_.assign(n_, false);
     degree_.assign(n_, 0);
     for (int p = 0; p < n_; ++p)
         degree_[p] = static_cast<int>(nodes_[p].adj.size()) + popcount(nodes_[p].forbid & palette_);
     physCopies_.assign(n_, std::vector<Copy>());
     for (const Copy &c : copies_)
         if (isPseudo(c.src) != isPseudo(c.dst)) physCopies_[indexOf(isPseudo(c.src) ? c.src : c.dst)].push_back(c);
+    coalesced_ = 0;
     coalesce();
+    reserveFresh();
     copiesOf_.assign(n_, std::vector<int>());
     for (std::size_t c = 0; c < copies_.size(); ++c) {
         const int u = isPseudo(copies_[c].src) ? find(indexOf(copies_[c].src)) : -1;
@@ -349,27 +406,62 @@ bool Allocator::colour() {
     }
     std::vector<int> stack;
     simplify(stack);
-    if (!select(stack)) {
-        colour_ = homes_;
-        coalesced_ = 0;
-        return false;
-    }
-    assert(valid(colour_) && "a colouring select made must honour the graph");
-    return true;
+    const int failed = select(stack);
+    assert((failed >= 0 || valid(colour_)) && "a colouring select made must honour the graph");
+    return failed;
+}
+
+// **The promoted locals the failed node holds go back to their slots**, in
+// the stream, so the graph is built again without them; false where it
+// holds none, which only the homes can answer.
+bool Allocator::demote(int failed) {
+    std::vector<int> back(n_, Webs::kAsIs);
+    bool any = false;
+    for (int q = nHomes_; q < n_; ++q)
+        if (!demoted_[q] && find(q) == failed) { demoted_[q] = true; back[q] = Webs::kToSlot; any = true; }
+    if (any) Webs::assign(fn_, back);
+    return any;
+}
+
+// **A preserved register taken is saved by the prologue and restored before
+// each return**, its slot below the frame after the saves already made.
+void Allocator::addSaves() {
+    RegSet used = 0;
+    for (int p = 0; p < n_; ++p) if (colour_[p] >= 0) used |= bit(colour_[p]);
+    std::vector<SavedReg> added;
+    for (int r : kOffer)
+        if (used & offered_ & bit(r))
+            added.push_back(SavedReg{regName(r, 8), -(fn_.frameBase() + 8 * static_cast<long long>(fn_.saves.size() + added.size() + 1))});
+    if (added.empty()) return;
+    insertRestores(fn_.stream, added);
+    fn_.saves.insert(fn_.saves.end(), added.begin(), added.end());
 }
 
 bool Allocator::run() {
     coalesced_ = 0;
     fellBack_ = false;
     if (n_ == 0) return Webs::dropSelfCopies(fn_);
-    findUses();
-    solveLiveness();
-    buildInterference();
-    collectCosts();
-    assert(valid(homes_) && "the homes must colour the graph: they are how the stream ran");
-    fellBack_ = !colour();
+    demoted_.assign(n_, false);
+    for (;;) {
+        findUses();
+        solveLiveness();
+        buildInterference();
+        collectCosts();
+        std::vector<int> homes(n_, Webs::kToSlot);
+        for (int p = 0; p < nHomes_; ++p) homes[p] = homes_[p];
+        assert(valid(homes) && "the homes must colour the graph: they are how the stream ran");
+        const int failed = colour();
+        if (failed < 0) break;
+        if (demote(failed)) continue;
+        colour_ = homes;
+        coalesced_ = 0;
+        fellBack_ = true;
+        break;
+    }
     bool moved = false;
-    for (int p = 0; p < n_; ++p) moved = moved || colour_[p] != homes_[p];
+    for (int p = 0; p < nHomes_; ++p) moved = moved || colour_[p] != homes_[p];
+    for (int p = nHomes_; p < n_; ++p) moved = moved || colour_[p] >= 0;
+    addSaves();
     Webs::assign(fn_, colour_);
     const bool dropped = Webs::dropSelfCopies(fn_);
     return moved || dropped;

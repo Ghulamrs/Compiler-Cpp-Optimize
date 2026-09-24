@@ -2,6 +2,7 @@
 
 #include "Mir.h"
 #include "MirAlloc.h"
+#include "MirLocals.h"
 #include "OptPasses.h"
 
 #include <cassert>
@@ -60,28 +61,24 @@ struct Webs : Pass {
     }
 };
 
-// **Every pseudo given a register**, and the copies that then copy a
-// register to itself dropped: the split ones the allocator sent back home,
-// and any it coalesced.
-struct Allocate : Pass {
-    Allocate() : Pass(PassInfo{"allocate", kFlow, kPropPhysical, 0, 0}) {}
-    bool execute(Function &fn) override {
-        mir::Allocator alloc(fn, fn.homes);
-        const bool changed = alloc.run();
-        fn.homes.clear();
-        return changed;
-    }
+// **Every scalar local whose slot a register could hold becomes a pseudo**,
+// the slot kept for the allocator to give back.
+struct LocalsPass : Pass {
+    LocalsPass() : Pass(PassInfo{"locals", kFlow, 0, 0, 0}) {}
+    bool execute(Function &fn) override { return mir::Locals(fn).promote() > 0; }
 };
 
-// **Locals go to registers once the frame is as small as it gets**, so an
-// address folded away no longer counts as escaping. Inserts the restores,
-// so the flow graph no longer describes the stream.
-struct PromoteLocals : Pass {
-    PromoteLocals() : Pass(PassInfo{"promote-locals", kPropPhysical, 0, kFlow, 0}) {}
+// **Every pseudo given a register**, or its slot back, and the copies that
+// then copy a register to itself dropped. The restores of the preserved
+// registers it took leave the flow describing the stream no longer.
+struct Allocate : Pass {
+    Allocate() : Pass(PassInfo{"allocate", kFlow, kPropPhysical, kFlow, 0}) {}
     bool execute(Function &fn) override {
-        fn.saves = promoteLocals(fn.stream, fn.convention, fn.locals, fn.shared, fn.frameBase(),
-                                 fn.costs().registers(), fn.costs().minWeight());
-        return !fn.saves.empty();
+        mir::Allocator alloc(fn);
+        const bool changed = alloc.run();
+        fn.homes.clear();
+        fn.slots.clear();
+        return changed;
     }
 };
 
@@ -122,10 +119,10 @@ struct FrameGroup : Group {
     bool gate(const Function &fn) const override { return fn.whole && fn.prologueAt >= 0; }
 };
 
-// Everything again once locals have registers - if any did.
+// Everything again once locals have registers - if any left its slot.
 struct RoundsIfPromoted : Group {
     RoundsIfPromoted() : Group(PassInfo{"rounds", 0, 0, 0, kTodoDropLabels | kTodoBuildFlow}, 0, WhenNoneChanged) {}
-    bool gate(const Function &fn) const override { return !fn.saves.empty(); }
+    bool gate(const Function &fn) const override { return fn.promoted || !fn.saves.empty(); }
 };
 
 template <class G>
@@ -155,8 +152,8 @@ struct Rounds : Group {
 //                     coalesce-copies, fold-loads, fold-offsets; repeated
 //   frame             (whole, prologue held)
 //     webs            every register web a pseudo, its home kept
-//     allocate        every pseudo a register, the copies coalesced away
-//     promote-locals  scalar locals into callee-saved registers
+//     locals          every promotable scalar local a pseudo, its slot kept
+//     allocate        every pseudo a register or its slot, the copies coalesced away
 //     rounds          (if any was promoted)
 //     dse-loop        remove-dead-stores, then rounds; up to three times,
 //                     while the stores found something
@@ -173,8 +170,8 @@ std::unique_ptr<Pass> pipelineFor() {
 
     std::unique_ptr<Group> frame(new FrameGroup());
     frame->add(std::unique_ptr<Pass>(new Webs()));
+    frame->add(std::unique_ptr<Pass>(new LocalsPass()));
     frame->add(std::unique_ptr<Pass>(new Allocate()));
-    frame->add(std::unique_ptr<Pass>(new PromoteLocals()));
     frame->add(rounds<RoundsIfPromoted>());
     std::unique_ptr<Group> dse(new Group(PassInfo{"dse-loop", 0, 0, 0, 0}, 3, Group::WhenFirstUnchanged));
     dse->add(std::unique_ptr<Pass>(new RemoveDeadStores()));

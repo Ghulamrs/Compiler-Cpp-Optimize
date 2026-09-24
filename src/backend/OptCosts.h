@@ -32,6 +32,8 @@ public:
     // asks that the saves pay for themselves.
     virtual int registers() const = 0;
     virtual long minWeight() const = 0;
+    // The unit minWeight is measured in: one access, eight times as many per loop.
+    long loopWeight(int loopDepth) const { return 1L << (3 * (loopDepth < 5 ? loopDepth : 5)); }
     // A block of three words or more copied by `rep movsq` (smaller) rather
     // than unrolled moves (faster).
     virtual bool stringCopies() const = 0;

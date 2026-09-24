@@ -63,10 +63,14 @@ private:
     long long escapesFrom_ = 0;
 };
 
-// **Scalar locals whose address never escapes, kept in callee-saved
-// registers** - the busiest first, by loop depth. Returns what the prologue saves.
-std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::vector<Local> &locals,
-                                    const SharedSlots &shared, int frameSize, int maxRegs, long minWeight);
+// **The scalar locals a register could hold**: not shared, never addressed,
+// every access whole and by an instruction that takes a register there;
+// none where the frame escapes or setjmp is called. `mentioned`: every register named.
+std::vector<Local> promotableLocals(const Stream &s, const std::vector<Local> &locals, const SharedSlots &shared,
+                                    RegSet &mentioned);
+
+// Each register goes back before rsp is taken from the frame for the return, ahead of the epilogue.
+void insertRestores(Stream &s, const std::vector<SavedReg> &saves);
 
 // **A frame store never read back**, where no address reaches it; whole functions only.
 bool removeDeadStores(Stream &s, const SharedSlots &shared);
