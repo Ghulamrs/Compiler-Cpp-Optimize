@@ -73,6 +73,11 @@ protected:
 
     // **What a backend has to be told about a landing pad, and no more.**
     virtual void landingPad(int pointerSlot, int selectorSlot) = 0;
+    // A call between the two labels that throws continues at the target: the
+    // pad, or where the function resumes after a handler ran as a funclet.
+    virtual void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) {
+        (void)begin; (void)end; (void)target;
+    }
 
     // One row of the call-site table: a call between `begin` and `end` that
     // throws goes to `pad`, catching these types in this order. Collected and

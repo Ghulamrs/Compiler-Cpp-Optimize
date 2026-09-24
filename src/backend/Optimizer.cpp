@@ -94,6 +94,10 @@ void Optimizer::inlineEnd() { inlining_ = false; }
 
 void Optimizer::jumpOnly(const std::string &label) { fn_.jumpOnly.insert(label); }
 
+void Optimizer::exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) {
+    fn_.regions.push_back(opt::Region{begin, end, target});
+}
+
 void Optimizer::functionEnd(const std::string &name) {
     flush();
     inFunction_ = false;
@@ -141,6 +145,7 @@ void Optimizer::flush() {
         }
     }
     fn_.stream.clear();
+    fn_.regions.clear();       // written out with the labels they name
     fn_.props = opt::kPropPhysical;   // a new stream: the flow describes nothing yet
     fn_.prologueAt = -1;       // written out: from here on the frame is what it is
 }

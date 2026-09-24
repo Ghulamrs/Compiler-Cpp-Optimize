@@ -123,7 +123,14 @@ void dumpStream(std::ostream &o, const Function &fn) {
         if (blockAt[k] >= 0) {
             const Block &blk = fn.flow.blocks[blockAt[k]];
             o << ";;   block " << blockAt[k] << " [" << blk.begin << ", " << blk.end << ")";
-            if (!fn.flow.solutionsDirty) o << " live in " << std::hex << blk.liveIn << " out " << blk.liveOut << std::dec;
+            if (!fn.flow.solutionsDirty) o << " live in " << std::hex << blk.in.regs << " out " << blk.out.regs << std::dec;
+            for (int e : blk.succs) {
+                static const char *const kinds[] = {"fall", "jump", "ret", "leave", "eh"};
+                const Edge &edge = fn.flow.edges[e];
+                o << (e == blk.succs.front() ? " -> " : ", ");
+                if (edge.to == Edge::kExit) o << "exit"; else o << edge.to;
+                o << " (" << kinds[edge.kind] << ")";
+            }
             o << "\n";
         }
         const Entry &e = fn.stream[k];

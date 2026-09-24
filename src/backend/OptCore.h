@@ -4,6 +4,7 @@
 // brings its instructions, its effects table and `controlOf`, found by
 // argument lookup; the flow graph, liveness and dead code are the same for all.
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -38,7 +39,15 @@ struct Control {
     bool ends = false;
     bool falls = true;
     bool returns = false;
+    bool calls = false;      // may leave by an exception edge, if a region covers it
     std::string target;
+};
+
+// **A range of the function a landing pad covers**: a call between the two
+// labels that throws continues at the target - the pad itself, or where
+// the function resumes after a handler ran as a funclet. Told by the walker.
+struct Region {
+    std::string begin, end, target;
 };
 
 // **One function, in the order it came**: instructions, labels, and events -
@@ -61,24 +70,54 @@ struct EntryOf {
 // Return carries nothing but what the return instruction reads; Leave is a
 // jump this function cannot see the end of (through a register, or to a
 // label it does not hold), so everything is live across it. Eh is an
-// exception edge from a call to its landing pad: none is made yet - a pad is
-// still a block with no predecessors, and no pass runs in a function that
-// has one - but every pass that walks edges already sees the kind.
+// exception edge from a call to its landing pad's block. GCC ends a block
+// at such a call; here the call stays inside its block - a split would
+// take from the scalar passes what they know across it, a pushed constant
+// for one - and the edge says which entry it leaves at, so liveness and
+// reaching definitions take it there: what the pad reads is live at the
+// call, and the registers the call clobbers die across it by the call's
+// own effects.
 struct Edge {
     enum Kind { Fallthrough, Jump, Return, Leave, Eh };
     int from = 0;
     int to = kExit;                      // a block index, or kExit
     Kind kind = Fallthrough;
+    int at = -1;                         // the entry an Eh edge leaves at; -1: the block's end
     static constexpr int kExit = -1;
+};
+
+// **What is live at a point**: the registers some path reads from here,
+// those read above their low four bytes, and the flags. Walking backward,
+// an instruction's writes die and its reads come alive.
+struct Live {
+    RegSet regs = 0;
+    RegSet wide = 0;
+    bool flags = false;
+
+    void step(const Effects &e) {
+        regs = (regs & ~e.writes) | e.reads;
+        wide = (wide & ~e.writes) | e.wide;
+        flags = e.flagsRead || (flags && !e.flagsWritten);
+    }
+    void join(const Live &o) {
+        regs |= o.regs;
+        wide |= o.wide;
+        flags = flags || o.flags;
+    }
+    bool operator!=(const Live &o) const { return regs != o.regs || wide != o.wide || flags != o.flags; }
+    static Live everything() {
+        Live l;
+        l.regs = l.wide = kAllRegs;
+        l.flags = true;
+        return l;
+    }
 };
 
 struct Block {
     int begin = 0, end = 0;              // entries [begin, end)
     std::vector<int> succs, preds;       // edge indices, in the order made
     bool leaves = false;                 // has a Leave edge: all live at its end
-    RegSet liveIn = 0, liveOut = 0;
-    RegSet wideIn = 0, wideOut = 0;      // live, and read above the low four bytes
-    bool flagsIn = false, flagsOut = false;
+    Live in, out;                        // live at its start, and at its end
     int idom = -1;                       // immediate dominator; -1 for the entry, or not computed
 };
 
@@ -117,13 +156,18 @@ struct FlowOf {
     }
 
     template <class EffectsFn>
-    void build(const std::vector<Entry> &s, EffectsFn effectsOf) {
+    void build(const std::vector<Entry> &s, EffectsFn effectsOf, const std::vector<Region> &regions) {
         blocks.clear();
         edges.clear();
         dominated = false;
         solutionsDirty = true;
         effects.assign(s.size(), Effects());
         std::map<std::string, int> at;
+        // The regions open at each point, and each call under one with the
+        // pad it may leave for - by label, until every block is numbered.
+        std::vector<const Region *> open;
+        struct Throw { int call; std::string pad; };
+        std::vector<Throw> throws;
         Block cur;
         for (int k = 0; k < static_cast<int>(s.size()); ++k) {
             const Entry &e = s[k];
@@ -134,10 +178,20 @@ struct FlowOf {
                 cur = Block();
                 cur.begin = k;
             }
-            if (e.kind == Entry::Label) at[e.label] = static_cast<int>(blocks.size());
+            if (e.kind == Entry::Label) {
+                at[e.label] = static_cast<int>(blocks.size());
+                for (const Region &r : regions) {
+                    if (r.begin == e.label) open.push_back(&r);
+                    if (r.end == e.label) open.erase(std::remove(open.begin(), open.end(), &r), open.end());
+                }
+            }
             if (e.kind != Entry::Ins) continue;
             effects[k] = effectsOf(e.ins);
-            if (!e.dead && controlOf(e.ins).ends) {
+            if (e.dead) continue;
+            const Control c = controlOf(e.ins);
+            if (c.calls)
+                for (const Region *r : open) throws.push_back(Throw{k, r->target});
+            if (c.ends) {
                 cur.end = k + 1;
                 blocks.push_back(cur);
                 cur = Block();
@@ -147,8 +201,8 @@ struct FlowOf {
         cur.end = static_cast<int>(s.size());
         if (cur.end > cur.begin || blocks.empty()) blocks.push_back(cur);
 
-        // Edges: the jump's target, and the next block if the last live
-        // instruction can fall through.
+        // Edges: the jump's target, the next block if the last live
+        // instruction can fall through, and the pads the calls may leave for.
         for (std::size_t b = 0; b < blocks.size(); ++b) {
             Control c;
             for (int k = blocks[b].end - 1; k >= blocks[b].begin; --k)
@@ -167,13 +221,35 @@ struct FlowOf {
                 else connect(static_cast<int>(b), Edge::kExit, Edge::Leave);
             }
         }
+        for (const Throw &t : throws) {
+            const int b = blockOf(t.call);
+            const auto pad = at.find(t.pad);
+            if (pad != at.end()) connect(b, pad->second, Edge::Eh, t.call);
+            else connect(b, Edge::kExit, Edge::Leave);
+        }
     }
 
-    void connect(int from, int to, Edge::Kind kind) {
+    // The block an entry lies in.
+    int blockOf(int k) const {
+        int b = 0;
+        while (blocks[b].end <= k) ++b;
+        return b;
+    }
+
+    // **What a pad reads is live at the call that may leave for it**: every
+    // backward walk of block b joins this at entry k before it steps over k.
+    void joinPads(int b, int k, Live &live) const {
+        for (int e : blocks[b].succs)
+            if (edges[e].kind == Edge::Eh && edges[e].at == k && edges[e].to != Edge::kExit)
+                live.join(blocks[edges[e].to].in);
+    }
+
+    void connect(int from, int to, Edge::Kind kind, int at = -1) {
         Edge e;
         e.from = from;
         e.to = to;
         e.kind = kind;
+        e.at = at;
         edges.push_back(e);
         const int id = static_cast<int>(edges.size()) - 1;
         blocks[from].succs.push_back(id);
@@ -182,34 +258,24 @@ struct FlowOf {
     }
 
     void solve(const std::vector<Entry> &s) {
-        for (Block &b : blocks) { b.liveIn = b.wideIn = 0; b.flagsIn = false; }
+        for (Block &b : blocks) b.in = Live();
         for (bool changed = true; changed;) {
             changed = false;
             for (int b = static_cast<int>(blocks.size()) - 1; b >= 0; --b) {
                 Block &blk = blocks[b];
-                RegSet live = blk.leaves ? kAllRegs : 0, wide = live;
-                bool flags = blk.leaves;
-                for (int e : blk.succs) {
-                    if (edges[e].to == Edge::kExit) continue;
-                    const Block &n = blocks[edges[e].to];
-                    live |= n.liveIn;
-                    wide |= n.wideIn;
-                    flags = flags || n.flagsIn;
-                }
-                blk.liveOut = live;
-                blk.wideOut = wide;
-                blk.flagsOut = flags;
+                // What the successors read comes in at the block's end; what
+                // a pad reads, at the call that may leave for it.
+                Live live = blk.leaves ? Live::everything() : Live();
+                for (int e : blk.succs)
+                    if (edges[e].kind != Edge::Eh && edges[e].to != Edge::kExit) live.join(blocks[edges[e].to].in);
+                blk.out = live;
                 for (int k = blk.end - 1; k >= blk.begin; --k) {
                     if (s[k].kind != Entry::Ins || s[k].dead) continue;
-                    const Effects &e = effects[k];
-                    live = (live & ~e.writes) | e.reads;
-                    wide = (wide & ~e.writes) | e.wide;
-                    flags = e.flagsRead || (flags && !e.flagsWritten);
+                    joinPads(b, k, live);
+                    live.step(effects[k]);
                 }
-                if (live != blk.liveIn || wide != blk.wideIn || flags != blk.flagsIn) {
-                    blk.liveIn = live;
-                    blk.wideIn = wide;
-                    blk.flagsIn = flags;
+                if (live != blk.in) {
+                    blk.in = live;
                     changed = true;
                 }
             }
@@ -279,24 +345,23 @@ template <class Entry, class IdleFn>
 bool removeDeadIn(std::vector<Entry> &s, FlowOf<Entry> &f, RegSet frame, IdleFn idle) {
     f.live(s);
     bool changed = false;
-    for (const Block &blk : f.blocks) {
-        RegSet live = blk.liveOut, wide = blk.wideOut;
-        bool flags = blk.flagsOut;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        Live live = blk.out;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &en = s[k];
             if (en.kind != Entry::Ins || en.dead) continue;
+            f.joinPads(b, k, live);
             const Effects &e = f.effects[k];
             const bool removable = !e.control && !e.memoryWritten && !e.stack && !e.opaque &&
                                    ((e.writes | e.partial) & frame) == 0;
-            const bool used = ((e.writes | e.partial) & live) != 0 || (e.flagsWritten && flags);
-            if ((removable && !used) || idle(en.ins, wide)) {
+            const bool used = ((e.writes | e.partial) & live.regs) != 0 || (e.flagsWritten && live.flags);
+            if ((removable && !used) || idle(en.ins, live.wide)) {
                 en.dead = true;
                 changed = true;
                 continue;
             }
-            live = (live & ~e.writes) | e.reads;
-            wide = (wide & ~e.writes) | e.wide;
-            flags = e.flagsRead || (flags && !e.flagsWritten);
+            live.step(e);
         }
     }
     return changed;

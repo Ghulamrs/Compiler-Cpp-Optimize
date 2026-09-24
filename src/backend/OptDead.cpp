@@ -27,11 +27,11 @@ namespace {
 
 // **A value taken out of X, worked on in t and put back** is worked on in X:
 // `mov %X,%t ... mov %t,%X` with X untouched between and t dead after.
-bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, RegSet live, RegSet wide) {
+bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, const Live &live) {
     const Instr &c = s[k].ins;
     if (!(c.m == "mov" || c.m == "movl" || c.m == "movq") || !gpr(c.a) || !gpr(c.b)) return false;
     const int t = c.a.reg.id, x = c.b.reg.id, w = c.b.reg.width;
-    if (t == x || frameReg(t) || frameReg(x) || c.a.reg.width != w || w < 4 || (live & bit(t)) || (w == 4 && (wide & bit(x)))) return false;
+    if (t == x || frameReg(t) || frameReg(x) || c.a.reg.width != w || w < 4 || (live.regs & bit(t)) || (w == 4 && (live.wide & bit(x)))) return false;
     for (int p = k - 1, n = 0; p >= begin && n < 32; --p, ++n) {
         if (s[p].kind != Entry::Ins || s[p].dead) continue;
         const Instr &i = s[p].ins;
@@ -63,18 +63,20 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, R
 bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
     f.live(s);
     bool changed = false;
-    for (const Block &blk : f.blocks) {
-        RegSet live = blk.liveOut, wide = blk.wideOut;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        Live live = blk.out;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &copy = s[k];
             if (copy.kind != Entry::Ins || copy.dead) continue;
+            f.joinPads(b, k, live);
             const Instr &c = copy.ins;
             const bool isCopy = (c.m == "mov" || c.m == "movq") && gpr(c.a) && gpr(c.b) &&
                                 !frameReg(c.a.reg.id) && !frameReg(c.b.reg.id) &&
                                 c.a.reg.width == 8 && c.b.reg.width == 8 && c.a.reg.id != c.b.reg.id;
             int p = k - 1;
             while (p >= blk.begin && (s[p].kind == Entry::Event || s[p].dead)) --p;
-            if (isCopy && p >= blk.begin && s[p].kind == Entry::Ins && !(live & bit(c.a.reg.id))) {
+            if (isCopy && p >= blk.begin && s[p].kind == Entry::Ins && !(live.regs & bit(c.a.reg.id))) {
                 Instr &w = s[p].ins;
                 const Effects &we = f.effects[p];
                 const RegSet r = bit(c.a.reg.id);
@@ -88,10 +90,8 @@ bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
                     continue;
                 }
             }
-            if (workInPlace(s, f, conv, k, blk.begin, live, wide)) { changed = true; break; }
-            const Effects &e = f.effects[k];
-            live = (live & ~e.writes) | e.reads;
-            wide = (wide & ~e.writes) | e.wide;
+            if (workInPlace(s, f, conv, k, blk.begin, live)) { changed = true; break; }
+            live.step(f.effects[k]);
         }
     }
     return changed;

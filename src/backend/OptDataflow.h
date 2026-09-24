@@ -5,7 +5,7 @@
 // solution stands until something changes the stream.
 //
 // Liveness lives in the flow itself (Flow::live), since every pass asks it
-// and it is what the blocks' liveIn/liveOut are. This file holds the
+// and it is what the blocks' in/out are. This file holds the
 // problems only some passes ask for. Session 2 adds def-use chains here,
 // built from reaching definitions as GCC builds them.
 

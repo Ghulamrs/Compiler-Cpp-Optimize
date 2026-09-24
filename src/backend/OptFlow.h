@@ -10,8 +10,8 @@ namespace opt {
 Control controlOf(const Instr &i);
 
 struct Flow : FlowOf<Entry> {
-    void build(const Stream &s, const Convention &c) {
-        FlowOf<Entry>::build(s, [&c](const Instr &i) { return effectsOf(i, c); });
+    void build(const Stream &s, const Convention &c, const std::vector<Region> &regions) {
+        FlowOf<Entry>::build(s, [&c](const Instr &i) { return effectsOf(i, c); }, regions);
     }
 };
 

@@ -117,6 +117,7 @@ protected:
     void settle() { if (optimizer_) optimizer_->settle(); }
 
     void landingPad(int pointerSlot, int selectorSlot) override;
+    void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) override;
 
 protected:
     // The `.gcc_except_table` for the function just emitted.

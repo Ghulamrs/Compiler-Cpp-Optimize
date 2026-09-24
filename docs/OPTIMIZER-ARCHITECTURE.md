@@ -18,7 +18,7 @@ classDiagram
         -unique_ptr~Pass~ pipeline_
         -PassManager manager_
         +ins() defLabel() stateLabel() functionBegin() functionEnd() prologue()
-        +frame() inlineBegin() inlineEnd() jumpOnly() returnsPair() settle()
+        +frame() inlineBegin() inlineEnd() jumpOnly() exceptionRegion() returnsPair() settle()
         -improve() flush()
     }
     Spelling <|-- Optimizer
@@ -33,8 +33,11 @@ classDiagram
         +unsigned props
         +locals promotable whole jumpOnly
         +prologueAt frameSize inlineTop lsda outgoing saves size
+        +regions : Region[]
         +frameBase() has() buildFlow()
     }
+    class Region { begin end target }
+    Function *-- Region
     Optimizer *-- Function
 
     class Costs { level forSize rounds registers minWeight stringCopies; forLevel() }
@@ -46,10 +49,12 @@ classDiagram
         +vector~Effects~ effects
         +solutionsDirty dominated
         +build() live() touch() solve() dominators() dominates()
-        +succBlocks() predBlocks()
+        +succBlocks() predBlocks() blockOf() joinPads()
     }
-    class Block { begin end succs preds leaves liveIn liveOut wideIn wideOut flagsIn flagsOut idom }
-    class Edge { from to kind : Fallthrough|Jump|Return|Leave|Eh }
+    class Block { begin end succs preds leaves in out idom }
+    class Live { regs wide flags; step(Effects) join(Live) }
+    Block *-- Live : in, out
+    class Edge { from to kind : Fallthrough|Jump|Return|Leave|Eh; at }
     Function *-- Flow
     Flow *-- Block
     Flow *-- Edge
@@ -98,7 +103,7 @@ Files, all under `src/backend/`:
 | `OptTable.{h,cpp}` | `Opcode`, `opcodeOf`, the move families, `conditionOf`/`inverse` |
 | `OptIr.{h,cpp}` | `Reg`, `Operand`, `Instr`, `Entry`, `Stream` (unchanged) |
 | `OptEffects.{h,cpp}` | `Effects`/`Roles` of one instruction from the table; `Convention` |
-| `OptCore.h` | `RegSet`, `Effects`, `Control`, `EntryOf`, `Edge`, `Block`, `FlowOf` (build, liveness, dominators), `removeDeadIn`, `removeUnreachableIn` |
+| `OptCore.h` | `RegSet`, `Effects`, `Control`, `Region`, `EntryOf`, `Edge`, `Live`, `Block`, `FlowOf` (build, liveness, dominators), `removeDeadIn`, `removeUnreachableIn` |
 | `OptFlow.{h,cpp}` | `controlOf` for x86; `Flow` = `FlowOf<Entry>` with the x86 effects |
 | `OptDataflow.{h,cpp}` | `ReachingDefs` |
 | `OptCosts.h` | `Costs` |
@@ -132,7 +137,17 @@ writes `props`.
 **`Flow`** (`FlowOf<Entry>`). The CFG and the scanning layer: `build`
 splits the stream into `Block`s at labels and after control instructions,
 computes `effects` per entry from the opcode table, and makes the `Edge`s -
-jump, fallthrough, return, leave; `Eh` is declared and unmade. `live()`
+jump, fallthrough, return, leave, and `Eh` from every call a `Region`
+covers to the block of the region's target (the landing pad, or where the
+function resumes after a handler ran as a funclet). GCC ends a block at
+such a call; here the call stays in its block - a split would take from
+the scalar passes what they know across it, a pushed constant for one -
+and the edge records the entry it leaves at (`Edge::at`). Liveness is a
+value, `Live` (registers, the ones read wide, the flags), stepped backward
+over an instruction's effects; `solve` and every pass that walks a block
+backward step the same `Live`, and `joinPads(b, k, live)` adds what a
+pad reads at the call that may leave for it, before the call's own effects
+kill what it clobbers. `live()`
 solves liveness (`liveIn`/`liveOut`, with the `wide` and `flags` bits cxx1
 carries) when `solutionsDirty`, and `touch()` sets it dirty; `dominators()`
 fills `Block::idom` on request. A rebuild clears both.
@@ -271,9 +286,13 @@ size-or-speed choice for if-conversion and tail calls.
 
 ## 7. What is a documented stub, and what is not built
 
-- `Edge::Eh` exists as a kind; no builder makes one. The pad is still a
-  block without predecessors, and `Function::promotable` is false for a
-  function with landing pads, so no frame pass runs there (unchanged rule).
+- `Edge::Eh` edges are made (S2) and liveness takes them; reaching
+  definitions still take an Eh edge from its block's end rather than its
+  call, which can only join more definitions than reach the pad. The
+  frame passes still do not run in a function with landing pads
+  (`Function::promotable`): a local kept in a callee-saved register would
+  need the unwinder to restore it into the pad, and the prologue's saves
+  carry no CFI for that yet.
 - `Flow::dominators()` and `dominates()` are built and cleared correctly but
   no pass reads them; session 2's value numbering is their first client.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are

@@ -30,6 +30,8 @@ public:
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
+    // A call between the two labels that throws continues at the target.
+    void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target);
     int level() const { return costs_->level(); }
     // Whether this level copies a block with `rep movsq` rather than unrolled.
     bool copiesByString() const { return costs_->stringCopies(); }

@@ -84,6 +84,7 @@ void Walker::visit(const Block &n) {
             row.pad = pad;
             row.terminate = true;
             callSites_.push_back(row);
+            exceptionRegion(row.begin, row.end, pad);
         }
     }
     closeBlock(n.scope());
@@ -279,9 +280,11 @@ void Walker::visit(const Try &n) {
             if (t < outer.indices.size()) chainIx.push_back(outer.indices[t]);
         }
     }
-    for (std::size_t i = 0; i < pieces.size(); i++)
+    for (std::size_t i = 0; i < pieces.size(); i++) {
         callSite(pieces[i].begin, pieces[i].end, pad, chain, chainIx,
                  n.alsoCleanup(), pieces[i].at);
+        exceptionRegion(pieces[i].begin, pieces[i].end, pad);
+    }
 }
 
 // **The Microsoft shape, and what is missing from it is the point.** No pad, no
@@ -302,6 +305,7 @@ void Walker::msTryStatement(const Try &n) {
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineStateLabel(r.end);
     defineLabel(r.resume);
+    exceptionRegion(r.begin, r.end, r.resume);
 
     if (r.isCleanup) {
         r.cleanupFunclet = beginFunclet();

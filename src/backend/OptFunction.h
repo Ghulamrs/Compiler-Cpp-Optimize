@@ -42,6 +42,7 @@ struct Function {
     bool promotable = false;        // whether any may be kept in a register
     bool whole = true;              // the stream is all of it: no funclet cut before this
     std::set<std::string> jumpOnly; // labels named only in jumps, droppable when nothing does
+    std::vector<Region> regions;    // what each landing pad covers, and where a throw continues
 
     // The frame: as walked, what inlined callees added below it, and what
     // the passes add below both. The outgoing area stays under all of it.
@@ -59,7 +60,7 @@ struct Function {
     bool has(unsigned p) const { return (props & p) == p; }
 
     void buildFlow() {
-        flow.build(stream, convention);
+        flow.build(stream, convention, regions);
         props |= kPropFlow;
     }
 

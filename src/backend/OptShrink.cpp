@@ -67,17 +67,16 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
 bool shrink(Stream &s, Flow &f, const Convention &c) {
     f.live(s);
     bool changed = false;
-    for (const Block &blk : f.blocks) {
-        RegSet wide = blk.wideOut;
-        bool flags = blk.flagsOut;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        Live live = blk.out;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &en = s[k];
             if (en.kind != Entry::Ins || en.dead) continue;
-            if (scaleByOne(en.ins) && !flags) { en.dead = changed = true; continue; }
-            if (shorter(en.ins, wide, flags)) { f.effects[k] = effectsOf(en.ins, c); changed = true; }
-            const Effects &e = f.effects[k];
-            wide = (wide & ~e.writes) | e.wide;
-            flags = e.flagsRead || (flags && !e.flagsWritten);
+            f.joinPads(b, k, live);
+            if (scaleByOne(en.ins) && !live.flags) { en.dead = changed = true; continue; }
+            if (shorter(en.ins, live.wide, live.flags)) { f.effects[k] = effectsOf(en.ins, c); changed = true; }
+            live.step(f.effects[k]);
         }
     }
     return changed;

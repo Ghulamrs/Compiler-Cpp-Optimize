@@ -1412,6 +1412,10 @@ std::string X86_64Linux::label(const char *kind, int id) const {
 
 // The SysV pair: %rax holds the exception object and %rdx the selector, and
 // both go into frame slots the parser already knows the numbers of.
+void X86_64Linux::exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) {
+    if (optimizer_) optimizer_->exceptionRegion(begin, end, target);
+}
+
 void X86_64Linux::landingPad(int pointerSlot, int selectorSlot) {
     a_->ins("mov", reg("%rax"), local(pointerSlot));
     a_->ins("movl", reg("%edx"), local(selectorSlot));

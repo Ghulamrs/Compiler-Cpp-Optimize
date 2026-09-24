@@ -32,11 +32,13 @@ bool readsAsValue(const Instr &i, const Effects &e, int r) {
 bool foldLoads(Stream &s, Flow &f, const Convention &c) {
     f.live(s);
     bool changed = false;
-    for (const Block &blk : f.blocks) {
-        RegSet live = blk.liveOut;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        Live live = blk.out;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &use = s[k];
             if (use.kind != Entry::Ins || use.dead) continue;
+            f.joinPads(b, k, live);
             Instr &u = use.ins;
             const bool arith = is(u.m, {"add", "sub", "and", "or", "xor", "cmp", "imul"}) && u.operands == 2;
             // The operand a load could stand in for: the source, or cmp's other side.
@@ -45,7 +47,7 @@ bool foldLoads(Stream &s, Flow &f, const Convention &c) {
             else if (u.m == "cmp" && gpr(u.b) && (gpr(u.a) || u.a.kind == Operand::Immediate) &&
                      !(gpr(u.a) && u.a.reg.id == u.b.reg.id)) slot = &u.b;
             const int r = slot ? slot->reg.id : -1;
-            if (slot && !(live & bit(r))) {
+            if (slot && !(live.regs & bit(r))) {
                 int l = k - 1;
                 RegSet written = 0;
                 bool clear = true;
@@ -70,8 +72,7 @@ bool foldLoads(Stream &s, Flow &f, const Convention &c) {
                     changed = true;
                 }
             }
-            const Effects &e = f.effects[k];
-            live = (live & ~e.writes) | e.reads;
+            live.step(f.effects[k]);
         }
     }
     return changed;
@@ -103,8 +104,8 @@ bool foldOffsets(Stream &s, Flow &f, const Convention &c) {
                     if (o->kind == Operand::Memory && o->reg.id == r) uses.push_back(o);
                 if (e.writes & bit(r)) ended = true;
             }
-            if (!ended && (blk.liveOut & bit(r))) ok = false;
-            if (!ended && blk.flagsOut && !flagsSettled) ok = false;
+            if (!ended && (blk.out.regs & bit(r))) ok = false;
+            if (!ended && blk.out.flags && !flagsSettled) ok = false;
             if (!ok || uses.empty()) continue;
             for (Operand *o : uses) {
                 if (!(o->disp + add.a.value == static_cast<int>(o->disp + add.a.value))) { ok = false; break; }
