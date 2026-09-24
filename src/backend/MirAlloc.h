@@ -58,15 +58,36 @@ private:
     std::vector<int> colour_;
     int coalesced_ = 0;
     bool fellBack_ = false;
+    // The colouring's state: the registers on offer, each node's
+    // representative once coalesced, its degree, and its copies.
+    opt::RegSet palette_ = 0;
+    std::vector<int> order_;
+    std::vector<int> rep_;
+    std::vector<int> degree_;
+    std::vector<bool> removed_;
+    std::vector<std::vector<int>> copiesOf_;
+    std::vector<std::vector<Copy>> physCopies_;   // per node: its copies to or from a physical register
 
     void findUses();
     void solveLiveness();
     void buildInterference();
     void collectCosts();
     bool valid(const std::vector<int> &colour) const;
+    bool colour();
+    void coalesce();
+    void simplify(std::vector<int> &stack);
+    bool select(const std::vector<int> &stack);
+    int find(int p);
+    void merge(int u, int v);
+    int significant(int u, int v) const;
+    long bestPreference(const std::vector<Copy> &prefs, opt::RegSet forbid) const;
+    int pick(int p);
 
     bool interferes(int p, int q) const { return (matrix_[static_cast<std::size_t>(p) * words_ + q / 64] >> (q % 64)) & 1; }
+    unsigned long long *row(int p) { return &matrix_[static_cast<std::size_t>(p) * words_]; }
+    const unsigned long long *row(int p) const { return &matrix_[static_cast<std::size_t>(p) * words_]; }
     void addEdge(int p, int q);
+    bool alive(int p) const { return rep_[p] == p && !removed_[p]; }
     static void set(Bits &b, int p) { b[p / 64] |= 1ull << (p % 64); }
     static void clear(Bits &b, int p) { b[p / 64] &= ~(1ull << (p % 64)); }
     static bool has(const Bits &b, int p) { return (b[p / 64] >> (p % 64)) & 1; }
