@@ -47,6 +47,11 @@ struct FoldOffsets : Pass {
     bool execute(Function &fn) override { return foldOffsets(fn.stream, fn.flow, fn.convention); }
 };
 
+struct ThreadJumps : Pass {
+    ThreadJumps() : Pass(PassInfo{"thread-jumps", kFlow, 0, 0, 0}) {}
+    bool execute(Function &fn) override { return threadJumps(fn); }
+};
+
 // **Scaled-index addressing**, after allocation so that webs and the
 // allocator never meet an indexed operand; `imul $8` is still a multiply here.
 struct FoldIndex : Pass {
@@ -159,6 +164,7 @@ std::unique_ptr<Group> rounds() {
     g->add(std::unique_ptr<Pass>(new CoalesceCopies()));
     g->add(std::unique_ptr<Pass>(new FoldLoads()));
     g->add(std::unique_ptr<Pass>(new FoldOffsets()));
+    g->add(std::unique_ptr<Pass>(new ThreadJumps()));
     return g;
 }
 
@@ -174,7 +180,7 @@ struct Rounds : Group {
 // **The pipeline**, cxx1's passes.def. In order:
 //
 //   rounds            forward-values, remove-unreachable, remove-dead,
-//                     coalesce-copies, fold-loads, fold-offsets; repeated
+//                     coalesce-copies, fold-loads, fold-offsets, thread-jumps; repeated
 //   frame             (whole, prologue held)
 //     webs            every register web a pseudo, its home kept
 //     locals          every promotable scalar local a pseudo, its slot kept

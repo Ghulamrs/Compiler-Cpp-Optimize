@@ -895,6 +895,8 @@ void X86_64Linux::visit(const Binary &n) {
         a_->defLabel(label("sc", id));
         a_->ins("mov", imm((isAnd ? 0 : 1)), reg("%rax"));
         a_->defLabel(label("scend", id));
+        // Named by these jumps and nothing else, so droppable once threaded past.
+        if (optimizer_) { optimizer_->jumpOnly(label("sc", id)); optimizer_->jumpOnly(label("scend", id)); }
         return;
     }
 

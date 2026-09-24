@@ -28,6 +28,10 @@ bool foldOffsets(Stream &s, Flow &f, const Convention &c);
 // **A register added to one only used as an address** becomes its index, a shift of it the scale.
 bool foldIndex(Stream &s, Flow &f, const Convention &c);
 
+struct Function;
+// **A jump that only jumps on, and a constant that decides the compare-and-branch it reaches** - see OptJumps.cpp.
+bool threadJumps(Function &fn);
+
 // A local the walker placed in the frame, rbp-relative.
 struct Local {
     long long disp;
