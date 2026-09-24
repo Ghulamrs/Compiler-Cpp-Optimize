@@ -36,6 +36,19 @@ public:
     // than unrolled moves (faster).
     virtual bool stringCopies() const = 0;
 
+    // **The inliner's budgets**, in the walker's measure of a body (AST
+    // nodes). Whether any call is walked in place at this level; how much
+    // larger than the call it replaces a callee may be and still be, at a
+    // site this many loops deep; and how much a caller, and the unit, may
+    // grow by, as a percentage of their size.
+    virtual bool inlines() const = 0;
+    virtual int inlineGrowth(int loopDepth) const = 0;
+    virtual int callerGrowthPercent() const = 0;
+    virtual int unitGrowthPercent() const = 0;
+    // A caller smaller than this may grow as if it were this large: the
+    // percentage is a cap on the large, not a bar to the small.
+    virtual int largeFunction() const = 0;
+
     // The costs of a level, 1 or 2.
     static std::unique_ptr<Costs> forLevel(int level);
 
@@ -55,6 +68,15 @@ public:
     int registers() const override { return 2; }
     long minWeight() const override { return 6; }
     bool stringCopies() const override { return true; }
+    // **Not until a cost in bytes can tell a body smaller than its call**:
+    // in nodes, "no larger than the call" admitted bodies that grew
+    // Compiler++'s .text by 783 bytes, measured. The budgets below are what
+    // GCC's max-inline-insns-size and cl's /O1 would then ask.
+    bool inlines() const override { return false; }
+    int inlineGrowth(int) const override { return 0; }
+    int callerGrowthPercent() const override { return 0; }
+    int unitGrowthPercent() const override { return 0; }
+    int largeFunction() const override { return 0; }
 };
 
 // **-O2: speed.** Registers spent freely, and code grown where time is saved.
@@ -72,6 +94,14 @@ public:
     int registers() const override { return 5; }
     long minWeight() const override { return 2; }
     bool stringCopies() const override { return false; }
+    bool inlines() const override { return true; }
+    // GCC's max-inline-insns-auto shape: a site inside a loop runs more
+    // often, so it may take twice as much per level, up to three levels.
+    int inlineGrowth(int loopDepth) const override { return 30 << (loopDepth < 3 ? loopDepth : 3); }
+    // GCC's large-function-growth, large-function-insns and inline-unit-growth.
+    int callerGrowthPercent() const override { return 100; }
+    int unitGrowthPercent() const override { return 40; }
+    int largeFunction() const override { return 2700; }
 };
 
 inline std::unique_ptr<Costs> Costs::forLevel(int level) {

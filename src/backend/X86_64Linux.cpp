@@ -1480,6 +1480,7 @@ std::string X86_64Linux::userLabel(const std::string &name) const {
 void X86_64Linux::setOptimize(int level) {
     if (level <= 0 || optimizer_) return;
     optimizer_.reset(new Optimizer(*a_, abi_, level));
+    if (optimizer_->costs().inlines()) inliner_.reset(new Inliner(optimizer_->costs()));
     a_ = optimizer_.get();
 }
 
@@ -1547,7 +1548,7 @@ void X86_64Linux::emit(const Function &fn) {
     // **A frame cut into funclets cannot grow once its first funclet is out**,
     // so it reserves room for any callee it may walk in place from the start.
     current_ = &fn;
-    inlineReserve_ = fn.hasLandingPads() && usesFunclets() && inlining() ? largestSmallFrame_ : 0;
+    inlineReserve_ = fn.hasLandingPads() && usesFunclets() && inlining() ? inliner_->largestFrame() : 0;
     frameSize_ = fn.frameSize() + inlineReserve_;
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
@@ -1794,40 +1795,23 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
     return scan.calls;
 }
 
-// **Small enough to walk in place**: straight-line statements and ifs, no
-// loops and no cleanups; anything else counts as too many.
-int statementsIn(const Stmt &s) {
-    constexpr int kTooMany = 1000;
-    if (const Block *b = dynamic_cast<const Block *>(&s)) {
-        if (b->unwindCleanup()) return kTooMany;
-        int n = 0;
-        for (const StmtPtr &x : b->body()) n += statementsIn(*x);
-        return n;
-    }
-    if (dynamic_cast<const ExprStmt *>(&s) || dynamic_cast<const Return *>(&s)) return 1;
-    if (const If *i = dynamic_cast<const If *>(&s))
-        return 1 + statementsIn(i->thenArm()) + (i->elseArm() ? statementsIn(*i->elseArm()) : 0);
-    return kTooMany;
 }
 
-}
-
-// **A direct call to a small function of this unit, walked in its place at
-// -O2**, where the caller has no landing pad for it to fall between and the
-// callee takes nothing on the stack.
+// **A direct call to a function of this unit, walked in its place** where
+// the site is safe - not itself inside a callee walked in place, nothing
+// on the stack, a frame that fits the room a funclet-cut caller reserved -
+// and the inliner's budgets say it is worth it.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end() || it->second == current_ || !small(*it->second)) return nullptr;
+    if (it == bodies_.end() || it->second == current_) return nullptr;
+    const Function &callee = *it->second;
     const bool reserved = current_->hasLandingPads() && usesFunclets();
-    return !reserved || ((it->second->frameSize() + 15) & ~15) <= inlineReserve_ ? it->second : nullptr;
+    if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) return nullptr;
+    return inliner_->allows(n) ? &callee : nullptr;
 }
 
-bool X86_64Linux::inlining() const { return optimizer_ && optimizer_->level() >= 2 && !lineSource(); }
-
-bool X86_64Linux::small(const Function &fn) const {
-    return !fn.hasLandingPads() && !fn.isVariadic() && fn.regSaveSlot() == 0 && statementsIn(fn.body()) <= 8;
-}
+bool X86_64Linux::inlining() const { return inliner_ && !lineSource(); }
 
 // The callee's walk borrows the caller's state for its own, and gives it
 // back; its frame the optimizer moves below the caller's.
@@ -2342,10 +2326,8 @@ void X86_64Linux::run(const Program &program) {
 
     emitData(program);
     finishChunk();
-    for (const Function &fn : program.functions) {
-        bodies_[fn.symbol()] = &fn;
-        if (small(fn)) largestSmallFrame_ = std::max(largestSmallFrame_, (fn.frameSize() + 15) & ~15);
-    }
+    for (const Function &fn : program.functions) bodies_[fn.symbol()] = &fn;
+    if (inliner_) inliner_->summarize(program);
     for (const Function &fn : program.functions) emit(fn);
     if (!program.initFunction.empty()) {
         a_->initialiserEntry(program.initFunction, program.usesDsoHandle);

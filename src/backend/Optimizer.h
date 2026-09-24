@@ -33,6 +33,7 @@ public:
     // A call between the two labels that throws continues at the target.
     void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target);
     int level() const { return costs_->level(); }
+    const opt::Costs &costs() const { return *costs_; }
     // Whether this level copies a block with `rep movsq` rather than unrolled.
     bool copiesByString() const { return costs_->stringCopies(); }
 

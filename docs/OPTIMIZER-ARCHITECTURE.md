@@ -40,8 +40,24 @@ classDiagram
     Function *-- Region
     Optimizer *-- Function
 
-    class Costs { level forSize rounds registers minWeight stringCopies; forLevel() }
-    Function *-- Costs
+    class Costs {
+        <<abstract>>
+        +level() forSize() rounds() registers() minWeight() stringCopies()
+        +inlines() inlineGrowth(depth) callerGrowthPercent() unitGrowthPercent() largeFunction()
+        +forLevel()$
+    }
+    Costs <|-- SizeCosts
+    Costs <|-- SpeedCosts
+    Function --> Costs : costs()
+    Optimizer *-- Costs : costs_
+
+    class Inliner {
+        -measures_ decided_ unitSize_ unitTaken_ largestFrame_
+        +summarize(Program) eligible(callee) allows(site) largestFrame()
+        -sitesOf() sortByBadness() withinBudgets() charge()
+    }
+    Inliner --> Costs
+    X86_64Linux *-- Inliner : inliner_
 
     class Flow {
         +vector~Block~ blocks
@@ -106,7 +122,8 @@ Files, all under `src/backend/`:
 | `OptCore.h` | `RegSet`, `Effects`, `Control`, `Region`, `EntryOf`, `Edge`, `Live`, `Block`, `FlowOf` (build, liveness, dominators), `removeDeadIn`, `removeUnreachableIn` |
 | `OptFlow.{h,cpp}` | `controlOf` for x86; `Flow` = `FlowOf<Entry>` with the x86 effects |
 | `OptDataflow.{h,cpp}` | `ReachingDefs` |
-| `OptCosts.h` | `Costs` |
+| `OptCosts.h` | `Costs`, `SizeCosts`, `SpeedCosts` |
+| `Inliner.{h,cpp}` | `Inliner`: which calls the walker walks in place, by the costs' budgets |
 | `OptFunction.h` | `Prop`, `Function` |
 | `OptPass.{h,cpp}` | `Todo`, `PassInfo`, `Pass`, `Group`, `PassManager`, `dropUnnamedLabels`, `dumpStream` |
 | `OptPipeline.{h,cpp}` | the `Pass` subclasses and `pipelineFor()` |
@@ -132,7 +149,23 @@ the passes leave it, `saves` and `size`). `frameBase()` is where the passes
 may add slots. A pass reads and writes the function; the manager reads and
 writes `props`.
 
-**`Costs`.** The level, in one table (section 6).
+**`Costs`.** The level, as the questions a pass asks of it (section 6):
+one interface, `SizeCosts` for -O1 and `SpeedCosts` for -O2. The
+`Optimizer` owns the one it was made with; `Function::costs()` hands it to
+the passes.
+
+**`Inliner`.** Which calls are walked in place of a call instruction -
+GCC's `ipa-inline` reduced to what the walker knows before it walks. Owned
+by the walker, made only when the costs say the level inlines. `summarize`
+measures every function of the unit once (AST nodes; whether a body is
+safe to walk in place at all: no landing pad, no cleanup on unwind, not
+variadic, no register save area), lists every site with the loops it sits
+in and its growth (the callee's size less the call it replaces), and
+decides them all in badness order - the least growth for the deepest loop
+first, as GCC's queue - against three budgets the costs set, per site by
+loop depth, per caller and per unit, charging each site admitted to its
+caller and to the unit; `allows` answers for a site from that;
+`largestFrame` is what a funclet-cut caller reserves.
 
 **`Flow`** (`FlowOf<Entry>`). The CFG and the scanning layer: `build`
 splits the stream into `Block`s at labels and after control instructions,
@@ -269,20 +302,22 @@ A pass that needs the flow after another destroyed it is caught by the
 
 ## 6. Levels and costs
 
-`Costs::forLevel(n)` is the one table: `level`, `forSize` (-O1), and the
-numbers the passes read - `rounds`, `registers` and `minWeight` (how many
-callee-saved registers locals may take and what earns one), `stringCopies`
-(`rep movsq` at -O1, unrolled moves at -O2). Both levels run the same
-pipeline; a pass never tests the level, it reads a cost. This is GCC's -Os
-against -O2 (the same passes, `optimize_size` changing costs and switching
-off the speed-only alignment and layout rows), and cl's /O1 against /O2 (/Os
+`Costs` is one interface with two classes behind it, `SizeCosts` (-O1)
+and `SpeedCosts` (-O2), made by `Costs::forLevel(n)`. Each question a pass
+asks is a virtual: `forSize`, `rounds`, `registers` and `minWeight` (how
+many callee-saved registers locals may take and what earns one),
+`stringCopies` (`rep movsq` at -O1, unrolled moves at -O2), and the
+inliner's `inlines`, `inlineGrowth(depth)`, `callerGrowthPercent`,
+`unitGrowthPercent`, `largeFunction`. Both levels run the same pipeline; a
+pass never tests the level, it asks a cost. This is GCC's -Os against -O2
+(the same passes, `optimize_size` changing costs and switching off the
+speed-only alignment and layout rows), and cl's /O1 against /O2 (/Os
 against /Ot).
 
-What session 2 adds here, per the handover: the inliner's budget (growth
-per site, per caller, per unit; `forSize` meaning "only where the body is
-no larger than the call"), the allocator's spill and register costs
-(references by loop depth for speed, by encoding bytes for size), and the
-size-or-speed choice for if-conversion and tail calls.
+Still to add here, per the handover: the allocator's spill and register
+costs (references by loop depth for speed, by encoding bytes for size), a
+cost in encoding bytes (Z1) - which is what would let `SizeCosts::inlines`
+say yes - and the size-or-speed choice for if-conversion and tail calls.
 
 ## 7. What is a documented stub, and what is not built
 
@@ -297,8 +332,8 @@ size-or-speed choice for if-conversion and tail calls.
   no pass reads them; session 2's value numbering is their first client.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
   session 2's.
-- `Costs` holds only the fields the passes read today; the inliner and
-  allocator fields are named in the handover, not declared.
+- `Costs` answers the inliner and the passes of today; the allocator's
+  questions are named in the handover, not declared.
 - The `Opcode` table records today's quirks (`addq` has a width but is not
   arithmetic; `sal`/`rol`/`ror` are shifts but opaque; `testl`/`testq`/`cmpq`
   are not explicit-only) - each a one-line candidate change for session 2,

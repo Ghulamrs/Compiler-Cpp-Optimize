@@ -2,6 +2,7 @@
 
 #include "Backend.h"
 #include "Dwarf.h"
+#include "Inliner.h"
 #include "Optimizer.h"
 #include "Spelling.h"
 #include "Walker.h"
@@ -192,15 +193,15 @@ private:
     void receiveParameters(const Function &fn);
     void walkBody(const Function &fn);
     std::vector<opt::Local> scalarsOf(const Function &fn) const;
-    // Inline expansion at -O2 - see inlineTarget.
+    // Inline expansion - see inlineTarget; the inliner decides, by the
+    // level's costs, which sites are worth it.
     const Function *inlineTarget(const Call &n, int stackSlots) const;
     void walkInPlace(const Function &fn);
+    std::unique_ptr<Inliner> inliner_;
     std::map<std::string, const Function *> bodies_;
     const Function *current_ = nullptr;
     bool inPlace_ = false;
     bool inlining() const;
-    bool small(const Function &fn) const;
-    int largestSmallFrame_ = 0;
     int inlineReserve_ = 0;
     void finishChunk();
     std::string label(const char *kind, int id) const override;
