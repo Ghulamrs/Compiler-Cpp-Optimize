@@ -105,6 +105,9 @@ classDiagram
     Pass <|-- CoalesceCopies
     Pass <|-- FoldLoads
     Pass <|-- FoldOffsets
+    Pass <|-- ThreadJumps
+    Pass <|-- DivideByConstant
+    Pass <|-- FoldIndex
     Pass <|-- WebsPass
     class Webs {
         -fn_ home_ pinned_ sets_ occ_ defAt_ implicitDef_ useWeb_ unknownIn_
@@ -143,7 +146,7 @@ Files, all under `src/backend/`:
 | File | Holds |
 |---|---|
 | `OptTable.{h,cpp}` | `Opcode`, `opcodeOf`, the move families, `conditionOf`/`inverse` |
-| `OptIr.{h,cpp}` | `Reg`, `Operand`, `Instr`, `Entry`, `Stream` (unchanged) |
+| `OptIr.{h,cpp}` | `Reg`, `Operand` (a memory operand carries an index register and a scale since session 7), `Instr`, `Entry`, `Stream` |
 | `OptEffects.{h,cpp}` | `Effects`/`Roles` of one instruction from the table; `Convention` |
 | `OptCore.h` | `RegSet`, `Effects`, `Control`, `Region`, `EntryOf`, `Edge`, `Live`, `Block`, `FlowOf` (build, liveness, dominators), `removeDeadIn`, `removeUnreachableIn` |
 | `OptFlow.{h,cpp}` | `controlOf` for x86; `Flow` = `FlowOf<Entry>` with the x86 effects |
@@ -154,7 +157,9 @@ Files, all under `src/backend/`:
 | `OptFunction.h` | `Prop`, `Function` |
 | `OptPass.{h,cpp}` | `Todo`, `PassInfo`, `Pass`, `Group`, `PassManager`, `dropUnnamedLabels`, `dumpStream` |
 | `OptPipeline.{h,cpp}` | the `Pass` subclasses and `pipelineFor()` |
-| `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions; `OptFrame.cpp` holds `promotableLocals`, `insertRestores`, `dropUnusedSaves` and the frame's shared slots |
+| `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions; `OptFrame.cpp` holds `promotableLocals`, `insertRestores`, `dropUnusedSaves` and the frame's shared slots; `OptMemory.cpp` holds `fold-index` beside the two older folds |
+| `OptJumps.cpp` | `threadJumps`: a jump to a block that only jumps on, and a constant that decides the compare-and-branch it reaches (session 7) |
+| `OptDivide.cpp` | `divideByConstant`: a 32-bit divide by a constant as a multiply by its magic number, -O2 only (session 7) |
 | `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos; `assign` and `dropSelfCopies` for whoever colours |
 | `MirLocals.{h,cpp}` | `mir::Locals`: every promotable scalar local renamed to a pseudo, its slot kept |
 | `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences, preserved registers charged their save, a local's slot given back where no register can hold it |
@@ -339,6 +344,42 @@ across a `Leave` edge. After `assign`, the copies that became self-copies
 go. This replaced `promote-locals`, which did the same for up to the
 level's count of locals with a cruder loop measure and nothing for the rest.
 
+**The memory operand's index** (session 7, S8). `Operand::Memory` was base
+and displacement; it carries `index` and `scale` now (`d(base,index,scale)`
+in the GNU and COFF spellings, `[base+index*scale+d]` in MASM, `scale` 0
+meaning none), and `Op` the same for the spelling. Nothing the walker emits
+has one: `fold-index`, after `frame`, makes them from `add %idx, %base`
+where base is then only ever an address until written again or dead (the
+add goes, every use takes `(%base,%idx,1)`) and from a `shl $k` or `imul
+$s` of the index that is then only an index at scale one (the shift goes,
+the scale moves into the operands). Neither rbp nor rsp is taken as base
+or index there, so every `reg.id == RBP` test on a slot stays exact - the
+one indexed rbp form, a frame address forward-values folds into an indexed
+base, is guarded by `scale == 0` at the four sites in forward-values, at
+`frameSlot`, and in dead-store removal (an unknown reach up the frame).
+What learned the index: effects (read, and read wide), coalesce's rename,
+`readOriginal`, fold-loads' written-between test, fold-offsets' value-read
+test, `mentioned` in promotion and the allocator, the dump; webs asserts it
+never meets one, running before the pass does.
+
+**`thread-jumps`** (session 7, last in `rounds`). A jump to a block that
+holds nothing but `jmp M` goes to M; a block whose last write of a register
+is `mov $v` or a zeroing `xor`, reaching a block that is exactly `cmp $c,
+%r; jcc L` or `test %r, %r; jcc L`, has that branch decided - its jump goes
+to L or to the label after the pair (one made if none, `.L.<fn>.thr.<n>`,
+registered droppable), or a `jmp L` is appended to a fallthrough - where the
+flags are dead at both sides. The walker registers the `&&`/`||` labels
+`sc` and `scend` as jump-only, which is what lets a threaded-past pair be
+dropped with its code by the next round; no other label gains that status.
+
+**`divide-by-constant`** (session 7, last in `rounds`, gated to a speed
+level). `mov $d, %R; cdq; idiv %R` and `xor %edx, %edx; div %R`, R dead
+after, become Hacker's Delight's multiply-and-shift with eax and edx left
+as the divide leaves them; the signed multiplier taken unsigned in a 64-bit
+product, the unsigned form only where a multiplier below 2^32 is exact.
+Every divide at -O1, every 64-bit one and the unsigned "add" case keep the
+instruction.
+
 **`Opcode`.** One mnemonic's description: `kind` (the effects branch),
 `flags` (explicit-only, writes-only, immediate source, renamable frame
 operand, shift, zero idiom, merges xmm lanes, leaves flags, forms an
@@ -396,6 +437,8 @@ pipeline
     coalesce-copies      requires flow
     fold-loads           requires flow
     fold-offsets         requires flow
+    thread-jumps         requires flow
+    divide-by-constant   requires flow; gate: !costs.forSize()
   frame                  [gate: whole && prologue held]
     webs                 [build-flow before]; requires flow, physical; destroys physical
     locals               requires flow
@@ -404,13 +447,18 @@ pipeline
     dse-loop             [repeat 3; stop when the first sub-pass found nothing]
       remove-dead-stores
       rounds
+  fold-index             [build-flow before]; requires flow, physical
   finish-frame
   shrink-loop            [build-flow before each round; repeat 3; stop when the first sub-pass found nothing]
     shrink               requires flow
     rounds
 ```
 
-This is exactly the order `Optimizer::improve` ran by hand before, including
+The three session-7 passes sit where their insertions are followed by a
+rebuild: `thread-jumps` and `divide-by-constant` insert entries and are
+last in a round, the next round rebuilding the flow before anything reads
+them; `fold-index` inserts nothing and runs once, after allocation.
+Otherwise this is exactly the order `Optimizer::improve` ran by hand before, including
 two things kept because changing them could change the output: `rounds`
 drops unnamed labels before rebuilding the flow, the two loops rebuild
 without dropping; and `webs` builds the flow once more even when `rounds`
@@ -444,7 +492,8 @@ Two properties exist today:
   Provided by `Function::buildFlow()` (from a `kTodoBuildFlow`); destroyed by
   `allocate`, which inserts the restores. Required by every pass that walks
   blocks or asks liveness.
-- `kPropPhysical`: no operand names a pseudo. True on entry; `webs`
+- `kPropPhysical`: no operand names a pseudo. True on entry; `fold-index`
+  requires it (webs and the allocator never see an indexed operand); `webs`
   requires it and destroys it (the stream names pseudos from there),
   keeping `kPropFlow` - the flow is rebuilt around the copies it inserts
   and every renamed entry's effects follow; `locals` adds pseudos and keeps
