@@ -69,7 +69,7 @@ struct Slot { int width; Value v; };
 // label, so no fact crosses an edge.
 class Forward {
 public:
-    Forward(Stream &s, Flow &f, const Convention &c) : s_(s), f_(f), c_(c) {}
+    Forward(Stream &s, Flow &f, const Convention &c, long long tempFrom) : s_(s), f_(f), c_(c), tempFrom_(tempFrom) {}
 
     bool run() {
         // **A caller-saved register this function neither names nor uses
@@ -105,8 +105,10 @@ private:
     Stream &s_;
     Flow &f_;
     const Convention &c_;
+    const long long tempFrom_;
     Value regs_[kGprs];
     std::vector<Pushed> stack_;
+    std::map<long long, Pushed> temps_;  // a temporary's slot -> the store it holds, in this block
     std::map<long long, Slot> slots_;   // rbp offset -> what the frame holds there
     int flagsFrom_ = -1;
     int condReg_ = -1;                  // the register whose low byte a setcc just wrote
@@ -127,18 +129,23 @@ private:
         for (Copy &c : copies_) c = Copy();
         stack_.clear();
         slots_.clear();
+        temps_.clear();
         flagsFrom_ = condReg_ = -1;
     }
+    bool isTemp(const Operand &o) const { return tempFrom_ != 0 && o.isMem() && o.reg.id == RBP && o.disp <= tempFrom_; }
 
-    // In this order: an address folded first may be a slot the reload finds.
+    // In this order: an address folded first may be a slot the reload finds,
+    // and a temporary's load is paired before the general reload resolves it
+    // and leaves its store standing.
     void step(int k) {
         Instr i = s_[k].ins;
         bool edited = foldAddress(i.a);
         edited = foldAddress(i.b) || edited;
         edited = immediateSource(i) || edited;
-        edited = reloadFromRegister(i) || edited;
+        Pop pop = pairTemp(i, k);
+        if (pop == Pop::Kept) edited = reloadFromRegister(i) || edited;
         edited = readOriginal(i) || edited;
-        const Pop pop = pairPop(i, k);
+        if (pop == Pop::Kept) pop = pairPop(i, k);
         if (pop == Pop::Gone || isNoop(i) || foldCondition(i, k)) { kill(k); return; }
         if (edited || pop == Pop::Copy) replace(k, i);
         learn(s_[k].ins, k);
@@ -232,33 +239,48 @@ private:
     Pop pairPop(Instr &i, int k) {
         if (!isPop(i.m) || !gpr(i.a) || i.a.reg.width != 8) return Pop::Kept;
         if (stack_.empty() || !quiet(stack_.back().at, k)) return Pop::Kept;
-        const Value v = stack_.back().v;
-        const int dst = i.a.reg.id;
-        const int at = stack_.back().at;
+        const Pop pop = pairWith(i, k, stack_.back(), i.a);
+        if (pop != Pop::Kept) stack_.pop_back();
+        return pop;
+    }
+
+    // **A temporary's load whose store is in this block** is the same pair in
+    // a frame slot nothing else reads or writes, and needs no quiet between.
+    Pop pairTemp(Instr &i, int k) {
+        if (!isMovQ(i.m) || !isTemp(i.a) || !gpr(i.b) || i.b.reg.width != 8) return Pop::Kept;
+        const auto it = temps_.find(i.a.disp);
+        if (it == temps_.end()) return Pop::Kept;
+        const Pop pop = pairWith(i, k, it->second, i.b);
+        if (pop != Pop::Kept) temps_.erase(it);
+        return pop;
+    }
+
+    // The pair's second half rewritten as a copy into `dst` and the first killed, or made the copy.
+    Pop pairWith(Instr &i, int k, const Pushed &p, const Operand &dstOp) {
+        const Value v = p.v;
+        const int dst = dstOp.reg.id;
+        const int at = p.at;
         std::string m = "mov";
         Operand from;
-        if (regs_[dst].same(v)) from = i.a;
+        if (regs_[dst].same(v)) from = dstOp;
         else if (v.kind == Value::Const && fitsImm32(v.k)) from = Operand::ofImm(v.k);
         else if (holding(v, dst) >= 0) from = Operand::ofReg(holding(v, dst), 8);
         else if (v.kind == Value::FrameAddr) { m = "lea"; from = Operand::ofMem(RBP, v.k); from.hasDisp = true; }
         else if (untouched(dst, at, k) && gpr(s_[at].ins.a)) {
             // Nowhere to copy from now: the push itself becomes the copy.
-            replace(at, Instr{"mov", s_[at].ins.a, i.a, 2});
-            stack_.pop_back();
+            replace(at, Instr{"mov", s_[at].ins.a, dstOp, 2});
             writtenBehind(dst, v);
             return Pop::Gone;
         } else if (const int sc = scratchBetween(at, k)) {
             // The push becomes the copy in, the pop the copy out.
             replace(at, Instr{"mov", s_[at].ins.a, Operand::ofReg(sc, 8), 2});
-            stack_.pop_back();
             writtenBehind(sc, v);
-            i = Instr{"mov", Operand::ofReg(sc, 8), i.a, 2};
+            i = Instr{"mov", Operand::ofReg(sc, 8), dstOp, 2};
             return Pop::Copy;
         } else return Pop::Kept;
         kill(at);
-        stack_.pop_back();
         if (from.isReg(dst)) return Pop::Gone;
-        i = Instr{m, from, i.a, 2};
+        i = Instr{m, from, dstOp, 2};
         return Pop::Copy;
     }
 
@@ -361,6 +383,12 @@ private:
         }
         if (e.stack || (e.writes & bit(RSP))) stack_.clear();
         if (e.memoryWritten) store(i);
+        if (isMovQ(i.m) && isTemp(i.b) && i.operands == 2) {
+            Value v = fresh();
+            if (gpr(i.a) && i.a.reg.width == 8) v = regs_[i.a.reg.id];
+            else if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(i.a.value);
+            temps_[i.b.disp] = Pushed{v, k};
+        }
 
         if (!gpr(i.b)) {
             forget(e.writes | e.partial);
@@ -444,8 +472,8 @@ private:
 
 }
 
-bool forwardValues(Stream &s, Flow &f, const Convention &c) {
-    return Forward(s, f, c).run();
+bool forwardValues(Stream &s, Flow &f, const Convention &c, long long tempFrom) {
+    return Forward(s, f, c, tempFrom).run();
 }
 
 }

@@ -36,6 +36,10 @@ public:
     void returnsPair(bool pair);
     // The function's scalar locals, candidates for registers.
     void frame(std::vector<opt::Local> locals);
+    // **The walker's temporaries are slots at -(kTempBase + 8(t + 1)) while it
+    // walks**; told how many, this puts them below every frame, as more locals.
+    static constexpr long long kTempBase = 1LL << 40;
+    void temporaries(int count);
     // The registers the next call reads its arguments from, said just before it.
     void callArguments(opt::RegSet regs);
     // Around a callee walked in place of its call, at -O2.

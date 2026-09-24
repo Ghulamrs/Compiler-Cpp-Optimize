@@ -211,6 +211,17 @@ private:
     void emitGlobal(const Global &g, Segment seg);
     void push();
     void pop(const char *into);
+    // A stack argument, on the real stack whatever the level: the call unwinds it.
+    void pushArg();
+    // **A temporary goes to a frame slot rather than the stack** where the
+    // optimizer holds the function and no funclet reads the frame, so depth_
+    // counts the real stack alone and the pads and unwind data stay the walker's.
+    bool tempsAllowed_ = false;
+    int tempDepth_ = 0;
+    int tempHigh_ = 0;
+    bool tempsInSlots() const { return tempsAllowed_ && !inFunclet_; }
+    // One stack per function, inlined callees included, placed below every frame once the walk is done.
+    Op tempSlot(int t) const { return local(Optimizer::kTempBase + 8 * (t + 1)); }
     void pushF();
     void popF(const char *into);
 

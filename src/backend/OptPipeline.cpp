@@ -19,7 +19,7 @@ constexpr unsigned kFlow = kPropFlow;
 
 struct ForwardValues : Pass {
     ForwardValues() : Pass(PassInfo{"forward-values", kFlow, 0, 0, 0}) {}
-    bool execute(Function &fn) override { return forwardValues(fn.stream, fn.flow, fn.convention); }
+    bool execute(Function &fn) override { return forwardValues(fn.stream, fn.flow, fn.convention, fn.tempFrom); }
 };
 
 struct RemoveUnreachable : Pass {
@@ -87,13 +87,31 @@ struct RemoveDeadStores : Pass {
     bool execute(Function &fn) override { return removeDeadStores(fn.stream, fn.shared); }
 };
 
+// **The temporaries' region shrinks to the slots still named**: the passes
+// resolve most into registers, and a frame reserved for the rest moves every
+// rendered displacement on Windows.
+static void shrinkTemporaries(Function &fn) {
+    if (fn.tempCount == 0) return;
+    int used = 0;
+    for (const Entry &e : fn.stream) {
+        if (e.kind != Entry::Ins || e.dead) continue;
+        for (const Operand *o : {&e.ins.a, &e.ins.b}) {
+            if (!o->isMem() || o->reg.id != RBP || o->disp > fn.tempFrom) continue;
+            const long long t = (-o->disp - fn.tempBase) / 8;
+            if (t <= fn.tempCount && t > used) used = static_cast<int>(t);
+        }
+    }
+    fn.inlineTop = static_cast<int>((fn.tempBase + 8 * used + 15) & ~15);
+}
+
 // **The frame as the passes leave it**: the saves nothing needs any more
 // dropped, and the prologue rewritten with the rest and the final size.
 struct FinishFrame : Pass {
     FinishFrame() : Pass(PassInfo{"finish-frame", 0, 0, 0, 0}) {}
     bool execute(Function &fn) override {
         const bool had = !fn.saves.empty();
-        dropUnusedSaves(fn.stream, fn.saves);
+        shrinkTemporaries(fn);
+        dropUnusedSaves(fn.stream, fn.saves, fn.frameBase());
         fn.size = fn.frameBase() + ((8 * static_cast<int>(fn.saves.size()) + 15) & ~15);
         if (fn.size != fn.frameSize) {
             assert(fn.prologueAt >= 0 && "a frame can grow only while its prologue is held");

@@ -34,7 +34,7 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
     argsPending_ = false;
     if (inlining_)
         for (opt::Operand *o : {&e.ins.a, &e.ins.b})
-            if (o->isMem() && o->reg.id == opt::RBP) {
+            if (o->isMem() && o->reg.id == opt::RBP && o->disp > -kTempBase) {
                 assert(o->disp < 0 && "an inlined callee reads only its own frame");
                 o->disp -= inlineBase_;
                 o->hasDisp = true;
@@ -80,6 +80,8 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     fn_.inlineTop = 0;
     fn_.saves.clear();
     fn_.promoted = false;
+    fn_.tempFrom = 0;
+    fn_.tempBase = fn_.tempCount = 0;
     fn_.shared = opt::SharedSlots();
     inlining_ = false;
 }
@@ -135,6 +137,21 @@ void Optimizer::functionEnd(const std::string &name) {
 }
 
 void Optimizer::frame(std::vector<opt::Local> locals) { fn_.locals = std::move(locals); }
+
+void Optimizer::temporaries(int count) {
+    if (count == 0) return;
+    const long long top = fn_.frameBase();
+    for (Entry &e : fn_.stream) {
+        if (e.kind != Entry::Ins) continue;
+        for (opt::Operand *o : {&e.ins.a, &e.ins.b})
+            if (o->isMem() && o->reg.id == opt::RBP && o->disp <= -kTempBase) o->disp += kTempBase - top;
+    }
+    for (int t = 0; t < count; ++t) fn_.locals.push_back(opt::Local{-(top + 8 * (t + 1)), 8});
+    fn_.tempFrom = -(top + 8);
+    fn_.tempBase = top;
+    fn_.tempCount = count;
+    fn_.inlineTop = static_cast<int>((top + 8 * count + 15) & ~15);
+}
 
 void Optimizer::callArguments(opt::RegSet regs) {
     argsPending_ = true;

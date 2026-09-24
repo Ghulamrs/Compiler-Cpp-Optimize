@@ -105,8 +105,20 @@ static const char *const kLinuxMacros[] = {
 };
 const char *const *X86_64LinuxBackend::identityMacros() const { return kLinuxMacros; }
 
-void X86_64Linux::push() { a_->ins("push", reg("%rax")); depth_++; }
-void X86_64Linux::pop(const char *into) { a_->ins("pop", reg(into)); depth_--; }
+void X86_64Linux::push() {
+    if (tempsInSlots()) {
+        a_->ins("mov", reg("%rax"), tempSlot(tempDepth_++));
+        if (tempDepth_ > tempHigh_) tempHigh_ = tempDepth_;
+        return;
+    }
+    pushArg();
+}
+void X86_64Linux::pop(const char *into) {
+    if (tempsInSlots()) { a_->ins("mov", tempSlot(--tempDepth_), reg(into)); return; }
+    a_->ins("pop", reg(into));
+    depth_--;
+}
+void X86_64Linux::pushArg() { a_->ins("push", reg("%rax")); depth_++; }
 
 void X86_64Linux::pushF() {
     a_->ins("sub", immText("8"), reg("%rsp"));
@@ -1081,14 +1093,14 @@ void X86_64Linux::visit(const Call &n) {
         }
         if (byRef && t->isStructOrUnion()) {
             msAggregateToRax(t, n.argSlot(i));
-            push();
+            pushArg();
             if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
         if (!t->isStructOrUnion()) {
             if (isX87(t))             pushX87();
             else if (t->isFloating()) pushF();
-            else                      push();
+            else                      pushArg();
             if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
@@ -1100,7 +1112,7 @@ void X86_64Linux::visit(const Call &n) {
             int left = size - off;
             if (left >= 8) {
                 a_->ins("mov", mem(off, "%rcx"), reg("%rax"));
-                push();
+                pushArg();
                 continue;
             }
             // **A partial lane is pushed as a zeroed word and then filled.** %rcx
@@ -1576,6 +1588,8 @@ void X86_64Linux::emit(const Function &fn) {
         if (!calls.empty()) outgoing_ = (abi_.shadowBytes + 8 * words + 15) & ~15;
     }
     floorDepth_ = 0;
+    tempsAllowed_ = optimizer_ && !(fn.hasLandingPads() && usesFunclets());
+    tempDepth_ = tempHigh_ = 0;
     a_->prologue(frameSize_,
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string(),
@@ -1584,6 +1598,7 @@ void X86_64Linux::emit(const Function &fn) {
     receiveParameters(fn);
 
     walkBody(fn);
+    if (optimizer_) optimizer_->temporaries(tempHigh_);
     // **rsp is restored *from rbp*, never by adding to itself.** Resuming after a
     // catch it holds whatever the runtime left, and adding the frame size landed
     // on the unwind-help slot, so `ret` took -2. The renderer adds the size.
@@ -1610,9 +1625,9 @@ void X86_64Linux::emit(const Function &fn) {
         dwarfFns_.back().blocks = blocks();
     }
 
-    if (depth_ != 0) {
-        std::fprintf(stderr, "codegen: stack depth %d at the end of %s\n",
-                     depth_, fn.name().c_str());
+    if (depth_ != 0 || tempDepth_ != 0) {
+        std::fprintf(stderr, "codegen: stack depth %d and %d temporaries at the end of %s\n",
+                     depth_, tempDepth_, fn.name().c_str());
         std::exit(1);
     }
     finishChunk();

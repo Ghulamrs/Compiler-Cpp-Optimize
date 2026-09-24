@@ -102,7 +102,7 @@ void insertRestores(Stream &s, const std::vector<SavedReg> &saves) {
     s.swap(out);
 }
 
-void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves) {
+void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves, long long top) {
     RegSet named = 0;
     for (const Entry &e : s)
         if (e.kind == Entry::Ins && !e.dead && !(e.ins.m == "mov" && e.ins.a.isMem() && e.ins.a.reg.id == RBP))
@@ -118,7 +118,7 @@ void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves) {
     }
     // The slots close up, the kept saves renumbered from the top.
     for (std::size_t j = 0; j < kept.size(); ++j) {
-        const long long want = saves[0].disp - 8 * static_cast<long long>(j);
+        const long long want = -(top + 8 * static_cast<long long>(j + 1));
         for (Entry &e : s)
             if (e.kind == Entry::Ins && !e.dead && e.ins.a.isMem() && e.ins.a.reg.id == RBP && e.ins.a.disp == kept[j].disp &&
                 e.ins.b.isReg(parseReg(kept[j].reg).id))

@@ -76,9 +76,9 @@ void insertRestores(Stream &s, const std::vector<SavedReg> &saves);
 bool removeDeadStores(Stream &s, const SharedSlots &shared);
 
 // A register saved for a local that no longer names it, and its restores, go.
-void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves);
+void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves, long long top);
 
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
-bool forwardValues(Stream &s, Flow &f, const Convention &c);
+bool forwardValues(Stream &s, Flow &f, const Convention &c, long long tempFrom = 0);
 
 }
