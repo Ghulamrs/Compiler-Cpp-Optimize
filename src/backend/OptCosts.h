@@ -49,6 +49,11 @@ public:
     // percentage is a cap on the large, not a bar to the small.
     virtual int largeFunction() const = 0;
 
+    // **The allocator's measure of a reference** at a loop depth - what a
+    // use is worth, what a coalesced copy saves: speed counts executions,
+    // eight times as many per loop; size counts the instruction, once.
+    virtual long referenceWeight(int loopDepth) const = 0;
+
     // The costs of a level, 1 or 2.
     static std::unique_ptr<Costs> forLevel(int level);
 
@@ -77,6 +82,7 @@ public:
     int callerGrowthPercent() const override { return 0; }
     int unitGrowthPercent() const override { return 0; }
     int largeFunction() const override { return 0; }
+    long referenceWeight(int) const override { return 1; }
 };
 
 // **-O2: speed.** Registers spent freely, and code grown where time is saved.
@@ -102,6 +108,7 @@ public:
     int callerGrowthPercent() const override { return 100; }
     int unitGrowthPercent() const override { return 40; }
     int largeFunction() const override { return 2700; }
+    long referenceWeight(int loopDepth) const override { return 1L << (3 * (loopDepth < 5 ? loopDepth : 5)); }
 };
 
 inline std::unique_ptr<Costs> Costs::forLevel(int level) {

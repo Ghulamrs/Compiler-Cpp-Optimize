@@ -253,8 +253,10 @@ void Webs::renameToPseudos() {
             }
             Operand &op = o.operand == 0 ? s[k].ins.a : s[k].ins.b;
             op.reg.id = pseudoOf[root];
+            fn_.flow.effects[k] = effectsOf(s[k].ins, fn_.convention);
         }
     }
+    fn_.flow.touch();
 }
 
 void Webs::build() {
@@ -266,17 +268,22 @@ void Webs::build() {
     renameToPseudos();
 }
 
-void Webs::assign(const std::vector<int> &colour) {
-    for (Entry &e : fn_.stream) {
+// The entry's effects follow the rename, so the flow describes the stream still.
+void Webs::assign(Function &fn, const std::vector<int> &colour) {
+    for (int k = 0; k < static_cast<int>(fn.stream.size()); ++k) {
+        Entry &e = fn.stream[k];
         if (e.kind != Entry::Ins) continue;
+        bool renamed = false;
         for (Operand *o : {&e.ins.a, &e.ins.b})
-            if (isPseudo(o->reg.id)) o->reg.id = colour[o->reg.id - kFirstPseudo];
+            if (isPseudo(o->reg.id)) { o->reg.id = colour[o->reg.id - kFirstPseudo]; renamed = true; }
+        if (renamed) fn.flow.effects[k] = effectsOf(e.ins, fn.convention);
     }
+    fn.flow.touch();
 }
 
-bool Webs::dropSelfCopies() {
+bool Webs::dropSelfCopies(Function &fn) {
     bool changed = false;
-    for (Entry &e : fn_.stream) {
+    for (Entry &e : fn.stream) {
         if (e.kind != Entry::Ins || e.dead) continue;
         const Instr &i = e.ins;
         if (i.m == "mov" && i.operands == 2 && i.a.kind == Operand::Register && i.b.kind == Operand::Register &&

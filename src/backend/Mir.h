@@ -42,11 +42,11 @@ public:
     int pinned() const { return pinned_; }
 
     // Every pseudo named in the stream given its register: `colour[p - kFirstPseudo]`.
-    void assign(const std::vector<int> &colour);
-    // A whole copy of a register to itself, which an assignment back home
-    // leaves where a split was made, goes; a four-byte one zero-extends
-    // and stays.
-    bool dropSelfCopies();
+    static void assign(opt::Function &fn, const std::vector<int> &colour);
+    // A whole copy of a register to itself, which an assignment leaves where
+    // a split was made or a copy coalesced, goes; a four-byte one
+    // zero-extends and stays.
+    static bool dropSelfCopies(opt::Function &fn);
 
 private:
     // One operand naming a candidate register, and what the instruction does there.

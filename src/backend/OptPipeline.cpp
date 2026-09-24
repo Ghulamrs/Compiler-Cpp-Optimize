@@ -1,6 +1,7 @@
 #include "OptPipeline.h"
 
 #include "Mir.h"
+#include "MirAlloc.h"
 #include "OptPasses.h"
 
 #include <cassert>
@@ -45,20 +46,30 @@ struct FoldOffsets : Pass {
     bool execute(Function &fn) override { return foldOffsets(fn.stream, fn.flow, fn.convention); }
 };
 
-// Stage 1 of docs/OPTIMIZER-IR.md: the pinned occurrences split off with
-// copies, every web a pseudo, and each given back the register it was
-// found in - which must change nothing: the copies are then of a register
-// to itself, and go. The inserted entries leave the flow describing the
-// stream no longer.
+// **The pinned occurrences split off with copies, every web a pseudo**, the
+// register each was found in kept as its home for the allocator. The flow
+// follows the inserted entries and the renaming; the stream names pseudos now.
 struct Webs : Pass {
-    Webs() : Pass(PassInfo{"webs", kFlow | kPropPhysical, kPropPhysical, kFlow, kTodoBuildFlow}) {}
+    Webs() : Pass(PassInfo{"webs", kFlow | kPropPhysical, 0, kPropPhysical, kTodoBuildFlow}) {}
     bool execute(Function &fn) override {
         mir::Webs webs(fn);
         const bool split = webs.splitPinned();
         webs.build();
-        webs.assign(webs.homes());
-        if (split) webs.dropSelfCopies();
+        fn.homes = webs.homes();
         return split;
+    }
+};
+
+// **Every pseudo given a register**, and the copies that then copy a
+// register to itself dropped: the split ones the allocator sent back home,
+// and any it coalesced.
+struct Allocate : Pass {
+    Allocate() : Pass(PassInfo{"allocate", kFlow, kPropPhysical, 0, 0}) {}
+    bool execute(Function &fn) override {
+        mir::Allocator alloc(fn, fn.homes);
+        const bool changed = alloc.run();
+        fn.homes.clear();
+        return changed;
     }
 };
 
@@ -143,7 +154,8 @@ struct Rounds : Group {
 //   rounds            forward-values, remove-unreachable, remove-dead,
 //                     coalesce-copies, fold-loads, fold-offsets; repeated
 //   frame             (whole, prologue held)
-//     webs            every register web a pseudo and back: must change nothing
+//     webs            every register web a pseudo, its home kept
+//     allocate        every pseudo a register, the copies coalesced away
 //     promote-locals  scalar locals into callee-saved registers
 //     rounds          (if any was promoted)
 //     dse-loop        remove-dead-stores, then rounds; up to three times,
@@ -161,6 +173,7 @@ std::unique_ptr<Pass> pipelineFor() {
 
     std::unique_ptr<Group> frame(new FrameGroup());
     frame->add(std::unique_ptr<Pass>(new Webs()));
+    frame->add(std::unique_ptr<Pass>(new Allocate()));
     frame->add(std::unique_ptr<Pass>(new PromoteLocals()));
     frame->add(rounds<RoundsIfPromoted>());
     std::unique_ptr<Group> dse(new Group(PassInfo{"dse-loop", 0, 0, 0, 0}, 3, Group::WhenFirstUnchanged));

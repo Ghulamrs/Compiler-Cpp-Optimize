@@ -35,6 +35,8 @@ struct Function {
     Convention convention;
     Flow flow;
     unsigned props = kPropPhysical;
+    // The register each pseudo was found in, while the stream names pseudos.
+    std::vector<int> homes;
 
     // The level's answers: what a pass asks instead of the level.
     const Costs &costs() const { return *costs_; }
