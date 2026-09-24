@@ -20,8 +20,8 @@ bool renamable(const std::string &m) { return opcodeOf(m).has(Opcode::kRenamable
 // where this cannot tell, which only ever makes a slot look more shared.
 int accessWidth(const Instr &i, const Operand &at) {
     const Operand &other = &at == &i.a ? i.b : i.a;
-    if (i.m == "movslq") return 4;
-    if (isPush(i.m)) return 8;
+    if (i.m == "movslq" || i.m == "movss") return 4;
+    if (isPush(i.m) || i.m == "movsd") return 8;
     const char last = i.m.back();
     if (renamable(i.m) && gpr(other)) return other.reg.width;
     if (renamable(i.m) && i.m.size() > 3 && (last == 'l' || last == 'q')) return last == 'l' ? 4 : 8;
