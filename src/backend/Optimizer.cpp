@@ -10,34 +10,13 @@
 
 using opt::Entry;
 
-namespace {
-
-// **What each level does, in one place.** A round is every pass once; each
-// pass leaves work for the others, so rounds run until one finds nothing, or
-// the level's limit. Where the code has two spellings, -O1 takes the smaller
-// and -O2 the faster, which is how cl's /O1 and /O2 part (/Os against /Ot).
-struct Level {
-    int rounds;
-    int registers;        // callee-saved registers locals may be kept in
-    long minWeight;       // the accesses, loop-weighted, that earn one
-    bool stringCopies;    // a block of three words or more copied by `rep movsq`
-};
-
-// **No loop-head alignment at -O2**, although cl pads with npad: measured on
-// the box with and without `.balign 16` before every loop head - Compiler++'s
-// bench 843 against 844 ms over 15 interleaved rounds, loops.cpp's five
-// kernels equal to the millisecond - for 3,904 bytes. Nothing to buy.
-Level levelFor(int n) {
-    return n <= 1 ? Level{8, 2, 6, true} : Level{16, 5, 2, false};
+Optimizer::Optimizer(Spelling &under, const Abi &abi, int level) : under_(under) {
+    fn_.convention = opt::conventionOf(abi);
+    fn_.costs = opt::Costs::forLevel(level);
 }
-
-}
-
-Optimizer::Optimizer(Spelling &under, const Abi &abi, int level)
-    : under_(under), convention_(opt::conventionOf(abi)), level_(level) {}
 
 void Optimizer::hold(Entry e) {
-    stream_.push_back(std::move(e));
+    fn_.stream.push_back(std::move(e));
     held_++;
 }
 
@@ -88,19 +67,20 @@ void Optimizer::defLabel(const std::string &l) {
 void Optimizer::stateLabel(const std::string &l) {
     if (!inFunction_) { under_.stateLabel(l); return; }
     defLabel(l);
-    stream_.back().state = true;
+    fn_.stream.back().state = true;
 }
 
-bool Optimizer::copiesByString() const { return levelFor(level_).stringCopies; }
-
 void Optimizer::functionBegin(const std::string &name, bool exported, bool mergeable) {
-    flush(false);
+    flush();
     under_.functionBegin(name, exported, mergeable);
     inFunction_ = true;
-    cut_ = promotable_ = false;
-    prologueAt_ = -1;
+    fn_.name = name;
+    fn_.whole = true;
+    fn_.promotable = false;
+    fn_.prologueAt = -1;
+    fn_.inlineTop = 0;
+    fn_.saves.clear();
     inlining_ = false;
-    inlineTop_ = 0;
 }
 
 // **A callee walked in place keeps its frame below the caller's locals**, moved
@@ -109,98 +89,102 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
 void Optimizer::inlineBegin(int base, int calleeFrame) {
     inlining_ = true;
     inlineBase_ = base;
-    inlineTop_ = std::max(inlineTop_, base + ((calleeFrame + 15) & ~15));
+    fn_.inlineTop = std::max(fn_.inlineTop, base + ((calleeFrame + 15) & ~15));
 }
 
 void Optimizer::inlineEnd() { inlining_ = false; }
 
-void Optimizer::jumpOnly(const std::string &label) { jumpOnly_.insert(label); }
+void Optimizer::jumpOnly(const std::string &label) { fn_.jumpOnly.insert(label); }
 
 // **A label only jumps name, that no jump names any more**, joins its block to
 // the one before, so what is known flows through it.
 void Optimizer::dropUnnamedLabels() {
     std::set<std::string> named;
-    for (const Entry &e : stream_)
+    for (const Entry &e : fn_.stream)
         if (e.kind == Entry::Ins && !e.dead && e.ins.a.kind == opt::Operand::Label) named.insert(e.ins.a.text);
-    for (Entry &e : stream_)
-        if (e.kind == Entry::Label && jumpOnly_.count(e.label) && !named.count(e.label)) e.dead = true;
+    for (Entry &e : fn_.stream)
+        if (e.kind == Entry::Label && fn_.jumpOnly.count(e.label) && !named.count(e.label)) e.dead = true;
 }
 
 void Optimizer::functionEnd(const std::string &name) {
-    flush(!cut_);
+    flush();
     inFunction_ = false;
     under_.functionEnd(name);
 }
 
 void Optimizer::frame(std::vector<opt::Local> locals, bool promotable) {
-    locals_ = std::move(locals);
-    promotable_ = promotable;
+    fn_.locals = std::move(locals);
+    fn_.promotable = promotable;
 }
 
 void Optimizer::returnsPair(bool pair) {
-    convention_.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);
-    if (pair) convention_.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
+    fn_.convention.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);
+    if (pair) fn_.convention.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
 }
 
-void Optimizer::rounds(opt::Flow &flow, int limit) {
+void Optimizer::rounds(int limit) {
+    opt::Stream &s = fn_.stream;
+    opt::Flow &flow = fn_.flow;
     for (int round = 0; round < limit; ++round) {
         dropUnnamedLabels();
-        flow.build(stream_, convention_);
-        bool changed = opt::forwardValues(stream_, flow, convention_);
-        changed = opt::removeUnreachable(stream_) || changed;
-        changed = opt::removeDead(stream_, flow) || changed;
-        changed = opt::coalesceCopies(stream_, flow, convention_) || changed;
-        changed = opt::foldLoads(stream_, flow, convention_) || changed;
-        changed = opt::foldOffsets(stream_, flow, convention_) || changed;
+        fn_.buildFlow();
+        bool changed = opt::forwardValues(s, flow, fn_.convention);
+        changed = opt::removeUnreachable(s) || changed;
+        changed = opt::removeDead(s, flow) || changed;
+        changed = opt::coalesceCopies(s, flow, fn_.convention) || changed;
+        changed = opt::foldLoads(s, flow, fn_.convention) || changed;
+        changed = opt::foldOffsets(s, flow, fn_.convention) || changed;
         if (!changed) break;
     }
 }
 
 // **Locals go to registers once the frame is as small as it gets**, so an
 // address folded away no longer counts as escaping; then everything again.
-void Optimizer::improve(bool whole) {
-    const Level level = levelFor(level_);
-    opt::Flow flow;
-    rounds(flow, level.rounds);
+void Optimizer::improve() {
+    const opt::Costs &costs = fn_.costs;
+    opt::Stream &s = fn_.stream;
+    opt::Flow &flow = fn_.flow;
+    rounds(costs.rounds);
     // What the frame gains goes below what it had: first the region inlined
     // callees live in, then the saves. The outgoing area stays under both.
-    int size = std::max(frameSize_, inlineTop_);
-    std::vector<SavedReg> saves;
-    if (whole && promotable_ && prologueAt_ >= 0) {
+    fn_.size = fn_.frameBase();
+    if (fn_.whole && fn_.promotable && fn_.prologueAt >= 0) {
         // Stage 1 of docs/OPTIMIZER-IR.md: every web a pseudo, and each given
         // back the register it was found in - which must change nothing.
-        const mir::Webs webs = mir::buildWebs(stream_, flow, convention_);
-        mir::assign(stream_, webs.home);
-        saves = opt::promoteLocals(stream_, convention_, locals_, size, level.registers, level.minWeight);
-        if (!saves.empty()) rounds(flow, level.rounds);
+        const mir::Webs webs = mir::buildWebs(s, flow, fn_.convention);
+        mir::assign(s, webs.home);
+        fn_.saves = opt::promoteLocals(s, fn_.convention, fn_.locals, fn_.size, costs.registers, costs.minWeight);
+        if (!fn_.saves.empty()) rounds(costs.rounds);
         // Each round can forward a reload away and leave its store unread.
-        for (int again = 0; again < 3 && opt::removeDeadStores(stream_); ++again) rounds(flow, level.rounds);
-        opt::dropUnusedSaves(stream_, saves);
-        size += (8 * static_cast<int>(saves.size()) + 15) & ~15;
+        for (int again = 0; again < 3 && opt::removeDeadStores(s); ++again) rounds(costs.rounds);
+        opt::dropUnusedSaves(s, fn_.saves);
+        fn_.size += (8 * static_cast<int>(fn_.saves.size()) + 15) & ~15;
     }
-    if (size != frameSize_) {
-        assert(prologueAt_ >= 0 && "a frame can grow only while its prologue is held");
-        const std::string lsda = lsda_;
-        const int outgoing = outgoing_;
-        stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda, outgoing); };
+    if (fn_.size != fn_.frameSize) {
+        assert(fn_.prologueAt >= 0 && "a frame can grow only while its prologue is held");
+        const std::vector<SavedReg> saves = fn_.saves;
+        const int size = fn_.size;
+        const std::string lsda = fn_.lsda;
+        const int outgoing = fn_.outgoing;
+        s[fn_.prologueAt].event = [=](Spelling &sp) { sp.calleeSaves(saves); sp.prologue(size, lsda, outgoing); };
     }
     // A shorter spelling last: narrowed arithmetic leaves extensions to delete.
     for (int again = 0; again < 3; ++again) {
-        flow.build(stream_, convention_);
-        if (!opt::shrink(stream_, flow, convention_)) break;
-        rounds(flow, level.rounds);
+        fn_.buildFlow();
+        if (!opt::shrink(s, flow, fn_.convention)) break;
+        rounds(costs.rounds);
     }
 }
 
 void Optimizer::settle() {
-    if (inFunction_) cut_ = true;
-    flush(false);
+    if (inFunction_) fn_.whole = false;
+    flush();
 }
 
-void Optimizer::flush(bool whole) {
-    if (stream_.empty()) return;
-    improve(whole);
-    for (const Entry &e : stream_) {
+void Optimizer::flush() {
+    if (fn_.stream.empty()) return;
+    improve();
+    for (const Entry &e : fn_.stream) {
         if (e.dead) continue;
         switch (e.kind) {
         case Entry::Ins: {
@@ -217,16 +201,16 @@ void Optimizer::flush(bool whole) {
         case Entry::Event: e.event(under_); break;
         }
     }
-    stream_.clear();
-    prologueAt_ = -1;       // written out: from here on the frame is what it is
+    fn_.stream.clear();
+    fn_.prologueAt = -1;       // written out: from here on the frame is what it is
 }
 
 // Everything else is an event: held where it stood, with its arguments copied.
 void Optimizer::prologue(int frameSize, const std::string &lsda, int outgoing) {
-    prologueAt_ = static_cast<int>(stream_.size());
-    frameSize_ = frameSize;
-    lsda_ = lsda;
-    outgoing_ = outgoing;
+    fn_.prologueAt = static_cast<int>(fn_.stream.size());
+    fn_.frameSize = frameSize;
+    fn_.lsda = lsda;
+    fn_.outgoing = outgoing;
     event([=](Spelling &s) { s.prologue(frameSize, lsda, outgoing); });
 }
 void Optimizer::fileEntry(int n, const std::string &name) {

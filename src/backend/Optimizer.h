@@ -4,11 +4,10 @@
 // function as it always has; this holds it, improves it and hands it on.
 // Outside a function every call passes straight through.
 
-#include "OptPasses.h"
+#include "OptFunction.h"
 #include "Spelling.h"
 
 #include <cstddef>
-#include <set>
 
 struct Abi;
 
@@ -29,9 +28,9 @@ public:
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
-    int level() const { return level_; }
+    int level() const { return fn_.costs.level; }
     // Whether this level copies a block with `rep movsq` rather than unrolled.
-    bool copiesByString() const;
+    bool copiesByString() const { return fn_.costs.stringCopies; }
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -68,30 +67,20 @@ public:
 
 private:
     Spelling &under_;
-    opt::Convention convention_;
-    int level_;
+    // **The function being held**, and what the walker has said of it so far.
+    opt::Function fn_;
     bool inFunction_ = false;
-    opt::Stream stream_;
     std::size_t held_ = 0;
-    std::vector<opt::Local> locals_;
-    bool promotable_ = false;
-    bool cut_ = false;                // settled mid-function: the stream is not all of it
-    int prologueAt_ = -1;
     bool inlining_ = false;
-    std::set<std::string> jumpOnly_;
     int inlineBase_ = 0;
-    int inlineTop_ = 0;
-    int frameSize_ = 0;
-    std::string lsda_;
-    int outgoing_ = 0;
 
     void hold(opt::Entry e);
     void instruction(const std::string &m, int operands, const Op *a, const Op *b);
     // A call that is not an instruction: held in its place inside a function,
     // passed on at once outside one.
     void event(std::function<void(Spelling &)> call);
-    void improve(bool whole);
+    void improve();
     void dropUnnamedLabels();
-    void rounds(opt::Flow &flow, int limit);
-    void flush(bool whole);
+    void rounds(int limit);
+    void flush();
 };
