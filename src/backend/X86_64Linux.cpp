@@ -1841,7 +1841,7 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end() || it->second == current_) return nullptr;
+    if (it == bodies_.end()) return nullptr;
     const Function &callee = *it->second;
     const bool reserved = current_->hasLandingPads() && usesFunclets();
     if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) return nullptr;
@@ -1861,7 +1861,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
     inPlace_ = true;
-    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize());
+    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize(), scalarsOf(fn));
     receiveParameters(fn);
     walkBody(fn);
     optimizer_->inlineEnd();

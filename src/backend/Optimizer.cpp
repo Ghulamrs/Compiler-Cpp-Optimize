@@ -114,12 +114,19 @@ void Optimizer::defer(std::function<void()> call) {
 void Optimizer::sharedSlot(long long disp, int size) { fn_.shared.add(disp, size); }
 
 // **A callee walked in place keeps its frame below the caller's locals**, moved
-// down by `base`. Every site shares that region, so no slot in it is one
-// variable's, and none is offered for a register.
-void Optimizer::inlineBegin(int base, int calleeFrame) {
+// down by `base`. Its scalars are listed there once, moved the same way; two
+// callees whose slots overlap unalike are refused by `promotableLocals`.
+void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &scalars) {
     inlining_ = true;
     inlineBase_ = base;
     fn_.inlineTop = std::max(fn_.inlineTop, base + ((calleeFrame + 15) & ~15));
+    for (const opt::Local &l : scalars) {
+        const opt::Local moved{l.disp - base, l.size};
+        bool listed = false;
+        for (const opt::Local &have : fn_.locals)
+            if (have.disp == moved.disp && have.size == moved.size) listed = true;
+        if (!listed) fn_.locals.push_back(moved);
+    }
 }
 
 void Optimizer::inlineEnd() { inlining_ = false; }

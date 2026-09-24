@@ -43,7 +43,7 @@ public:
     // The registers the next call reads its arguments from, said just before it.
     void callArguments(opt::RegSet regs);
     // Around a callee walked in place of its call, at -O2.
-    void inlineBegin(int base, int calleeFrame);
+    void inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &scalars);
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
