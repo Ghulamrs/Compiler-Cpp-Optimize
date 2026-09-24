@@ -55,7 +55,7 @@ public:
     Group(const PassInfo &info, int repeat, Stop stop) : Pass(info), repeat_(repeat), stop_(stop) {}
     Group &add(std::unique_ptr<Pass> p) { subs_.push_back(std::move(p)); return *this; }
     bool execute(Function &) override { return false; }     // the manager runs the subs
-    int repeat(const Function &fn) const { return repeat_ > 0 ? repeat_ : fn.costs.rounds; }
+    int repeat(const Function &fn) const { return repeat_ > 0 ? repeat_ : fn.costs().rounds(); }
     Stop stop() const { return stop_; }
     const std::vector<std::unique_ptr<Pass>> &subs() const { return subs_; }
 

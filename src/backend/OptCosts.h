@@ -7,42 +7,76 @@
 // (the same passes, size costs in place of speed costs); GCC's own -O1 is a
 // subset of passes instead, which cxx1 does not follow.
 //
-// Every number a pass takes from the level is a field here, so a pass never
-// tests the level itself. A pass that grows code (an inlined body, a cmov
-// where a branch is shorter) will be gated by a cost read from here, not
-// switched off by level.
+// Every number a pass takes from the level is a question asked of a Costs,
+// so a pass never tests the level itself. The two levels are the two
+// classes below behind one interface: a pass that grows code (an inlined
+// body, a cmov where a branch is shorter) is gated by what the costs
+// answer, not switched off by level.
+
+#include <memory>
 
 namespace opt {
 
-struct Costs {
-    int level = 0;          // 1 or 2; 0 means no optimizer stands in front
-    bool forSize = true;    // -O1: size is the cost; -O2: speed is
+class Costs {
+public:
+    virtual ~Costs() {}
+
+    int level() const { return level_; }
+    // Whether size is the cost (-O1) or speed is (-O2).
+    virtual bool forSize() const = 0;
 
     // The rounds a pass group repeats until one finds nothing.
-    int rounds = 0;
+    virtual int rounds() const = 0;
     // Callee-saved registers locals may be kept in, and the accesses,
     // loop-weighted, that earn one. Speed spends registers freely; size
     // asks that the saves pay for themselves.
-    int registers = 0;
-    long minWeight = 0;
+    virtual int registers() const = 0;
+    virtual long minWeight() const = 0;
     // A block of three words or more copied by `rep movsq` (smaller) rather
     // than unrolled moves (faster).
-    bool stringCopies = false;
+    virtual bool stringCopies() const = 0;
 
-    // **No loop-head alignment at -O2**, although cl pads with npad: measured
-    // on the box with and without `.balign 16` before every loop head -
-    // Compiler++'s bench 843 against 844 ms over 15 interleaved rounds,
-    // loops.cpp's five kernels equal to the millisecond - for 3,904 bytes.
-    // Nothing to buy, so no field for it.
+    // The costs of a level, 1 or 2.
+    static std::unique_ptr<Costs> forLevel(int level);
 
-    static Costs forLevel(int level) {
-        Costs c;
-        c.level = level;
-        c.forSize = level <= 1;
-        if (level <= 1) { c.rounds = 8; c.registers = 2; c.minWeight = 6; c.stringCopies = true; }
-        else { c.rounds = 16; c.registers = 5; c.minWeight = 2; c.stringCopies = false; }
-        return c;
-    }
+protected:
+    explicit Costs(int level) : level_(level) {}
+
+private:
+    int level_;
 };
+
+// **-O1: size.** Nothing is done that does not make the code smaller.
+class SizeCosts final : public Costs {
+public:
+    SizeCosts() : Costs(1) {}
+    bool forSize() const override { return true; }
+    int rounds() const override { return 8; }
+    int registers() const override { return 2; }
+    long minWeight() const override { return 6; }
+    bool stringCopies() const override { return true; }
+};
+
+// **-O2: speed.** Registers spent freely, and code grown where time is saved.
+//
+// **No loop-head alignment**, although cl pads with npad: measured on the
+// box with and without `.balign 16` before every loop head - Compiler++'s
+// bench 843 against 844 ms over 15 interleaved rounds, loops.cpp's five
+// kernels equal to the millisecond - for 3,904 bytes. Nothing to buy, so
+// no question for it.
+class SpeedCosts final : public Costs {
+public:
+    SpeedCosts() : Costs(2) {}
+    bool forSize() const override { return false; }
+    int rounds() const override { return 16; }
+    int registers() const override { return 5; }
+    long minWeight() const override { return 2; }
+    bool stringCopies() const override { return false; }
+};
+
+inline std::unique_ptr<Costs> Costs::forLevel(int level) {
+    if (level <= 1) return std::unique_ptr<Costs>(new SizeCosts());
+    return std::unique_ptr<Costs>(new SpeedCosts());
+}
 
 }

@@ -26,12 +26,16 @@ enum Prop : unsigned {
 };
 
 struct Function {
+    explicit Function(const Costs &costs) : costs_(&costs) {}
+
     std::string name;
     Stream stream;
     Convention convention;
-    Costs costs;
     Flow flow;
     unsigned props = kPropPhysical;
+
+    // The level's answers: what a pass asks instead of the level.
+    const Costs &costs() const { return *costs_; }
 
     // What the walker said of the function.
     std::vector<Local> locals;      // its scalar locals, rbp-relative
@@ -58,6 +62,9 @@ struct Function {
         flow.build(stream, convention);
         props |= kPropFlow;
     }
+
+private:
+    const Costs *costs_;
 };
 
 }

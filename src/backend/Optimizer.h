@@ -30,9 +30,9 @@ public:
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
-    int level() const { return fn_.costs.level; }
+    int level() const { return costs_->level(); }
     // Whether this level copies a block with `rep movsq` rather than unrolled.
-    bool copiesByString() const { return fn_.costs.stringCopies; }
+    bool copiesByString() const { return costs_->stringCopies(); }
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -69,6 +69,8 @@ public:
 
 private:
     Spelling &under_;
+    // The level, as the costs its passes ask.
+    std::unique_ptr<const opt::Costs> costs_;
     // **The function being held**, and what the walker has said of it so far.
     opt::Function fn_;
     // The pipeline, built once per spelling, and the manager that runs it.

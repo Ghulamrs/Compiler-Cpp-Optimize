@@ -63,7 +63,7 @@ struct PromoteLocals : Pass {
     PromoteLocals() : Pass(PassInfo{"promote-locals", kPropPhysical, 0, kFlow, 0}) {}
     bool execute(Function &fn) override {
         fn.saves = promoteLocals(fn.stream, fn.convention, fn.locals, fn.frameBase(),
-                                 fn.costs.registers, fn.costs.minWeight);
+                                 fn.costs().registers(), fn.costs().minWeight());
         return !fn.saves.empty();
     }
 };

@@ -9,9 +9,8 @@
 using opt::Entry;
 
 Optimizer::Optimizer(Spelling &under, const Abi &abi, int level)
-    : under_(under), pipeline_(opt::pipelineFor()) {
+    : under_(under), costs_(opt::Costs::forLevel(level)), fn_(*costs_), pipeline_(opt::pipelineFor()) {
     fn_.convention = opt::conventionOf(abi);
-    fn_.costs = opt::Costs::forLevel(level);
 }
 
 void Optimizer::hold(Entry e) {

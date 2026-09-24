@@ -12,6 +12,9 @@
 #   CPP  a Compiler++ tree (its units are CPP/Compiler++/*.cpp); default
 #        ~/cxxopt-build/cpp, skipped if it is not there
 #   OUT  a scratch directory; default ~/cxxopt-build/identical
+#   LEVELS, in the environment, names the levels compared ("0 1 2" unless
+#   set): a step that changes -O1 and -O2 on purpose is gated with LEVELS=0,
+#   -O0 being the reference the other two are diffed against.
 #
 # Prints the number of outputs compared and the number that differ, and names
 # each one that does; exits 1 if any does. Runs the compiles eight at a time,
@@ -48,14 +51,13 @@ sources() {
     done
     [ -d "$CPP/Compiler++" ] && ls "$CPP"/Compiler++/*.cpp
 }
+LEVELS=${LEVELS:-0 1 2}
 for src in $(sources); do
     n=$(echo "$src" | tr '/' '_' | sed 's/\.cpp$//')
-    for L in 0 1 2; do
+    for L in $LEVELS; do
         echo "$n.win.gnu.O$L $src -nologo -arch x86_64-windows -masm=gnu -O$L -S" >> "$jobs"
         echo "$n.win.masm.O$L $src -nologo -arch x86_64-windows -masm=masm -O$L -S" >> "$jobs"
-    done
-    for L in 1 2; do
-        echo "$n.linux.O$L $src -nologo -arch x86_64-linux -O$L -S" >> "$jobs"
+        [ "$L" = 0 ] || echo "$n.linux.O$L $src -nologo -arch x86_64-linux -O$L -S" >> "$jobs"
     done
 done
 
