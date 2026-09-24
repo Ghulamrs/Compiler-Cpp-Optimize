@@ -114,18 +114,22 @@ classDiagram
     WebsPass ..> Webs
     Webs --> Function
     Webs ..> ReachingDefs
+    Pass <|-- LocalsPass
+    class Locals { +promote() }
+    LocalsPass ..> Locals
+    Locals ..> promotableLocals
     Pass <|-- Allocate
     class Allocator {
-        -fn_ homes_ uses_ liveIn_ liveOut_ nodes_ matrix_ copies_ colour_
+        -fn_ homes_ nHomes_ uses_ liveIn_ liveOut_ nodes_ matrix_ copies_ colour_ demoted_ offered_ taken_ freshFor_
         +run() coalesced() fellBack()
         -findUses() solveLiveness() buildInterference() collectCosts() valid()
-        -colour() coalesce() simplify() select() pick() merge() significant() bestPreference()
+        -colour() coalesce() reserveFresh() simplify() select() pick() merge() significant() bestPreference()
+        -demote() addSaves()
     }
     Allocate ..> Allocator
     Allocator --> Function
     Allocator ..> Loops : depthOf
-    Allocator ..> Costs : referenceWeight
-    Pass <|-- PromoteLocals
+    Allocator ..> Costs : referenceWeight loopWeight registers minWeight
     Pass <|-- RemoveDeadStores
     Pass <|-- FinishFrame
     Pass <|-- Shrink
@@ -150,9 +154,10 @@ Files, all under `src/backend/`:
 | `OptFunction.h` | `Prop`, `Function` |
 | `OptPass.{h,cpp}` | `Todo`, `PassInfo`, `Pass`, `Group`, `PassManager`, `dropUnnamedLabels`, `dumpStream` |
 | `OptPipeline.{h,cpp}` | the `Pass` subclasses and `pipelineFor()` |
-| `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions (unchanged) |
+| `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions; `OptFrame.cpp` holds `promotableLocals`, `insertRestores`, `dropUnusedSaves` and the frame's shared slots |
 | `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos; `assign` and `dropSelfCopies` for whoever colours |
-| `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences |
+| `MirLocals.{h,cpp}` | `mir::Locals`: every promotable scalar local renamed to a pseudo, its slot kept |
+| `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences, preserved registers charged their save, a local's slot given back where no register can hold it |
 | `Optimizer.{h,cpp}` | the Spelling that holds a function, runs the pipeline, replays |
 
 ## 2. Each class, and what it is responsible for
@@ -193,7 +198,10 @@ caller and to the unit; `allows` answers for a site from that;
 
 **`Flow`** (`FlowOf<Entry>`). The CFG and the scanning layer: `build`
 splits the stream into `Block`s at labels and after control instructions,
-computes `effects` per entry from the opcode table, and makes the `Edge`s -
+computes `effects` per entry from the opcode table (a call's reads are the
+argument registers the walker's plan filled, `Instr::args`, told through
+`Optimizer::callArguments` just before it; a call issued by hand says
+nothing and reads the convention's whole set), and makes the `Edge`s -
 jump, fallthrough, return, leave, and `Eh` from every call a `Region`
 covers to the block of the region's target (the landing pad, or where the
 function resumes after a handler ran as a funclet). GCC ends a block at
@@ -220,7 +228,7 @@ Owned by the `Function` and computed on request (`Function::loops()`, GCC's
 `loops_for_fn`), dropped when the flow is rebuilt; the dominators' first
 client. The dump shows each block's depth. Tried as `promote-locals`'
 weights in place of its label-and-backward-jump count: 89 outputs changed
-for 2 bytes either way, so not taken; the allocator will weigh by them.
+for 2 bytes either way, so not taken then; the allocator weighs by them now.
 
 **`ReachingDefs`.** A forward dataflow problem: per block and register, the
 definitions that may reach the block's entry. The caller numbers the
@@ -251,8 +259,19 @@ self-copies that leaves (a four-byte one zero-extends and stays); both are
 the allocator's to call. Over Compiler++ at -O2 the split raises the
 pseudos from 33,395 to 55,826.
 
-**`mir::Allocator`** (session 4; `allocate`, after `webs`). GCC's IRA
-reduced to one function with no regions. `solveLiveness` is the flow's
+**`mir::Locals`** (session 5; `locals`, between `webs` and `allocate`).
+GCC's into-SSA of a non-addressable local reduced to a rename: every
+scalar local `promotableLocals` would offer a register - not shared with a
+funclet or the runtime (`SharedSlots`), never addressed, every access whole
+and by an instruction that takes a register there, none where the frame
+escapes or setjmp is called - is renamed to a new pseudo numbered after the
+webs' homes, its slot kept in `Function::slots`. A parameter's store into
+its slot is then a copy out of its argument register into a pseudo, and
+the allocator coalesces it into that register where nothing keeps it out.
+`Function::promoted` is what makes the rounds run again after allocation.
+
+**`mir::Allocator`** (session 4, and session 5 for the locals; `allocate`,
+after `locals`). GCC's IRA reduced to one function with no regions. `solveLiveness` is the flow's
 liveness problem over the pseudos, one bit each, exception edges joined at
 the call. `buildInterference` walks each block backward with that and
 with the flow's physical liveness (in which a pseudo's write kills no
@@ -276,11 +295,23 @@ degree below the palette while one exists and the cheapest by weight over
 degree otherwise, optimistically; `select` gives each node the register
 its copies prefer most, its home on a tie, then the cheapest encoding on
 offer - the caller-saved general registers (nine on SysV, seven on
-Microsoft), a home outside them allowed, the preserved ones not until a
-save can be charged. A pseudo left without a register sends the whole
-function back to its homes (`fellBack`); no function in the cases needs it
-today, and nothing spills to the frame yet. After `assign`, the copies
-that became self-copies go.
+Microsoft), a home outside them allowed, and the preserved ones the
+stream never names last: those are taken out of the physical liveness
+(their life from the entry to the return is exactly what a save and a
+restore remove), a pseudo live across a call has no other, and one taken
+is saved by the prologue and restored before each return (`addSaves`,
+`insertRestores`) at a slot below `frameBase()`. The level's count of
+fresh preserved registers (`Costs::registers`) goes to the locals that need
+one most (`reserveFresh`): no caller-saved register can hold them, their own
+accesses in `minWeight`'s loop-weighted unit (`Costs::loopWeight`) earn the
+save, the heaviest first. A promoted local left without a register takes
+its slot back - the node's slot members are demoted in the stream and the
+graph is built again without them (`demote`), the spill that costs nothing;
+only a web pseudo left over sends the function back to its homes
+(`fellBack`), which no function in the cases does. A local is kept live
+across a `Leave` edge. After `assign`, the copies that became self-copies
+go. This replaced `promote-locals`, which did the same for up to the
+level's count of locals with a cruder loop measure and nothing for the rest.
 
 **`Opcode`.** One mnemonic's description: `kind` (the effects branch),
 `flags` (explicit-only, writes-only, immediate source, renamable frame
@@ -322,9 +353,9 @@ pipeline
     fold-offsets         requires flow
   frame                  [gate: whole && prologue held]
     webs                 [build-flow before]; requires flow, physical; destroys physical
-    allocate             requires flow; provides physical
-    promote-locals       requires physical; destroys flow
-    rounds               [gate: some local was promoted]
+    locals               requires flow
+    allocate             requires flow; provides physical; destroys flow
+    rounds               [gate: some local left its slot, or a register was saved]
     dse-loop             [repeat 3; stop when the first sub-pass found nothing]
       remove-dead-stores
       rounds
@@ -366,14 +397,14 @@ Two properties exist today:
 - `kPropFlow`: `Function::flow` describes `Function::stream` - the blocks'
   ranges are the stream's, the edges are current, the effects are per entry.
   Provided by `Function::buildFlow()` (from a `kTodoBuildFlow`); destroyed by
-  `promote-locals`, which inserts entries. Required by every pass that walks
+  `allocate`, which inserts the restores. Required by every pass that walks
   blocks or asks liveness.
 - `kPropPhysical`: no operand names a pseudo. True on entry; `webs`
   requires it and destroys it (the stream names pseudos from there),
   keeping `kPropFlow` - the flow is rebuilt around the copies it inserts
-  and every renamed entry's effects follow; `allocate` requires the flow
-  and provides `kPropPhysical` again. A pass placed between the two would
-  have to take pseudos; none is today.
+  and every renamed entry's effects follow; `locals` adds pseudos and keeps
+  it; `allocate` requires the flow, provides `kPropPhysical` again and
+  destroys `kPropFlow`, the restores it inserts having moved the entries.
 
 Invalidation has two levels, as in GCC (`df`'s `solutions_dirty` against
 `TODO_cleanup_cfg`):
@@ -397,7 +428,7 @@ A pass that needs the flow after another destroyed it is caught by the
 `Costs` is one interface with two classes behind it, `SizeCosts` (-O1)
 and `SpeedCosts` (-O2), made by `Costs::forLevel(n)`. Each question a pass
 asks is a virtual: `forSize`, `rounds`, `registers` and `minWeight` (how
-many callee-saved registers locals may take and what earns one),
+many callee-saved registers a function's locals may take and what earns one),
 `stringCopies` (`rep movsq` at -O1, unrolled moves at -O2), and the
 inliner's `inlines`, `inlineGrowth(depth)`, `callerGrowthPercent`,
 `unitGrowthPercent`, `largeFunction`. Both levels run the same pipeline; a
@@ -407,8 +438,10 @@ speed-only alignment and layout rows), and cl's /O1 against /O2 (/Os
 against /Ot).
 
 The allocator asks `referenceWeight(loopDepth)`: what a use is worth and
-what a coalesced copy saves - 8^depth for speed (as `promote-locals`
-weighs), 1 for size. Still to add: a cost in encoding bytes (Z1), which is
+what a coalesced copy saves - 8^depth for speed, 1 for size; and
+`registers()` and `minWeight()`, once `promote-locals`' - how many
+preserved registers a function's locals may take, and the loop-weighted
+accesses (`loopWeight`) that earn one. Still to add: a cost in encoding bytes (Z1), which is
 what would let `SizeCosts::inlines` say yes and the size register order be
 measured rather than assumed, and the size-or-speed choice for
 if-conversion and tail calls.
@@ -418,11 +451,12 @@ if-conversion and tail calls.
 - `Edge::Eh` edges are made (S2); liveness and, since session 4, reaching
   definitions take them at the call. The frame passes run under landing
   pads since session 3 (the prologue's saves carry CFI and unwind codes).
-- The allocator (S5) colours and coalesces; it does not spill (no function
-  in the cases needs it, and the homes stand in where a colouring fails),
-  does not take a preserved register for a pseudo (none is live across a
-  call until parameters and temporaries are pseudos, S6/S7), and weighs by
-  loop depth or by one - not yet by encoding bytes.
+- The allocator (S5, S6) colours, coalesces, takes preserved registers for
+  the locals that earn them and gives the rest their slots back. A web
+  pseudo it cannot colour still sends the function back to its homes rather
+  than to a spill slot below the frame: no function in the cases reaches
+  that, and the temporaries (S7) are what would. It weighs by loop depth or
+  by one - not yet by encoding bytes.
 - `Flow::dominators()` and `dominates()` have `Loops` as their client;
   value numbering over the dominator tree is still to come.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
