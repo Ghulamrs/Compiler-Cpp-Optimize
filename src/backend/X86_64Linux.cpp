@@ -121,14 +121,23 @@ void X86_64Linux::pop(const char *into) {
 void X86_64Linux::pushArg() { a_->ins("push", reg("%rax")); depth_++; }
 
 void X86_64Linux::pushF() {
-    a_->ins("sub", immText("8"), reg("%rsp"));
-    a_->ins("movsd", reg("%xmm0"), mem("%rsp"));
-    depth_++;
+    if (tempsInSlots()) {
+        a_->ins("movsd", reg("%xmm0"), tempSlot(tempDepth_++));
+        if (tempDepth_ > tempHigh_) tempHigh_ = tempDepth_;
+        return;
+    }
+    pushFArg();
 }
 void X86_64Linux::popF(const char *into) {
+    if (tempsInSlots()) { a_->ins("movsd", tempSlot(--tempDepth_), reg(into)); return; }
     a_->ins("movsd", mem("%rsp"), reg(into));
     a_->ins("add", immText("8"), reg("%rsp"));
     depth_--;
+}
+void X86_64Linux::pushFArg() {
+    a_->ins("sub", immText("8"), reg("%rsp"));
+    a_->ins("movsd", reg("%xmm0"), mem("%rsp"));
+    depth_++;
 }
 
 void X86_64Linux::pushX87() {
@@ -1099,7 +1108,7 @@ void X86_64Linux::visit(const Call &n) {
         }
         if (!t->isStructOrUnion()) {
             if (isX87(t))             pushX87();
-            else if (t->isFloating()) pushF();
+            else if (t->isFloating()) pushFArg();
             else                      pushArg();
             if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
@@ -1157,7 +1166,8 @@ void X86_64Linux::visit(const Call &n) {
 
                 if (abi_.positional && n.isVariadic() &&
                     static_cast<int>(i) >= n.namedArgs())
-                    a_->ins("mov", mem("%rsp"), reg(abi_.intRegs[place[i].regs[0]]));
+                    a_->ins("mov", tempsInSlots() ? tempSlot(tempDepth_ - 1) : mem("%rsp"),
+                            reg(abi_.intRegs[place[i].regs[0]]));
                 popF(abi_.sseRegs[place[i].regs[0]]);
             } else {
                 pop(abi_.intRegs[place[i].regs[0]]);

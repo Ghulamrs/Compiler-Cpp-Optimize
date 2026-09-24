@@ -224,6 +224,7 @@ private:
     Op tempSlot(int t) const { return local(Optimizer::kTempBase + 8 * (t + 1)); }
     void pushF();
     void popF(const char *into);
+    void pushFArg();
 
     void pushX87();
     void popX87();

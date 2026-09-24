@@ -90,6 +90,8 @@ public:
         }
         for (int r = 0; r < kGprs; ++r)
             if ((c_.clobbered & bit(r)) && !frameReg(r) && !(named & bit(r))) scratch_.push_back(r);
+        for (int r = kXmm0; r < kXmm0 + 16; ++r)
+            if ((c_.clobbered & bit(r)) && !(named & bit(r))) xmmScratch_.push_back(r);
         for (const Block &b : f_.blocks) {
             enterBlock();
             for (int k = b.begin; k < b.end; ++k)
@@ -99,7 +101,7 @@ public:
     }
 
 private:
-    struct Pushed { Value v; int at; };
+    struct Pushed { Value v; int at; int xmm = -1; };   // xmm: the register a movsd stored, or -1
     enum class Pop { Kept, Copy, Gone };
 
     Stream &s_;
@@ -111,6 +113,7 @@ private:
     std::map<long long, Pushed> temps_;  // a temporary's slot -> the store it holds, in this block
     std::map<long long, Slot> slots_;   // rbp offset -> what the frame holds there
     int flagsFrom_ = -1;
+    int k_ = 0;                         // the entry being stepped
     int condReg_ = -1;                  // the register whose low byte a setcc just wrote
     Value cond_;
     // **The copy each register last received**, good while neither end has
@@ -121,6 +124,7 @@ private:
     int nextId_ = 1;
     bool changed_ = false;
     std::vector<int> scratch_;
+    std::vector<int> xmmScratch_;
 
     Value fresh() { Value v; v.id = nextId_++; return v; }
 
@@ -138,6 +142,7 @@ private:
     // and a temporary's load is paired before the general reload resolves it
     // and leaves its store standing.
     void step(int k) {
+        k_ = k;
         Instr i = s_[k].ins;
         bool edited = foldAddress(i.a);
         edited = foldAddress(i.b) || edited;
@@ -247,13 +252,36 @@ private:
     // **A temporary's load whose store is in this block** is the same pair in
     // a frame slot nothing else reads or writes, and needs no quiet between.
     Pop pairTemp(Instr &i, int k) {
-        if (!isMovQ(i.m) || !isTemp(i.a) || !gpr(i.b) || i.b.reg.width != 8) return Pop::Kept;
+        if (!isTemp(i.a)) return Pop::Kept;
         const auto it = temps_.find(i.a.disp);
         if (it == temps_.end()) return Pop::Kept;
-        const Pop pop = pairWith(i, k, it->second, i.b);
+        Pop pop = Pop::Kept;
+        if (isMovQ(i.m) && gpr(i.b) && i.b.reg.width == 8) pop = pairWith(i, k, it->second, i.b);
+        else if (i.m == "movsd" && xmmReg(i.b)) pop = pairXmm(i, it->second);
         if (pop != Pop::Kept) temps_.erase(it);
         return pop;
     }
+
+    // **A double's pair**: nothing if the register still holds it, a register
+    // copy if another does, else through an xmm the function never names.
+    Pop pairXmm(Instr &i, const Pushed &p) {
+        const int at = p.at, dst = i.b.reg.id;
+        if (p.xmm < 0) return Pop::Kept;
+        if (untouched(p.xmm, at, k_)) {
+            kill(at);
+            if (dst == p.xmm) return Pop::Gone;
+            i = Instr{"movapd", Operand::ofReg(p.xmm, 16), i.b, 2};
+            return Pop::Copy;
+        }
+        for (int sc : xmmScratch_) {
+            if (!untouched(sc, at, k_)) continue;
+            replace(at, Instr{"movapd", s_[at].ins.a, Operand::ofReg(sc, 16), 2});
+            i = Instr{"movapd", Operand::ofReg(sc, 16), i.b, 2};
+            return Pop::Copy;
+        }
+        return Pop::Kept;
+    }
+    static bool xmmReg(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= kXmm0 && o.reg.id < kXmm0 + 16; }
 
     // The pair's second half rewritten as a copy into `dst` and the first killed, or made the copy.
     Pop pairWith(Instr &i, int k, const Pushed &p, const Operand &dstOp) {
@@ -388,6 +416,8 @@ private:
             if (gpr(i.a) && i.a.reg.width == 8) v = regs_[i.a.reg.id];
             else if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(i.a.value);
             temps_[i.b.disp] = Pushed{v, k};
+        } else if (i.m == "movsd" && isTemp(i.b) && xmmReg(i.a)) {
+            temps_[i.b.disp] = Pushed{fresh(), k, i.a.reg.id};
         }
 
         if (!gpr(i.b)) {
