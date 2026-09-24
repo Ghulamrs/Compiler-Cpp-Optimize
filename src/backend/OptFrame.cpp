@@ -11,7 +11,7 @@ bool gpr(const Operand &o) {
     return o.kind == Operand::Register && o.reg.id >= 0 && (o.reg.id < kGprs || o.reg.id >= kPhysical);
 }
 bool xmm(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= kXmm0 && o.reg.id < kPhysical; }
-bool frameSlot(const Operand &o) { return o.kind == Operand::Memory && o.reg.id == RBP; }
+bool frameSlot(const Operand &o) { return o.kind == Operand::Memory && o.reg.id == RBP && o.scale == 0; }
 
 // The instructions whose frame operand a register can take as it stands.
 bool renamable(const std::string &m) { return opcodeOf(m).has(Opcode::kRenamable); }
@@ -64,6 +64,7 @@ std::vector<Local> promotableLocals(const Stream &s, const std::vector<Local> &l
             if ((o->kind == Operand::Register || o->kind == Operand::Memory || o->kind == Operand::Indirect) &&
                 o->reg.id >= 0 && o->reg.id < kPhysical)
                 mentioned |= bit(o->reg.id);
+            if (o->indexed()) mentioned |= bit(o->index.id);
             // rbp read as a value, not restored nor handed to rsp, is the frame escaping.
             if (o->isReg(RBP) && i.m != "pop" && !(i.m == "mov" && i.b.isReg(RSP))) return {};
         }
@@ -106,8 +107,10 @@ void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves, long long top) {
     RegSet named = 0;
     for (const Entry &e : s)
         if (e.kind == Entry::Ins && !e.dead && !(e.ins.m == "mov" && e.ins.a.isMem() && e.ins.a.reg.id == RBP))
-            for (const Operand *o : {&e.ins.a, &e.ins.b})
+            for (const Operand *o : {&e.ins.a, &e.ins.b}) {
                 if ((o->kind == Operand::Register || o->kind == Operand::Memory) && o->reg.id >= 0) named |= bit(o->reg.id);
+                if (o->indexed()) named |= bit(o->index.id);
+            }
     std::vector<SavedReg> kept;
     for (const SavedReg &sv : saves) {
         const int r = parseReg(sv.reg).id;
@@ -142,6 +145,8 @@ bool removeDeadStores(Stream &s, const SharedSlots &shared) {
         if (e.kind != Entry::Ins || e.dead) continue;
         const Instr &i = e.ins;
         for (const Operand *o : {&i.a, &i.b}) {
+            // An indexed access reaches an unknown way up from its displacement.
+            if (o->indexed() && o->reg.id == RBP) { escapesFrom = std::min(escapesFrom, o->disp); continue; }
             if (!frameSlot(*o)) continue;
             if (i.m == "lea") { if (!i.b.isReg(RSP)) escapesFrom = std::min(escapesFrom, o->disp); continue; }
             if (o == &i.b && isStore(i)) continue;

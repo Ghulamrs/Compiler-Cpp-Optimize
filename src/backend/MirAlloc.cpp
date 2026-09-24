@@ -148,6 +148,8 @@ void Allocator::buildInterference() {
             if ((o->kind == Operand::Register || o->kind == Operand::Memory || o->kind == Operand::Indirect) &&
                 o->reg.id >= 0 && o->reg.id < kPhysical)
                 mentioned |= bit(o->reg.id);
+        for (const Operand *o : {&e.ins.a, &e.ins.b})
+            if (o->indexed()) mentioned |= bit(o->index.id);
     }
     offered_ = 0;
     for (int r = 0; r < kGprs; ++r)

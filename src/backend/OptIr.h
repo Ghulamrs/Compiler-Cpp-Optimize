@@ -38,6 +38,8 @@ struct Operand {
     Reg reg;                  // Register; Indirect's target; Memory's base
     long long disp = 0;       // Memory
     bool hasDisp = false;
+    Reg index;                // Memory: `disp(base,index,scale)`; scale 0 is none
+    int scale = 0;
     long long value = 0;      // Immediate, when numeric
     bool numeric = false;
     std::string text;         // an Immediate that is not numeric, a symbol, a label
@@ -49,6 +51,7 @@ struct Operand {
     Op op() const;            // valid while this operand is
     bool isReg(int id) const { return kind == Register && reg.id == id; }
     bool isMem() const { return kind == Memory; }
+    bool indexed() const { return kind == Memory && scale != 0; }
 };
 
 struct Instr {

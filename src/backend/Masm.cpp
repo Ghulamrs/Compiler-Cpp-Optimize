@@ -215,6 +215,7 @@ MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
         // target takes rbp after the allocation, exactly frameSize lower, so every
         // `[rbp + d]` becomes `[rbp + d + frameSize]` - the positive ones included.
         if (std::string(x.text.substr(1)) == "rbp") d += frameSize_;
+        if (x.scale != 0) t += "+" + std::string(x.index.substr(1)) + "*" + std::to_string(x.scale);
         if (d != 0) {
             if (d < 0) t += std::to_string(d);
             else       t += "+" + std::to_string(d);

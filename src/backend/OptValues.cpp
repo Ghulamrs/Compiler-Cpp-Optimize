@@ -136,7 +136,7 @@ private:
         temps_.clear();
         flagsFrom_ = condReg_ = -1;
     }
-    bool isTemp(const Operand &o) const { return tempFrom_ != 0 && o.isMem() && o.reg.id == RBP && o.disp <= tempFrom_; }
+    bool isTemp(const Operand &o) const { return tempFrom_ != 0 && o.isMem() && o.reg.id == RBP && o.scale == 0 && o.disp <= tempFrom_; }
 
     // In this order: an address folded first may be a slot the reload finds,
     // and a temporary's load is paired before the general reload resolves it
@@ -175,8 +175,10 @@ private:
         if (o.kind != Operand::Memory || o.reg.id < 0 || o.reg.id == RBP || o.reg.id == RSP) return false;
         const Value &v = regs_[o.reg.id];
         if (v.kind != Value::FrameAddr || !fitsImm32(v.k + o.disp)) return false;
-        o = Operand::ofMem(RBP, v.k + o.disp);
+        o.reg = Reg{RBP, 8};
+        o.disp += v.k;
         o.hasDisp = true;
+        o.text.clear();
         return true;
     }
 
@@ -197,7 +199,7 @@ private:
     // **A reload of a frame slot whose value a register still holds** is a
     // copy of that register, or of the constant.
     bool reloadFromRegister(Instr &i) const {
-        if (!i.a.isMem() || i.a.reg.id != RBP || !gpr(i.b) || i.b.reg.width != 8) return false;
+        if (!i.a.isMem() || i.a.reg.id != RBP || i.a.scale != 0 || !gpr(i.b) || i.b.reg.width != 8) return false;
         const auto it = slots_.find(i.a.disp);
         if (it == slots_.end()) return false;
         const Slot &slot = it->second;
@@ -347,9 +349,11 @@ private:
         const bool shift = opcodeOf(i.m).has(Opcode::kShift);
         if (sourceOnly && !shift && gpr(i.a)) edited = original(i.a.reg) || edited;
         if (is(i.m, {"cmp", "cmpl", "cmpq", "test", "testl", "testq"}) && gpr(i.b)) edited = original(i.b.reg) || edited;
-        for (Operand *o : {&i.a, &i.b})
+        for (Operand *o : {&i.a, &i.b}) {
             if (o->kind == Operand::Memory && o->reg.id >= 0 && o->reg.id < kGprs && o->reg.id != RBP && o->reg.id != RSP)
                 edited = original(o->reg) || edited;
+            if (o->indexed()) edited = original(o->index) || edited;
+        }
         return edited;
     }
     bool original(Reg &r) const {
@@ -453,7 +457,7 @@ private:
 
     // A store into the frame is remembered; any other forgets the frame.
     void store(const Instr &i) {
-        if (!i.b.isMem() || i.b.reg.id != RBP) { slots_.clear(); return; }
+        if (!i.b.isMem() || i.b.reg.id != RBP || i.b.scale != 0) { slots_.clear(); return; }
         const int w = suffixWidth(i.m) ? suffixWidth(i.m) : i.a.kind == Operand::Register ? i.a.reg.width : 16;
         for (auto it = slots_.begin(); it != slots_.end();) {
             const bool overlaps = it->first < i.b.disp + w && i.b.disp < it->first + it->second.width;
@@ -488,7 +492,13 @@ private:
             return cond_;
         } else if (is(m, {"movzbq", "movzbl"}) && src.kind == Value::Const) {
             return Value::constant(src.k & 0xff);
-        } else if (m == "lea" && i.a.isMem() && i.a.reg.id == RBP) {
+        } else if (is(m, {"movsbq", "movsbl"}) && src.kind == Value::Const) {
+            return Value::constant(atWidth(src.k, 1));
+        } else if (is(m, {"movswq", "movswl"}) && src.kind == Value::Const) {
+            return Value::constant(atWidth(src.k, 2));
+        } else if (is(m, {"movzwq", "movzwl"}) && src.kind == Value::Const) {
+            return Value::constant(src.k & 0xffff);
+        } else if (m == "lea" && i.a.isMem() && i.a.reg.id == RBP && i.a.scale == 0) {
             return Value::frame(i.a.disp);
         } else if (is(m, {"add", "sub"}) && constSrc && w == 8) {
             const Value &cur = regs_[i.b.reg.id];

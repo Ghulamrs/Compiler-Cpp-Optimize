@@ -47,6 +47,13 @@ struct FoldOffsets : Pass {
     bool execute(Function &fn) override { return foldOffsets(fn.stream, fn.flow, fn.convention); }
 };
 
+// **Scaled-index addressing**, after allocation so that webs and the
+// allocator never meet an indexed operand; `imul $8` is still a multiply here.
+struct FoldIndex : Pass {
+    FoldIndex() : Pass(PassInfo{"fold-index", kFlow | kPropPhysical, 0, 0, kTodoBuildFlow}) {}
+    bool execute(Function &fn) override { return foldIndex(fn.stream, fn.flow, fn.convention); }
+};
+
 // **The pinned occurrences split off with copies, every web a pseudo**, the
 // register each was found in kept as its home for the allocator. The flow
 // follows the inserted entries and the renaming; the stream names pseudos now.
@@ -96,7 +103,7 @@ static void shrinkTemporaries(Function &fn) {
     for (const Entry &e : fn.stream) {
         if (e.kind != Entry::Ins || e.dead) continue;
         for (const Operand *o : {&e.ins.a, &e.ins.b}) {
-            if (!o->isMem() || o->reg.id != RBP || o->disp > fn.tempFrom) continue;
+            if (!o->isMem() || o->reg.id != RBP || o->scale != 0 || o->disp > fn.tempFrom) continue;
             const long long t = (-o->disp - fn.tempBase) / 8;
             if (t <= fn.tempCount && t > used) used = static_cast<int>(t);
         }
@@ -175,6 +182,7 @@ struct Rounds : Group {
 //     rounds          (if any was promoted)
 //     dse-loop        remove-dead-stores, then rounds; up to three times,
 //                     while the stores found something
+//   fold-index        an added index register into the memory operand, its scale with it
 //   finish-frame      unused saves dropped, the prologue rewritten
 //   shrink-loop       shrink, then rounds; up to three times, while shrink
 //                     found something; the flow rebuilt before each
@@ -197,6 +205,7 @@ std::unique_ptr<Pass> pipelineFor() {
     frame->add(std::move(dse));
     top->add(std::move(frame));
 
+    top->add(std::unique_ptr<Pass>(new FoldIndex()));
     top->add(std::unique_ptr<Pass>(new FinishFrame()));
 
     std::unique_ptr<Group> shrinkLoop(new Group(PassInfo{"shrink-loop", 0, 0, 0, kTodoBuildFlow}, 3, Group::WhenFirstUnchanged));

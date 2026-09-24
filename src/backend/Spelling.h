@@ -54,27 +54,34 @@ struct Op {
     unsigned long long uimm = 0;
     bool immNeg = false;
     bool immNumeric = false;
+
+    // Mem only: `d(base,index,scale)`; scale 0 is no index.
+    Str index;
+    int scale = 0;
 };
 
-inline Op reg(Str r)  { return { Op::Reg, r, 0, false, 0, false, false }; }
+inline Op reg(Str r)  { return { Op::Reg, r, 0, false, 0, false, false, {}, 0 }; }
 inline Op imm(long long v) {
-    Op o { Op::Imm, {}, 0, false, 0, false, true };
+    Op o { Op::Imm, {}, 0, false, 0, false, true, {}, 0 };
     if (v < 0) { o.immNeg = true; o.uimm = 0ULL - static_cast<unsigned long long>(v); }
     else o.uimm = static_cast<unsigned long long>(v);
     return o;
 }
-inline Op imm(unsigned long long v) { return { Op::Imm, {}, 0, false, v, false, true }; }
+inline Op imm(unsigned long long v) { return { Op::Imm, {}, 0, false, v, false, true, {}, 0 }; }
 inline Op imm(int v)                { return imm(static_cast<long long>(v)); }
 inline Op imm(unsigned int v)       { return imm(static_cast<unsigned long long>(v)); }
 
-inline Op immText(Str t) { return { Op::Imm, t, 0, false, 0, false, false }; }
+inline Op immText(Str t) { return { Op::Imm, t, 0, false, 0, false, false, {}, 0 }; }
 
-inline Op mem(Str base) { return { Op::Mem, base, 0, false, 0, false, false }; }
+inline Op mem(Str base) { return { Op::Mem, base, 0, false, 0, false, false, {}, 0 }; }
 inline Op mem(long long d, Str base)
-                                   { return { Op::Mem, base, d, true, 0, false, false }; }
-inline Op rip(Str sym) { return { Op::Rip, sym, 0, false, 0, false, false }; }
-inline Op ind(Str r)   { return { Op::Ind, r, 0, false, 0, false, false }; }
-inline Op lbl(Str l)   { return { Op::Lbl, l, 0, false, 0, false, false }; }
+                                   { return { Op::Mem, base, d, true, 0, false, false, {}, 0 }; }
+inline Op memIndexed(long long d, bool hasD, Str base, Str index, int scale) {
+    return { Op::Mem, base, d, hasD, 0, false, false, index, scale };
+}
+inline Op rip(Str sym) { return { Op::Rip, sym, 0, false, 0, false, false, {}, 0 }; }
+inline Op ind(Str r)   { return { Op::Ind, r, 0, false, 0, false, false, {}, 0 }; }
+inline Op lbl(Str l)   { return { Op::Lbl, l, 0, false, 0, false, false, {}, 0 }; }
 
 inline void appendNum(std::string &s, unsigned long long v) {
     char b[24];

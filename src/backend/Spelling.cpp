@@ -18,6 +18,7 @@ void GnuSpelling::op(const Op &x) {
         if (x.hasDisp) appendNum(o_, x.disp);
         o_ += '(';
         o_ += x.text;
+        if (x.scale != 0) { o_ += ','; o_ += x.index; o_ += ','; appendNum(o_, x.scale); }
         o_ += ')';
         return;
     case Op::Rip: o_ += sym(std::string(x.text.p, x.text.n)); o_ += "(%rip)"; return;
@@ -387,5 +388,6 @@ void CoffSpelling::op(const Op &x) {
     if (d != 0) appendNum(o_, d);
     o_ += '(';
     o_ += std::string(x.text.p, x.text.n);
+    if (x.scale != 0) { o_ += ','; o_ += x.index; o_ += ','; appendNum(o_, x.scale); }
     o_ += ')';
 }
