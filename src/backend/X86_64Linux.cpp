@@ -1197,6 +1197,14 @@ void X86_64Linux::visit(const Call &n) {
             depth_ += shadowSlots;
         }
 
+        // **The call reads the registers the plan filled and no other**: the
+        // optimizer need not keep the rest alive into it, nor copy into them.
+        if (optimizer_) {
+            opt::RegSet reads = (n.isVariadic() && abi_.variadicSseCountInAl) ? opt::bit(opt::RAX) : 0;
+            for (int k = 0; k < plan.intsUsed && k < abi_.intCount; ++k) reads |= opt::bit(opt::parseReg(abi_.intRegs[k]).id);
+            for (int k = 0; k < plan.ssesUsed && k < abi_.sseCount; ++k) reads |= opt::bit(opt::parseReg(abi_.sseRegs[k]).id);
+            optimizer_->callArguments(reads);
+        }
         if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
         else                       a_->ins("call", lbl(n.symbol()));
 

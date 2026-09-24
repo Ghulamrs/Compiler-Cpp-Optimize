@@ -30,6 +30,8 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
     e.ins.operands = operands;
     if (a) e.ins.a = opt::Operand::from(*a);
     if (b) e.ins.b = opt::Operand::from(*b);
+    if (argsPending_ && m == "call") { e.ins.args = args_; e.ins.exactArgs = true; }
+    argsPending_ = false;
     if (inlining_)
         for (opt::Operand *o : {&e.ins.a, &e.ins.b})
             if (o->isMem() && o->reg.id == opt::RBP) {
@@ -132,6 +134,11 @@ void Optimizer::functionEnd(const std::string &name) {
 }
 
 void Optimizer::frame(std::vector<opt::Local> locals) { fn_.locals = std::move(locals); }
+
+void Optimizer::callArguments(opt::RegSet regs) {
+    argsPending_ = true;
+    args_ = regs;
+}
 
 void Optimizer::returnsPair(bool pair) {
     fn_.convention.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);

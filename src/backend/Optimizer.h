@@ -36,6 +36,8 @@ public:
     void returnsPair(bool pair);
     // The function's scalar locals, candidates for registers.
     void frame(std::vector<opt::Local> locals);
+    // The registers the next call reads its arguments from, said just before it.
+    void callArguments(opt::RegSet regs);
     // Around a callee walked in place of its call, at -O2.
     void inlineBegin(int base, int calleeFrame);
     void inlineEnd();
@@ -99,6 +101,8 @@ private:
     std::size_t held_ = 0;
     bool inlining_ = false;
     int inlineBase_ = 0;
+    bool argsPending_ = false;
+    opt::RegSet args_ = 0;
 
     // Where an entry goes: the funclet being held, or the function.
     opt::Function &current() { return funclet_ ? *funclet_ : fn_; }

@@ -86,7 +86,7 @@ Roles classify(const Instr &i, const Convention &conv, Effects &e) {
     case Opcode::Call:
         r.a = kRead;
         e.control = e.memoryRead = e.memoryWritten = true;
-        e.reads = conv.arguments | bit(RSP);
+        e.reads = (i.exactArgs ? i.args : conv.arguments) | bit(RSP);
         e.writes = conv.clobbered & ~bit(RSP);
         e.flagsWritten = true;
         break;

@@ -55,6 +55,10 @@ struct Instr {
     std::string m;
     Operand a, b;             // AT&T order: a is the source, b the destination
     int operands = 0;
+    // A call's argument registers as the walker placed them; without the
+    // word, the convention's whole set is read.
+    RegSet args = 0;
+    bool exactArgs = false;
 };
 
 // Everything between functionBegin and functionEnd; an event is a spelling
