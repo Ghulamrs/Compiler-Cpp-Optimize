@@ -2,25 +2,9 @@
 
 #include "../Abi.h"
 
-#include <cstring>
-
 namespace opt {
 
 namespace {
-
-bool starts(const std::string &m, const char *p) { return m.compare(0, std::strlen(p), p) == 0; }
-bool oneOf(const std::string &m, std::initializer_list<const char *> names) {
-    for (const char *n : names) if (m == n) return true;
-    return false;
-}
-
-// The conditions jcc, setcc and cmovcc spell, each with its opposite.
-struct Cond { const char *cc, *inv; };
-const Cond kConds[] = {
-    {"e", "ne"}, {"ne", "e"}, {"z", "nz"}, {"nz", "z"}, {"l", "ge"}, {"ge", "l"},
-    {"le", "g"}, {"g", "le"}, {"b", "ae"}, {"ae", "b"}, {"be", "a"}, {"a", "be"},
-    {"s", "ns"}, {"ns", "s"}, {"p", "np"}, {"np", "p"}, {"o", "no"}, {"no", "o"},
-};
 
 // What an operand reads when it is only a source: its register, or the
 // register an address is formed from.
@@ -51,37 +35,11 @@ void read(Effects &e, const Operand &o) {
     if (o.kind == Operand::Register && o.reg.id < 0) e.opaque = true;
 }
 
-bool isMove(const std::string &m) {
-    return oneOf(m, {"mov", "movq", "movl", "movw", "movb", "movabs", "movslq", "movsbq",
-                     "movswq", "movsbl", "movswl", "movzbq", "movzbl", "movzwl", "movzwq",
-                     "lea", "movd", "movaps", "movapd"}) ||
-           starts(m, "cvt");
-}
-
-// The SSE moves into a register keep its upper lanes: a partial write.
-bool mergesXmm(const std::string &m) { return m == "movsd" || m == "movss" || starts(m, "cvt"); }
-
-bool isRmw(const std::string &m) {
-    return oneOf(m, {"add", "sub", "and", "or", "xor", "adc", "sbb", "imul", "shl", "sar", "shr",
-                     "addl", "subl", "orb", "andl", "orl", "xorl", "shll", "sarl", "shrl",
-                     "addsd", "subsd", "mulsd", "divsd", "addss", "subss", "mulss", "divss",
-                     "pxor", "xorps", "xorpd", "andpd", "andps"});
-}
-
-// **SSE arithmetic leaves the flags alone**, and that has to be exact: a flags
-// write claimed where there is none would let a compare be taken for dead.
-bool writesFlags(const std::string &m) {
-    return !oneOf(m, {"addsd", "subsd", "mulsd", "divsd", "addss", "subss", "mulss", "divss",
-                      "pxor", "xorps", "xorpd", "andpd", "andps"});
-}
-
 }
 
 bool explicitOnly(const Instr &i) {
-    const std::string &m = i.m;
-    if (m == "imul" && i.operands != 2) return false;           // rdx:rax, unnamed
-    return starts(m, "mov") || starts(m, "set") ||
-           oneOf(m, {"lea", "add", "sub", "and", "or", "xor", "cmp", "test", "addl", "subl", "cmpl", "imul"});
+    if (i.m == "imul" && i.operands != 2) return false;           // rdx:rax, unnamed
+    return opcodeOf(i.m).has(Opcode::kExplicit);
 }
 
 namespace {
@@ -93,7 +51,7 @@ bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0
 RegSet wideOf(const Instr &i, const Effects &e) {
     if (!explicitOnly(i)) return e.reads;
     // A move's destination, and setcc's, is written, not read.
-    const bool writesOnly = starts(i.m, "mov") || starts(i.m, "set") || i.m == "lea";
+    const bool writesOnly = opcodeOf(i.m).has(Opcode::kWritesOnly);
     RegSet narrow = 0, wide = 0;
     for (const Operand *o : {&i.a, &i.b}) {
         const bool destination = o == (i.operands == 1 ? &i.a : &i.b) && writesOnly;
@@ -116,95 +74,104 @@ Convention conventionOf(const Abi &abi) {
     return c;
 }
 
-std::string conditionOf(const std::string &m) {
-    std::string rest;
-    if (m.size() > 1 && m[0] == 'j' && m != "jmp") rest = m.substr(1);
-    else if (starts(m, "set")) rest = m.substr(3);
-    else return std::string();
-    for (const Cond &c : kConds) if (rest == c.cc) return rest;
-    return std::string();
-}
-
-std::string inverse(const std::string &cc) {
-    for (const Cond &c : kConds) if (cc == c.cc) return c.inv;
-    return std::string();
-}
-
 namespace {
 
 // **What an instruction does with each operand it names, and what it does
-// beyond them** - the one table both effectsOf and rolesOf read.
+// beyond them** - one branch per kind in the opcode table, read by both
+// effectsOf and rolesOf.
 Roles classify(const Instr &i, const Convention &conv, Effects &e) {
-    const std::string &m = i.m;
+    const Opcode &op = opcodeOf(i.m);
     Roles r;
-    if (m == "call") {
+    switch (op.kind) {
+    case Opcode::Call:
         r.a = kRead;
         e.control = e.memoryRead = e.memoryWritten = true;
         e.reads = conv.arguments | bit(RSP);
         e.writes = conv.clobbered & ~bit(RSP);
         e.flagsWritten = true;
-    } else if (m == "ret") {
+        break;
+    case Opcode::Ret:
         e.control = true;
         e.reads = conv.returned | conv.preserved | bit(RSP);
-    } else if (m == "jmp") {
+        break;
+    case Opcode::Jmp:
         e.control = true;
         if (i.a.kind != Operand::Label) { r.a = kRead; e.opaque = true; }
-    } else if (!conditionOf(m).empty() && m[0] == 'j') {
+        break;
+    case Opcode::Jcc:
         e.control = true;
         e.flagsRead = true;
-    } else if (!conditionOf(m).empty()) {           // setcc
+        break;
+    case Opcode::Setcc:
         r.a = kWrite;
         e.flagsRead = true;
-    } else if (m == "push" || m == "pushq") {
+        break;
+    case Opcode::Push:
         r.a = kRead;
         e.reads = e.writes = bit(RSP);
         e.memoryWritten = e.stack = true;
-    } else if (m == "pop" || m == "popq") {
+        break;
+    case Opcode::Pop:
         r.a = kWrite;
         e.reads = e.writes = bit(RSP);
         e.memoryRead = e.stack = true;
-    } else if (m == "leave") {
+        break;
+    case Opcode::Leave:
         e.reads = bit(RBP);
         e.writes = bit(RSP) | bit(RBP);
         e.memoryRead = e.stack = true;
-    } else if (oneOf(m, {"cqo", "cqto", "cdq", "cltd"})) {
+        break;
+    case Opcode::SignExtendAx:
         e.reads = bit(RAX);
         e.writes = bit(RDX);
-    } else if (m == "rep movsq") {
+        break;
+    case Opcode::StringMove:
         // rcx words from (rsi) to (rdi): all three read, and left changed.
         e.reads = e.writes = bit(RSI) | bit(RDI) | bit(RCX);
         e.memoryRead = e.memoryWritten = true;
-    } else if (oneOf(m, {"cltq", "cdqe"})) {
+        break;
+    case Opcode::ExtendAx:
         e.reads = e.writes = bit(RAX);
-    } else if (oneOf(m, {"idiv", "div", "idivl", "divl", "idivq", "divq"})) {
+        break;
+    case Opcode::Div:
         r.a = kRead;
         e.reads = e.writes = bit(RAX) | bit(RDX);
         e.flagsWritten = true;
-    } else if (oneOf(m, {"cmp", "cmpl", "cmpq", "cmpb", "test", "testb", "testl", "testq",
-                          "ucomisd", "ucomiss", "comisd", "comiss"})) {
+        break;
+    case Opcode::Compare:
         r.a = r.b = kRead;
         e.flagsWritten = true;
-    } else if (oneOf(m, {"neg", "not", "inc", "dec", "negq", "notq"})) {
+        break;
+    case Opcode::Unary:
         r.a = kRead | kWrite;
-        e.flagsWritten = m != "not" && m != "notq";
-    } else if (isMove(m) || mergesXmm(m)) {
-        r.a = m == "lea" ? kAddress : kRead;
-        const bool keeps = mergesXmm(m) && i.b.kind == Operand::Register && i.a.kind == Operand::Register;
+        e.flagsWritten = !op.has(Opcode::kNoFlags);
+        break;
+    case Opcode::Move: {
+        r.a = op.has(Opcode::kAddress) ? kAddress : kRead;
+        const bool keeps = op.has(Opcode::kMergeXmm) && i.b.kind == Operand::Register && i.a.kind == Operand::Register;
         r.b = keeps ? kWrite | kKeep : kWrite;
-    } else if (isRmw(m) && i.operands == 2) {     // one operand: imul's rdx:rax, a shift by one
-        const bool zeroing = oneOf(m, {"xor", "xorl", "pxor", "xorps", "xorpd", "sub"}) &&
-                             i.a.kind == Operand::Register && i.b.kind == Operand::Register &&
-                             i.a.reg.id == i.b.reg.id && i.a.reg.id >= 0;
-        r.a = zeroing ? 0 : kRead;
-        r.b = zeroing ? kWrite : kRead | kWrite;
-        e.flagsWritten = writesFlags(m);
-        if (i.b.isReg(RSP)) e.stack = true;
-    } else if (m[0] == 'f') {                       // x87: memory and its own stack
+        break;
+    }
+    case Opcode::Rmw:
+        if (i.operands != 2) { e.opaque = true; break; }   // imul's rdx:rax, a shift by one
+        {
+            const bool zeroing = op.has(Opcode::kZeroIdiom) &&
+                                 i.a.kind == Operand::Register && i.b.kind == Operand::Register &&
+                                 i.a.reg.id == i.b.reg.id && i.a.reg.id >= 0;
+            r.a = zeroing ? 0 : kRead;
+            r.b = zeroing ? kWrite : kRead | kWrite;
+            e.flagsWritten = !op.has(Opcode::kNoFlags);
+            if (i.b.isReg(RSP)) e.stack = true;
+        }
+        break;
+    case Opcode::X87:
         r.a = kRead;
         e.memoryRead = e.memoryWritten = true;
-        e.flagsWritten = oneOf(m, {"fucomip", "fcomip", "fucomi", "fcomi"});
-    } else {
+        e.flagsWritten = !op.has(Opcode::kNoFlags);
+        break;
+    case Opcode::Unknown:
         e.opaque = true;
+        break;
     }
     return r;
 }

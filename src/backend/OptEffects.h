@@ -5,6 +5,7 @@
 // writes everything, so no pass moves anything across it.
 
 #include "OptIr.h"
+#include "OptTable.h"
 
 struct Abi;
 
@@ -31,9 +32,5 @@ Roles rolesOf(const Instr &i);
 
 // Whether an instruction reads registers only through its operands.
 bool explicitOnly(const Instr &i);
-
-// The condition a jcc or setcc tests, and its opposite; "" for anything else.
-std::string conditionOf(const std::string &m);
-std::string inverse(const std::string &cc);
 
 }

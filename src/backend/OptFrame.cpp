@@ -8,24 +8,17 @@ namespace opt {
 namespace {
 
 bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kGprs; }
-bool is(const std::string &m, std::initializer_list<const char *> names) {
-    for (const char *n : names) if (m == n) return true;
-    return false;
-}
 bool frameSlot(const Operand &o) { return o.kind == Operand::Memory && o.reg.id == RBP; }
 
 // The instructions whose frame operand a register can take as it stands.
-bool renamable(const std::string &m) {
-    return is(m, {"mov", "movq", "movl", "movslq", "add", "sub", "and", "or", "xor", "cmp", "test",
-                  "imul", "addl", "subl", "cmpl", "push", "pushq"});
-}
+bool renamable(const std::string &m) { return opcodeOf(m).has(Opcode::kRenamable); }
 
 // **How many bytes an instruction reads or writes at its frame operand**; 16
 // where this cannot tell, which only ever makes a slot look more shared.
 int accessWidth(const Instr &i, const Operand &at) {
     const Operand &other = &at == &i.a ? i.b : i.a;
     if (i.m == "movslq") return 4;
-    if (is(i.m, {"push", "pushq"})) return 8;
+    if (isPush(i.m)) return 8;
     const char last = i.m.back();
     if (renamable(i.m) && gpr(other)) return other.reg.width;
     if (renamable(i.m) && i.m.size() > 3 && (last == 'l' || last == 'q')) return last == 'l' ? 4 : 8;
@@ -170,7 +163,7 @@ bool removeDeadStores(Stream &s) {
     std::vector<Access> reads;
     auto isStore = [](const Instr &i) {
         return frameSlot(i.b) && i.b.disp < 0 && i.operands == 2 &&
-               is(i.m, {"mov", "movq", "movl", "movw", "movb"}) && (gpr(i.a) || i.a.kind == Operand::Immediate);
+               isMovAny(i.m) && (gpr(i.a) || i.a.kind == Operand::Immediate);
     };
     for (const Entry &e : s) {
         if (e.kind != Entry::Ins || e.dead) continue;

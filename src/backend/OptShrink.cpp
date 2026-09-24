@@ -42,7 +42,7 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
     }
     if (!reg64(i.b)) return false;
     const bool upperRead = (wide & bit(i.b.reg.id)) != 0;
-    if (is(i.m, {"mov", "movq"}) && i.a.kind == Operand::Immediate && i.a.numeric) {
+    if (isMovQ(i.m) && i.a.kind == Operand::Immediate && i.a.numeric) {
         const long long v = i.a.value;
         if (v == 0 && !flagsLive) { i = Instr{"xor", Operand::ofReg(i.b.reg.id, 4), Operand::ofReg(i.b.reg.id, 4), 2}; return true; }
         if ((v >= 0 && v <= 0x7fffffffLL) || (!upperRead && v == static_cast<int>(v))) { i.m = "mov"; i.b.reg.width = 4; return true; }
@@ -58,7 +58,7 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
     }
     if (i.m == "movslq" && i.a.isMem()) { i.m = "movl"; i.b.reg.width = 4; return true; }
     if (i.m == "movslq" && gpr(i.a) && i.a.reg.id != i.b.reg.id) { i.m = "mov"; i.b.reg.width = 4; return true; }
-    if (is(i.m, {"mov", "movq"}) && i.a.isMem()) { i.m = "movl"; i.b.reg.width = 4; return true; }
+    if (isMovQ(i.m) && i.a.isMem()) { i.m = "movl"; i.b.reg.width = 4; return true; }
     return false;
 }
 

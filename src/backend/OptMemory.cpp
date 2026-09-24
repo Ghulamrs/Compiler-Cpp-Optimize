@@ -14,7 +14,7 @@ bool is(const std::string &m, std::initializer_list<const char *> names) {
 int loadWidth(const Instr &l) {
     if (!l.a.isMem() || !gpr(l.b)) return 0;
     if (l.m == "movl" || l.m == "movslq") return 4;
-    if (is(l.m, {"mov", "movq"}) && l.b.reg.width == 8) return 8;
+    if (isMovQ(l.m) && l.b.reg.width == 8) return 8;
     return 0;
 }
 

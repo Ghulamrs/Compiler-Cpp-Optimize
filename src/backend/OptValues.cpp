@@ -47,19 +47,10 @@ bool is(const std::string &m, std::initializer_list<const char *> names) {
 }
 
 // The width an instruction's own suffix names, or 0 where only a register can.
-int suffixWidth(const std::string &m) {
-    if (is(m, {"movq", "addq", "subq", "cmpq"})) return 8;
-    if (is(m, {"movl", "addl", "subl", "cmpl"})) return 4;
-    if (m == "movw") return 2;
-    if (is(m, {"movb", "orb", "cmpb"})) return 1;
-    return 0;
-}
+int suffixWidth(const std::string &m) { return opcodeOf(m).width; }
 
 // The instructions whose source may be an immediate in place of a register.
-bool takesImmediate(const std::string &m) {
-    return is(m, {"mov", "movq", "movl", "movw", "movb", "add", "sub", "cmp", "and", "or",
-                  "xor", "addl", "subl", "cmpl", "imul"});
-}
+bool takesImmediate(const std::string &m) { return opcodeOf(m).has(Opcode::kImmSource); }
 
 // A constant cut to the width it is read at, as that width's instruction reads it.
 long long atWidth(long long v, int width) {
@@ -198,7 +189,7 @@ private:
         const auto it = slots_.find(i.a.disp);
         if (it == slots_.end()) return false;
         const Slot &slot = it->second;
-        const bool whole = is(i.m, {"mov", "movq"}) && slot.width == 8;
+        const bool whole = isMovQ(i.m) && slot.width == 8;
         const bool extended = i.m == "movslq" && slot.width == 4 &&
                               (slot.v.sext32 || slot.v.kind == Value::Const);
         if (!whole && !extended) return false;
@@ -218,7 +209,7 @@ private:
     bool isNoop(const Instr &i) const {
         if (!gpr(i.b) || !gpr(i.a)) return false;
         const Value &src = regs_[i.a.reg.id], &dst = regs_[i.b.reg.id];
-        if (is(i.m, {"mov", "movq"}) && i.a.reg.width == 8 && i.b.reg.width == 8)
+        if (isMovQ(i.m) && i.a.reg.width == 8 && i.b.reg.width == 8)
             return i.a.reg.id == i.b.reg.id || dst.same(src);
         return i.m == "movslq" && i.a.reg.id == i.b.reg.id && src.sext32;
     }
@@ -239,7 +230,7 @@ private:
     // **A pop whose push is in this block** is a copy from wherever the pushed
     // value still is, and the push goes; the pop too, if it copies nothing.
     Pop pairPop(Instr &i, int k) {
-        if (!is(i.m, {"pop", "popq"}) || !gpr(i.a) || i.a.reg.width != 8) return Pop::Kept;
+        if (!isPop(i.m) || !gpr(i.a) || i.a.reg.width != 8) return Pop::Kept;
         if (stack_.empty() || !quiet(stack_.back().at, k)) return Pop::Kept;
         const Value v = stack_.back().v;
         const int dst = i.a.reg.id;
@@ -302,8 +293,8 @@ private:
     // %cl can be.
     bool readOriginal(Instr &i) const {
         bool edited = false;
-        const bool sourceOnly = i.operands == 2 || is(i.m, {"push", "pushq"});
-        const bool shift = is(i.m, {"shl", "shr", "sar", "sal", "rol", "ror", "shll", "shrl", "sarl"});
+        const bool sourceOnly = i.operands == 2 || isPush(i.m);
+        const bool shift = opcodeOf(i.m).has(Opcode::kShift);
         if (sourceOnly && !shift && gpr(i.a)) edited = original(i.a.reg) || edited;
         if (is(i.m, {"cmp", "cmpl", "cmpq", "test", "testl", "testq"}) && gpr(i.b)) edited = original(i.b.reg) || edited;
         for (Operand *o : {&i.a, &i.b})
@@ -354,14 +345,14 @@ private:
             if (e.opaque) stack_.clear();
             return;
         }
-        if (is(m, {"push", "pushq"})) {
+        if (isPush(m)) {
             Value v = fresh();
             if (gpr(i.a) && i.a.reg.width == 8) v = regs_[i.a.reg.id];
             else if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(i.a.value);
             stack_.push_back(Pushed{v, k});
             return;
         }
-        if (is(m, {"pop", "popq"})) {
+        if (isPop(m)) {
             Value v = fresh();
             if (!stack_.empty()) { v = stack_.back().v; stack_.pop_back(); }
             if (gpr(i.a)) regs_[i.a.reg.id] = i.a.reg.width == 8 ? v : fresh();
@@ -381,7 +372,7 @@ private:
         const Value out = result(i, extendsCond);
         const int w = i.b.reg.width;
         // A sign extension copies the low four bytes.
-        const bool whole = is(m, {"mov", "movq", "movl"}) && i.a.reg.width == w && w >= 4;
+        const bool whole = isMovQL(m) && i.a.reg.width == w && w >= 4;
         const bool low = m == "movslq" && i.a.reg.width == 4;
         copies_[d] = gpr(i.a) && i.a.reg.id != d && (whole || low)
                          ? Copy{i.a.reg.id, low ? 4 : w, version_[i.a.reg.id], version_[d]} : Copy();
@@ -410,7 +401,7 @@ private:
             const bool overlaps = it->first < i.b.disp + w && i.b.disp < it->first + it->second.width;
             it = overlaps ? slots_.erase(it) : std::next(it);
         }
-        if (!is(i.m, {"mov", "movq", "movl"}) || (w != 8 && w != 4)) return;
+        if (!isMovQL(i.m) || (w != 8 && w != 4)) return;
         Value v = fresh();
         if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(atWidth(i.a.value, w));
         else if (gpr(i.a)) v = regs_[i.a.reg.id];
@@ -423,7 +414,7 @@ private:
         const int w = i.b.reg.width;
         const Value src = gpr(i.a) ? regs_[i.a.reg.id] : Value();
         const bool constSrc = i.a.kind == Operand::Immediate && i.a.numeric;
-        if (is(m, {"mov", "movq", "movabs"}) && w == 8) {
+        if ((isMovQ(m) || m == "movabs") && w == 8) {
             if (constSrc) return Value::constant(i.a.value);
             if (gpr(i.a) && i.a.reg.width == 8) return src;
         } else if (is(m, {"mov", "movl"}) && w == 4) {
