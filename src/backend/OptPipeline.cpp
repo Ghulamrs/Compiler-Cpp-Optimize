@@ -68,7 +68,7 @@ struct Webs : Pass {
 struct PromoteLocals : Pass {
     PromoteLocals() : Pass(PassInfo{"promote-locals", kPropPhysical, 0, kFlow, 0}) {}
     bool execute(Function &fn) override {
-        fn.saves = promoteLocals(fn.stream, fn.convention, fn.locals, fn.frameBase(),
+        fn.saves = promoteLocals(fn.stream, fn.convention, fn.locals, fn.shared, fn.frameBase(),
                                  fn.costs().registers(), fn.costs().minWeight());
         return !fn.saves.empty();
     }
@@ -76,7 +76,7 @@ struct PromoteLocals : Pass {
 
 struct RemoveDeadStores : Pass {
     RemoveDeadStores() : Pass(PassInfo{"remove-dead-stores", 0, 0, 0, 0}) {}
-    bool execute(Function &fn) override { return removeDeadStores(fn.stream); }
+    bool execute(Function &fn) override { return removeDeadStores(fn.stream, fn.shared); }
 };
 
 // **The frame as the passes leave it**: the saves nothing needs any more
@@ -104,11 +104,11 @@ struct Shrink : Pass {
     bool execute(Function &fn) override { return shrink(fn.stream, fn.flow, fn.convention); }
 };
 
-// The frame passes run only on a whole function that may keep locals in
-// registers, while its prologue is still held.
+// The frame passes run only on a whole function - a funclet's frame is its
+// parent's - while its prologue is still held.
 struct FrameGroup : Group {
     FrameGroup() : Group(PassInfo{"frame", 0, 0, 0, 0}, 1, WhenNoneChanged) {}
-    bool gate(const Function &fn) const override { return fn.whole && fn.promotable && fn.prologueAt >= 0; }
+    bool gate(const Function &fn) const override { return fn.whole && fn.prologueAt >= 0; }
 };
 
 // Everything again once locals have registers - if any did.
@@ -142,7 +142,7 @@ struct Rounds : Group {
 //
 //   rounds            forward-values, remove-unreachable, remove-dead,
 //                     coalesce-copies, fold-loads, fold-offsets; repeated
-//   frame             (whole, promotable, prologue held)
+//   frame             (whole, prologue held)
 //     webs            every register web a pseudo and back: must change nothing
 //     promote-locals  scalar locals into callee-saved registers
 //     rounds          (if any was promoted)

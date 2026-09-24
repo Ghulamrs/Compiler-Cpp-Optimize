@@ -1553,7 +1553,7 @@ void X86_64Linux::emit(const Function &fn) {
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
-    if (optimizer_) optimizer_->frame(scalarsOf(fn), !fn.hasLandingPads());
+    if (optimizer_) optimizer_->frame(scalarsOf(fn));
     // The shadow space and the widest stack arguments of a call not inside
     // another's operands, in 16s. A nested call is evaluated with the outer
     // one's values pushed, so it never finds the area; counting it only made
@@ -1593,6 +1593,8 @@ void X86_64Linux::emit(const Function &fn) {
     // so its unwind info does not name a FuncInfo that never appears.
     if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
     a_->functionEnd(fn.symbol());
+    // The tables below measure slots from the frame as the passes left it.
+    if (optimizer_) frameSize_ = optimizer_->frameSize();
     emitExceptionTables(fn);
     if (lineSource()) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
@@ -1864,9 +1866,9 @@ void X86_64Linux::walkBody(const Function &fn) {
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
 std::string X86_64Linux::beginFunclet() {
-    settle();
+    if (optimizer_) optimizer_->funcletBegin();
     inFunclet_ = true;
-    funcletMark_ = out_.size();
+    atOutput([this] { funcletMark_ = out_.size(); });
     funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
                      std::to_string(funcletIndex_++) + "$" + fnSymbol_;
     return funcletSymbol_;
@@ -1885,16 +1887,13 @@ void X86_64Linux::endFunclet(const std::string &resume) {
 // Write -2 into the runtime's scratch word: the personality routine reads it
 // through the FuncInfo's dispUnwindHelp to know how far this frame had got.
 void X86_64Linux::storeUnwindHelp(int slot) {
+    if (optimizer_) optimizer_->sharedSlot(-slot, 8);
     a_->ins("movq", immText("-2"), mem(-slot, "%rbp"));
 }
 
 // **The funclet's own frame, and the assembler writes its unwind data.**
 void X86_64Linux::closeFunclet(const std::string &tail) {
-    settle();
     inFunclet_ = false;
-    std::string body = out_.substr(funcletMark_);
-    out_.resize(funcletMark_);
-
     const std::string q = "\"" + funcletSymbol_ + "\"";
     const std::string b = "\"$LNbeg$" + funcletSymbol_ + "\"";
     const std::string e = "\"$LNend$" + funcletSymbol_ + "\"";
@@ -1906,21 +1905,22 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     const std::string assoc =
         fnMergeable_ ? ",associative," + a_->labelText(fnSymbol_) : std::string();
 
-    std::string f;
+    // The text around the body: the head, then the body as written out,
+    // then the tail with the unwind data.
+    std::string head, f;
     // **Not `.globl`.**
-    f += "\n  .section .text$x,\"xr\"" + assoc + "\n";
-    f += q + ":\n";
-    f += b + ":\n";
-    f += "  movq %rdx, 16(%rsp)\n";
-    f += "  push %rbp\n";
-    f += pu + ":\n";
-    f += "  sub $32, %rsp\n";
-    f += pr + ":\n";
+    head += "\n  .section .text$x,\"xr\"" + assoc + "\n";
+    head += q + ":\n";
+    head += b + ":\n";
+    head += "  movq %rdx, 16(%rsp)\n";
+    head += "  push %rbp\n";
+    head += pu + ":\n";
+    head += "  sub $32, %rsp\n";
+    head += pr + ":\n";
     // rdx is the establisher frame, which on this target is exactly the parent's rbp - the two
     // became one thing when the frame pointer moved to the bottom of the allocation - so the
     // handler reaches the parent's locals with no adjustment.
-    f += "  mov %rdx, %rbp\n";
-    f += body;
+    head += "  mov %rdx, %rbp\n";
     f += tail;
     f += "  add $32, %rsp\n";
     f += "  pop %rbp\n";
@@ -1947,12 +1947,21 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     f += "  .long \"$cppxdata$" + fnSymbol_ + "\"@IMGREL\n";
     f += "  .text\n";
 
-    funcletPdata_ += "  .section .pdata,\"dr\"" + assoc + "\n";
-    funcletPdata_ += "  .p2align 2\n";
-    funcletPdata_ += "  .long " + b + "@IMGREL\n";
-    funcletPdata_ += "  .long " + e + "@IMGREL\n";
-    funcletPdata_ += "  .long " + u + "@IMGREL\n";
-    funclets_ += f;
+    std::string pdata;
+    pdata += "  .section .pdata,\"dr\"" + assoc + "\n";
+    pdata += "  .p2align 2\n";
+    pdata += "  .long " + b + "@IMGREL\n";
+    pdata += "  .long " + e + "@IMGREL\n";
+    pdata += "  .long " + u + "@IMGREL\n";
+    // **The body is lifted out of the output where it was written**, which
+    // with an optimizer in front is after the function it belongs to.
+    atOutput([this, head, f, pdata] {
+        const std::string body = out_.substr(funcletMark_);
+        out_.resize(funcletMark_);
+        funclets_ += head + body + f;
+        funcletPdata_ += pdata;
+    });
+    if (optimizer_) optimizer_->funcletEnd();
 }
 
 // **The FH3 tables for a frame that only cleans up.**

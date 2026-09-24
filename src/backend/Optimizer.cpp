@@ -14,7 +14,7 @@ Optimizer::Optimizer(Spelling &under, const Abi &abi, int level)
 }
 
 void Optimizer::hold(Entry e) {
-    fn_.stream.push_back(std::move(e));
+    current().stream.push_back(std::move(e));
     held_++;
 }
 
@@ -74,12 +74,39 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     inFunction_ = true;
     fn_.name = name;
     fn_.whole = true;
-    fn_.promotable = false;
     fn_.prologueAt = -1;
     fn_.inlineTop = 0;
     fn_.saves.clear();
+    fn_.shared = opt::SharedSlots();
     inlining_ = false;
 }
+
+// **A funclet is a function of its own to the passes** - the runtime calls
+// it, with the parent's frame under rbp - and a piece, never whole: no pass
+// takes a register for it that its prologue does not save. What it reads or
+// writes of the parent's frame is shared with the parent, whose passes then
+// leave those slots alone.
+void Optimizer::funcletBegin() {
+    assert(inFunction_ && !funclet_ && "a funclet inside a funclet");
+    funclet_.reset(new opt::Function(*costs_));
+    funclet_->name = fn_.name;
+    funclet_->convention = fn_.convention;
+    funclet_->whole = false;
+}
+
+void Optimizer::funcletEnd() {
+    assert(funclet_ && "no funclet is held");
+    improve(*funclet_);
+    fn_.shared.addAccessesOf(funclet_->stream);
+    funclets_.push_back(std::move(funclet_->stream));
+    funclet_.reset();
+}
+
+void Optimizer::defer(std::function<void()> call) {
+    event([call](Spelling &) { call(); });
+}
+
+void Optimizer::sharedSlot(long long disp, int size) { fn_.shared.add(disp, size); }
 
 // **A callee walked in place keeps its frame below the caller's locals**, moved
 // down by `base`. Every site shares that region, so no slot in it is one
@@ -104,10 +131,7 @@ void Optimizer::functionEnd(const std::string &name) {
     under_.functionEnd(name);
 }
 
-void Optimizer::frame(std::vector<opt::Local> locals, bool promotable) {
-    fn_.locals = std::move(locals);
-    fn_.promotable = promotable;
-}
+void Optimizer::frame(std::vector<opt::Local> locals) { fn_.locals = std::move(locals); }
 
 void Optimizer::returnsPair(bool pair) {
     fn_.convention.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);
@@ -117,17 +141,26 @@ void Optimizer::returnsPair(bool pair) {
 // **The passes, through the manager.** What ran here as hand-written loops
 // is the pipeline in OptPipeline.cpp; the manager runs it, checks what each
 // pass requires, and dumps after any pass CXX1_DUMP_MIR names.
-void Optimizer::improve() { manager_.run(*pipeline_, fn_); }
+void Optimizer::improve(opt::Function &fn) { manager_.run(*pipeline_, fn); }
 
-void Optimizer::settle() {
-    if (inFunction_) fn_.whole = false;
-    flush();
-}
-
+// **The function, then its funclets**, the frame's final size having been
+// written with the function's prologue - a funclet's operands are rendered
+// against it.
 void Optimizer::flush() {
     if (fn_.stream.empty()) return;
-    improve();
-    for (const Entry &e : fn_.stream) {
+    improve(fn_);
+    replay(fn_.stream);
+    for (const opt::Stream &f : funclets_) replay(f);
+    frameSize_ = fn_.size;
+    funclets_.clear();
+    fn_.stream.clear();
+    fn_.regions.clear();       // written out with the labels they name
+    fn_.props = opt::kPropPhysical;   // a new stream: the flow describes nothing yet
+    fn_.prologueAt = -1;       // written out: from here on the frame is what it is
+}
+
+void Optimizer::replay(const opt::Stream &s) {
+    for (const Entry &e : s) {
         if (e.dead) continue;
         switch (e.kind) {
         case Entry::Ins: {
@@ -144,10 +177,6 @@ void Optimizer::flush() {
         case Entry::Event: e.event(under_); break;
         }
     }
-    fn_.stream.clear();
-    fn_.regions.clear();       // written out with the labels they name
-    fn_.props = opt::kPropPhysical;   // a new stream: the flow describes nothing yet
-    fn_.prologueAt = -1;       // written out: from here on the frame is what it is
 }
 
 // Everything else is an event: held where it stood, with its arguments copied.

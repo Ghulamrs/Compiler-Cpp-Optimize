@@ -48,11 +48,22 @@ std::vector<int> loopDepths(const Stream &s) {
 
 }
 
+void SharedSlots::addAccessesOf(const Stream &s) {
+    for (const Entry &e : s) {
+        if (e.kind != Entry::Ins || e.dead) continue;
+        for (const Operand *o : {&e.ins.a, &e.ins.b}) {
+            if (!frameSlot(*o)) continue;
+            if (e.ins.m == "lea") addressTaken(o->disp);
+            else add(o->disp, accessWidth(e.ins, *o));
+        }
+    }
+}
+
 std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::vector<Local> &locals,
-                                    int frameSize, int maxRegs, long minWeight) {
+                                    const SharedSlots &shared, int frameSize, int maxRegs, long minWeight) {
     std::vector<Candidate> cands;
     for (const Local &l : locals)
-        if (l.size == 4 || l.size == 8) cands.push_back(Candidate{l});
+        if ((l.size == 4 || l.size == 8) && !shared.overlaps(l.disp, l.size)) cands.push_back(Candidate{l});
     RegSet mentioned = 0;
     const std::vector<int> depth = loopDepths(s);
     auto overlapping = [&](long long disp, int width, const std::function<void(Candidate &)> &f) {
@@ -155,7 +166,7 @@ void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves) {
     saves.swap(kept);
 }
 
-bool removeDeadStores(Stream &s) {
+bool removeDeadStores(Stream &s, const SharedSlots &shared) {
     // An object runs upward from its address, so an address taken at L may
     // reach anything above it in the frame.
     long long escapesFrom = 0;
@@ -181,6 +192,7 @@ bool removeDeadStores(Stream &s) {
         const long long d = e.ins.b.disp;
         const int w = accessWidth(e.ins, e.ins.b);
         if (escapesFrom < 0 && d + w > escapesFrom) continue;
+        if (shared.mayReach(d, w)) continue;
         bool read = false;
         for (const Access &r : reads) read = read || (r.disp < d + w && d < r.disp + r.width);
         if (!read) { e.dead = true; changed = true; }

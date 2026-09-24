@@ -17,14 +17,25 @@ class Optimizer final : public Spelling {
 public:
     Optimizer(Spelling &under, const Abi &abi, int level);
 
-    // **Write out what is held**, before the walker cuts a funclet out of its text.
-    void settle();
+    // **A funclet is held apart from the function it belongs to.** Between
+    // these two calls every entry goes to the funclet's own stream, which is
+    // improved as a piece of its own when it ends and written out after the
+    // function; the function's stream stays held, so the passes see it whole.
+    void funcletBegin();
+    void funcletEnd();
+    // Run where it stands in the output: after everything held before it.
+    void defer(std::function<void()> call);
+    // A frame slot something outside the stream reads or writes - the
+    // runtime's scratch word - which no pass may take for its own.
+    void sharedSlot(long long disp, int size);
+    // The frame as the passes left the function last written out.
+    int frameSize() const { return frameSize_; }
     // Grows with every entry held, never shrinks: Walker's measure of held code.
     std::size_t held() const { return held_; }
     // Whether the function being held returns in two registers, rax:rdx or xmm0:xmm1.
     void returnsPair(bool pair);
-    // The function's scalar locals, and whether it may keep any in registers.
-    void frame(std::vector<opt::Local> locals, bool promotable);
+    // The function's scalar locals, candidates for registers.
+    void frame(std::vector<opt::Local> locals);
     // Around a callee walked in place of its call, at -O2.
     void inlineBegin(int base, int calleeFrame);
     void inlineEnd();
@@ -74,8 +85,13 @@ private:
     Spelling &under_;
     // The level, as the costs its passes ask.
     std::unique_ptr<const opt::Costs> costs_;
-    // **The function being held**, and what the walker has said of it so far.
+    // **The function being held**, and what the walker has said of it so far;
+    // the funclet being held, if one is; and the funclets done, each improved,
+    // waiting to be written after the function.
     opt::Function fn_;
+    std::unique_ptr<opt::Function> funclet_;
+    std::vector<opt::Stream> funclets_;
+    int frameSize_ = 0;
     // The pipeline, built once per spelling, and the manager that runs it.
     std::unique_ptr<opt::Pass> pipeline_;
     opt::PassManager manager_;
@@ -84,11 +100,14 @@ private:
     bool inlining_ = false;
     int inlineBase_ = 0;
 
+    // Where an entry goes: the funclet being held, or the function.
+    opt::Function &current() { return funclet_ ? *funclet_ : fn_; }
     void hold(opt::Entry e);
     void instruction(const std::string &m, int operands, const Op *a, const Op *b);
     // A call that is not an instruction: held in its place inside a function,
     // passed on at once outside one.
     void event(std::function<void(Spelling &)> call);
-    void improve();
+    void improve(opt::Function &fn);
     void flush();
+    void replay(const opt::Stream &s);
 };

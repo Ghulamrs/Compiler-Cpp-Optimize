@@ -48,8 +48,8 @@ struct Function {
 
     // What the walker said of the function.
     std::vector<Local> locals;      // its scalar locals, rbp-relative
-    bool promotable = false;        // whether any may be kept in a register
-    bool whole = true;              // the stream is all of it: no funclet cut before this
+    SharedSlots shared;             // frame slots its funclets and the runtime touch
+    bool whole = true;              // the stream is all of it, not a funclet
     std::set<std::string> jumpOnly; // labels named only in jumps, droppable when nothing does
     std::vector<Region> regions;    // what each landing pad covers, and where a throw continues
 

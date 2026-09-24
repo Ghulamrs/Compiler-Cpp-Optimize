@@ -112,10 +112,11 @@ protected:
     std::string out_;
     std::size_t emittedSize() override { return out_.size() + (optimizer_ ? optimizer_->held() : 0); }
     Spelling *a_ = &gnu_;
-    // In front of a_ at -O1 and above; the walker settles it before it lifts
-    // text out of out_, which held code has not reached yet.
+    // In front of a_ at -O1 and above. It holds a function whole, its funclets
+    // apart, so anything that lifts text out of out_ goes through atOutput.
     std::unique_ptr<Optimizer> optimizer_;
-    void settle() { if (optimizer_) optimizer_->settle(); }
+    // Done where it stands in the output: at once, or after what an optimizer holds.
+    void atOutput(std::function<void()> f) { if (optimizer_) optimizer_->defer(std::move(f)); else f(); }
 
     void landingPad(int pointerSlot, int selectorSlot) override;
     void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) override;

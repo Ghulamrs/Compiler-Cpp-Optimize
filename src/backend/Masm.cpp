@@ -637,6 +637,7 @@ int MasmCodeGen::establisherOffset(int slot) const {
 // only place the frame moves: `[rbp-slot]` written here comes out as `[rbp + frameSize - slot]`
 // there, which is the same arithmetic establisherOffset does for the tables.
 void MasmCodeGen::storeUnwindHelp(int slot) {
+    if (optimizer_) optimizer_->sharedSlot(-slot, 8);
     a_->ins("movq", imm(-2), mem(-slot, "%rbp"));
 }
 
@@ -644,9 +645,11 @@ void MasmCodeGen::storeUnwindHelp(int slot) {
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
 std::string MasmCodeGen::beginFunclet() {
-    settle();                            // an optimizer's held code, out first
-    masm_.raw("");                       // nothing pending inside the slice
-    funcletMark_ = out_.size();
+    if (optimizer_) optimizer_->funcletBegin();
+    atOutput([this] {
+        masm_.raw("");                   // nothing pending inside the slice
+        funcletMark_ = out_.size();
+    });
     funcletSymbol_ = masm_.mangledName() + funcletKind_ +
                      std::to_string(funcletIndex_++);
     return funcletSymbol_;
@@ -665,29 +668,25 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
 }
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
-    settle();
-    masm_.raw("");
-    std::string body = out_.substr(funcletMark_);
-    out_.resize(funcletMark_);
-
     const std::string sym = funcletSymbol_;
-    std::string f;
+    // The text around the body: the head, then the body as written out,
+    // then the tail with the unwind data.
+    std::string head, f;
     // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
     // segment called `text` gets data attributes, so the handler faults at its own
     // first instruction; 'CODE' is what gives it execute permission beside .text.
-    f += "\n.text$x SEGMENT ALIGN(16) 'CODE'" + masm_.associative() + "\n";
-    f += sym + " PROC\n";
-    f += "$LNbeg$" + sym + ":\n";
-    f += "  mov QWORD PTR [rsp+16], rdx\n";
-    f += "  push rbp\n";
-    f += "$LNpush$" + sym + ":\n";
-    f += "  sub rsp, 32\n";
-    f += "$LNprolog$" + sym + ":\n";
+    head += "\n.text$x SEGMENT ALIGN(16) 'CODE'" + masm_.associative() + "\n";
+    head += sym + " PROC\n";
+    head += "$LNbeg$" + sym + ":\n";
+    head += "  mov QWORD PTR [rsp+16], rdx\n";
+    head += "  push rbp\n";
+    head += "$LNpush$" + sym + ":\n";
+    head += "  sub rsp, 32\n";
+    head += "$LNprolog$" + sym + ":\n";
     // **rdx is the establisher frame, and that is now exactly the parent's rbp** -
     // the two became one thing when the frame pointer moved to the bottom of the
     // allocation, so the handler reaches the parent's locals with no adjustment.
-    f += "  mov rbp, rdx\n";
-    f += body;
+    head += "  mov rbp, rdx\n";
     f += tail;
     f += "  add rsp, 32\n";
     f += "  pop rbp\n";
@@ -719,7 +718,15 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     f += "  DD imagerel __CxxFrameHandler3\n";
     f += "  DD imagerel $cppxdata$" + masm_.mangledName() + "\n";
     f += ".xdata ENDS\n";
-    funclets_ += f;
+    // **The body is lifted out of the output where it was written**, which
+    // with an optimizer in front is after the function it belongs to.
+    atOutput([this, head, f] {
+        masm_.raw("");
+        const std::string body = out_.substr(funcletMark_);
+        out_.resize(funcletMark_);
+        funclets_ += head + body + f;
+    });
+    if (optimizer_) optimizer_->funcletEnd();
 }
 
 // The four FH3 tables, written after the function they describe. **Every offset is
