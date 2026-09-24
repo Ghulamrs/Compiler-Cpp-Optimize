@@ -102,7 +102,15 @@ classDiagram
     Pass <|-- CoalesceCopies
     Pass <|-- FoldLoads
     Pass <|-- FoldOffsets
-    Pass <|-- Webs
+    Pass <|-- WebsPass
+    class Webs {
+        -fn_ home_ pinned_ sets_ occ_ defAt_ implicitDef_ useWeb_ unknownIn_
+        +splitPinned() build() homes() count() pinned() assign(colour) dropSelfCopies()
+        -occurrencesOf() implicitReads() implicitWrites() makeDefinitions() joinUsesToDefinitions() renameToPseudos()
+    }
+    WebsPass ..> Webs
+    Webs --> Function
+    Webs ..> ReachingDefs
     Pass <|-- PromoteLocals
     Pass <|-- RemoveDeadStores
     Pass <|-- FinishFrame
@@ -128,7 +136,7 @@ Files, all under `src/backend/`:
 | `OptPass.{h,cpp}` | `Todo`, `PassInfo`, `Pass`, `Group`, `PassManager`, `dropUnnamedLabels`, `dumpStream` |
 | `OptPipeline.{h,cpp}` | the `Pass` subclasses and `pipelineFor()` |
 | `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions (unchanged) |
-| `Mir.h`, `MirWebs.cpp` | webs to pseudos and back (`buildWebs`, `assign`) |
+| `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos and back |
 | `Optimizer.{h,cpp}` | the Spelling that holds a function, runs the pipeline, replays |
 
 ## 2. Each class, and what it is responsible for
@@ -191,7 +199,26 @@ into `Flow::edges`; `Edge::to == kExit` leaves the function.
 **`ReachingDefs`.** A forward dataflow problem: per block and register, the
 definitions that may reach the block's entry. The caller numbers the
 definitions (`lastDef[entry][reg]`) and says what a block entered from
-nowhere holds (`unknownIn[block][reg]`). `buildWebs` is its one client.
+nowhere holds (`unknownIn[block][reg]`). `mir::Webs` is its one client.
+
+**`mir::Webs`.** One value's life in one register - every definition
+joined with every use it reaches, over `ReachingDefs`, as GCC's `web` pass
+makes them - and each the ABI does not pin made a pseudo, with the
+register it was found in kept as its home. Phases as members:
+`splitPinned` first - where an instruction reads a register it does not
+name (a call its arguments, `idiv` its dividend, `rep movsq` its three) or
+wants one by name (a shift's count in `%cl`), the value is copied there
+just before; where it writes one it does not name and something reads it
+after (a call's result), the value is copied out just after - so only the
+copy is pinned and the web that computed it is free, as GCC's expander
+places every fixed-register operand and IRA coalesces the copies away. A
+`ret`'s implicit reads are the convention's own protocol and stay. Then
+`makeDefinitions`, `joinUsesToDefinitions` (the reaching definitions
+solved, each use united with what reaches it, the implicit and pinned
+reads pinning what they read), `renameToPseudos`; `assign` gives every
+pseudo a register and `dropSelfCopies` removes the whole self-copies an
+assignment back home leaves (a four-byte one zero-extends and stays).
+Over Compiler++ at -O2 the split raises the pseudos from 33,395 to 55,826.
 
 **`Opcode`.** One mnemonic's description: `kind` (the effects branch),
 `flags` (explicit-only, writes-only, immediate source, renamable frame
@@ -232,7 +259,7 @@ pipeline
     fold-loads           requires flow
     fold-offsets         requires flow
   frame                  [gate: whole && promotable && prologue held]
-    webs                 [build-flow before]; requires flow, physical; provides physical
+    webs                 [build-flow before]; requires flow, physical; provides physical; destroys flow
     promote-locals       requires physical; destroys flow
     rounds               [gate: some local was promoted]
     dse-loop             [repeat 3; stop when the first sub-pass found nothing]
@@ -280,8 +307,10 @@ Two properties exist today:
   blocks or asks liveness.
 - `kPropPhysical`: no operand names a pseudo. True on entry; `webs` requires
   and re-provides it (it makes pseudos and assigns them back within the
-  pass). A session-2 allocator will have `webs` destroy it and the allocator
-  provide it, and every pass between will say which it can take.
+  pass), and destroys `kPropFlow`, the copies it inserts having moved the
+  entries. A session-2 allocator will have `webs` destroy `kPropPhysical`
+  and the allocator provide it, and every pass between will say which it
+  can take.
 
 Invalidation has two levels, as in GCC (`df`'s `solutions_dirty` against
 `TODO_cleanup_cfg`):

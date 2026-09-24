@@ -45,14 +45,20 @@ struct FoldOffsets : Pass {
     bool execute(Function &fn) override { return foldOffsets(fn.stream, fn.flow, fn.convention); }
 };
 
-// Stage 1 of docs/OPTIMIZER-IR.md: every web a pseudo, and each given back
-// the register it was found in - which must change nothing.
+// Stage 1 of docs/OPTIMIZER-IR.md: the pinned occurrences split off with
+// copies, every web a pseudo, and each given back the register it was
+// found in - which must change nothing: the copies are then of a register
+// to itself, and go. The inserted entries leave the flow describing the
+// stream no longer.
 struct Webs : Pass {
-    Webs() : Pass(PassInfo{"webs", kFlow | kPropPhysical, kPropPhysical, 0, kTodoBuildFlow}) {}
+    Webs() : Pass(PassInfo{"webs", kFlow | kPropPhysical, kPropPhysical, kFlow, kTodoBuildFlow}) {}
     bool execute(Function &fn) override {
-        const mir::Webs webs = mir::buildWebs(fn.stream, fn.flow, fn.convention);
-        mir::assign(fn.stream, webs.home);
-        return false;
+        mir::Webs webs(fn);
+        const bool split = webs.splitPinned();
+        webs.build();
+        webs.assign(webs.homes());
+        if (split) webs.dropSelfCopies();
+        return split;
     }
 };
 

@@ -103,7 +103,9 @@ register allocator cannot be built without:
 2. **Pin an occurrence, not a web.** One `cqo`, `idiv`, `ret` or argument use of
    rax pins the whole web it belongs to. On one case 5,142 of 6,412 webs were
    pinned. The pinned occurrence is to be split off with a copy before webs are
-   joined, and that pseudo count is the measure of it.
+   joined, and that pseudo count is the measure of it. *Done on gcc-scheme
+   (`mir::Webs::splitPinned`): over Compiler++ at -O2, 33,395 pseudos became
+   55,826, byte-identical output.*
 3. **One opcode table.** About a dozen mnemonic lists (`isMove`, `isRmw`,
    `takesImmediate`, `renamable`, `suffixWidth` and more) become one table with
    flags, so every constraint the allocator honours lives in one place.

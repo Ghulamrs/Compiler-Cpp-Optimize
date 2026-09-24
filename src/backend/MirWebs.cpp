@@ -2,7 +2,6 @@
 
 #include "OptDataflow.h"
 
-#include <algorithm>
 
 namespace mir {
 
@@ -15,21 +14,40 @@ bool candidate(int r) { return r >= 0 && r < kGprs && !frameReg(r); }
 
 bool isShift(const std::string &m) { return opcodeOf(m).has(Opcode::kShift); }
 
-// One operand naming a candidate register, and what the instruction does there.
-struct Occurrence {
-    int entry = 0;
-    int operand = 0;            // 0 for a, 1 for b
-    int reg = 0;
-    bool read = false;
-    bool write = false;         // a new value, whole or in part
-    bool keeps = false;         // written in part: the old value is read too
-    bool pinned = false;        // the instruction wants this very register
-    bool tied = false;          // no role of its own: named as the other's write
-};
+// A copy of a register to itself, whole: the one move that is truly
+// nothing, where a four-byte one zero-extends.
+Entry copy(int reg) {
+    Entry e;
+    e.ins = Instr{"mov", Operand::ofReg(reg, 8), Operand::ofReg(reg, 8), 2};
+    return e;
+}
+
+}
+
+int Webs::Sets::make(bool pin) {
+    parent_.push_back(static_cast<int>(parent_.size()));
+    pinned_.push_back(pin);
+    return parent_.back();
+}
+
+int Webs::Sets::find(int x) {
+    while (parent_[x] != x) x = parent_[x] = parent_[parent_[x]];
+    return x;
+}
+
+void Webs::Sets::unite(int x, int y) {
+    x = find(x);
+    y = find(y);
+    if (x == y) return;
+    parent_[y] = x;
+    pinned_[x] = pinned_[x] || pinned_[y];
+}
+
+Webs::Webs(Function &fn) : fn_(fn) {}
 
 // **What each operand of an instruction does with a candidate register.** An
 // operand with no role (xor's first, zeroing) is tied to the other's write.
-std::vector<Occurrence> occurrencesOf(const Instr &i, int entry) {
+std::vector<Webs::Occurrence> Webs::occurrencesOf(const Instr &i, int entry) {
     std::vector<Occurrence> out;
     const Roles roles = rolesOf(i);
     const Operand *ops[2] = {&i.a, &i.b};
@@ -57,151 +75,217 @@ std::vector<Occurrence> occurrencesOf(const Instr &i, int entry) {
     return out;
 }
 
-// Union-find over definitions; a pin on any member pins the web.
-struct Sets {
-    std::vector<int> parent;
-    std::vector<bool> pinned;
-    int make(bool pin) {
-        parent.push_back(static_cast<int>(parent.size()));
-        pinned.push_back(pin);
-        return parent.back();
-    }
-    int find(int x) {
-        while (parent[x] != x) x = parent[x] = parent[parent[x]];
-        return x;
-    }
-    void unite(int x, int y) {
-        x = find(x);
-        y = find(y);
-        if (x == y) return;
-        parent[y] = x;
-        pinned[x] = pinned[x] || pinned[y];
-    }
-    void pin(int x) { pinned[find(x)] = true; }
-};
-
+RegSet Webs::implicitReads(int k) const {
+    RegSet named = 0;
+    for (const Occurrence &o : occ_[k]) if (o.read || o.keeps) named |= bit(o.reg);
+    return fn_.flow.effects[k].reads & ~named;
 }
 
-// The flow must describe the stream: the pass that calls this has it built.
-Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
-    (void)c;
-    const int nb = static_cast<int>(f.blocks.size());
+RegSet Webs::implicitWrites(int k) const {
+    RegSet named = 0;
+    for (const Occurrence &o : occ_[k]) if (o.write) named |= bit(o.reg);
+    const Effects &e = fn_.flow.effects[k];
+    return (e.writes | e.partial) & ~named;
+}
 
-    Sets sets;
-    // **A block entered from nowhere this function shows** - the entry, or a
-    // label only a table names - starts from a value the ABI placed: pinned.
-    std::vector<std::vector<int>> unknownIn(nb, std::vector<int>(kGprs, -1));
-    for (int b = 0; b < nb; ++b)
-        if (b == 0 || f.blocks[b].preds.empty())
-            for (int r = 0; r < kGprs; ++r)
-                if (candidate(r)) unknownIn[b][r] = sets.make(true);
-
-    std::vector<std::vector<Occurrence>> occ(s.size());
+// **Where an instruction reads a register it does not name, the value is
+// copied there just before; where it writes one that is read after, the
+// value is copied out just after** - a shift's count in %cl among the
+// former, since the operand names the register but no other would do. A
+// return's implicit reads are the calling convention's own protocol - the
+// result in rax, the callee-saved registers restored - and stay as they are.
+bool Webs::splitPinned() {
+    Stream &s = fn_.stream;
+    Flow &f = fn_.flow;
+    f.live(s);
+    occ_.assign(s.size(), std::vector<Occurrence>());
     for (int k = 0; k < static_cast<int>(s.size()); ++k)
-        if (s[k].kind == Entry::Ins && !s[k].dead) occ[k] = occurrencesOf(s[k].ins, k);
+        if (s[k].kind == Entry::Ins && !s[k].dead) occ_[k] = occurrencesOf(s[k].ins, k);
 
-    typedef ReachingDefs::DefList DefList;
-    std::vector<std::vector<int>> defAt(s.size(), std::vector<int>(2, -1));
-    std::vector<std::vector<int>> implicitDef(s.size());
+    Stream out;
+    out.reserve(s.size() + s.size() / 8);
+    int prologueAt = fn_.prologueAt;
+    bool changed = false;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        // What is live after each entry, walked backward once.
+        std::vector<RegSet> liveAfter(blk.end - blk.begin, 0);
+        Live live = blk.out;
+        for (int k = blk.end - 1; k >= blk.begin; --k) {
+            liveAfter[k - blk.begin] = live.regs;
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            f.joinPads(b, k, live);
+            live.step(f.effects[k]);
+        }
+        for (int k = blk.begin; k < blk.end; ++k) {
+            const bool ins = s[k].kind == Entry::Ins && !s[k].dead;
+            const bool ret = ins && opcodeOf(s[k].ins.m).kind == Opcode::Ret;
+            if (ins && !ret) {
+                const RegSet wanted = implicitReads(k);
+                for (int r = 0; r < kGprs; ++r)
+                    if (candidate(r) && (wanted & bit(r))) { out.push_back(copy(r)); changed = true; }
+                for (const Occurrence &o : occ_[k])
+                    if (o.pinned) { out.push_back(copy(o.reg)); changed = true; }
+            }
+            if (k == fn_.prologueAt) prologueAt = static_cast<int>(out.size());
+            out.push_back(std::move(s[k]));
+            if (ins && !ret) {
+                const RegSet leftLive = implicitWrites(k) & liveAfter[k - blk.begin];
+                for (int r = 0; r < kGprs; ++r)
+                    if (candidate(r) && (leftLive & bit(r))) { out.push_back(copy(r)); changed = true; }
+            }
+        }
+    }
+    if (!changed) { s.swap(out); return false; }
+    s.swap(out);
+    fn_.prologueAt = prologueAt;
+    fn_.buildFlow();
+    return true;
+}
 
-    // Every definition is made once, before the fixpoint, so its identity is stable.
+// Every definition is made once, before the fixpoint, so its identity is
+// stable: one per operand that writes, one per register an instruction
+// writes without naming it - the latter pinned, the ABI having placed it.
+void Webs::makeDefinitions() {
+    const Stream &s = fn_.stream;
+    occ_.assign(s.size(), std::vector<Occurrence>());
+    defAt_.assign(s.size(), std::vector<int>(2, -1));
+    implicitDef_.assign(s.size(), std::vector<int>());
     for (int k = 0; k < static_cast<int>(s.size()); ++k) {
         if (s[k].kind != Entry::Ins || s[k].dead) continue;
-        RegSet named = 0;
-        for (const Occurrence &o : occ[k])
-            if (o.write) { defAt[k][o.operand] = sets.make(false); named |= bit(o.reg); }
-        const Effects &e = f.effects[k];
-        implicitDef[k].assign(kGprs, -1);
+        occ_[k] = occurrencesOf(s[k].ins, k);
+        for (const Occurrence &o : occ_[k])
+            if (o.write) defAt_[k][o.operand] = sets_.make(false);
+        implicitDef_[k].assign(kGprs, -1);
+        const RegSet unnamed = implicitWrites(k);
         for (int r = 0; r < kGprs; ++r)
-            if (candidate(r) && ((e.writes | e.partial) & bit(r)) && !(named & bit(r)))
-                implicitDef[k][r] = sets.make(true);
+            if (candidate(r) && (unnamed & bit(r))) implicitDef_[k][r] = sets_.make(true);
     }
+    // **A block entered from nowhere this function shows** - the entry, or a
+    // label only a table names - starts from a value the ABI placed: pinned.
+    const int nb = static_cast<int>(fn_.flow.blocks.size());
+    unknownIn_.assign(nb, std::vector<int>(kGprs, -1));
+    for (int b = 0; b < nb; ++b)
+        if (b == 0 || fn_.flow.blocks[b].preds.empty())
+            for (int r = 0; r < kGprs; ++r)
+                if (candidate(r)) unknownIn_[b][r] = sets_.make(true);
+}
+
+// **Walk each block with what reaches it, joining each use to its
+// definitions.** A read the instruction makes implicitly, or at a place
+// that must be this register, pins what it reads.
+void Webs::joinUsesToDefinitions() {
+    const Stream &s = fn_.stream;
+    const Flow &f = fn_.flow;
+    typedef ReachingDefs::DefList DefList;
 
     // The definition of r each instruction leaves, if it makes one; then the
     // reaching definitions solved over the flow from that.
     std::vector<std::vector<int>> lastDef(s.size(), std::vector<int>(kGprs, -1));
     for (int k = 0; k < static_cast<int>(s.size()); ++k) {
-        if (implicitDef[k].empty()) continue;
+        if (implicitDef_[k].empty()) continue;
         for (int r = 0; r < kGprs; ++r) {
-            int d = implicitDef[k][r];
-            for (const Occurrence &o : occ[k]) if (o.write && o.reg == r) { d = defAt[k][o.operand]; break; }
+            int d = implicitDef_[k][r];
+            for (const Occurrence &o : occ_[k]) if (o.write && o.reg == r) { d = defAt_[k][o.operand]; break; }
             lastDef[k][r] = d;
         }
     }
     ReachingDefs rd;
-    rd.solve(f, s, kGprs, lastDef, unknownIn);
-    const std::vector<std::vector<DefList>> &in = rd.in;
+    rd.solve(f, s, kGprs, lastDef, unknownIn_);
 
-    // **Walk each block with what reaches it, joining each use to its
-    // definitions.** A read the instruction makes implicitly, or at a place
-    // that must be this register, pins what it reads.
-    std::vector<std::vector<int>> useWeb(s.size(), std::vector<int>(2, -1));
-    for (int b = 0; b < nb; ++b) {
-        std::vector<DefList> reach = in[b];
+    useWeb_.assign(s.size(), std::vector<int>(2, -1));
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        std::vector<DefList> reach = rd.in[b];
         for (int k = f.blocks[b].begin; k < f.blocks[b].end; ++k) {
             if (s[k].kind != Entry::Ins || s[k].dead) continue;
-            const Effects &e = f.effects[k];
-            RegSet namedRead = 0;
-            for (const Occurrence &o : occ[k]) {
+            for (const Occurrence &o : occ_[k]) {
                 if (!o.read && !o.keeps) continue;
-                namedRead |= bit(o.reg);
                 const DefList &from = reach[o.reg];
-                if (from.empty()) { useWeb[k][o.operand] = sets.make(true); continue; }
-                for (int d : from) sets.unite(from[0], d);
-                if (o.pinned) sets.pin(from[0]);
-                useWeb[k][o.operand] = from[0];
+                if (from.empty()) { useWeb_[k][o.operand] = sets_.make(true); continue; }
+                for (int d : from) sets_.unite(from[0], d);
+                if (o.pinned) sets_.pin(from[0]);
+                useWeb_[k][o.operand] = from[0];
             }
+            const RegSet unnamed = implicitReads(k);
             for (int r = 0; r < kGprs; ++r)
-                if (candidate(r) && (e.reads & bit(r)) && !(namedRead & bit(r)))
-                    for (int d : reach[r]) sets.pin(d);
+                if (candidate(r) && (unnamed & bit(r)))
+                    for (int d : reach[r]) sets_.pin(d);
             // A write joins the use in the same operand: one name for both.
-            for (const Occurrence &o : occ[k]) {
+            for (const Occurrence &o : occ_[k]) {
                 if (!o.write) continue;
-                const int d = defAt[k][o.operand];
-                if (useWeb[k][o.operand] >= 0) sets.unite(useWeb[k][o.operand], d);
+                const int d = defAt_[k][o.operand];
+                if (useWeb_[k][o.operand] >= 0) sets_.unite(useWeb_[k][o.operand], d);
                 reach[o.reg].assign(1, d);
             }
             for (int r = 0; r < kGprs; ++r)
-                if (implicitDef[k][r] >= 0) reach[r].assign(1, implicitDef[k][r]);
+                if (implicitDef_[k][r] >= 0) reach[r].assign(1, implicitDef_[k][r]);
             // An operand with no role takes the name of this instruction's write.
-            for (const Occurrence &o : occ[k]) {
+            for (const Occurrence &o : occ_[k]) {
                 if (!o.tied) continue;
-                const int other = defAt[k][1 - o.operand];
-                useWeb[k][o.operand] = other >= 0 ? other : sets.make(true);
+                const int other = defAt_[k][1 - o.operand];
+                useWeb_[k][o.operand] = other >= 0 ? other : sets_.make(true);
             }
         }
         // What leaves for somewhere unseen may be read there.
         if (f.blocks[b].leaves)
             for (int r = 0; r < kGprs; ++r)
-                for (int d : reach[r]) sets.pin(d);
+                for (int d : reach[r]) sets_.pin(d);
     }
+}
 
-    // **Every unpinned web a pseudo**, and each operand renamed to its web's.
-    Webs webs;
-    std::vector<int> pseudoOf(sets.parent.size(), -1);
+// **Every unpinned web a pseudo**, and each operand renamed to its web's.
+void Webs::renameToPseudos() {
+    Stream &s = fn_.stream;
+    std::vector<int> pseudoOf(sets_.size(), -1);
+    std::vector<bool> counted(sets_.size(), false);
     for (int k = 0; k < static_cast<int>(s.size()); ++k) {
-        for (const Occurrence &o : occ[k]) {
-            const int web = defAt[k][o.operand] >= 0 ? defAt[k][o.operand] : useWeb[k][o.operand];
+        for (const Occurrence &o : occ_[k]) {
+            const int web = defAt_[k][o.operand] >= 0 ? defAt_[k][o.operand] : useWeb_[k][o.operand];
             if (web < 0) continue;
-            const int root = sets.find(web);
-            if (sets.pinned[root]) continue;
+            const int root = sets_.find(web);
+            if (sets_.isPinned(root)) {
+                if (!counted[root]) { counted[root] = true; ++pinned_; }
+                continue;
+            }
             if (pseudoOf[root] < 0) {
-                pseudoOf[root] = kFirstPseudo + webs.count();
-                webs.home.push_back(o.reg);
+                pseudoOf[root] = kFirstPseudo + count();
+                home_.push_back(o.reg);
             }
             Operand &op = o.operand == 0 ? s[k].ins.a : s[k].ins.b;
             op.reg.id = pseudoOf[root];
         }
     }
-    return webs;
 }
 
-void assign(Stream &s, const std::vector<int> &colour) {
-    for (Entry &e : s) {
+void Webs::build() {
+    sets_ = Sets();
+    home_.clear();
+    pinned_ = 0;
+    makeDefinitions();
+    joinUsesToDefinitions();
+    renameToPseudos();
+}
+
+void Webs::assign(const std::vector<int> &colour) {
+    for (Entry &e : fn_.stream) {
         if (e.kind != Entry::Ins) continue;
         for (Operand *o : {&e.ins.a, &e.ins.b})
             if (isPseudo(o->reg.id)) o->reg.id = colour[o->reg.id - kFirstPseudo];
     }
+}
+
+bool Webs::dropSelfCopies() {
+    bool changed = false;
+    for (Entry &e : fn_.stream) {
+        if (e.kind != Entry::Ins || e.dead) continue;
+        const Instr &i = e.ins;
+        if (i.m == "mov" && i.operands == 2 && i.a.kind == Operand::Register && i.b.kind == Operand::Register &&
+            i.a.reg.id == i.b.reg.id && i.a.reg.width == 8 && i.b.reg.width == 8) {
+            e.dead = true;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 }
