@@ -2,7 +2,7 @@
 
 // **What the optimizer of every instruction set shares.** An instruction set
 // brings its instructions, its effects table and `controlOf`, found by
-// argument lookup; the flow, liveness and dead code are the same for all.
+// argument lookup; the flow graph, liveness and dead code are the same for all.
 
 #include <map>
 #include <string>
@@ -55,26 +55,62 @@ struct EntryOf {
     bool state = false;
 };
 
+// **An edge of the flow graph**, as GCC has them: from one block to another,
+// or out of the function, with the kind that says what crosses it.
+//
+// Return carries nothing but what the return instruction reads; Leave is a
+// jump this function cannot see the end of (through a register, or to a
+// label it does not hold), so everything is live across it. Eh is an
+// exception edge from a call to its landing pad: none is made yet - a pad is
+// still a block with no predecessors, and no pass runs in a function that
+// has one - but every pass that walks edges already sees the kind.
+struct Edge {
+    enum Kind { Fallthrough, Jump, Return, Leave, Eh };
+    int from = 0;
+    int to = kExit;                      // a block index, or kExit
+    Kind kind = Fallthrough;
+    static constexpr int kExit = -1;
+};
+
 struct Block {
     int begin = 0, end = 0;              // entries [begin, end)
-    std::vector<int> next;
-    bool leaves = false;                 // falls or jumps somewhere not seen here
+    std::vector<int> succs, preds;       // edge indices, in the order made
+    bool leaves = false;                 // has a Leave edge: all live at its end
     RegSet liveIn = 0, liveOut = 0;
     RegSet wideIn = 0, wideOut = 0;      // live, and read above the low four bytes
     bool flagsIn = false, flagsOut = false;
+    int idom = -1;                       // immediate dominator; -1 for the entry, or not computed
 };
 
-// **The function as blocks, and what is live across each.** A block starts at
-// a label and ends after a jump or a return; liveness is solved over the
-// edges to a fixpoint, so a value is dead only if no path reads it.
+// **The function as blocks and edges, and what is live across each.** A
+// block starts at a label and ends after a jump or a return; liveness is
+// solved over the edges to a fixpoint, so a value is dead only if no path
+// reads it. Dominators are computed on request and kept until the next build.
 template <class Entry>
 struct FlowOf {
     std::vector<Block> blocks;
+    std::vector<Edge> edges;
     std::vector<Effects> effects;        // one per entry; empty for labels and events
+    bool dominated = false;              // whether each block's idom is current
+
+    // The successor blocks of b, each once, in edge order; the exit left out.
+    std::vector<int> succBlocks(int b) const {
+        std::vector<int> out;
+        for (int e : blocks[b].succs)
+            if (edges[e].to != Edge::kExit) out.push_back(edges[e].to);
+        return out;
+    }
+    std::vector<int> predBlocks(int b) const {
+        std::vector<int> out;
+        for (int e : blocks[b].preds) out.push_back(edges[e].from);
+        return out;
+    }
 
     template <class EffectsFn>
     void build(const std::vector<Entry> &s, EffectsFn effectsOf) {
         blocks.clear();
+        edges.clear();
+        dominated = false;
         effects.assign(s.size(), Effects());
         std::map<std::string, int> at;
         Block cur;
@@ -103,22 +139,35 @@ struct FlowOf {
         // Edges: the jump's target, and the next block if the last live
         // instruction can fall through.
         for (std::size_t b = 0; b < blocks.size(); ++b) {
-            Block &blk = blocks[b];
             Control c;
-            for (int k = blk.end - 1; k >= blk.begin; --k)
+            for (int k = blocks[b].end - 1; k >= blocks[b].begin; --k)
                 if (s[k].kind == Entry::Ins && !s[k].dead) { c = controlOf(s[k].ins); break; }
             if (c.ends && !c.target.empty()) {
                 const auto t = at.find(c.target);
-                if (t != at.end()) blk.next.push_back(t->second);
-                else blk.leaves = true;
+                if (t != at.end()) connect(static_cast<int>(b), t->second, Edge::Jump);
+                else connect(static_cast<int>(b), Edge::kExit, Edge::Leave);
             } else if (c.ends && !c.returns) {
-                blk.leaves = true;
+                connect(static_cast<int>(b), Edge::kExit, Edge::Leave);
+            } else if (c.ends && c.returns) {
+                connect(static_cast<int>(b), Edge::kExit, Edge::Return);
             }
             if (!c.ends || c.falls) {
-                if (b + 1 < blocks.size()) blk.next.push_back(static_cast<int>(b + 1));
-                else blk.leaves = true;
+                if (b + 1 < blocks.size()) connect(static_cast<int>(b), static_cast<int>(b + 1), Edge::Fallthrough);
+                else connect(static_cast<int>(b), Edge::kExit, Edge::Leave);
             }
         }
+    }
+
+    void connect(int from, int to, Edge::Kind kind) {
+        Edge e;
+        e.from = from;
+        e.to = to;
+        e.kind = kind;
+        edges.push_back(e);
+        const int id = static_cast<int>(edges.size()) - 1;
+        blocks[from].succs.push_back(id);
+        if (to != Edge::kExit) blocks[to].preds.push_back(id);
+        if (kind == Edge::Leave) blocks[from].leaves = true;
     }
 
     void solve(const std::vector<Entry> &s) {
@@ -129,10 +178,12 @@ struct FlowOf {
                 Block &blk = blocks[b];
                 RegSet live = blk.leaves ? kAllRegs : 0, wide = live;
                 bool flags = blk.leaves;
-                for (int n : blk.next) {
-                    live |= blocks[n].liveIn;
-                    wide |= blocks[n].wideIn;
-                    flags = flags || blocks[n].flagsIn;
+                for (int e : blk.succs) {
+                    if (edges[e].to == Edge::kExit) continue;
+                    const Block &n = blocks[edges[e].to];
+                    live |= n.liveIn;
+                    wide |= n.wideIn;
+                    flags = flags || n.flagsIn;
                 }
                 blk.liveOut = live;
                 blk.wideOut = wide;
@@ -152,6 +203,61 @@ struct FlowOf {
                 }
             }
         }
+    }
+
+    // **Immediate dominators**, by the iterative algorithm over a reverse
+    // postorder (Cooper, Harvey and Kennedy): block 0 is the entry; a block
+    // no path from it reaches, a landing pad today, has no dominator.
+    void dominators() {
+        if (dominated) return;
+        const int n = static_cast<int>(blocks.size());
+        std::vector<int> order, postIndex(n, -1);
+        std::vector<int> stack, next(n, 0);
+        std::vector<bool> seen(n, false);
+        if (n > 0) { stack.push_back(0); seen[0] = true; }
+        while (!stack.empty()) {
+            const int b = stack.back();
+            const std::vector<int> s = succBlocks(b);
+            if (next[b] < static_cast<int>(s.size())) {
+                const int t = s[next[b]++];
+                if (!seen[t]) { seen[t] = true; stack.push_back(t); }
+            } else {
+                postIndex[b] = static_cast<int>(order.size());
+                order.push_back(b);
+                stack.pop_back();
+            }
+        }
+        for (Block &b : blocks) b.idom = -1;
+        auto intersect = [&](int x, int y) {
+            while (x != y) {
+                while (postIndex[x] < postIndex[y]) x = blocks[x].idom;
+                while (postIndex[y] < postIndex[x]) y = blocks[y].idom;
+            }
+            return x;
+        };
+        if (n > 0) blocks[0].idom = 0;
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (int i = static_cast<int>(order.size()) - 1; i >= 0; --i) {
+                const int b = order[i];
+                if (b == 0) continue;
+                int idom = -1;
+                for (int p : predBlocks(b)) {
+                    if (postIndex[p] < 0 || blocks[p].idom < 0) continue;
+                    idom = idom < 0 ? p : intersect(p, idom);
+                }
+                if (idom != blocks[b].idom) { blocks[b].idom = idom; changed = true; }
+            }
+        }
+        if (n > 0) blocks[0].idom = -1;
+        dominated = true;
+    }
+
+    // Whether block a dominates block b: b, or a proper ancestor in the tree.
+    bool dominates(int a, int b) const {
+        for (int x = b; x >= 0; x = blocks[x].idom)
+            if (x == a) return true;
+        return false;
     }
 };
 

@@ -11,10 +11,7 @@ namespace {
 // The registers webs are made of: the general ones but the frame's.
 bool candidate(int r) { return r >= 0 && r < kGprs && !frameReg(r); }
 
-bool isShift(const std::string &m) {
-    return m == "shl" || m == "shr" || m == "sar" || m == "sal" || m == "rol" || m == "ror" ||
-           m == "shll" || m == "shrl" || m == "sarl";
-}
+bool isShift(const std::string &m) { return opcodeOf(m).has(Opcode::kShift); }
 
 // One operand naming a candidate register, and what the instruction does there.
 struct Occurrence {
@@ -88,7 +85,7 @@ Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
     const int nb = static_cast<int>(f.blocks.size());
     std::vector<std::vector<int>> preds(nb);
     for (int b = 0; b < nb; ++b)
-        for (int n : f.blocks[b].next) preds[n].push_back(b);
+        for (int n : f.succBlocks(b)) preds[n].push_back(b);
 
     Sets sets;
     // **A block entered from nowhere this function shows** - the entry, or a
