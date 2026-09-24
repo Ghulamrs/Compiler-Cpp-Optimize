@@ -28,6 +28,9 @@ bool foldOffsets(Stream &s, Flow &f, const Convention &c);
 // **A register added to one only used as an address** becomes its index, a shift of it the scale.
 bool foldIndex(Stream &s, Flow &f, const Convention &c);
 
+// **A division by a constant is a multiply by its magic number** - see OptDivide.cpp.
+bool divideByConstant(Stream &s, Flow &f);
+
 struct Function;
 // **A jump that only jumps on, and a constant that decides the compare-and-branch it reaches** - see OptJumps.cpp.
 bool threadJumps(Function &fn);

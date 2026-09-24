@@ -52,6 +52,14 @@ struct ThreadJumps : Pass {
     bool execute(Function &fn) override { return threadJumps(fn); }
 };
 
+// Ten instructions for three, so a speed level's alone; the flow is rebuilt
+// before anything reads the entries this inserts.
+struct DivideByConstant : Pass {
+    DivideByConstant() : Pass(PassInfo{"divide-by-constant", kFlow, 0, 0, 0}) {}
+    bool gate(const Function &fn) const override { return !fn.costs().forSize(); }
+    bool execute(Function &fn) override { return divideByConstant(fn.stream, fn.flow); }
+};
+
 // **Scaled-index addressing**, after allocation so that webs and the
 // allocator never meet an indexed operand; `imul $8` is still a multiply here.
 struct FoldIndex : Pass {
@@ -165,6 +173,7 @@ std::unique_ptr<Group> rounds() {
     g->add(std::unique_ptr<Pass>(new FoldLoads()));
     g->add(std::unique_ptr<Pass>(new FoldOffsets()));
     g->add(std::unique_ptr<Pass>(new ThreadJumps()));
+    g->add(std::unique_ptr<Pass>(new DivideByConstant()));
     return g;
 }
 
@@ -180,7 +189,8 @@ struct Rounds : Group {
 // **The pipeline**, cxx1's passes.def. In order:
 //
 //   rounds            forward-values, remove-unreachable, remove-dead,
-//                     coalesce-copies, fold-loads, fold-offsets, thread-jumps; repeated
+//                     coalesce-copies, fold-loads, fold-offsets, thread-jumps,
+//                     divide-by-constant (-O2); repeated
 //   frame             (whole, prologue held)
 //     webs            every register web a pseudo, its home kept
 //     locals          every promotable scalar local a pseudo, its slot kept
