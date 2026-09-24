@@ -18,7 +18,7 @@ classDiagram
         -unique_ptr~Pass~ pipeline_
         -PassManager manager_
         +ins() defLabel() stateLabel() functionBegin() functionEnd() prologue()
-        +frame() inlineBegin() inlineEnd() jumpOnly() exceptionRegion() returnsPair() settle()
+        +frame() temporaries() inlineBegin() inlineEnd() jumpOnly() exceptionRegion() returnsPair() settle()
         -improve() flush()
     }
     Spelling <|-- Optimizer
@@ -31,7 +31,7 @@ classDiagram
         +Costs costs
         +Flow flow
         +unsigned props
-        +locals promotable whole jumpOnly
+        +locals promotable whole jumpOnly tempFrom tempBase tempCount
         +prologueAt frameSize inlineTop lsda outgoing saves size
         +regions : Region[]
         +frameBase() has() buildFlow() loops()
@@ -167,9 +167,35 @@ and -O2. Holds every call between `functionBegin` and `functionEnd` as an
 `Entry` of the `Function`'s stream - an instruction, a label (with the
 state mark), or an *event* (any other spelling call, replayed where it
 stood). Takes what the walker says of the function (`frame`, `inlineBegin`,
-`jumpOnly`, `returnsPair`, `prologue`). At `functionEnd`, or at `settle`
+`jumpOnly`, `returnsPair`, `prologue`, and since session 6 `temporaries`).
+At `functionEnd`, or at `settle`
 (the walker about to cut a funclet), `flush` runs the pipeline and replays
 the surviving entries. Nothing else: no pass logic lives here any more.
+
+**The walker's temporaries** (session 6, S7). The walker is a stack
+machine, and an operand held across the evaluation of another went through
+`push` and `pop` - across a call, `push %rax; sub $8, %rsp ... add $8,
+%rsp; pop %rdi`. Where the optimizer holds the function and no funclet
+reads the frame (`X86_64Linux::tempsInSlots`: never at -O0, never in a
+function with Microsoft funclets), `push()`/`pop()` and `pushF()`/`popF()`
+write and read a **frame slot** instead, so `depth_` counts the real stack
+alone and every pad, the atFloor decision, the unwind codes and the CFI
+stay the walker's own; a stack argument keeps a real push (`pushArg`,
+`pushFArg`) for the call to unwind. The slots are one LIFO stack per
+function, an inlined callee continuing it, addressed at
+`-(Optimizer::kTempBase + 8(t+1))` (2^40) while the walk runs;
+`Optimizer::instruction` leaves such an operand out of the inlined
+callee's shift. Once the walk is done `Optimizer::temporaries(count)`
+places the region below `frameBase()` - below every local and every
+inlined frame, so a temporary never shares an address with an object whose
+address is taken (the first version interleaved them and read an inlined
+callee's object through a temporary's pseudo) - rewrites the displacements,
+appends each slot to `Function::locals` and records `tempFrom`, `tempBase`
+and `tempCount`. From there an integer slot is a local to `mir::Locals`
+and a pseudo to the allocator; an xmm slot stays a slot (xmm accesses are
+not promotable) but has no `rsp` traffic. The choice against rewriting
+push/pop pairs in a pass: a pass would have had to re-derive the alignment
+pad and the atFloor decision of every call the pair spanned.
 
 **`Function`.** GCC's `struct function` + `cfg` + `curr_properties`. The
 stream, the convention, the costs, the flow, the properties, and the frame
@@ -324,6 +350,25 @@ part, reads wide, and does to the flags, memory, control and the stack;
 computed by `effectsOf` from the opcode's kind and the operands. Every pass
 asks this and nothing else about an instruction's behaviour.
 
+**`forward-values` and the temporaries.** The scalar passes had always
+turned an in-block push/pop pair into a copy (`pairPop`), so only the
+cross-call and cross-block temporaries were ever on the stack. A slot
+round trip was opaque to them, and that mattered twice: the size proxy
+rose 7-14% and a loop counter lost its register, because the `lea` of `i`
+for `i++` - which the pair used to carry to `fold-offsets` - survived to
+`locals` in the slot. So `pairTemp` pairs a temporary's load with its
+store in the block exactly as `pairPop` pairs a pop with its push
+(`pairWith` is the shared body), **before** the general slot reload
+(`reloadFromRegister`) resolves the load and leaves the store standing; the
+region is private and LIFO, so it needs no `quiet` between. `pairXmm` does
+the same for a double: nothing where the register still holds the value
+untouched, a `movapd` where another does, else a `movapd` through an xmm
+register the function never names (`xmmScratch_`); across a call the pair
+stays a slot. `finish-frame` then shrinks the region to the slots still
+named (`shrinkTemporaries`) and `dropUnusedSaves` re-places the saves below
+it - a frame reserved for temporaries that became registers moved every
+rendered displacement on Windows.
+
 **`Pass`.** `info()` - name, required/provided/destroyed properties, start
 TODOs; `gate(fn)`; `execute(fn)` returning whether it changed anything.
 
@@ -455,8 +500,13 @@ if-conversion and tail calls.
   the locals that earn them and gives the rest their slots back. A web
   pseudo it cannot colour still sends the function back to its homes rather
   than to a spill slot below the frame: no function in the cases reaches
-  that, and the temporaries (S7) are what would. It weighs by loop depth or
+  that, the temporaries (S7) included - a temporary is a local with a slot
+  of its own and is demoted to it, never spilled. It weighs by loop depth or
   by one - not yet by encoding bytes.
+- The temporaries (S7) are slots for the integer and the SSE stack; the x87
+  pair (`pushX87`/`popX87`) and every stack argument stay on the real
+  stack, and a function with Microsoft funclets keeps push and pop
+  throughout - its frame cannot grow once a funclet is out.
 - `Flow::dominators()` and `dominates()` have `Loops` as their client;
   value numbering over the dominator tree is still to come.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
