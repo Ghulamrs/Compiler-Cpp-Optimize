@@ -60,6 +60,14 @@ struct DivideByConstant : Pass {
     bool execute(Function &fn) override { return divideByConstant(fn.stream, fn.flow); }
 };
 
+// **Loop-invariant code motion**, after allocation, where a register the
+// loop never touches can be seen to be free; a speed level's alone.
+struct HoistInvariants : Pass {
+    HoistInvariants() : Pass(PassInfo{"hoist-invariants", kFlow | kPropPhysical, 0, 0, kTodoBuildFlow}) {}
+    bool gate(const Function &fn) const override { return fn.whole && !fn.costs().forSize(); }
+    bool execute(Function &fn) override { return hoistInvariants(fn); }
+};
+
 // **Scaled-index addressing**, after allocation so that webs and the
 // allocator never meet an indexed operand; `imul $8` is still a multiply here.
 struct FoldIndex : Pass {
@@ -222,6 +230,7 @@ std::unique_ptr<Pass> pipelineFor() {
     top->add(std::move(frame));
 
     top->add(std::unique_ptr<Pass>(new FoldIndex()));
+    top->add(std::unique_ptr<Pass>(new HoistInvariants()));
     top->add(std::unique_ptr<Pass>(new FinishFrame()));
 
     std::unique_ptr<Group> shrinkLoop(new Group(PassInfo{"shrink-loop", 0, 0, 0, kTodoBuildFlow}, 3, Group::WhenFirstUnchanged));

@@ -1,0 +1,10 @@
+sum -11
+rows 272832
+strides 25
+divides 26461
+shifts 2414
+called 1898
+branches 93
+do 279
+empty 1 46
+crowded 11142208
