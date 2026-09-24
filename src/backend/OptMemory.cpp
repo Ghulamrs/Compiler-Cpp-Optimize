@@ -30,7 +30,7 @@ bool readsAsValue(const Instr &i, const Effects &e, int r) {
 }
 
 bool foldLoads(Stream &s, Flow &f, const Convention &c) {
-    f.solve(s);
+    f.live(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
         RegSet live = blk.liveOut;
@@ -78,7 +78,7 @@ bool foldLoads(Stream &s, Flow &f, const Convention &c) {
 }
 
 bool foldOffsets(Stream &s, Flow &f, const Convention &c) {
-    f.solve(s);
+    f.live(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
         for (int k = blk.begin; k < blk.end; ++k) {

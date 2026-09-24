@@ -1,5 +1,7 @@
 #include "Mir.h"
 
+#include "OptDataflow.h"
+
 #include <algorithm>
 
 namespace mir {
@@ -83,16 +85,13 @@ struct Sets {
 Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
     f.build(s, c);
     const int nb = static_cast<int>(f.blocks.size());
-    std::vector<std::vector<int>> preds(nb);
-    for (int b = 0; b < nb; ++b)
-        for (int n : f.succBlocks(b)) preds[n].push_back(b);
 
     Sets sets;
     // **A block entered from nowhere this function shows** - the entry, or a
     // label only a table names - starts from a value the ABI placed: pinned.
     std::vector<std::vector<int>> unknownIn(nb, std::vector<int>(kGprs, -1));
     for (int b = 0; b < nb; ++b)
-        if (b == 0 || preds[b].empty())
+        if (b == 0 || f.blocks[b].preds.empty())
             for (int r = 0; r < kGprs; ++r)
                 if (candidate(r)) unknownIn[b][r] = sets.make(true);
 
@@ -100,10 +99,7 @@ Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
     for (int k = 0; k < static_cast<int>(s.size()); ++k)
         if (s[k].kind == Entry::Ins && !s[k].dead) occ[k] = occurrencesOf(s[k].ins, k);
 
-    // Reaching definitions, one register at a time: the set of definitions of
-    // r that may hold its value on entry to each block.
-    typedef std::vector<int> DefList;
-    std::vector<std::vector<DefList>> in(nb, std::vector<DefList>(kGprs));
+    typedef ReachingDefs::DefList DefList;
     std::vector<std::vector<int>> defAt(s.size(), std::vector<int>(2, -1));
     std::vector<std::vector<int>> implicitDef(s.size());
 
@@ -120,32 +116,20 @@ Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
                 implicitDef[k][r] = sets.make(true);
     }
 
-    // The definition of r an instruction leaves, if it makes one.
-    auto lastDef = [&](int k, int r) {
-        for (const Occurrence &o : occ[k]) if (o.write && o.reg == r) return defAt[k][o.operand];
-        return implicitDef[k].empty() ? -1 : implicitDef[k][r];
-    };
-    std::vector<std::vector<DefList>> out(nb, std::vector<DefList>(kGprs));
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (int b = 0; b < nb; ++b) {
-            for (int r = 0; r < kGprs; ++r) {
-                if (!candidate(r)) continue;
-                DefList reach;
-                if (unknownIn[b][r] >= 0) reach.push_back(unknownIn[b][r]);
-                for (int p : preds[b]) reach.insert(reach.end(), out[p][r].begin(), out[p][r].end());
-                std::sort(reach.begin(), reach.end());
-                reach.erase(std::unique(reach.begin(), reach.end()), reach.end());
-                in[b][r] = reach;
-                for (int k = f.blocks[b].begin; k < f.blocks[b].end; ++k) {
-                    if (s[k].kind != Entry::Ins || s[k].dead) continue;
-                    const int d = lastDef(k, r);
-                    if (d >= 0) reach.assign(1, d);
-                }
-                if (reach != out[b][r]) { out[b][r] = reach; changed = true; }
-            }
+    // The definition of r each instruction leaves, if it makes one; then the
+    // reaching definitions solved over the flow from that.
+    std::vector<std::vector<int>> lastDef(s.size(), std::vector<int>(kGprs, -1));
+    for (int k = 0; k < static_cast<int>(s.size()); ++k) {
+        if (implicitDef[k].empty()) continue;
+        for (int r = 0; r < kGprs; ++r) {
+            int d = implicitDef[k][r];
+            for (const Occurrence &o : occ[k]) if (o.write && o.reg == r) { d = defAt[k][o.operand]; break; }
+            lastDef[k][r] = d;
         }
     }
+    ReachingDefs rd;
+    rd.solve(f, s, kGprs, lastDef, unknownIn);
+    const std::vector<std::vector<DefList>> &in = rd.in;
 
     // **Walk each block with what reaches it, joining each use to its
     // definitions.** A read the instruction makes implicitly, or at a place

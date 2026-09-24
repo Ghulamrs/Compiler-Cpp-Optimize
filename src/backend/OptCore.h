@@ -92,6 +92,16 @@ struct FlowOf {
     std::vector<Edge> edges;
     std::vector<Effects> effects;        // one per entry; empty for labels and events
     bool dominated = false;              // whether each block's idom is current
+    bool solutionsDirty = true;          // whether liveness must be solved again
+
+    // **Liveness on request**: solved when the stream changed since it last
+    // was, kept otherwise. The driver says when something changed (touch).
+    void live(const std::vector<Entry> &s) {
+        if (!solutionsDirty) return;
+        solve(s);
+        solutionsDirty = false;
+    }
+    void touch() { solutionsDirty = true; }
 
     // The successor blocks of b, each once, in edge order; the exit left out.
     std::vector<int> succBlocks(int b) const {
@@ -111,6 +121,7 @@ struct FlowOf {
         blocks.clear();
         edges.clear();
         dominated = false;
+        solutionsDirty = true;
         effects.assign(s.size(), Effects());
         std::map<std::string, int> at;
         Block cur;
@@ -266,7 +277,7 @@ struct FlowOf {
 // says of an instruction that only the upper halves it writes go unread.
 template <class Entry, class IdleFn>
 bool removeDeadIn(std::vector<Entry> &s, FlowOf<Entry> &f, RegSet frame, IdleFn idle) {
-    f.solve(s);
+    f.live(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
         RegSet live = blk.liveOut, wide = blk.wideOut;

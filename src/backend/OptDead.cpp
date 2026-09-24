@@ -61,7 +61,7 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, R
 }
 
 bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
-    f.solve(s);
+    f.live(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
         RegSet live = blk.liveOut, wide = blk.wideOut;

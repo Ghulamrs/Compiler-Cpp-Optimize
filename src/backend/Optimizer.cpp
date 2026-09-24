@@ -125,15 +125,19 @@ void Optimizer::returnsPair(bool pair) {
 void Optimizer::rounds(int limit) {
     opt::Stream &s = fn_.stream;
     opt::Flow &flow = fn_.flow;
+    // A pass that changed something leaves the liveness to be solved again.
+    bool changed = false;
+    auto ran = [&](bool c) { if (c) { flow.touch(); changed = true; } };
     for (int round = 0; round < limit; ++round) {
         dropUnnamedLabels();
         fn_.buildFlow();
-        bool changed = opt::forwardValues(s, flow, fn_.convention);
-        changed = opt::removeUnreachable(s) || changed;
-        changed = opt::removeDead(s, flow) || changed;
-        changed = opt::coalesceCopies(s, flow, fn_.convention) || changed;
-        changed = opt::foldLoads(s, flow, fn_.convention) || changed;
-        changed = opt::foldOffsets(s, flow, fn_.convention) || changed;
+        changed = false;
+        ran(opt::forwardValues(s, flow, fn_.convention));
+        ran(opt::removeUnreachable(s));
+        ran(opt::removeDead(s, flow));
+        ran(opt::coalesceCopies(s, flow, fn_.convention));
+        ran(opt::foldLoads(s, flow, fn_.convention));
+        ran(opt::foldOffsets(s, flow, fn_.convention));
         if (!changed) break;
     }
 }
@@ -154,10 +158,12 @@ void Optimizer::improve() {
         const mir::Webs webs = mir::buildWebs(s, flow, fn_.convention);
         mir::assign(s, webs.home);
         fn_.saves = opt::promoteLocals(s, fn_.convention, fn_.locals, fn_.size, costs.registers, costs.minWeight);
+        flow.touch();
         if (!fn_.saves.empty()) rounds(costs.rounds);
         // Each round can forward a reload away and leave its store unread.
-        for (int again = 0; again < 3 && opt::removeDeadStores(s); ++again) rounds(costs.rounds);
+        for (int again = 0; again < 3 && opt::removeDeadStores(s); ++again) { flow.touch(); rounds(costs.rounds); }
         opt::dropUnusedSaves(s, fn_.saves);
+        flow.touch();
         fn_.size += (8 * static_cast<int>(fn_.saves.size()) + 15) & ~15;
     }
     if (fn_.size != fn_.frameSize) {
@@ -172,6 +178,7 @@ void Optimizer::improve() {
     for (int again = 0; again < 3; ++again) {
         fn_.buildFlow();
         if (!opt::shrink(s, flow, fn_.convention)) break;
+        flow.touch();
         rounds(costs.rounds);
     }
 }

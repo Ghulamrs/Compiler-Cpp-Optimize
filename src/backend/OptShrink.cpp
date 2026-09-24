@@ -65,7 +65,7 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
 }
 
 bool shrink(Stream &s, Flow &f, const Convention &c) {
-    f.solve(s);
+    f.live(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
         RegSet wide = blk.wideOut;
