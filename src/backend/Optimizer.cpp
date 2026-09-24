@@ -1,16 +1,15 @@
 #include "Optimizer.h"
 
-#include "Mir.h"
-#include "OptPasses.h"
+#include "OptPipeline.h"
 
 #include <algorithm>
 #include <cassert>
-#include <set>
 #include <utility>
 
 using opt::Entry;
 
-Optimizer::Optimizer(Spelling &under, const Abi &abi, int level) : under_(under) {
+Optimizer::Optimizer(Spelling &under, const Abi &abi, int level)
+    : under_(under), pipeline_(opt::pipelineFor()) {
     fn_.convention = opt::conventionOf(abi);
     fn_.costs = opt::Costs::forLevel(level);
 }
@@ -96,16 +95,6 @@ void Optimizer::inlineEnd() { inlining_ = false; }
 
 void Optimizer::jumpOnly(const std::string &label) { fn_.jumpOnly.insert(label); }
 
-// **A label only jumps name, that no jump names any more**, joins its block to
-// the one before, so what is known flows through it.
-void Optimizer::dropUnnamedLabels() {
-    std::set<std::string> named;
-    for (const Entry &e : fn_.stream)
-        if (e.kind == Entry::Ins && !e.dead && e.ins.a.kind == opt::Operand::Label) named.insert(e.ins.a.text);
-    for (Entry &e : fn_.stream)
-        if (e.kind == Entry::Label && fn_.jumpOnly.count(e.label) && !named.count(e.label)) e.dead = true;
-}
-
 void Optimizer::functionEnd(const std::string &name) {
     flush();
     inFunction_ = false;
@@ -122,66 +111,10 @@ void Optimizer::returnsPair(bool pair) {
     if (pair) fn_.convention.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
 }
 
-void Optimizer::rounds(int limit) {
-    opt::Stream &s = fn_.stream;
-    opt::Flow &flow = fn_.flow;
-    // A pass that changed something leaves the liveness to be solved again.
-    bool changed = false;
-    auto ran = [&](bool c) { if (c) { flow.touch(); changed = true; } };
-    for (int round = 0; round < limit; ++round) {
-        dropUnnamedLabels();
-        fn_.buildFlow();
-        changed = false;
-        ran(opt::forwardValues(s, flow, fn_.convention));
-        ran(opt::removeUnreachable(s));
-        ran(opt::removeDead(s, flow));
-        ran(opt::coalesceCopies(s, flow, fn_.convention));
-        ran(opt::foldLoads(s, flow, fn_.convention));
-        ran(opt::foldOffsets(s, flow, fn_.convention));
-        if (!changed) break;
-    }
-}
-
-// **Locals go to registers once the frame is as small as it gets**, so an
-// address folded away no longer counts as escaping; then everything again.
-void Optimizer::improve() {
-    const opt::Costs &costs = fn_.costs;
-    opt::Stream &s = fn_.stream;
-    opt::Flow &flow = fn_.flow;
-    rounds(costs.rounds);
-    // What the frame gains goes below what it had: first the region inlined
-    // callees live in, then the saves. The outgoing area stays under both.
-    fn_.size = fn_.frameBase();
-    if (fn_.whole && fn_.promotable && fn_.prologueAt >= 0) {
-        // Stage 1 of docs/OPTIMIZER-IR.md: every web a pseudo, and each given
-        // back the register it was found in - which must change nothing.
-        const mir::Webs webs = mir::buildWebs(s, flow, fn_.convention);
-        mir::assign(s, webs.home);
-        fn_.saves = opt::promoteLocals(s, fn_.convention, fn_.locals, fn_.size, costs.registers, costs.minWeight);
-        flow.touch();
-        if (!fn_.saves.empty()) rounds(costs.rounds);
-        // Each round can forward a reload away and leave its store unread.
-        for (int again = 0; again < 3 && opt::removeDeadStores(s); ++again) { flow.touch(); rounds(costs.rounds); }
-        opt::dropUnusedSaves(s, fn_.saves);
-        flow.touch();
-        fn_.size += (8 * static_cast<int>(fn_.saves.size()) + 15) & ~15;
-    }
-    if (fn_.size != fn_.frameSize) {
-        assert(fn_.prologueAt >= 0 && "a frame can grow only while its prologue is held");
-        const std::vector<SavedReg> saves = fn_.saves;
-        const int size = fn_.size;
-        const std::string lsda = fn_.lsda;
-        const int outgoing = fn_.outgoing;
-        s[fn_.prologueAt].event = [=](Spelling &sp) { sp.calleeSaves(saves); sp.prologue(size, lsda, outgoing); };
-    }
-    // A shorter spelling last: narrowed arithmetic leaves extensions to delete.
-    for (int again = 0; again < 3; ++again) {
-        fn_.buildFlow();
-        if (!opt::shrink(s, flow, fn_.convention)) break;
-        flow.touch();
-        rounds(costs.rounds);
-    }
-}
+// **The passes, through the manager.** What ran here as hand-written loops
+// is the pipeline in OptPipeline.cpp; the manager runs it, checks what each
+// pass requires, and dumps after any pass CXX1_DUMP_MIR names.
+void Optimizer::improve() { manager_.run(*pipeline_, fn_); }
 
 void Optimizer::settle() {
     if (inFunction_) fn_.whole = false;
@@ -209,6 +142,7 @@ void Optimizer::flush() {
         }
     }
     fn_.stream.clear();
+    fn_.props = opt::kPropPhysical;   // a new stream: the flow describes nothing yet
     fn_.prologueAt = -1;       // written out: from here on the frame is what it is
 }
 

@@ -82,8 +82,9 @@ struct Sets {
 
 }
 
+// The flow must describe the stream: the pass that calls this has it built.
 Webs buildWebs(Stream &s, Flow &f, const Convention &c) {
-    f.build(s, c);
+    (void)c;
     const int nb = static_cast<int>(f.blocks.size());
 
     Sets sets;

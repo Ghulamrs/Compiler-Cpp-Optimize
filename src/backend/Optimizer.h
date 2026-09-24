@@ -5,9 +5,11 @@
 // Outside a function every call passes straight through.
 
 #include "OptFunction.h"
+#include "OptPass.h"
 #include "Spelling.h"
 
 #include <cstddef>
+#include <memory>
 
 struct Abi;
 
@@ -69,6 +71,9 @@ private:
     Spelling &under_;
     // **The function being held**, and what the walker has said of it so far.
     opt::Function fn_;
+    // The pipeline, built once per spelling, and the manager that runs it.
+    std::unique_ptr<opt::Pass> pipeline_;
+    opt::PassManager manager_;
     bool inFunction_ = false;
     std::size_t held_ = 0;
     bool inlining_ = false;
@@ -80,7 +85,5 @@ private:
     // passed on at once outside one.
     void event(std::function<void(Spelling &)> call);
     void improve();
-    void dropUnnamedLabels();
-    void rounds(int limit);
     void flush();
 };
