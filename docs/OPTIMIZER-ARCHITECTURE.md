@@ -114,6 +114,17 @@ classDiagram
     WebsPass ..> Webs
     Webs --> Function
     Webs ..> ReachingDefs
+    Pass <|-- Allocate
+    class Allocator {
+        -fn_ homes_ uses_ liveIn_ liveOut_ nodes_ matrix_ copies_ colour_
+        +run() coalesced() fellBack()
+        -findUses() solveLiveness() buildInterference() collectCosts() valid()
+        -colour() coalesce() simplify() select() pick() merge() significant() bestPreference()
+    }
+    Allocate ..> Allocator
+    Allocator --> Function
+    Allocator ..> Loops : depthOf
+    Allocator ..> Costs : referenceWeight
     Pass <|-- PromoteLocals
     Pass <|-- RemoveDeadStores
     Pass <|-- FinishFrame
@@ -140,7 +151,8 @@ Files, all under `src/backend/`:
 | `OptPass.{h,cpp}` | `Todo`, `PassInfo`, `Pass`, `Group`, `PassManager`, `dropUnnamedLabels`, `dumpStream` |
 | `OptPipeline.{h,cpp}` | the `Pass` subclasses and `pipelineFor()` |
 | `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions (unchanged) |
-| `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos and back |
+| `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos; `assign` and `dropSelfCopies` for whoever colours |
+| `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences |
 | `Optimizer.{h,cpp}` | the Spelling that holds a function, runs the pipeline, replays |
 
 ## 2. Each class, and what it is responsible for
@@ -201,7 +213,7 @@ fills `Block::idom` on request. A rebuild clears both.
 into `Flow::edges`; `Edge::to == kExit` leaves the function.
 
 **`Loops`.** The natural loops of the flow graph, from its dominators, as
-GCC's `loop-init` finds them: each back edge `b -> h` whose target
+GCC's `loop-init` finds them (the allocator weighs by them): each back edge `b -> h` whose target
 dominates its source heads a loop of `h` and every block that reaches `b`
 without passing `h`; `depthOf(block)` is how many loops hold a block.
 Owned by the `Function` and computed on request (`Function::loops()`, GCC's
@@ -213,12 +225,15 @@ for 2 bytes either way, so not taken; the allocator will weigh by them.
 **`ReachingDefs`.** A forward dataflow problem: per block and register, the
 definitions that may reach the block's entry. The caller numbers the
 definitions (`lastDef[entry][reg]`) and says what a block entered from
-nowhere holds (`unknownIn[block][reg]`). `mir::Webs` is its one client.
+nowhere holds (`unknownIn[block][reg]`). An exception edge carries what
+stood after its call, the call's own definitions made. `mir::Webs` is its
+one client.
 
 **`mir::Webs`.** One value's life in one register - every definition
 joined with every use it reaches, over `ReachingDefs`, as GCC's `web` pass
 makes them - and each the ABI does not pin made a pseudo, with the
-register it was found in kept as its home. Phases as members:
+register it was found in kept as its home (`Function::homes`, for the
+allocator). Phases as members:
 `splitPinned` first - where an instruction reads a register it does not
 name (a call its arguments, `idiv` its dividend, `rep movsq` its three) or
 wants one by name (a shift's count in `%cl`), the value is copied there
@@ -229,10 +244,43 @@ places every fixed-register operand and IRA coalesces the copies away. A
 `ret`'s implicit reads are the convention's own protocol and stay. Then
 `makeDefinitions`, `joinUsesToDefinitions` (the reaching definitions
 solved, each use united with what reaches it, the implicit and pinned
-reads pinning what they read), `renameToPseudos`; `assign` gives every
-pseudo a register and `dropSelfCopies` removes the whole self-copies an
-assignment back home leaves (a four-byte one zero-extends and stays).
-Over Compiler++ at -O2 the split raises the pseudos from 33,395 to 55,826.
+reads pinning what they read), `renameToPseudos`, each renamed entry's effects recomputed so the
+flow describes the stream still. `assign` (static) gives every pseudo the
+register a colouring names and `dropSelfCopies` removes the whole
+self-copies that leaves (a four-byte one zero-extends and stays); both are
+the allocator's to call. Over Compiler++ at -O2 the split raises the
+pseudos from 33,395 to 55,826.
+
+**`mir::Allocator`** (session 4; `allocate`, after `webs`). GCC's IRA
+reduced to one function with no regions. `solveLiveness` is the flow's
+liveness problem over the pseudos, one bit each, exception edges joined at
+the call. `buildInterference` walks each block backward with that and
+with the flow's physical liveness (in which a pseudo's write kills no
+physical register, since which one it kills is what is being decided): a
+pseudo defined at an instruction interferes with every pseudo live after
+it but the source of a copy (Chaitin), may not take a physical register
+live after or written there, and one live across an instruction may not
+be in a register it writes; a block entered from nowhere cliques what is
+live into it. The homes are a colouring known to work and are asserted
+valid against the graph - the check that found `ReachingDefs` taking an
+exception edge from the block's end (a pad's rax joined into a web that was
+not pinned; it takes the edge at its call now). `collectCosts` weighs each
+reference by `Costs::referenceWeight` at its block's `Loops::depthOf`, and
+lists the whole copies (`mov` of two eight-byte registers, one of them a
+pseudo) as the preferences. `colour`: the pseudo-to-pseudo copies are
+coalesced heaviest first where the two do not interfere, Briggs' test
+holds (fewer significant neighbours than registers, a forbidden register
+counting as one), and the copy saved outweighs the copies to physical
+registers the two could no longer both drop; `simplify` takes a node of
+degree below the palette while one exists and the cheapest by weight over
+degree otherwise, optimistically; `select` gives each node the register
+its copies prefer most, its home on a tie, then the cheapest encoding on
+offer - the caller-saved general registers (nine on SysV, seven on
+Microsoft), a home outside them allowed, the preserved ones not until a
+save can be charged. A pseudo left without a register sends the whole
+function back to its homes (`fellBack`); no function in the cases needs it
+today, and nothing spills to the frame yet. After `assign`, the copies
+that became self-copies go.
 
 **`Opcode`.** One mnemonic's description: `kind` (the effects branch),
 `flags` (explicit-only, writes-only, immediate source, renamable frame
@@ -272,8 +320,9 @@ pipeline
     coalesce-copies      requires flow
     fold-loads           requires flow
     fold-offsets         requires flow
-  frame                  [gate: whole && promotable && prologue held]
-    webs                 [build-flow before]; requires flow, physical; provides physical; destroys flow
+  frame                  [gate: whole && prologue held]
+    webs                 [build-flow before]; requires flow, physical; destroys physical
+    allocate             requires flow; provides physical
     promote-locals       requires physical; destroys flow
     rounds               [gate: some local was promoted]
     dse-loop             [repeat 3; stop when the first sub-pass found nothing]
@@ -319,12 +368,12 @@ Two properties exist today:
   Provided by `Function::buildFlow()` (from a `kTodoBuildFlow`); destroyed by
   `promote-locals`, which inserts entries. Required by every pass that walks
   blocks or asks liveness.
-- `kPropPhysical`: no operand names a pseudo. True on entry; `webs` requires
-  and re-provides it (it makes pseudos and assigns them back within the
-  pass), and destroys `kPropFlow`, the copies it inserts having moved the
-  entries. A session-2 allocator will have `webs` destroy `kPropPhysical`
-  and the allocator provide it, and every pass between will say which it
-  can take.
+- `kPropPhysical`: no operand names a pseudo. True on entry; `webs`
+  requires it and destroys it (the stream names pseudos from there),
+  keeping `kPropFlow` - the flow is rebuilt around the copies it inserts
+  and every renamed entry's effects follow; `allocate` requires the flow
+  and provides `kPropPhysical` again. A pass placed between the two would
+  have to take pseudos; none is today.
 
 Invalidation has two levels, as in GCC (`df`'s `solutions_dirty` against
 `TODO_cleanup_cfg`):
@@ -357,26 +406,29 @@ pass never tests the level, it asks a cost. This is GCC's -Os against -O2
 speed-only alignment and layout rows), and cl's /O1 against /O2 (/Os
 against /Ot).
 
-Still to add here, per the handover: the allocator's spill and register
-costs (references by loop depth for speed, by encoding bytes for size), a
-cost in encoding bytes (Z1) - which is what would let `SizeCosts::inlines`
-say yes - and the size-or-speed choice for if-conversion and tail calls.
+The allocator asks `referenceWeight(loopDepth)`: what a use is worth and
+what a coalesced copy saves - 8^depth for speed (as `promote-locals`
+weighs), 1 for size. Still to add: a cost in encoding bytes (Z1), which is
+what would let `SizeCosts::inlines` say yes and the size register order be
+measured rather than assumed, and the size-or-speed choice for
+if-conversion and tail calls.
 
 ## 7. What is a documented stub, and what is not built
 
-- `Edge::Eh` edges are made (S2) and liveness takes them; reaching
-  definitions still take an Eh edge from its block's end rather than its
-  call, which can only join more definitions than reach the pad. The
-  frame passes still do not run in a function with landing pads
-  (`Function::promotable`): a local kept in a callee-saved register would
-  need the unwinder to restore it into the pad, and the prologue's saves
-  carry no CFI for that yet.
+- `Edge::Eh` edges are made (S2); liveness and, since session 4, reaching
+  definitions take them at the call. The frame passes run under landing
+  pads since session 3 (the prologue's saves carry CFI and unwind codes).
+- The allocator (S5) colours and coalesces; it does not spill (no function
+  in the cases needs it, and the homes stand in where a colouring fails),
+  does not take a preserved register for a pseudo (none is live across a
+  call until parameters and temporaries are pseudos, S6/S7), and weighs by
+  loop depth or by one - not yet by encoding bytes.
 - `Flow::dominators()` and `dominates()` have `Loops` as their client;
   value numbering over the dominator tree is still to come.
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
   session 2's.
-- `Costs` answers the inliner and the passes of today; the allocator's
-  questions are named in the handover, not declared.
+- `Costs` answers the inliner, the allocator (`referenceWeight`) and the
+  passes of today.
 - The `Opcode` table records today's quirks (`addq` has a width but is not
   arithmetic; `sal`/`rol`/`ror` are shifts but opaque; `testl`/`testq`/`cmpq`
   are not explicit-only) - each a one-line candidate change for session 2,
