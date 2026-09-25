@@ -767,10 +767,10 @@ ExprPtr Parser::primary(Program *program) {
                                          : types_.charType();
         int width = elem->size(target_);
 
-        // **A u or U literal is UTF-8 in the source and code units in the object**
-        // - [lex.string]/8 and /9; a wide one keeps the bytes as it always did.
+        // **A u, U or L literal is UTF-8 in the source and code units in the object**
+        // - [lex.string]/8 and /9; a surrogate pair in u for a point past the BMP.
         std::vector<unsigned long long> units;
-        if (prefix == 'u' || prefix == 'U') {
+        if (prefix == 'u' || prefix == 'U' || wide) {
             for (std::size_t i = 0; i < text.size(); ) {
                 const unsigned char c = static_cast<unsigned char>(text[i]);
                 int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;

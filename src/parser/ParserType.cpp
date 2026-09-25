@@ -1696,7 +1696,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                                           " in '" +
                                           found->enclosing()->tag() + "'");
                 at_ += consumed;
-                return found;
+                // `std::string::size_type`: what the prefix names may be a typedef for a class.
+                return memberTypeWalk(found);
             }
         }
         if (const Type *t = findTypedef(peek().text)) {

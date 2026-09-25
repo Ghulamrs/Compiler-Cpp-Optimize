@@ -391,11 +391,16 @@ std::size_t Parser::qualifiedTypeEnd() const {
     if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return 0;
     std::string q = peek().text;
     std::size_t typeEnd = 0;
+    const Type *cur = findTypedef(q);
     for (std::size_t k = 1; peekAt(k).is("::") &&
                             peekAt(k + 1).kind == TokenKind::Ident;
          k += 2) {
         q += "::" + peekAt(k + 1).text;
-        if (findTypedef(q) != nullptr) typeEnd = k + 2;
+        if (const Type *t = findTypedef(q)) { typeEnd = k + 2; cur = t; }
+        // `std::string::size_type`: a member type of the class a typedef reached.
+        else if (cur != nullptr && cur->isStructOrUnion() &&
+                 (cur = lookupInClass(cur, peekAt(k + 1).text)) != nullptr)
+            typeEnd = k + 2;
         // **`std::vector<int> v;` - the name stops at a class template too.**
         if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
     }
