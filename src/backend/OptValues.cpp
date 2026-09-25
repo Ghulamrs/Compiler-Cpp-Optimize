@@ -92,8 +92,21 @@ public:
             if ((c_.clobbered & bit(r)) && !frameReg(r) && !(named & bit(r))) scratch_.push_back(r);
         for (int r = kXmm0; r < kXmm0 + 16; ++r)
             if ((c_.clobbered & bit(r)) && !(named & bit(r))) xmmScratch_.push_back(r);
+        // The two narrow rewrites ask what is live out of a block; solve it.
+        f_.live(s_);
+        flagsDead_.assign(s_.size(), false);
+        for (const Block &b : f_.blocks) {
+            Live live = b.out;
+            for (int k = b.end - 1; k >= b.begin; --k) {
+                if (s_[k].kind != Entry::Ins || s_[k].dead) continue;
+                f_.joinPads(static_cast<int>(&b - &f_.blocks[0]), k, live);
+                flagsDead_[k] = !live.flags;
+                live.step(f_.effects[k]);
+            }
+        }
         for (const Block &b : f_.blocks) {
             enterBlock();
+            blk_ = &b;
             for (int k = b.begin; k < b.end; ++k)
                 if (s_[k].kind == Entry::Ins && !s_[k].dead) step(k);
         }
@@ -113,6 +126,10 @@ private:
     std::map<long long, Pushed> temps_;  // a temporary's slot -> the store it holds, in this block
     std::map<long long, Slot> slots_;   // rbp offset -> what the frame holds there
     int flagsFrom_ = -1;
+    std::vector<bool> flagsDead_;       // per entry: no path reads the flags it leaves
+    const Block *blk_ = nullptr;        // the block being walked
+    std::map<int, Value> sextOf_;       // an unknown's number -> its sign extension's value
+    std::map<int, Value> sextFrom_;     // and the extension's number -> the unknown it extends
     int k_ = 0;                         // the entry being stepped
     int condReg_ = -1;                  // the register whose low byte a setcc just wrote
     Value cond_;
@@ -134,6 +151,8 @@ private:
         stack_.clear();
         slots_.clear();
         temps_.clear();
+        sextOf_.clear();
+        sextFrom_.clear();
         flagsFrom_ = condReg_ = -1;
     }
     bool isTemp(const Operand &o) const { return tempFrom_ != 0 && o.isMem() && o.reg.id == RBP && o.scale == 0 && o.disp <= tempFrom_; }
@@ -150,6 +169,9 @@ private:
         Pop pop = pairTemp(i, k);
         if (pop == Pop::Kept) edited = reloadFromRegister(i) || edited;
         edited = readOriginal(i) || edited;
+        edited = addressOfSum(i, k) || edited;
+        edited = extensionHeld(i) || edited;
+        edited = extensionUnread(i, k) || edited;
         if (pop == Pop::Kept) pop = pairPop(i, k);
         if (pop == Pop::Gone || isNoop(i) || foldCondition(i, k)) { kill(k); return; }
         if (edited || pop == Pop::Copy) replace(k, i);
@@ -216,6 +238,81 @@ private:
         const int r = regs_[i.b.reg.id].same(slot.v) ? i.b.reg.id : holding(slot.v, -1);
         if (r < 0) return false;
         i = Instr{"mov", Operand::ofReg(r, 8), i.b, 2};
+        return true;
+    }
+
+    // **`mov $c, %d; add %s, %d` is `lea c(%s), %d`** where nothing reads the
+    // flags the add would leave: one instruction, and the constant's move dies.
+    bool addressOfSum(Instr &i, int k) const {
+        if (i.m != "add" || i.operands != 2 || !gpr(i.a) || !gpr(i.b) || !flagsDead_[k]) return false;
+        const int w = i.b.reg.width;
+        if (w < 4 || i.a.reg.width != w || i.a.reg.id == i.b.reg.id || frameReg(i.a.reg.id) || frameReg(i.b.reg.id)) return false;
+        const Value &v = regs_[i.b.reg.id];
+        if (v.kind != Value::Const) return false;
+        const long long c = atWidth(v.k, w);
+        if (!fitsImm32(c)) return false;
+        // A four-byte sum reads its base's low half only, so the base may be
+        // what a sign extension was made from, the extension then unread.
+        Reg base = i.a.reg;
+        if (w == 4) {
+            for (int n = 0; n < 4 && original(base); ++n) {}
+            const Value &bv = regs_[base.id];
+            const auto from = bv.kind == Value::Unknown && bv.sext32 ? sextFrom_.find(bv.id) : sextFrom_.end();
+            const int r = from == sextFrom_.end() ? -1 : holding(from->second, -1);
+            if (r >= 0) base.id = r;
+        }
+        if (frameReg(base.id)) return false;
+        Operand m = Operand::ofMem(base.id, c);
+        m.hasDisp = true;
+        m.reg.width = 8;
+        i = Instr{"lea", m, i.b, 2};
+        return true;
+    }
+
+    // **A sign extension another register already holds** is a copy of it.
+    bool extensionHeld(Instr &i) const {
+        if (i.m != "movslq" || !gpr(i.a) || !gpr(i.b) || i.a.reg.width != 4 || i.b.reg.width != 8) return false;
+        const Value &src = regs_[i.a.reg.id];
+        if (src.kind != Value::Unknown || src.id == 0 || src.sext32) return false;
+        const auto it = sextOf_.find(src.id);
+        if (it == sextOf_.end()) return false;
+        const int r = holding(it->second, i.b.reg.id);
+        if (r < 0 || frameReg(r)) return false;
+        i = Instr{"mov", Operand::ofReg(r, 8), i.b, 2};
+        return true;
+    }
+
+    // **An extension read only at its source's width** - a byte stored, and
+    // nothing wider - is a copy of the whole register, which can then go.
+    bool extensionUnread(Instr &i, int k) const {
+        int ws = 0;
+        if (is(i.m, {"movsbq", "movzbq", "movsbl", "movzbl"})) ws = 1;
+        else if (is(i.m, {"movswq", "movzwq", "movswl", "movzwl"})) ws = 2;
+        if (ws == 0 || !gpr(i.a) || !gpr(i.b) || i.a.reg.width != ws || i.b.reg.width < 4) return false;
+        const int d = i.b.reg.id;
+        if (frameReg(d) || frameReg(i.a.reg.id)) return false;
+        bool redefined = false;
+        for (int j = k + 1; j < blk_->end && !redefined; ++j) {
+            if (s_[j].kind != Entry::Ins || s_[j].dead) continue;
+            const Instr &u = s_[j].ins;
+            const Effects &e = f_.effects[j];
+            if (!((e.reads | e.writes | e.partial) & bit(d))) continue;
+            if (e.partial & bit(d)) return false;
+            bool named = false;
+            for (const Operand *o : {&u.a, &u.b}) {
+                if (o->kind == Operand::Register && o->reg.id == d) {
+                    named = true;
+                    const bool written = o == &u.b ? (rolesOf(u).b & kWrite) != 0 : (rolesOf(u).a & kWrite) != 0;
+                    if (written && o->reg.width >= 4) redefined = true;
+                    else if (o->reg.width > ws) return false;
+                } else if ((o->isMem() || o->kind == Operand::Indirect) && (o->reg.id == d || (o->indexed() && o->index.id == d))) {
+                    return false;
+                }
+            }
+            if (!named || (!redefined && !explicitOnly(u))) return false;
+        }
+        if (!redefined && (blk_->out.regs & bit(d))) return false;
+        i = Instr{"mov", Operand::ofReg(i.a.reg.id, 8), Operand::ofReg(d, 8), 2};
         return true;
     }
 
@@ -487,6 +584,12 @@ private:
             if (gpr(i.a) && src.sext32) return src;
             Value v = fresh();
             v.sext32 = true;
+            if (gpr(i.a) && src.kind == Value::Unknown && src.id != 0) {
+                const auto it = sextOf_.find(src.id);
+                if (it != sextOf_.end()) return it->second;
+                sextOf_[src.id] = v;
+                sextFrom_[v.id] = src;
+            }
             return v;
         } else if (extendsCond) {
             return cond_;
