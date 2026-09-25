@@ -1311,7 +1311,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // block copy**.
                 const Signature *cc = copyConstructorOf(caught->unqualified());
                 ExprPtr fromPtr;
-                if (cc != nullptr) {
+                // **With no `__cxa_get_exception_ptr`** the copy is made from what `__cxa_begin_catch` returns, as cl6x does.
+                const bool copyAfterBegin = cc != nullptr && !target_.hasGetExceptionPtr();
+                if (cc != nullptr && !copyAfterBegin) {
                     std::vector<ExprPtr> ptrArgs;
                     ExprPtr raw(Var::local(".ex.ptr", pointerSlot));
                     raw->setType(voidPtr);
@@ -1365,7 +1367,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // **The catch is entered after the copy** where a constructor
                 // ran, which is the order the two calls exist to make
                 // possible.
-                if (cc != nullptr)
+                if (cc != nullptr && !copyAfterBegin)
                     steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
                 // **An object of this scope from here on.**
                 if (destructorOf(caught->unqualified()) != nullptr)
@@ -1445,7 +1447,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 held->setType(voidPtr);
                 resumeArgs.push_back(std::move(held));
                 padSteps.push_back(StmtPtr(new ExprStmt(
-                    runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+                    resumeCall(
                                 std::move(resumeArgs)))));
             }
             // Behind the label a region inside this handler jumps to.
@@ -1505,7 +1507,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                      -1, aliveOutside);
     if (beyondTry.empty())
         resume.push_back(StmtPtr(new ExprStmt(
-            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+            resumeCall(
                         std::move(resumeArgs)))));
     else
         resume.push_back(StmtPtr(new Goto(beyondTry)));

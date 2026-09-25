@@ -1,4 +1,5 @@
 #include "Arm64Darwin.h"
+#include "Tms6747.h"
 #include "Backend.h"
 #include "X86_64Linux.h"
 #include "X86_64Windows.h"
@@ -14,8 +15,9 @@ std::unique_ptr<CodeGen> X86_64LinuxBackend::codegen(std::ostream &sink, Syntax)
 static const X86_64LinuxBackend kLinux;
 static const X86_64WindowsBackend kWindows;
 static const Arm64DarwinBackend kDarwin;
+static const Tms6747Backend kTms6747;
 
-static const Backend *const kBackends[] = { &kLinux, &kWindows, &kDarwin };
+static const Backend *const kBackends[] = { &kLinux, &kWindows, &kDarwin, &kTms6747 };
 
 static std::string twoDigits(int n) {
     const std::string digits = std::to_string(n);

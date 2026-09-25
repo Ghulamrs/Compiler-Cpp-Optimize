@@ -626,6 +626,9 @@ public:
     // are named there.
     bool hasLandingPads() const { return landingPads_; }
     void setHasLandingPads(bool b) { landingPads_ = b; }
+    // Declared noexcept: the C6000 writes it into its unwind table.
+    bool isNoexcept() const { return noexcept_; }
+    void setNoexcept(bool b) { noexcept_ = b; }
 private:
     bool hasThis_ = false;
     bool isInline_ = false;
@@ -644,6 +647,7 @@ private:
     std::vector<Local> locals_;
     std::vector<int> blocks_;
     bool landingPads_ = false;
+    bool noexcept_ = false;
 };
 
 struct GlobalPiece {

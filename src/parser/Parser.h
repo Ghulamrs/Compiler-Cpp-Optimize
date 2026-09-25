@@ -1446,6 +1446,8 @@ private:
                                      std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
+    // _Unwind_Resume(exception), or TI's __cxa_end_cleanup(), which takes nothing.
+    ExprPtr resumeCall(std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;

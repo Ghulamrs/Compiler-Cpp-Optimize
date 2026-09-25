@@ -884,11 +884,17 @@ StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
     // and the one chain that tests it lives in the `try`'s own pad.
     if (chainLabel.empty())
         steps.push_back(StmtPtr(new ExprStmt(
-            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+            resumeCall(
                         std::move(args)))));
     else
         steps.push_back(StmtPtr(new Goto(chainLabel)));
     return unwindPad(std::move(steps));
+}
+
+ExprPtr Parser::resumeCall(std::vector<ExprPtr> args) {
+    if (target_.resumeTakesException())
+        return runtimeCall("_Unwind_Resume", types_.get(Kind::Void), std::move(args));
+    return runtimeCall("__cxa_end_cleanup", types_.get(Kind::Void), std::vector<ExprPtr>());
 }
 
 StmtPtr Parser::unwindPad(std::vector<StmtPtr> steps) {

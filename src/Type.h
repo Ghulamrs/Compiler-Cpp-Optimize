@@ -498,8 +498,14 @@ public:
 
     // Which ABI spells a C++ name, which is a property of the platform in the same way that the width of a long is.
     virtual bool microsoftNames() const = 0;
-    // Whether a word may sit at any address: every target here loads one; a C6000 would not.
+    // What the stack pointer is kept aligned to: 16 on the hosts, 8 on the C6000.
+    virtual int stackAlign() const { return 16; }
+    // Whether a word may sit at any address: the hosts' loads do, the C6000's LDW faults.
     virtual bool loadsUnaligned() const { return true; }
+    // **How a cleanup pad hands the exception back**: `_Unwind_Resume(exception)`, or TI's `__cxa_end_cleanup()`.
+    virtual bool resumeTakesException() const { return true; }
+    // **Whether `__cxa_get_exception_ptr` exists** - TI's runtime copies from what `__cxa_begin_catch` returns.
+    virtual bool hasGetExceptionPtr() const { return true; }
 
     virtual const char *name() const = 0;
 };
