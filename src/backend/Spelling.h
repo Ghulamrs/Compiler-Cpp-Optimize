@@ -214,8 +214,7 @@ protected:
 protected:
     std::string &o_;
     std::vector<SavedReg> saves_;
-    // The section the function being written lives in: `.text`, or its own
-    // COMDAT group when it is mergeable, which textSection() returns to.
+    // The section the function lives in: .text, or its own COMDAT group when mergeable.
     std::string textSection_ = "  .text\n";
     // Whether the last instruction spelled was a call - see stateLabel.
     bool afterCall_ = false;

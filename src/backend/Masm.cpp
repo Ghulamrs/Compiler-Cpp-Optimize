@@ -522,8 +522,7 @@ void MasmSpelling::align(int n) {
     flushPending();
     if (seg_ != Code) {
         if (!dataBlock_.empty() && dataBlockUsed_) closeDataBlock();
-        // An ALIGN past 16 inside .DATA is "invalid combination with segment
-        // alignment": such an object gets a segment declared for it.
+        // An ALIGN past 16 inside .DATA is refused: such an object gets a segment of its own.
         if (!pendingComdat_.empty() || n > 16) openDataBlock(n);
         dataBlockUsed_ = true;
     }
