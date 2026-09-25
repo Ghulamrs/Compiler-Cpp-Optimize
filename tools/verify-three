@@ -235,10 +235,16 @@ double 2.5" ]; then
     # Defined external symbols. cl's float and string literal COMDATs are
     # dropped: it names those and cxx1 puts them in .rdata unnamed, which is a
     # codegen difference and says nothing about a symbol anybody links.
+    # The RTTI records ??_R0..??_R4 are dropped too, and the reason is on both
+    # sides: names-vs-cl.cmd compiles cl's half with /GR-, so cl writes none,
+    # and since 2780983 cxx1 writes each as a COMDAT of its own, which needs a
+    # global symbol - so they surfaced in 22 cases as cxx1's alone. A recorded
+    # difference, not a fixed one: the flag is deliberate (this is a question
+    # about names, not tables), and cl with /GR emits the same five records.
     clsyms() {
         grep -E "SECT[0-9A-F]+ .*External" "$1" 2>/dev/null |
         sed -e 's/.*| //' -e 's/ (.*//' -e 's/[[:space:]]*$//' |
-        grep -vE '^__real@|^__xmm@|^\?\?_C@' | sort -u
+        grep -vE '^__real@|^__xmm@|^\?\?_C@|^\?\?_R[0-4]' | sort -u
     }
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\names-vs-cl.cmd $REMOTE" >/dev/null || STATUS=1
     NOUT=$(mktemp -d)
