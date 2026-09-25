@@ -36,8 +36,12 @@ g++ 439 (3 58 9 8 209 150); clang 384.
   a time (movapd copies, the repeated movslq, the addsd memory fold), building
   the best. See HANDOVER-SESSION-12.md if it landed.
 
-**Queue after that:** isort's redundant load and movslq (dominator-based), fib's
-second level of recursive inlining, and the sound design for S11's hash.
+**Queue after that.** S12 #2 landed; see HANDOVER-SESSION-12.md.
+Skipped permanently, at the user's instruction (too long for a Fable round):
+isort's redundant load and movslq (dominator-based), and fib's second level of
+recursive inlining. Do not propose them again. What remains: the sound design
+for S11's hash, and the Windows index shape that blocks the S12 #2 rules on
+x86_64-windows.
 
 **Only the user can run these:** the Windows box (`C:\cxxopt`,
 `tools\windows\bench.cmd` against cl /O2 and cl6x at `C:\ti`) and the Mac
