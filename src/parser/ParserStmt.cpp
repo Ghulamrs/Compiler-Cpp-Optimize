@@ -1222,6 +1222,13 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             declaredType = byRef ? d.type : d.type->unqualified();
             caught = byRef ? d.type->referent()->unqualified()
                            : d.type->unqualified();
+            // A reference to a pointer would bind to what the runtime hands
+            // back for a pointer - the value, not the object - so it is refused.
+            if (byRef && caught->isPointer())
+                src_.fail(d.pos, "catching a pointer by reference - '" +
+                                 d.type->describe() + "' - is not supported "
+                                 "yet: the runtime hands a handler the pointer "
+                                 "itself, so catch it by value");
             std::string why;
             h.type = typeInfoSymbolFor(caught, cpos, &why);
             if (h.type.empty())
@@ -1354,6 +1361,17 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     copyBlock->setScope(-1);
                     copyBlock->setUnwindCleanup();
                     steps.push_back(StmtPtr(copyBlock));
+                } else if (caught->unqualified()->isPointer()) {
+                    // **A pointer caught is the pointer __cxa_begin_catch
+                    // hands back**, converted to the handler's type: the
+                    // runtimes return the value, not the object's address.
+                    ExprPtr from(new Cast(caught, std::move(fromPtr)));
+                    from->setType(caught);
+                    ExprPtr to(Var::local(caughtName, slot));
+                    to->setType(caught);
+                    ExprPtr copy(new Assign(std::move(to), std::move(from)));
+                    copy->setType(caught);
+                    steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
                 } else {
                     // No copy constructor is a trivially copyable class, or a
                     // fundamental type, and the bytes are the copy.

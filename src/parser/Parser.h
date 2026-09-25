@@ -558,6 +558,8 @@ private:
 
     // The _ZTI a throw or a catch names, emitting one for a class on the way.
     // Answers empty and fills `why` where this compiler cannot describe it.
+    std::string emitPointerTypeInfo(const Type *ptr, std::size_t pos,
+                                    std::string *why);
     std::string typeInfoSymbolFor(const Type *t, std::size_t pos,
                                   std::string *why);
     // The flags word and a virtual base's vtable slot, both for the

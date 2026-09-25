@@ -25,6 +25,12 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
+// The one-letter Itanium code of a fundamental type: how `new` names its size_t.
+const char *itaniumBuiltinCode(Kind k);
+
+// A type as a signature spells it - `P1S`, `PKc` - the string a type_info holds.
+bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem);
+
 // The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a signature spells it.
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 

@@ -1,0 +1,1 @@
+x86_64-windows  answered first by an older refusal: a pointer-typed throw wants the Microsoft ThrowInfo chain for a pointer, which is not built (throw-pointer.notarget), so the throw is refused before the handler is read and this case's own refusal is never reached here.

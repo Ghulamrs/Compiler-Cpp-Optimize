@@ -1130,6 +1130,8 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     return true;
 }
 
+const char *itaniumBuiltinCode(Kind k) { return itaniumBuiltin(k); }
+
 std::string vtableSymbol(const std::string &tag, bool microsoft) {
     const std::vector<std::string> parts = scopeComponents(tag);
     if (microsoft) {
@@ -1237,6 +1239,14 @@ std::string itaniumClassTypeInfoSymbol(const Type *cls) {
 
 std::string itaniumClassTypeNameSymbol(const Type *cls) {
     return "_ZTS" + itaniumClassNameString(cls);
+}
+
+bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem) {
+    Itanium m;
+    m.typeInfoFor(t);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
 }
 
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
