@@ -544,6 +544,11 @@ ExprPtr Parser::functionAsValue(const std::string &key, std::size_t pos) {
 }
 
 ExprPtr Parser::primary(Program *program) {
+    if (peek().is("typeid")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return typeidExpression(pos);
+    }
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
         at_++;

@@ -1,0 +1,2 @@
+x86_64-linux  the C1/D1 forms of the in-class constructors and destructors beside the C2/D2 - the COMDAT difference implicit-move.nonames records - and clang's `__cxa_bad_typeid`, which it calls for `typeid(*pb)` should pb be null; cxx1 reads the vptr without the test. The type_info names themselves agree - `_ZTI1B`, `_ZTI1D`, `_ZTS1D`, `_ZTIPKc` - and so does every function.
+arm64-darwin  the same: the C1/D1 forms and `___cxa_bad_typeid`.

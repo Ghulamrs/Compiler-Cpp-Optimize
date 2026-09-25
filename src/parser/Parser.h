@@ -1461,6 +1461,7 @@ private:
     // _Unwind_Resume(exception), or TI's __cxa_end_cleanup(), which takes nothing.
     ExprPtr resumeCall(std::vector<ExprPtr> args);
     const Signature *classAllocator(const Type *made, const char *which);
+    ExprPtr typeidExpression(std::size_t pos);
     ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);

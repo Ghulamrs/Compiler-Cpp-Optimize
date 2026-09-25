@@ -1451,3 +1451,76 @@ ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
     guarded->setType(types_.intType());
     return guarded;
 }
+
+// **`typeid` names a type_info object** - [expr.typeid]: the static type's
+// for a type-id or a non-polymorphic operand, unevaluated; read through the
+// vptr for a polymorphic glvalue, a word before the vtable's address point.
+ExprPtr Parser::typeidExpression(std::size_t pos) {
+    if (target_.microsoftNames())
+        src_.fail(pos, "'typeid' is not supported yet for x86_64-windows - the "
+                       "Microsoft ABI answers it with a type descriptor per "
+                       "type and __RTtypeid, which are not built here");
+    const Type *info = findTypedef("std::type_info");
+    if (info == nullptr || !info->isStructOrUnion())
+        src_.fail(pos, "'typeid' needs std::type_info, so include <typeinfo>");
+    const Type *infoPtr = types_.pointerTo(types_.withConst(info));
+    expect("(");
+
+    const Type *named = nullptr;
+    ExprPtr operand;
+    if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
+        StorageClass sc;
+        named = declarator(specifiers(&sc), true).type;
+    } else {
+        Discarded held(this);
+        operand = expr();
+    }
+    expect(")");
+
+    ExprPtr address;
+    const Type *subject = named != nullptr ? named : operand->type();
+    if (subject->isReference()) subject = subject->referent();
+    subject = subject->unqualified();
+    const bool glvalue = operand != nullptr &&
+        (operand->type()->isReference() ||
+         dynamic_cast<const MemberAccess *>(operand.get()) != nullptr ||
+         (dynamic_cast<const Unary *>(operand.get()) != nullptr &&
+          static_cast<const Unary *>(operand.get())->op() == '*') ||
+         (dynamic_cast<const Var *>(operand.get()) != nullptr &&
+          !static_cast<const Var *>(operand.get())->noAddress()));
+    if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
+        // The object's first word is the vptr; the type_info pointer sits
+        // one word below the address point it holds.
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        ExprPtr at(new Unary('&', std::move(operand)));
+        at->setType(types_.pointerTo(subject));
+        ExprPtr vptrAt(new Cast(types_.pointerTo(chars), std::move(at)));
+        vptrAt->setType(types_.pointerTo(chars));
+        ExprPtr vptr(new Unary('*', std::move(vptrAt)));
+        vptr->setType(chars);
+        ExprPtr back(new Num(static_cast<long long>(-pointerBytes())));
+        back->setType(types_.intType());
+        ExprPtr slot(new Binary(BinOp::Add, std::move(vptr), std::move(back)));
+        slot->setType(chars);
+        ExprPtr slotPtr(new Cast(types_.pointerTo(infoPtr), std::move(slot)));
+        slotPtr->setType(types_.pointerTo(infoPtr));
+        address.reset(new Unary('*', std::move(slotPtr)));
+        address->setType(infoPtr);
+    } else {
+        std::string why;
+        const std::string sym = typeInfoSymbolFor(subject, pos, &why);
+        if (sym.empty())
+            src_.fail(pos, "'typeid' cannot name the type of this: " + why);
+        Var *ti = Var::global(sym);
+        ti->setSymbol(sym);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(types_.pointerTo(types_.get(Kind::Char)));
+        address.reset(new Cast(infoPtr, std::move(addr)));
+        address->setType(infoPtr);
+    }
+    ExprPtr object(new Unary('*', std::move(address)));
+    object->setType(types_.withConst(info));
+    return object;
+}

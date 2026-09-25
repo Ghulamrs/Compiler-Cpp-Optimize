@@ -1,0 +1,1 @@
+x86_64-windows  'typeid' is refused for this target: the Microsoft ABI answers it with a type descriptor per type (??_R0...@8) and __RTtypeid through the vftable's locator, neither of which is built - the same lag the class-typed throw and dynamic_cast's descriptors record. Both Itanium targets and tms6747 compile this case.
