@@ -362,7 +362,8 @@ private:
         Pop pop = Pop::Kept;
         if (isMovQ(i.m) && gpr(i.b) && i.b.reg.width == 8) pop = pairWith(i, k, it->second, i.b);
         else if (i.m == "movsd" && xmmReg(i.b)) pop = pairXmm(i, it->second);
-        if (pop != Pop::Kept) temps_.erase(it);
+        // A load that stays still reads the slot, so no later one may kill the store.
+        temps_.erase(it);
         return pop;
     }
 

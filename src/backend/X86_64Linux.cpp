@@ -1026,6 +1026,8 @@ X86_64Linux::Placement X86_64Linux::placeArguments(
         }
         out.args.push_back(p);
     }
+    // With `this` alone the loop never reached the pointer's slot; it is still taken.
+    if (msThisFirst && types.size() < 2) { ints++; sses++; }
     out.intsUsed = ints;
     out.ssesUsed = sses;
     out.stackWords = words;
