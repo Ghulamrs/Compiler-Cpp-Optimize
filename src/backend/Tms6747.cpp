@@ -32,18 +32,25 @@ int Tms6747Target::sizeOf(Kind k) const {
 int Tms6747Target::alignOf(Kind k) const { return sizeOf(k); }
 
 // ---- the backend ---------------------------------------------------------
+// C6000 EABI argument registers, in order; the result comes back in A4.
+static const char *const kTiIntRegs[] = {
+    "A4", "B4", "A6", "B6", "A8", "B8", "A10", "B10", "A12", "B12"
+};
+
+// Set by name, as the host ABIs are. structReturnLimit 0 and aggregatesByReference
+// false: every struct comes back through the pointer the caller hands over in A3 -
+// TI's convention - and goes by the address of a copy (the parser's arg slot).
+static Abi ti() {
+    Abi a;
+    a.intRegs = kTiIntRegs;             a.intCount = 10;
+    a.positional = true;
+    a.scratch = "A0";                   a.scratch32 = "A0";
+    a.elfSymbolAttributes = true;
+    return a;
+}
+
 const Abi &Tms6747Backend::abi() const {
-    // C6000 EABI argument registers, in order; the result comes back in A4.
-    static const char *const kIntRegs[] = {
-        "A4", "B4", "A6", "B6", "A8", "B8", "A10", "B10", "A12", "B12"
-    };
-    // structReturnLimit 0 and aggregatesByReference false: every struct or
-    // union, whatever its size, is returned through the hidden pointer the
-    // caller hands over in A3 - TI's convention - and passed by the address
-    // of a copy (the parser gives each struct argument a slot for it).
-    static const Abi kAbi = {
-        kIntRegs, 10, nullptr, 0, true, 0, 0, false, false, "A0", "A0", false, true
-    };
+    static const Abi kAbi = ti();
     return kAbi;
 }
 
