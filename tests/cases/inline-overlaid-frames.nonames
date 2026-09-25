@@ -1,0 +1,3 @@
+x86_64-linux  there is nothing to compare here, by construction: the case includes <string>, so clang compiles it against its own library and the two objects hold two implementations' symbols; on the cross targets clang has no C++ headers at all. The oracle is behaviour - run.sh on every machine, and the box's srun.cmd at -O1 and -O2, where the fault this case holds was found.
+arm64-darwin  the same.
+x86_64-windows  the same.

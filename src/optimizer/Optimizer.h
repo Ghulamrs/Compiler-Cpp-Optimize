@@ -106,6 +106,8 @@ private:
     std::size_t held_ = 0;
     bool inlining_ = false;
     int inlineBase_ = 0;
+    // The bytes of inlined callees' frames that are not their scalars.
+    std::vector<opt::Local> opaque_;
     bool argsPending_ = false;
     opt::RegSet args_ = 0;
 

@@ -84,6 +84,7 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     fn_.tempBase = fn_.tempCount = 0;
     fn_.shared = opt::SharedSlots();
     inlining_ = false;
+    opaque_.clear();
 }
 
 // **A funclet is a function of its own to the passes** - the runtime calls
@@ -114,18 +115,33 @@ void Optimizer::defer(std::function<void()> call) {
 void Optimizer::sharedSlot(long long disp, int size) { fn_.shared.add(disp, size); }
 
 // **A callee walked in place keeps its frame below the caller's locals**, moved
-// down by `base`. Its scalars are listed there once, moved the same way; two
-// callees whose slots overlap unalike are refused by `promotableLocals`.
+// down by `base`, and its scalars are listed there once. The rest of a callee's
+// frame is copied a word at a time, as a scalar is read: no scalar goes over it.
 void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &scalars) {
     inlining_ = true;
     inlineBase_ = base;
     fn_.inlineTop = std::max(fn_.inlineTop, base + ((calleeFrame + 15) & ~15));
-    for (const opt::Local &l : scalars) {
-        const opt::Local moved{l.disp - base, l.size};
-        bool listed = false;
+    std::vector<opt::Local> moved;
+    for (const opt::Local &l : scalars) moved.push_back(opt::Local{l.disp - base, l.size});
+    std::sort(moved.begin(), moved.end(),
+              [](const opt::Local &x, const opt::Local &y) { return x.disp < y.disp; });
+    long long at = -static_cast<long long>(base + calleeFrame);
+    for (const opt::Local &m : moved) {
+        if (m.disp > at) opaque_.push_back(opt::Local{at, static_cast<int>(m.disp - at)});
+        at = std::max(at, m.disp + m.size);
+    }
+    if (-base > at) opaque_.push_back(opt::Local{at, static_cast<int>(-base - at)});
+    auto opaque = [this](const opt::Local &l) {
+        for (const opt::Local &o : opaque_)
+            if (l.disp < o.disp + o.size && o.disp < l.disp + l.size) return true;
+        return false;
+    };
+    fn_.locals.erase(std::remove_if(fn_.locals.begin(), fn_.locals.end(), opaque), fn_.locals.end());
+    for (const opt::Local &m : moved) {
+        bool listed = opaque(m);
         for (const opt::Local &have : fn_.locals)
-            if (have.disp == moved.disp && have.size == moved.size) listed = true;
-        if (!listed) fn_.locals.push_back(moved);
+            if (have.disp == m.disp && have.size == m.size) listed = true;
+        if (!listed) fn_.locals.push_back(m);
     }
 }
 
