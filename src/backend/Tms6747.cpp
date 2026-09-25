@@ -1,4 +1,5 @@
 #include "Tms6747.h"
+#include "../optimizer/C6xSched.h"
 
 #include "../Abi.h"
 #include "../Ast.h"
@@ -1344,7 +1345,9 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(-(kSaveBytes + frame));
     }
 
-    out_ << params << body;
+    // The parameters and the body are what the backend padded; the prologue
+    // and epilogue hold no padding, and the frame is decided after the body.
+    out_ << c6xSchedule(params + body, optimize_);
 
     out_ << returnLabel_ << ":\n";
     if (needFrame) {
