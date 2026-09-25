@@ -59,6 +59,7 @@ public:
     void visit(const Switch &) override;
     void visit(const Return &) override;
     void landingPad(int pointerSlot, int selectorSlot) override;
+    bool terminateScopes() const override { return true; }
 
 private:
     std::ostringstream out_;    // the piece being emitted (one function at a time)

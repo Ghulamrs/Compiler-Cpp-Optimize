@@ -450,6 +450,10 @@ void Tms6747::emitExceptionTable(const Function &fn) {
         const CallSite &c = rows[i];
         std::string len = "$EXTAB_SCOPE(" + c.end + ") - $EXTAB_SCOPE(" + c.begin + ")";
         std::string off = "$EXTAB_SCOPE(" + c.begin + ") - $EXTAB_SCOPE(" + fn.symbol() + ") + 2";
+        if (c.terminate) {           // catch anything, and terminate: cl6x's scope over a cleanup pad
+            t << "\t.half\t" << len << " + 1\n\t.half\t" << off << "\n\t.ulong\t0\n\t.ulong\t0xfffffffe\n";
+            continue;
+        }
         for (std::size_t k = 0; k < c.types.size(); k++) {
             int ix = k < c.indices.size() ? c.indices[k] : static_cast<int>(k) + 1;
             t << "\t.half\t" << len << " + 1\n\t.half\t" << off << "\n"
