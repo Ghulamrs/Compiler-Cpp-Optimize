@@ -28,7 +28,7 @@ namespace std {
 
 // The `fopen` mode string a set of flags asks for. Reading and writing at once
 // is not offered: there is one `FILE *` and one direction per class here.
-static const char *_cxx1_mode(int flags, bool reading) {
+inline const char *_cxx1_mode(int flags, bool reading) {
     const bool binary = (flags & ios::binary) != 0;
     if (reading) return binary ? "rb" : "r";
     if ((flags & ios::app) != 0) return binary ? "ab" : "a";

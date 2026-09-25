@@ -217,6 +217,15 @@ void Parser::topLevel(Program &program) {
     if (constexprFunction && !d.type->isFunction())
         d.type = types_.withoutConst(d.type);
 
+    // **`int ns::f(int)` defines the `f` declared in namespace `ns`**: a
+    // qualifier that names a namespace is folded into the name, which is how
+    // a function in a namespace is keyed throughout (the review's A17).
+    if (!d.qualifier.empty() && namespaces_.find(d.qualifier) != namespaces_.end() &&
+        findTypedef(d.qualifier) == nullptr) {
+        d.name = d.qualifier + "::" + d.name;
+        d.qualifier.clear();
+    }
+
     // **`S g(1);` at file scope is a construction, not a prototype**: a
     // parameter list begins with a type name or is empty, the local path's own
     // question, and `S g();` is the function C++ says it is.
@@ -325,29 +334,28 @@ void Parser::topLevel(Program &program) {
                 continue;
             }
 
-            // **An array of a class with a constructor** at file scope: each
-            // element would need registering, and the destructor walk knows one
-            // object per entry. Refused by name rather than laid out as bytes.
+            // **An array of a class with a constructor** at file scope goes
+            // the way one object does: built before main by the class's loop,
+            // destroyed at exit by a helper - buildStaticArrayConstruction.
+            const Type *arrayClass = nullptr;
             {
                 const Type *elem = d.type;
                 while (elem->isArray()) elem = elem->pointee();
                 const Type *plain = elem->unqualified();
                 if (d.type->isArray() && plain->isStructOrUnion() &&
-                    !plain->tag().empty() && sc != StorageExtern &&
-                    overloadsOf(constructorKey(plain->tag())) != nullptr)
-                    src_.fail(d.pos, "'" + d.name + "' is an array of '" +
-                                     plain->describe() + "', which has a "
-                                     "constructor - an array with static "
-                                     "storage duration whose elements have a "
-                                     "constructor is not supported yet");
+                    !plain->tag().empty() &&
+                    (overloadsOf(constructorKey(plain->tag())) != nullptr ||
+                     destructorOf(plain) != nullptr))
+                    arrayClass = plain;
             }
 
             // **A class with a constructor, at file scope.** This path had no test at
             // all, so the object was laid out as bytes and the constructor never ran.
             // The braced form is asked first: C++11 makes such a class no aggregate.
-            if (d.type->isStructOrUnion() && !d.type->tag().empty()) {
+            if (arrayClass != nullptr ||
+                (d.type->isStructOrUnion() && !d.type->tag().empty())) {
                 const bool braced = peek().is("=") && peekAt(1).is("{");
-                if (braced && hasMemberInitialiser(d.type->tag()))
+                if (braced && arrayClass == nullptr && hasMemberInitialiser(d.type->tag()))
                     src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
                                      "initialiser on a member, so in C++11 it "
                                      "is not an aggregate and a braced list "
@@ -356,7 +364,8 @@ void Parser::topLevel(Program &program) {
                 // **Built before main**, [basic.start.init]/2, in the init
                 // function and in declaration order; destroyed at exit in
                 // reverse. `extern S s;` alone declares and builds nothing.
-                if (overloadsOf(constructorKey(d.type->tag())) != nullptr &&
+                if ((arrayClass != nullptr ||
+                     overloadsOf(constructorKey(d.type->tag())) != nullptr) &&
                     sc != StorageExtern) {
                     const std::string gname =
                         (namespaceStack_.empty() || cLinkage_ > 0)
@@ -407,6 +416,7 @@ void Parser::topLevel(Program &program) {
                     program.globals.push_back(Global{ gname, symbol, d.type,
                                                       std::vector<GlobalPiece>(),
                                                       false, internal, false });
+                    program.globals.back().align = quals.alignAs;
                     if (!consume(",")) break;
                     d = declarator(base);
                     continue;
@@ -424,6 +434,7 @@ void Parser::topLevel(Program &program) {
             // what it is worth so one defined from it can fold.
             bool constantDoubleKnown = false;
             long double constantDoubleValue = 0;
+            Init dynamicScalar;
             if (scalarInitAhead || consume("=") || atBracedInitialiser(d.name)) {
                 Init in = scalarInitAhead ? parenthesisedInitialiser(d)
                                           : parseInitialiser();
@@ -446,8 +457,15 @@ void Parser::topLevel(Program &program) {
                                      "value has to be known while this is "
                                      "compiled, and this initialiser is not a "
                                      "constant expression");
-                flattenInit(d.type, in, 0, pieces);
-                hasInit = true;
+                // **Dynamic initialisation of a scalar or a trivial class** (A12,
+                // A13): `int gA = init(1);` and `P g = P();` are stored before main
+                // in declaration order, as a constructor runs there; the object is .bss.
+                if (staticallyInitialisable(d.type, in)) {
+                    flattenInit(d.type, in, 0, pieces);
+                    hasInit = true;
+                } else {
+                    dynamicScalar = std::move(in);
+                }
             } else if (quals.isConstexpr && sc != StorageExtern) {
                 src_.fail(d.pos, "'" + d.name + "' is 'constexpr' and has no "
                                  "initialiser - there is nothing for it to be");
@@ -476,11 +494,15 @@ void Parser::topLevel(Program &program) {
 
                 prev->type = both;
                 d.type = both;
-                if (hasInit && prev->hasInit)
+                if ((hasInit || dynamicScalar.value != nullptr) && prev->hasInit)
                     src_.fail(d.pos, "'" + d.name + "' is given an initialiser twice");
-                if (hasInit) prev->hasInit = true;
+                if (hasInit || dynamicScalar.value != nullptr) prev->hasInit = true;
+                if (dynamicScalar.value != nullptr)
+                    dynamicInitialiseScalar(gname, d.type, dynamicScalar);
 
-                if (sc != StorageExtern) {
+                // `extern` with an initialiser defines - [dcl.stc]/6 - and
+                // keeps external linkage a const object would otherwise lose.
+                if (sc != StorageExtern || hasInit || dynamicScalar.value != nullptr) {
                     if (!prev->emitted) {
                         prev->emitted = true;
                         program.globals.push_back(Global{ d.name, prev->symbol,
@@ -513,15 +535,21 @@ void Parser::topLevel(Program &program) {
                             (objectIsConst && sc != StorageExtern);
             refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
+            const bool dynamic = dynamicScalar.value != nullptr;
             globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
-                                          sc != StorageExtern, hasInit,
+                                          sc != StorageExtern || hasInit || dynamic,
+                                          hasInit || dynamic,
                                           constantKnown, constantValue });
             globals_.back().isConstantDouble = constantDoubleKnown;
             globals_.back().constantDouble = constantDoubleValue;
-            if (sc != StorageExtern)
+            if (dynamic) dynamicInitialiseScalar(gname, d.type, dynamicScalar);
+            if (sc != StorageExtern || hasInit || dynamic) {
                 program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
-                                                  internal, objectIsConst });
+                                                  internal, objectIsConst && !dynamic });
+                program.globals.back().align = quals.alignAs;
+                refuseWeakAlignas(quals.alignAs, d.type, d.pos);
+            }
             if (!consume(",")) break;
             d = declarator(base);
         }
@@ -808,6 +836,17 @@ void Parser::topLevel(Program &program) {
             thisOffset_ = declare("this", thisType, d.pos);
             inParams_ = false;
             paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+            // **Itanium's VTT, second**: a C2 or D2 of a class with virtual
+            // bases is handed the tables its vptrs come from - [2.6.2].
+            vttSlot_ = -1;
+            if (takesVtt(memberOf) && (d.name == localOf(d.qualifier) ||
+                                       d.name == "~" + localOf(d.qualifier))) {
+                inParams_ = true;
+                vttSlot_ = declare(".vtt", vttType(), d.pos);
+                inParams_ = false;
+                paramSlots.insert(paramSlots.begin() + 1,
+                                  Param{ vttType(), vttSlot_ });
+            }
             // **cl's hidden most-derived flag, last of all.**
             msVbInitSlot_ = -1;
             if (target_.microsoftNames() && memberOf->hasVirtualBase() &&
@@ -821,6 +860,7 @@ void Parser::topLevel(Program &program) {
     } else {
         inStaticMember_ = false;
         msVbInitSlot_ = -1;
+        vttSlot_ = -1;
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
         // Which function's body is about to be read, so that an access check inside it
@@ -1334,6 +1374,11 @@ void Parser::topLevel(Program &program) {
             args.push_back(std::move(me));
             std::vector<const Type *> params2;
             params2.push_back(basePtr);
+            // A base with virtual bases takes its sub-VTT out of this one's.
+            if (takesVtt(base)) {
+                args.push_back(vttForBase(memberOf, base));
+                params2.push_back(vttType());
+            }
             for (std::size_t i = 0; i < chosen.params.size(); i++) {
                 args.push_back(std::move(chosenArgs[i]));
                 params2.push_back(chosen.params[i]);

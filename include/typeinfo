@@ -1,0 +1,41 @@
+// <typeinfo> - std::type_info, laid out as the Itanium ABI lays every
+// type_info object: a vtable pointer and the name string. `typeid` here
+// yields a reference to such an object - the library's for a fundamental
+// type, one this compiler emits beside a class's vtable or for a pointer -
+// and what this class does is read it. Names are compared by content, so
+// two weak copies of one class's object answer the same whether or not the
+// linker folded them. The name is the mangled one, as it is under libstdc++
+// and libc++.
+#ifndef _CXX1_TYPEINFO
+#define _CXX1_TYPEINFO
+
+#include <string.h>
+
+namespace std {
+
+class type_info {
+public:
+    const char *name() const { return __name; }
+    bool operator==(const type_info &other) const {
+        return __name == other.__name || strcmp(__name, other.__name) == 0;
+    }
+    bool operator!=(const type_info &other) const { return !(*this == other); }
+    bool before(const type_info &other) const {
+        return strcmp(__name, other.__name) < 0;
+    }
+    unsigned long hash_code() const {
+        unsigned long h = 5381;
+        for (const char *p = __name; *p != 0; p++) h = h * 33 + (unsigned char)*p;
+        return h;
+    }
+private:
+    type_info();
+    type_info(const type_info &);
+    type_info &operator=(const type_info &);
+    const void *__vptr;
+    const char *__name;
+};
+
+}
+
+#endif

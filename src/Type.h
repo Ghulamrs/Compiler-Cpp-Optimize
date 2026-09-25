@@ -13,6 +13,10 @@ enum class Kind {
     Bool,
     Char, SChar, UChar,
     Short, UShort,
+    // **wchar_t, a type of its own** ([basic.fundamental]/5): mangled `w`, an
+    // overload apart from the integer it is represented as - which the target
+    // names (Target::wcharType), and which its size, alignment and sign follow.
+    WChar,
     Int, UInt,
     Long, ULong,
     LongLong, ULongLong,
@@ -83,6 +87,8 @@ struct Member {
     const Type *inVirtualBase = nullptr;
     // **Which class declared it**, null for one the class wrote itself.
     const Type *declaredIn = nullptr;
+    // In two base subobjects of the copying class (A25): unqualified, refused.
+    bool ambiguous = false;
 
     bool isBitField() const { return width != 0; }
 };
@@ -200,7 +206,7 @@ public:
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
     const std::string &enumTag() const { return tag_; }
-    bool isEnumeration() const { return kind_ == Kind::Int && !tag_.empty(); }
+    bool isEnumeration() const { return isInteger() && !tag_.empty(); }
     bool isSpecialization() const { return !cls().templateName_.empty(); }
     const std::string &templateName() const { return cls().templateName_; }
     const std::vector<TemplateArg> &templateArgs() const { return cls().templateArgs_; }
@@ -259,16 +265,28 @@ public:
         Access access;
         // **One subobject however many paths reach it**, laid down by the
         bool isVirtual = false;
-        // **Written in this class's base-clause, rather than reached through
-        // one.**
+        // **Written in this class's base-clause**, not reached through one.
         bool direct = true;
+        // Its place in that base-clause, -1 for one reached through another.
+        int written = -1;
     };
     const std::vector<BaseSpec> &bases() const {
         return cls().bases_;
     }
     void addBase(const Type *b, int offset, Access how, bool isVirtual = false,
-                 bool direct = true) {
-        bases_.push_back(BaseSpec{ b, offset, how, isVirtual, direct });
+                 bool direct = true, int written = -1) {
+        bases_.push_back(BaseSpec{ b, offset, how, isVirtual, direct, written });
+    }
+    // **The direct bases in the order the base-clause wrote them**, virtual
+    // and non-virtual together: the Itanium ABI's every walk is that order.
+    std::vector<const BaseSpec *> directBases() const {
+        const std::vector<BaseSpec> &b = bases();
+        std::vector<const BaseSpec *> out;
+        for (std::size_t n = 0; n < b.size(); n++)
+            for (std::size_t i = 0; i < b.size(); i++)
+                if (b[i].direct && b[i].written == static_cast<int>(n))
+                    out.push_back(&b[i]);
+        return out;
     }
     bool hasVirtualBase() const {
         const std::vector<BaseSpec> &b = bases();
@@ -325,6 +343,8 @@ public:
     const Type *primaryBase() const { return cls().primaryBase_; }
     void setPrimaryBase(const Type *t) { primaryBase_ = t; }
 
+    // A virtual base is recorded before the members and placed after them.
+    void setBaseOffset(std::size_t i, int offset) { bases_[i].offset = offset; }
     // **A pointer the class introduces at offset 0 pushes every base down.**
     void shiftBaseOffsets(int by) {
         for (std::size_t i = 0; i < bases_.size(); i++) bases_[i].offset += by;
@@ -471,7 +491,7 @@ public:
 
     Type *structType(Kind kind, const std::string &tag);
     // **An enumeration, which is an `int` that remembers its name.**
-    Type *enumType(const std::string &tag);
+    Type *enumType(const std::string &tag, Kind underlying = Kind::Int);
     Type *anonymousStruct(Kind kind);
 
     const Type *voidType() const   { return get(Kind::Void); }
@@ -498,8 +518,14 @@ public:
 
     // Which ABI spells a C++ name, which is a property of the platform in the same way that the width of a long is.
     virtual bool microsoftNames() const = 0;
-    // Whether a word may sit at any address: every target here loads one; a C6000 would not.
+    // What the stack pointer is kept aligned to: 16 on the hosts, 8 on the C6000.
+    virtual int stackAlign() const { return 16; }
+    // Whether a word may sit at any address: the hosts' loads do, the C6000's LDW faults.
     virtual bool loadsUnaligned() const { return true; }
+    // **How a cleanup pad hands the exception back**: `_Unwind_Resume(exception)`, or TI's `__cxa_end_cleanup()`.
+    virtual bool resumeTakesException() const { return true; }
+    // **Whether `__cxa_get_exception_ptr` exists** - TI's runtime copies from what `__cxa_begin_catch` returns.
+    virtual bool hasGetExceptionPtr() const { return true; }
 
     virtual const char *name() const = 0;
 };

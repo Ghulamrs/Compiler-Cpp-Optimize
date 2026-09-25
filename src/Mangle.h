@@ -25,6 +25,12 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
+// The one-letter Itanium code of a fundamental type: how `new` names its size_t.
+const char *itaniumBuiltinCode(Kind k);
+
+// A type as a signature spells it - `P1S`, `PKc` - the string a type_info holds.
+bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem);
+
 // The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a signature spells it.
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 
@@ -39,6 +45,12 @@ struct MicrosoftRtti {
     std::string hierarchy;       // ??_R3Base@@8
     std::string locator;         // ??_R4Base@@6B@
 };
+
+// cl's vcall thunk for a virtual function taken by `&S::f`: `??_9S@@$B7AA`
+// for the slot 8 bytes into the vftable - the class as a scope, `$B`, the
+// offset as a number, and `AA` for the flat convention. Measured.
+bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
+                             std::string *problem);
 
 bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
                              std::string *problem);

@@ -678,6 +678,7 @@ struct Global {
     // vtable, a typeinfo and its name string. clang marks all three weak, and without it two units
     // that share a polymorphic class collide on every one of them.
     bool isInline = false;
+    int align = 0;   // `alignas(N)` on the object: what it asked for beyond its type's, else 0
 };
 
 struct StringLit {

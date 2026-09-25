@@ -1,6 +1,6 @@
 # A Makefile for a project compiled by cxx1.
 #
-# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+# ©2026 G. R. Akhtar - ISO C++ 11
 #
 # Copy this beside your own sources and change the first three lines. It builds
 # every .cpp in this directory into one program, through an object file each, so

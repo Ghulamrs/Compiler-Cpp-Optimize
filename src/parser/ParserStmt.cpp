@@ -142,34 +142,40 @@ StmtPtr Parser::declarationBody() {
             const Type *elem = d.type;
             while (elem != nullptr && elem->isArray()) elem = elem->pointee();
             const Type *plain = elem == nullptr ? nullptr : elem->unqualified();
-            if (d.type->isArray() && plain != nullptr &&
+            const bool arrayCtor = d.type->isArray() && plain != nullptr &&
                 plain->isStructOrUnion() && !plain->tag().empty() &&
-                overloadsOf(constructorKey(plain->tag())) != nullptr) {
-                if (sc == StorageStatic)
-                    src_.fail(d.pos, "'" + d.name + "' is static and its "
-                                     "elements have a constructor - an array "
-                                     "with static storage duration whose "
-                                     "elements have a constructor is not "
-                                     "supported yet");
+                overloadsOf(constructorKey(plain->tag())) != nullptr;
+            const bool arrayDtor = d.type->isArray() && plain != nullptr &&
+                plain->isStructOrUnion() && !plain->tag().empty() &&
+                destructorOf(plain) != nullptr;
+            if (arrayCtor || arrayDtor) {
+                // [stmt.dcl]/4: a static one is built once, under a guard,
+                // and its elements destroyed at exit - as one object is.
+                if (sc == StorageStatic) {
+                    staticLocalWithConstructor(d, inits);
+                    continue;
+                }
                 if (peek().is("(") || peek().is("="))
                     src_.fail(d.pos, "an initialiser for an array of '" +
                                      plain->describe() + "' is not supported "
                                      "yet - each element gets the default "
                                      "constructor");
-                // **Destruction is refused rather than half-built.** [class.dtor]
-                // destroys the elements in reverse, and the shared code that emits a
-                // scope's destructors knows one object per entry and not a count.
-                if (destructorOf(plain) != nullptr)
-                    src_.fail(d.pos, "an array of '" + plain->describe() +
-                                     "' is not supported yet because it has a "
-                                     "destructor, and the elements would have "
-                                     "to be destroyed in reverse when the scope "
-                                     "ends - an array of a class with only "
-                                     "constructors works");
-                int off = declare(d.name, d.type, d.pos);
+                int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
-                int indexSlot = allocateFrameSlot(types_.intType());
-                inits.push_back(constructLocalArray(d, off, indexSlot));
+                if (arrayCtor) {
+                    int indexSlot = allocateFrameSlot(types_.intType());
+                    inits.push_back(constructLocalArray(d, off, indexSlot));
+                }
+                // **Destroyed last first when the scope ends** - [class.dtor]
+                // - as one entry carrying the count, by the class's loop.
+                if (destructorOf(plain) != nullptr) {
+                    long long count = 1;
+                    for (const Type *t = d.type; t->isArray(); t = t->pointee())
+                        count *= t->length();
+                    Alive whole{ d.name, off, plain };
+                    whole.count = count;
+                    alive_.push_back(whole);
+                }
                 // **The comma belongs to the loop condition.**
                 continue;
             }
@@ -185,7 +191,7 @@ StmtPtr Parser::declarationBody() {
             }
             CtorInit ci = readConstructorInitialiser(d);
 
-            int off = declare(d.name, d.type, d.pos);
+            int off = declare(d.name, d.type, d.pos, quals.alignAs);
             locals_.back().guardsJump = true;
 
             // The backing array and the list object, before the constructor
@@ -237,7 +243,7 @@ StmtPtr Parser::declarationBody() {
                                      d.type->describe() + "' - and this gives " +
                                      std::to_string(args.size()) + " arguments");
                 checkAssignable(*args[0], d.type, d.pos, "'" + d.name + "'");
-                const int off = declare(d.name, d.type, d.pos);
+                const int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
                 ExprPtr target(Var::local(d.name, off));
                 target->setType(d.type);
@@ -298,7 +304,7 @@ StmtPtr Parser::declarationBody() {
                                  "writes through it");
             at_++;
             ExprPtr init = assign();
-            int off = declare(d.name, d.type, d.pos);
+            int off = declare(d.name, d.type, d.pos, quals.alignAs);
             locals_.back().guardsJump = true;
             const Type *slot = types_.pointerTo(d.type->referent());
             ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
@@ -346,6 +352,7 @@ StmtPtr Parser::declarationBody() {
             current_->globals.push_back(Global{ symbol, symbol, d.type,
                                                 std::move(pieces), hasInit, true,
                                                 locals_.back().isConst });
+            current_->globals.back().align = quals.alignAs;
             continue;
         }
 
@@ -367,7 +374,7 @@ StmtPtr Parser::declarationBody() {
         }
 
         if (!hasInit) refuseDeletedDefaultInit(d.type, d.name, d.pos);
-        const int off = declare(d.name, d.type, d.pos);
+        const int off = declare(d.name, d.type, d.pos, quals.alignAs);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
         // An initialiser to skip, or a destructor that would run on what was
@@ -551,9 +558,9 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(")");
 
     const Type *rt = range->type();
-    if (d.type->isReference())
-        src_.fail(d.pos, "a reference in a range-based 'for' is not supported "
-                         "yet - the loop variable is copied for now");
+    if (d.type->kind() == Kind::RValueRef)
+        src_.fail(d.pos, "an rvalue reference in a range-based 'for' is not "
+                         "supported yet - write 'const T &' or 'T &'");
 
     // **The two ends of the loop, and the only thing the two kinds of range
     // disagree about.**
@@ -630,15 +637,26 @@ StmtPtr Parser::rangeForStatement(int scope) {
     // The body, with the loop variable built from `*__b` in front of it.
     enterScope();
     const int inner = enterBlock();
-    const int vSlot = declare(d.name, d.type, d.pos);
+    const int vSlot = declare(d.name, d.type, d.pos, quals.alignAs);
     ExprPtr through(Var::local(bName, bSlot));
     through->setType(elemPtr);
-    ExprPtr at(new Unary('*', std::move(through)));
-    at->setType(elem);
-    ExprPtr var(Var::local(d.name, vSlot));
-    var->setType(d.type);
-    ExprPtr take(new Assign(std::move(var), convert(std::move(at), d.type)));
-    take->setType(d.type);
+    ExprPtr take;
+    if (d.type->isReference()) {
+        // **`T &x : a` binds x to the element** - [stmt.ranged]/1 - so the
+        // slot holds `__b` itself, read through as every reference is.
+        const Type *slotType = types_.pointerTo(d.type->referent());
+        ExprPtr var(Var::local(d.name, vSlot));
+        var->setType(slotType);
+        take.reset(new Assign(std::move(var), convert(std::move(through), slotType)));
+        take->setType(slotType);
+    } else {
+        ExprPtr at(new Unary('*', std::move(through)));
+        at->setType(elem);
+        ExprPtr var(Var::local(d.name, vSlot));
+        var->setType(d.type);
+        take.reset(new Assign(std::move(var), convert(std::move(at), d.type)));
+        take->setType(d.type);
+    }
 
     std::vector<StmtPtr> body;
     body.push_back(StmtPtr(new ExprStmt(std::move(take))));
@@ -721,7 +739,7 @@ ExprPtr Parser::whileConditionDeclaration() {
                          "condition of a loop is not supported yet - "
                          "[stmt.iter] builds it afresh on every turn, and only "
                          "a scalar can be written where the test is");
-    const int slot = declare(d.name, d.type, d.pos);
+    const int slot = declare(d.name, d.type, d.pos, quals.alignAs);
     locals_.back().isConst = d.type->isConst();
     ExprPtr x(Var::local(d.name, slot));
     x->setType(d.type);
@@ -849,13 +867,12 @@ StmtPtr Parser::caseLabel() {
                         : "'case " + std::to_string(value) + ":'",
               "the 'switch'");
 
-    if (atDeclarationStart())
-        src_.fail(peek().pos, "a label cannot be followed by a declaration - "
-                              "put it in a block");
+    // A declaration is a statement in C++, so a label may stand before one;
+    // the rule that it may not was C's (the cl review's A10).
     if (peek().is("}"))
         src_.fail(peek().pos, "a label must be followed by a statement");
 
-    StmtPtr body = statement();
+    StmtPtr body = atDeclarationStart() ? declaration() : statement();
 
     Case *node = new Case(value, isDefault, caseIds_++, std::move(body));
     StmtPtr owned(node);
@@ -875,13 +892,12 @@ StmtPtr Parser::gotoLabel() {
             src_.fail(pos, "label '" + name + "' is defined twice in this function");
     labels_.push_back(LabelDef{ name, pos, jumpGuards(), alive_, nullptr });
 
-    if (atDeclarationStart())
-        src_.fail(peek().pos, "a label cannot be followed by a declaration - "
-                              "put it in a block");
+    // A declaration is a statement in C++, so a label may stand before one;
+    // the rule that it may not was C's (the cl review's A10).
     if (peek().is("}"))
         src_.fail(peek().pos, "a label must be followed by a statement");
 
-    return StmtPtr(new Label(std::move(name), statement()));
+    return StmtPtr(new Label(std::move(name), atDeclarationStart() ? declaration() : statement()));
 }
 
 // **[stmt.dcl]/3: a jump may not enter the scope of an initialised object.** All three
@@ -1221,6 +1237,13 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             declaredType = byRef ? d.type : d.type->unqualified();
             caught = byRef ? d.type->referent()->unqualified()
                            : d.type->unqualified();
+            // A reference to a pointer would bind to what the runtime hands
+            // back for a pointer - the value, not the object - so it is refused.
+            if (byRef && caught->isPointer())
+                src_.fail(d.pos, "catching a pointer by reference - '" +
+                                 d.type->describe() + "' - is not supported "
+                                 "yet: the runtime hands a handler the pointer "
+                                 "itself, so catch it by value");
             std::string why;
             h.type = typeInfoSymbolFor(caught, cpos, &why);
             if (h.type.empty())
@@ -1311,7 +1334,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // block copy**.
                 const Signature *cc = copyConstructorOf(caught->unqualified());
                 ExprPtr fromPtr;
-                if (cc != nullptr) {
+                // **With no `__cxa_get_exception_ptr`** the copy is made from what `__cxa_begin_catch` returns, as cl6x does.
+                const bool copyAfterBegin = cc != nullptr && !target_.hasGetExceptionPtr();
+                if (cc != nullptr && !copyAfterBegin) {
                     std::vector<ExprPtr> ptrArgs;
                     ExprPtr raw(Var::local(".ex.ptr", pointerSlot));
                     raw->setType(voidPtr);
@@ -1351,6 +1376,17 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     copyBlock->setScope(-1);
                     copyBlock->setUnwindCleanup();
                     steps.push_back(StmtPtr(copyBlock));
+                } else if (caught->unqualified()->isPointer()) {
+                    // **A pointer caught is the pointer __cxa_begin_catch
+                    // hands back**, converted to the handler's type: the
+                    // runtimes return the value, not the object's address.
+                    ExprPtr from(new Cast(caught, std::move(fromPtr)));
+                    from->setType(caught);
+                    ExprPtr to(Var::local(caughtName, slot));
+                    to->setType(caught);
+                    ExprPtr copy(new Assign(std::move(to), std::move(from)));
+                    copy->setType(caught);
+                    steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
                 } else {
                     // No copy constructor is a trivially copyable class, or a
                     // fundamental type, and the bytes are the copy.
@@ -1365,7 +1401,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // **The catch is entered after the copy** where a constructor
                 // ran, which is the order the two calls exist to make
                 // possible.
-                if (cc != nullptr)
+                if (cc != nullptr && !copyAfterBegin)
                     steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
                 // **An object of this scope from here on.**
                 if (destructorOf(caught->unqualified()) != nullptr)
@@ -1440,13 +1476,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 // **Handed on rather than resumed.**
                 padSteps.push_back(StmtPtr(new Goto(beyond)));
             } else {
-                std::vector<ExprPtr> resumeArgs;
-                ExprPtr held(Var::local(".ex.ptr", padPtr));
-                held->setType(voidPtr);
-                resumeArgs.push_back(std::move(held));
-                padSteps.push_back(StmtPtr(new ExprStmt(
-                    runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                                std::move(resumeArgs)))));
+                padSteps.push_back(resumeUnwinding(padPtr));
             }
             // Behind the label a region inside this handler jumps to.
             StmtPtr padLabelled(new Label(endCatchLabel, unwindPad(std::move(padSteps))));
@@ -1491,10 +1521,6 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     }
 
     // **Nothing matched, so this frame unwinds like any other.**
-    std::vector<ExprPtr> resumeArgs;
-    ExprPtr again(Var::local(".ex.ptr", pointerSlot));
-    again->setType(voidPtr);
-    resumeArgs.push_back(std::move(again));
     std::vector<StmtPtr> resume;
     // **A nested `try` hands over instead of resuming.**
     int outPtr = 0, outSel = 0;
@@ -1503,12 +1529,8 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                              beyondTry.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
-    if (beyondTry.empty())
-        resume.push_back(StmtPtr(new ExprStmt(
-            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                        std::move(resumeArgs)))));
-    else
-        resume.push_back(StmtPtr(new Goto(beyondTry)));
+    if (beyondTry.empty()) resume.push_back(resumeUnwinding(pointerSlot));
+    else                   resume.push_back(StmtPtr(new Goto(beyondTry)));
     StmtPtr chain = unwindPad(std::move(resume));
 
     for (std::size_t i = handlers.size(); i-- > 0; ) {

@@ -1,0 +1,1 @@
+x86_64-linux  the D1 form of `Dtor::~Dtor`, which cxx1 emits beside D2 where clang emits D2 alone with an alias; every declared name agrees, and the other two targets agree wholly.

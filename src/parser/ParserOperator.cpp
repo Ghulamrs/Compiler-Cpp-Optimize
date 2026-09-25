@@ -50,20 +50,32 @@ ExprPtr Parser::castExpr() {
 // function's address, and on Itanium a `this` adjustment which is zero for every
 // case here. Shaped as classTemporary's is, a dereference of a comma.
 ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
-                                   std::size_t pos) {
+                                   std::size_t pos, long long vtableCode,
+                                   const std::string &code) {
     const Type *fn = types_.functionType(f.returns, f.params, f.variadic);
     const Type *mp = types_.memberFunctionPointerTo(cls, fn, target_);
     const int slot = allocateFrameSlot(mp);
     const Type *word = types_.pointerTo(types_.get(Kind::Void));
 
-    Var *code = Var::global(f.name);
-    code->setSymbol(f.symbol);
-    ExprPtr target(code);
-    target->setType(fn);
-    ExprPtr addr(new Unary('&', std::move(target)));
-    addr->setType(types_.pointerTo(fn));
-    ExprPtr asWord(new Cast(word, std::move(addr)));
-    asWord->setType(word);
+    ExprPtr asWord;
+    if (vtableCode != 0) {
+        // The slot's offset with the low bit set, which is what the call
+        // tests for; no function is named at all.
+        asWord.reset(new Num(vtableCode));
+        asWord->setType(ptrdiffType());
+        ExprPtr made(new Cast(word, std::move(asWord)));
+        made->setType(word);
+        asWord = std::move(made);
+    } else {
+        Var *fnVar = Var::global(f.name);
+        fnVar->setSymbol(code.empty() ? f.symbol : code);
+        ExprPtr target(fnVar);
+        target->setType(fn);
+        ExprPtr addr(new Unary('&', std::move(target)));
+        addr->setType(types_.pointerTo(fn));
+        asWord.reset(new Cast(word, std::move(addr)));
+        asWord->setType(word);
+    }
 
     ExprPtr obj(Var::local("$mfp", slot));
     obj->setType(mp);
@@ -109,25 +121,37 @@ ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
 ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
                                    bool constObject) {
     const Type *mpt = mp->type()->unqualified();
+    // **[expr.mptr.oper]/3: the object is converted to the member pointer's
+    // class first** - a `&B2::f` applied to a D whose B2 is not at 0 moves
+    // `this` to that base before anything the pair or the offset says.
+    if ((mpt->isMemberFunctionPointer() || mpt->isMemberPointer()) &&
+        mpt->enclosing() != nullptr && addr->type()->isPointer()) {
+        const Type *owner = mpt->enclosing()->unqualified();
+        const Type *have = addr->type()->pointee();
+        if (have->unqualified() != owner) {
+            const Type *to = have->isConst() ? types_.withConst(owner) : owner;
+            addr = convert(std::move(addr), types_.pointerTo(to));
+        }
+    }
     // A pointer to a member *function*: read the code pointer out of it and
     // leave the object's address for the call to pick up.
     if (mpt->isMemberFunctionPointer()) {
         const Member *slot = mpt->findMember("$fn");
         const Type *fnPtr = types_.pointerTo(mpt->pointee());
-        boundThis_ = std::move(addr);
         boundFn_ = mpt->pointee();
         boundAt_ = pos;
-        if (mpt->findMember("$adj") == nullptr) {
+        if (target_.microsoftNames() && mpt->findMember("$adj") == nullptr) {
             // One code pointer, a vcall thunk standing in for a virtual one.
             ExprPtr held(new MemberAccess(std::move(mp), "$fn", slot->offset, 0, 0));
             held->setType(fnPtr);
+            boundThis_ = std::move(addr);
             return held;
         }
-        // **A pair with a `this` adjustment - Itanium's always, cl's multiple and
-        // virtual forms - moves the object by it before the call**: [conv.mem] puts
-        // a base's offset there, and a cl caller may hand one that is not zero.
-        {
-            const Type *thisType = boundThis_->type();
+        if (target_.microsoftNames()) {
+            // cl's multiple and virtual forms carry a `this` adjustment after the
+            // code pointer, and a cl caller may hand one that is not zero: the
+            // pair is copied to a slot and the object moved by it, as Itanium's is.
+            const Type *thisType = addr->type();
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
             const Member *adjSlot = mpt->findMember("$adj");
             const int pairSlot = allocateFrameSlot(mpt);
@@ -137,7 +161,7 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
             keepPair->setType(mpt);
             ExprPtr adjRead(new MemberAccess(pair(), "$adj", adjSlot->offset, 0, 0));
             adjRead->setType(adjSlot->type);
-            ExprPtr asChars(new Cast(chars, std::move(boundThis_)));
+            ExprPtr asChars(new Cast(chars, std::move(addr)));
             asChars->setType(chars);
             ExprPtr moved(new Binary(BinOp::Add, std::move(asChars), std::move(adjRead)));
             moved->setType(chars);
@@ -150,6 +174,69 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
             boundThis_ = std::move(self);
             return callee;
         }
+        // **Itanium decides at the call**: the pair copied to a slot, the
+        // object moved by its adjustment, and a set low bit in the code word
+        // means "vtable offset + 1", read through the vptr; clear, an address.
+        const Type *thisType = addr->type();
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        const Type *diff = ptrdiffType();
+        const Member *adjSlot = mpt->findMember("$adj");
+        const int pairSlot = allocateFrameSlot(mpt);
+        const int thisSlot = allocateFrameSlot(chars);
+        const std::string pairName = ".mp" + std::to_string(refTemps_++);
+        const std::string thisName = ".mt" + std::to_string(refTemps_++);
+        auto pair = [&]() { ExprPtr e(Var::local(pairName, pairSlot)); e->setType(mpt); return e; };
+        auto pairField = [&](const Member *m) {
+            ExprPtr e(new MemberAccess(pair(), m->name, m->offset, 0, 0));
+            e->setType(m->type); return e;
+        };
+        auto movedThis = [&]() { ExprPtr e(Var::local(thisName, thisSlot)); e->setType(chars); return e; };
+
+        ExprPtr keepPair(new Assign(pair(), std::move(mp)));
+        keepPair->setType(mpt);
+        ExprPtr asChars(new Cast(chars, std::move(addr)));
+        asChars->setType(chars);
+        ExprPtr moved(new Binary(BinOp::Add, std::move(asChars), pairField(adjSlot)));
+        moved->setType(chars);
+        ExprPtr keepThis(new Assign(movedThis(), std::move(moved)));
+        keepThis->setType(chars);
+
+        ExprPtr codeWord(new Cast(diff, pairField(slot)));
+        codeWord->setType(diff);
+        ExprPtr one(new Num(1LL));
+        one->setType(diff);
+        ExprPtr low(new Binary(BinOp::BitAnd, std::move(codeWord), std::move(one)));
+        low->setType(diff);
+
+        ExprPtr vptrAt(new Cast(types_.pointerTo(chars), movedThis()));
+        vptrAt->setType(types_.pointerTo(chars));
+        ExprPtr vptr(new Unary('*', std::move(vptrAt)));
+        vptr->setType(chars);
+        ExprPtr codeAgain(new Cast(diff, pairField(slot)));
+        codeAgain->setType(diff);
+        ExprPtr minusOne(new Num(-1LL));
+        minusOne->setType(diff);
+        ExprPtr offset(new Binary(BinOp::Add, std::move(codeAgain), std::move(minusOne)));
+        offset->setType(diff);
+        ExprPtr entryAt(new Binary(BinOp::Add, std::move(vptr), std::move(offset)));
+        entryAt->setType(chars);
+        ExprPtr entryPtr(new Cast(types_.pointerTo(fnPtr), std::move(entryAt)));
+        entryPtr->setType(types_.pointerTo(fnPtr));
+        ExprPtr fromTable(new Unary('*', std::move(entryPtr)));
+        fromTable->setType(fnPtr);
+        ExprPtr direct(new Cast(fnPtr, pairField(slot)));
+        direct->setType(fnPtr);
+        ExprPtr chosen(new Conditional(std::move(low), std::move(fromTable), std::move(direct)));
+        chosen->setType(fnPtr);
+
+        ExprPtr seq(new Comma(std::move(keepPair), std::move(keepThis)));
+        seq->setType(chars);
+        ExprPtr callee(new Comma(std::move(seq), std::move(chosen)));
+        callee->setType(fnPtr);
+        ExprPtr self(new Cast(thisType, movedThis()));
+        self->setType(thisType);
+        boundThis_ = std::move(self);
+        return callee;
     }
     if (!mpt->isMemberPointer())
         src_.fail(pos, "the right of '.*' has to be a pointer to a member, and "
@@ -752,9 +839,21 @@ ExprPtr Parser::assign() {
     checkAssignable(*value, to, pos, "the left of '='");
 
     // **A class with a copy assignment of its own is assigned by calling it**,
-    // not by moving its bytes. Where the copy is trivial no such function was
-    // declared, and this is the struct assignment it has always been.
+    // not by moving its bytes - the one for the value's category, an lvalue
+    // taking `const T &` and an xvalue or prvalue `T &&` (review A22).
     if (const Signature *op = copyAssignOf(to->unqualified())) {
+        const std::vector<std::size_t> *set = overloadsOf(assignmentKey(to->unqualified()->tag()));
+        if (set != nullptr) {
+            const bool wantMove = !isLvalue(*value);
+            for (std::size_t i = 0; i < set->size(); i++) {
+                const Signature &cand = functions_[(*set)[i]];
+                if (cand.params.empty()) continue;
+                if (cand.params[0]->isReference() && cand.params[0]->isRValueReference() == wantMove) {
+                    op = &cand;
+                    break;
+                }
+            }
+        }
         markUsed(op);
         const Type *selfPtr = types_.pointerTo(to->unqualified());
         ExprPtr addr(new Unary('&', std::move(n)));

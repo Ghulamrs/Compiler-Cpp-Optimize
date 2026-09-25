@@ -90,7 +90,7 @@ returning whether it changed anything; `opt::Group` as the pass with a
 sub-list, extended with the repeat policy cxx1's driver already had ("run
 the group until a round changes nothing, or a limit"); `opt::Function::props`
 with the same one-line update; the pipeline declared once in
-`OptPipeline.cpp`; a dump after any named pass through `CXX1_DUMP_MIR`. The
+`OptPipeline.cpp`; a dump after any named pass through `CPP11_DUMP_MIR`. The
 properties cxx1 needs today are two: the flow graph describes the stream, and
 every register is physical. Left out: pass types (cxx1 has one IR level),
 timers, plugins, cloning (a pass listed twice is simply constructed twice).
@@ -403,7 +403,7 @@ instruction set of fixed spellings. Modes are the operands' widths already.
 | `execute_one_pass` / `execute_pass_list` | `opt::PassManager::run` | built |
 | `function::curr_properties`, `PROP_*` | `Function::props`, `opt::Prop` | built (two bits) |
 | `TODO_*` | `opt::Todo` (drop unnamed labels, rebuild flow) | built |
-| `-fdump-rtl-<pass>` | `CXX1_DUMP_MIR=<pass>|all` | built |
+| `-fdump-rtl-<pass>` | `CPP11_DUMP_MIR=<pass>|all` | built |
 | `struct function` + `control_flow_graph` | `opt::Function` (`OptFunction.h`) + `opt::Flow` | built |
 | `basic_block_def` (`preds`, `succs`, `dom`) | `opt::Block` (`succs`, `preds`, `idom`) | built |
 | `edge_def` + `EDGE_*` flags | `opt::Edge` + `Edge::Kind` | built; `Eh` declared, not made |

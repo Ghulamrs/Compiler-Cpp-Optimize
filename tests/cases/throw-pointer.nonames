@@ -1,0 +1,2 @@
+x86_64-linux  cxx1 emits the C1 form of each in-class constructor beside the C2 where clang emits only the C2 a use asks for - the COMDAT difference implicit-move.nonames records. Nothing the pointer type_infos add differs: _ZTIP1D, _ZTSP1D, _ZTIPK1B and the class ones agree.
+arm64-darwin  the same C1 forms, and the same agreement on the type_info names.

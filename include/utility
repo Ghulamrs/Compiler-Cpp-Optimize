@@ -1,4 +1,5 @@
-// <utility> - `pair`, and the two functions that go with it.
+// <utility> - `pair`, the two functions that go with it, and the two casts a
+// C++11 program moves things with.
 //
 // It is here because `<map>` needs it: a map's element *is* a pair, and its
 // iterator is a pointer to one, so `it->first` and `it->second` are an ordinary
@@ -27,15 +28,45 @@ struct pair {
 };
 
 template <class T1, class T2>
-static pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
+pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
     return pair<T1, T2>(a, b);
 }
 
 template <class T>
-static void swap(T &a, T &b) {
+void swap(T &a, T &b) {
     T held(a);
     a = b;
     b = held;
+}
+
+// **move and forward - [forward].** Each is a cast and nothing else: `move`
+// names its argument as an rvalue, so an overload on `T &&` is chosen and a
+// move constructor or assignment runs. Written as two overloads, on `T &` and
+// on `T &&`, rather than the standard's one on a forwarding reference: this
+// compiler deduces `T` from a `T &&` parameter as the argument's type without
+// [temp.deduct.call]/3's `T &` for an lvalue, and has no reference collapsing
+// to make that work, so the one-overload spelling takes no lvalue - and an
+// lvalue is what `move` is for (the cl review's A22). `forward<T>` follows
+// the same shape; a forwarding reference of the program's own still cannot
+// be written (CONFORMANCE).
+template <class T>
+T &&move(T &t) {
+    return static_cast<T &&>(t);
+}
+
+template <class T>
+T &&move(T &&t) {
+    return static_cast<T &&>(t);
+}
+
+template <class T>
+T &&forward(T &t) {
+    return static_cast<T &&>(t);
+}
+
+template <class T>
+T &&forward(T &&t) {
+    return static_cast<T &&>(t);
 }
 
 }  // namespace std

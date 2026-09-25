@@ -512,7 +512,7 @@ and the rest of the round is skipped).
 with the group's start TODOs then its subs; for a leaf, the start TODOs, the
 `required` check (an assert), `execute`, the property update
 `props = (props | provided) & ~destroyed`, `flow.touch()` if it changed,
-and the dump if `CXX1_DUMP_MIR` names the pass.
+and the dump if `CPP11_DUMP_MIR` names the pass.
 
 ## 3. The pipeline declaration
 
@@ -581,7 +581,7 @@ left it fresh. Both are marked in the source.
    more than one place is constructed once per place.
 4. Gate: `tools/identical.sh` for a pass meant to change nothing; the suites,
    Compiler++ and the box measurements for one meant to.
-5. Read its dump: `CXX1_DUMP_MIR=<name> cxx1.exe -O2 -S x.cpp` prints the
+5. Read its dump: `CPP11_DUMP_MIR=<name> cxx1.exe -O2 -S x.cpp` prints the
    function after that pass; `all` prints after every pass.
 
 ## 5. Properties and invalidation

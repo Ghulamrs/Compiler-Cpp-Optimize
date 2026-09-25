@@ -1,1 +1,1 @@
-placement new is not supported yet
+a parenthesised type after 'new' is read as a placement here

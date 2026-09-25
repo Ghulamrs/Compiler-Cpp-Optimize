@@ -222,6 +222,17 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
                        "order - only '==' and '!=' are written with 'nullptr'");
     if (null || lhs->type()->isPointer() || rhs->type()->isPointer() ||
         lhs->type()->isMemberPointer() || rhs->type()->isMemberPointer()) {
+        // **A pointer beside an integer: only a null pointer constant** -
+        // [expr.eq], [expr.rel]; `p == 1` was accepted (cl C2446, review A26).
+        for (int side = 0; side < 2; side++) {
+            const Expr &ptr = side == 0 ? *lhs : *rhs;
+            const Expr &other = side == 0 ? *rhs : *lhs;
+            if ((ptr.type()->isPointer() || ptr.type()->isMemberPointer()) &&
+                other.type()->isArithmetic() && !isNullConstant(other))
+                src_.fail(pos, "'" + ptr.type()->describe() + "' is compared with '" +
+                               other.type()->describe() + "' - a pointer compares with "
+                               "a pointer, or with 0; a cast says you meant the integer");
+        }
         // The null a data member pointer holds is -1, so nullptr becomes that first.
         if (lhs->type()->isNullPtr() && rhs->type()->isMemberPointer()) lhs = convert(std::move(lhs), rhs->type());
         if (rhs->type()->isNullPtr() && lhs->type()->isMemberPointer()) rhs = convert(std::move(rhs), lhs->type());
@@ -446,7 +457,7 @@ const Type *Parser::simpleTypeKeyword() const {
     };
     for (const auto &k : t)
         if (peek().is(k.word)) return types_.get(k.kind);
-    if (peek().is("wchar_t")) return types_.get(target_.wcharType());
+    if (peek().is("wchar_t")) return types_.get(Kind::WChar);
     return nullptr;
 }
 
@@ -534,7 +545,27 @@ ExprPtr Parser::functionAsValue(const std::string &key, std::size_t pos) {
     return n;
 }
 
+// **The injected class name of a base**, which is how a derived class
+// usually spells it: `Base::f(...)` for a `cc::Base`.
+struct FindBase {
+    static const Type *named(const Type *cls, const std::string &name) {
+        if (cls == nullptr) return nullptr;
+        const std::vector<Type::BaseSpec> &bs = cls->unqualified()->bases();
+        for (std::size_t i = 0; i < bs.size(); i++) {
+            if (bs[i].type->localName() == name ||
+                bs[i].type->tag() == name) return bs[i].type;
+            if (const Type *deeper = named(bs[i].type, name)) return deeper;
+        }
+        return nullptr;
+    }
+};
+
 ExprPtr Parser::primary(Program *program) {
+    if (peek().is("typeid")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return typeidExpression(pos);
+    }
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
         at_++;
@@ -680,7 +711,7 @@ ExprPtr Parser::primary(Program *program) {
         const char *promotes = nullptr;
         switch (want->kind()) {
         case Kind::Char: case Kind::SChar: case Kind::UChar:
-        case Kind::Short: case Kind::UShort: promotes = "int"; break;
+        case Kind::Short: case Kind::UShort: case Kind::WChar: promotes = "int"; break;
         case Kind::Float:                    promotes = "double"; break;
         default: break;
         }
@@ -721,7 +752,7 @@ ExprPtr Parser::primary(Program *program) {
             at_++;
         }
 
-        const Type *elem = wide ? types_.get(target_.wcharType())
+        const Type *elem = wide ? types_.get(Kind::WChar)
                                 : types_.charType();
         int width = elem->size(target_);
 
@@ -791,7 +822,7 @@ ExprPtr Parser::primary(Program *program) {
                                                                ? types_.get(Kind::LongLong)
                                             : types_.get(Kind::ULongLong);
 
-        else if (t.wide)                 ty = types_.get(target_.wcharType());
+        else if (t.wide)                 ty = types_.get(Kind::WChar);
         // [lex.ccon]/2: an ordinary character literal has type char, where C gives it int.
         else if (t.isChar)               ty = types_.get(Kind::Char);
         // **[lex.icon] table 6, and the two ladders it holds.** A decimal literal
@@ -899,7 +930,18 @@ ExprPtr Parser::primary(Program *program) {
         if (peek().kind == TokenKind::Ident && isTemplateName(peek().text, true))
             return templateCall(program);
 
-        const std::string full = scope + "::" + expectIdent("a name");
+        std::string full = scope + "::" + expectIdent("a name");
+        // **A member of N's unnamed namespace is reached as `N::x`** -
+        // [namespace.unnamed]/1 puts a using-directive for it in N, which a
+        // qualified lookup honours: what N itself lacks is asked of it.
+        {
+            const std::string inner = scope + "::_GLOBAL__N_1::" + full.substr(scope.size() + 2);
+            if (overloadsOf(full) == nullptr && findGlobalToUpdate(full) == nullptr &&
+                findEnum(full) == nullptr && namespaces_.count(scope + "::_GLOBAL__N_1") &&
+                (overloadsOf(inner) != nullptr || findGlobalToUpdate(inner) != nullptr ||
+                 findEnum(inner) != nullptr))
+                full = inner;
+        }
         if (consume("(")) {
             std::vector<ExprPtr> args;
             parseArguments(args);
@@ -912,7 +954,7 @@ ExprPtr Parser::primary(Program *program) {
         if (ExprPtr v = objectRef(full)) return v;
         if (const EnumConst *e = findEnum(full)) {
             ExprPtr n(new Num(e->value));
-            n->setType(types_.intType());
+            n->setType(e->type != nullptr ? e->type : types_.intType());
             return n;
         }
         // `take(N::nl)` - the function itself, written qualified and not called.
@@ -1028,21 +1070,6 @@ ExprPtr Parser::primary(Program *program) {
         }
     }
 
-    // **The injected class name of a base**, which is how a derived class
-    // usually spells it: `Base::f(...)` for a `cc::Base`.
-    struct FindBase {
-        static const Type *named(const Type *cls, const std::string &name) {
-            if (cls == nullptr) return nullptr;
-            const std::vector<Type::BaseSpec> &bs = cls->unqualified()->bases();
-            for (std::size_t i = 0; i < bs.size(); i++) {
-                if (bs[i].type->localName() == name ||
-                    bs[i].type->tag() == name) return bs[i].type;
-                if (const Type *deeper = named(bs[i].type, name)) return deeper;
-            }
-            return nullptr;
-        }
-    };
-
     // **`Base::f(...)` inside a member - the version this class replaced.**
     // [expr.call]/1: naming the function with a qualified-id suppresses the
     // dispatch, which is the whole reason an override writes it.
@@ -1108,9 +1135,13 @@ ExprPtr Parser::primary(Program *program) {
             callee != nullptr && (callee->isFunctionPointer() ||
                                   callee->unqualified()->isStructOrUnion());
 
-        // **An unqualified static member, inside a member function or a lambda
-        // written in one.** It needs no object; a nearer local or global won above.
-        const Type *staticScopes[2] = { currentClass_, lambdaScope() };
+        // **An unqualified static member, inside a member function, the class's
+        // own body, or a lambda written in either** - `static const int n = 8;`
+        // as an array bound. It needs no object; a nearer local or global won above.
+        const Type *staticScopes[2] = {
+            currentClass_ != nullptr ? currentClass_
+                                     : classStack_.empty() ? nullptr : classStack_.back(),
+            lambdaScope() };
         for (const Type *staticScope : staticScopes) {
             if (l != nullptr || g != nullptr || staticScope == nullptr ||
                 peekAt(1).is("("))
@@ -1256,6 +1287,7 @@ ExprPtr Parser::primary(Program *program) {
         if (currentClass_ != nullptr) {
             const Local *self = findLocal("this");
             if (const Member *m = currentClass_->findMember(name)) {
+                if (m->ambiguous) refuseAmbiguousMember(currentClass_, *m, pos);
                 // **[class.access]/1 applies however the member is spelled**, and this path checked
                 // nothing: `x` inside a derived class reached a private member of its base where
                 // `this->x` and `d.x` were both refused.
@@ -1265,6 +1297,18 @@ ExprPtr Parser::primary(Program *program) {
                                    "object here to read it from");
                 const Type *held = self->type->pointee();
                 ExprPtr acc = thisMember(self->offset, held, *m);
+                // **A member of a virtual base is not at a constant offset
+                // from `this` either**: the same walk through the vtable the
+                // `.` and `->` paths take, from `*this`.
+                if (m->inVirtualBase != nullptr) {
+                    refuseVirtualBaseMember(held, *m, name, pos);
+                    ExprPtr me(Var::local("this", self->offset));
+                    me->setType(self->type);
+                    ExprPtr obj(new Unary('*', std::move(me)));
+                    obj->setType(held);
+                    if (ExprPtr viaVb = virtualBaseMember(std::move(obj), held, *m))
+                        acc = std::move(viaVb);
+                }
                 // The same two rules as the `.` and `->` paths: a const
                 // object does not reach through a reference member, and a
                 // reference member is read by dereferencing what it holds.
@@ -1306,7 +1350,7 @@ ExprPtr Parser::primary(Program *program) {
         // Namespace scope, last of the three.
         if (const EnumConst *e = findEnum(name)) {
             ExprPtr n(new Num(e->value));
-            n->setType(types_.intType());
+            n->setType(e->type != nullptr ? e->type : types_.intType());
             return n;
         }
         if (ExprPtr v = globalRef(name)) return v;
@@ -1552,6 +1596,41 @@ ExprPtr Parser::globalRef(const std::string &name) {
     return nullptr;
 }
 
+// A25: the member is in two base subobjects, and cl's C2385 is the answer.
+void Parser::refuseAmbiguousMember(const Type *cls, const Member &m,
+                                   std::size_t pos) {
+    src_.fail(pos, "'" + m.name + "' is ambiguous in '" + cls->describe() +
+                   "': more than one of its bases has a member of that name - "
+                   "say which, as '" + m.declaredIn->localName() + "::" + m.name + "'");
+}
+
+// `c.A::x` and `p->A::get()` (A18): the name read as the member is a class -
+// the object's own or a base of it - and the member follows the `::`. Answers
+// that class with `name` moved on to the member, or null with nothing read.
+const Type *Parser::qualifiedMemberScope(const Type *obj, std::string &name,
+                                         std::size_t pos) {
+    if (!peek().is("::") || peekAt(1).kind != TokenKind::Ident) return nullptr;
+    std::string q = name;
+    for (;;) {
+        at_++;
+        name = peek().text;
+        at_++;
+        if (!peek().is("::") || peekAt(1).kind != TokenKind::Ident) break;
+        q += "::" + name;
+    }
+    const Type *cls = findTypedef(q);
+    if (cls == nullptr) cls = FindBase::named(obj, q);
+    if (cls == nullptr || !cls->isStructOrUnion())
+        src_.fail(pos, "'" + q + "' is not a class, so '" + q + "::" + name +
+                       "' names no member of '" + obj->describe() + "'");
+    cls = cls->unqualified();
+    if (cls != obj->unqualified() && publicBaseOffset(obj, cls) < 0)
+        src_.fail(pos, "'" + q + "' is not '" + obj->describe() + "' or a base "
+                       "of it, so '" + q + "::" + name + "' is not one of its "
+                       "members");
+    return cls;
+}
+
 ExprPtr Parser::postfix() {
     ExprPtr n = primary(current_);
     for (;;) {
@@ -1661,6 +1740,10 @@ ExprPtr Parser::postfix() {
             deref->setType(obj);
             n = std::move(deref);
             std::string name = declaredName("a member name");
+            const Type *scope = qualifiedMemberScope(obj, name, pos);
+            const int adjust = scope == nullptr || scope == obj->unqualified()
+                             ? 0 : publicBaseOffset(obj, scope);
+            const Type *in = scope != nullptr ? scope : obj;
             // **A member function template**, `p->head<3>()` - told from `<` as
             // a comparison only because the member is a registered template.
             if ((peek().is("<") || peek().is("(")) && isMemberTemplate(obj, name)) {
@@ -1670,16 +1753,20 @@ ExprPtr Parser::postfix() {
             // **A data member that is itself callable**: `p.H(i, j)` reaches H
             // and then applies its operator(), where `p.f(i)` calls a member
             // function f.
-            if (findMemberOwner(obj->unqualified(), name) != nullptr &&
+            if (findMemberOwner(in->unqualified(), name) != nullptr &&
                 consume("(")) {
-                n = memberCall(std::move(n), obj, name, pos);
+                // A qualified call is never dispatched - [expr.call]/1.
+                std::vector<ExprPtr> args;
+                parseArguments(args);
+                n = memberCallWith(std::move(n), obj, name, pos, std::move(args),
+                                   scope);
                 continue;
             }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
             // [expr.ref] says so - which is what the comma is for.
-            if (const Type::StaticMember *s = obj->findStaticMember(name)) {
-                ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
+            if (const Type::StaticMember *s = in->findStaticMember(name)) {
+                ExprPtr one = staticMemberRef(in, *s, in->tag(), pos);
                 // [expr.ref] evaluates the object expression even though what the
                 // whole thing names is the one shared object. Where it is pure
                 // there is nothing to evaluate, and dropping it leaves an lvalue.
@@ -1692,8 +1779,9 @@ ExprPtr Parser::postfix() {
                 n = std::move(one);
                 continue;
             }
-            const Member *m = obj->findMember(name);
-            if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
+            const Member *m = in->findMember(name);
+            if (!m) src_.fail(pos, "'" + in->describe() + "' has no member '" + name + "'");
+            if (m->ambiguous) refuseAmbiguousMember(in, *m, pos);
             checkAccessible(obj, *m, pos);
             // A member of a virtual base is not at a constant offset. The test
             // comes first because the call consumes the object: asking
@@ -1705,7 +1793,7 @@ ExprPtr Parser::postfix() {
                     continue;
                 }
             }
-            ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
+            ExprPtr acc(new MemberAccess(std::move(n), name, m->offset + adjust,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
@@ -1735,6 +1823,10 @@ ExprPtr Parser::postfix() {
                                n->type()->describe() + "'");
             const Type *obj = n->type();
             std::string name = declaredName("a member name");
+            const Type *scope = qualifiedMemberScope(obj, name, pos);
+            const int adjust = scope == nullptr || scope == obj->unqualified()
+                             ? 0 : publicBaseOffset(obj, scope);
+            const Type *in = scope != nullptr ? scope : obj;
             // **A member function template**, `v.head<3>()`.
             if ((peek().is("<") || peek().is("(")) && isMemberTemplate(obj, name)) {
                 n = memberTemplateCall(std::move(n), obj, name, pos);
@@ -1743,16 +1835,20 @@ ExprPtr Parser::postfix() {
             // **A data member that is itself callable**: `p.H(i, j)` reaches H
             // and then applies its operator(), where `p.f(i)` calls a member
             // function f.
-            if (findMemberOwner(obj->unqualified(), name) != nullptr &&
+            if (findMemberOwner(in->unqualified(), name) != nullptr &&
                 consume("(")) {
-                n = memberCall(std::move(n), obj, name, pos);
+                // A qualified call is never dispatched - [expr.call]/1.
+                std::vector<ExprPtr> args;
+                parseArguments(args);
+                n = memberCallWith(std::move(n), obj, name, pos, std::move(args),
+                                   scope);
                 continue;
             }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
             // [expr.ref] says so - which is what the comma is for.
-            if (const Type::StaticMember *s = obj->findStaticMember(name)) {
-                ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
+            if (const Type::StaticMember *s = in->findStaticMember(name)) {
+                ExprPtr one = staticMemberRef(in, *s, in->tag(), pos);
                 // [expr.ref] evaluates the object expression even though what the
                 // whole thing names is the one shared object. Where it is pure
                 // there is nothing to evaluate, and dropping it leaves an lvalue.
@@ -1765,8 +1861,9 @@ ExprPtr Parser::postfix() {
                 n = std::move(one);
                 continue;
             }
-            const Member *m = obj->findMember(name);
-            if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
+            const Member *m = in->findMember(name);
+            if (!m) src_.fail(pos, "'" + in->describe() + "' has no member '" + name + "'");
+            if (m->ambiguous) refuseAmbiguousMember(in, *m, pos);
             checkAccessible(obj, *m, pos);
             // A member of a virtual base is not at a constant offset. The test
             // comes first because the call consumes the object: asking
@@ -1778,7 +1875,7 @@ ExprPtr Parser::postfix() {
                     continue;
                 }
             }
-            ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
+            ExprPtr acc(new MemberAccess(std::move(n), name, m->offset + adjust,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
@@ -1857,22 +1954,29 @@ ExprPtr Parser::unary() {
     }
     if (consume("&")) {
         // **`&S::x` - a pointer to a member, which is an offset and not an address.**
-        // Read here because nothing else would: `primary`'s qualified-name path
-        // answers for a *static* member, and a non-static one has no address.
-        if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
-            peekAt(2).kind == TokenKind::Ident) {
-            if (const Type *cls = findTypedef(peek().text))
+        // Read here because nothing else would: `primary`'s qualified-name path answers
+        // for a *static* member. Every `Name::` but the last is the class (A20, nested).
+        std::size_t q = 0;
+        std::string qualified;
+        while (peekAt(q).kind == TokenKind::Ident && peekAt(q + 1).is("::") &&
+               peekAt(q + 2).kind == TokenKind::Ident) {
+            qualified += (q == 0 ? "" : "::") + peekAt(q).text;
+            q += 2;
+        }
+        if (q > 0) {
+            const std::string memberName = peekAt(q).text;
+            if (const Type *cls = findTypedef(qualified))
                 if (cls->isStructOrUnion()) {
-                    if (const Member *m = cls->findMember(peekAt(2).text)) {
+                    if (const Member *m = cls->findMember(memberName)) {
                         checkAccessible(cls, *m, pos);
-                        at_ += 3;
+                        at_ += q + 1;
                         ExprPtr off(new Num(static_cast<long long>(m->offset)));
                         off->setType(types_.memberPointerTo(cls, m->type));
                         return off;
                     }
                     // `&S::f` for a member function: the ABI's pair, built in
                     // a slot of this frame the way a class temporary is.
-                    const std::string key = cls->tag() + "::" + peekAt(2).text;
+                    const std::string key = cls->tag() + "::" + memberName;
                     if (const std::vector<std::size_t> *set = overloadsOf(key)) {
                         if (set->size() > 1)
                             src_.fail(pos, "'" + key + "' names " +
@@ -1880,16 +1984,28 @@ ExprPtr Parser::unary() {
                                            " functions, and which one this is "
                                            "cannot be told from the use alone");
                         const Signature &f = functions_[(*set)[0]];
-                        // **A virtual one is refused by name.** Itanium keeps the
-                        // vtable index in the low bit and branches on it at every
-                        // call; Microsoft calls a thunk. Neither is written.
-                        if (f.isVirtual)
-                            src_.fail(pos, "'" + key + "' is virtual, and a "
-                                           "pointer to a virtual member "
-                                           "function is not supported yet - it "
-                                           "holds a vtable index where this "
-                                           "holds an address");
-                        at_ += 3;
+                        at_ += q + 1;
+                        // **A virtual one holds the slot, not the function.**
+                        // Itanium: 1 + the slot's byte offset, tested at the
+                        // call; Microsoft: the address of a vcall thunk.
+                        if (f.isVirtual) {
+                            int index = -1;
+                            const std::vector<VSlot> &slots = vtables_[cls->tag()];
+                            for (std::size_t i = 0; i < slots.size(); i++)
+                                if (overrides(slots[i], f.name, f.params, f.constThis))
+                                    index = static_cast<int>(i);
+                            if (index < 0)
+                                src_.fail(pos, "'" + key + "' is virtual but has "
+                                               "no slot in '" + cls->describe() +
+                                               "'s own vtable - a function of a "
+                                               "base after the first is not "
+                                               "supported here yet");
+                            if (target_.microsoftNames())
+                                return boundMemberPointer(cls, f, pos, 0,
+                                                          synthesizeVcallThunk(cls, f, index, pos));
+                            return boundMemberPointer(cls, f, pos,
+                                                      1 + static_cast<long long>(index) * pointerBytes());
+                        }
                         return boundMemberPointer(cls, f, pos);
                     }
                 }
@@ -1989,6 +2105,21 @@ ExprPtr Parser::unary() {
         return n;
     }
 
+    // `alignof(T)` - [expr.alignof] takes a type-id and nothing else; the
+    // answer is the type's alignment requirement, as sizeof's is its size.
+    if (peek().is("alignof")) {
+        at_++;
+        expect("(");
+        StorageClass sc;
+        const Type *measured = declarator(specifiers(&sc), true).type;
+        expect(")");
+        if (measured->isReference()) measured = measured->referent();
+        if (!measured->isComplete())
+            src_.fail(pos, "alignof needs a complete type");
+        ExprPtr n(new Num(static_cast<long long>(measured->align(target_))));
+        n->setType(types_.get(target_.sizeType()));
+        return n;
+    }
     if (peek().is("sizeof")) {
         at_++;
         const Type *measured = nullptr;

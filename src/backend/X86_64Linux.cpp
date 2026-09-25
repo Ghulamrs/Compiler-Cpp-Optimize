@@ -16,6 +16,7 @@ int LinuxX86_64Target::sizeOf(Kind k) const {
     case Kind::Bool:                                       return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar:   return 1;
     case Kind::Short: case Kind::UShort:                   return 2;
+    case Kind::WChar:                                      return sizeOf(wcharType());
     case Kind::Int: case Kind::UInt:                       return 4;
     case Kind::Long: case Kind::ULong:                     return 8;
     case Kind::LongLong: case Kind::ULongLong:             return 8;
@@ -1471,9 +1472,14 @@ static const Walker::LsdaSpelling kElfLsda = {
     ".L", ".section .gcc_except_table,\"a\",@progbits", false, ".L", ".DW.stub"
 };
 
-void X86_64Linux::emitLsda(const std::string &symbol) {
+void X86_64Linux::emitLsda(const std::string &symbol, bool mergeable) {
     std::string &o = out_;
-    o += lsdaTable(kElfLsda, symbol, lsdaTypes_);
+    // A mergeable function's table joins its group: gcc's `.gcc_except_table.<sym>`.
+    Walker::LsdaSpelling sp = kElfLsda;
+    const std::string grouped = ".section .gcc_except_table." + symbol +
+                                ",\"aG\",@progbits," + symbol + ",comdat";
+    if (mergeable) sp.section = grouped.c_str();
+    o += lsdaTable(sp, symbol, lsdaTypes_);
 
     // **The two objects an ELF table refers to indirectly.** The type table holds
     // offsets to *pointers*, since a direct reference to one in another shared
@@ -1502,7 +1508,7 @@ void X86_64Linux::emitLsda(const std::string &symbol) {
         o += "DW.ref.__gxx_personality_v0:\n";
         o += "  .quad __gxx_personality_v0\n";
     }
-    o += "  .text\n";
+    o += gnu_.currentText();   // the function's own section, for the labels -g adds after it
 }
 
 std::string X86_64Linux::userLabel(const std::string &name) const {
@@ -2133,7 +2139,7 @@ void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
         a_->objectType(g.symbol);
         a_->objectSize(g.symbol, size);
     }
-    a_->align(objectAlign(g.type, target_));
+    a_->align(g.align > objectAlign(g.type, target_) ? g.align : objectAlign(g.type, target_));
     // The word in front, where there is one: laid down after the alignment so
     // that it is the label - not the block - that ends up aligned, which is
     // what makes `vftable - 8` the locator the runtime reads.

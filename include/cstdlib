@@ -23,6 +23,7 @@ using ::calloc;
 using ::exit;
 using ::free;
 using ::labs;
+using ::getenv;
 using ::malloc;
 using ::qsort;
 using ::rand;

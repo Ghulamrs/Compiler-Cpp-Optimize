@@ -42,6 +42,7 @@ const char *itaniumBuiltin(Kind k) {
     case Kind::UChar:      return "h";
     case Kind::Short:      return "s";
     case Kind::UShort:     return "t";
+    case Kind::WChar:      return "w";
     case Kind::Int:        return "i";
     case Kind::UInt:       return "j";
     case Kind::Long:       return "l";
@@ -66,6 +67,7 @@ const char *microsoftBuiltin(Kind k) {
     case Kind::UChar:      return "E";
     case Kind::Short:      return "F";
     case Kind::UShort:     return "G";
+    case Kind::WChar:      return "_W";
     case Kind::Int:        return "H";
     case Kind::UInt:       return "I";
     case Kind::Long:       return "J";
@@ -598,6 +600,8 @@ public:
     // **The class as a type descriptor spells it**, `?AUBase@@`.
     void classAsTypeName(const Type *t) { returnType(t); }
 
+    void vtableOffset(int offset) { number(offset); }   // a vcall thunk's vftable offset
+
     // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
     // `this`, the calling convention - with every enclosing class innermost first,
     // closed by '@'. A local class's owner goes in as `?1?` and the whole name.
@@ -918,6 +922,16 @@ public:
             return;
         }
         type(u);
+        // **A member pointer's storage class repeats the class**, `EQ<class>@`
+        // after the type: cl's `?gpm@@3PEQNest@@HEQ1@` (the review's A7); Q is
+        // the member's cv-code, R for const, as a pointer's A/B are.
+        if (u->isMemberPointer() || u->isMemberFunctionPointer()) {
+            const Type *cls = u->enclosing();
+            out += 'E';
+            out += t->isConst() ? 'R' : 'Q';
+            scopeOf(cls, cls->tag());
+            return;
+        }
         // A reference follows the pointer's rule, measured: `?r@@3AEAHEA`,
         // `?cr@@3AEBHEB`, `?sr@@3AEAUS@@EA`.
         if (u->isPointer() || u->isReference()) {
@@ -975,9 +989,10 @@ private:
     }
 
     void returnType(const Type *t) {
-        // A class returned by value carries its cv-qualification in front of
-        // it; everything else is written as it stands.
-        if (t->isStructOrUnion()) out += "?A";
+        // A class or an enumeration returned by value carries its
+        // cv-qualification in front of it; everything else is written as it
+        // stands. Measured: `Small pick(int)` is `?pick@@YA?AW4Small@@H@Z`.
+        if (t->isStructOrUnion() || t->isEnumeration()) out += "?A";
         type(t);
     }
 
@@ -1129,6 +1144,8 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     return true;
 }
 
+const char *itaniumBuiltinCode(Kind k) { return itaniumBuiltin(k); }
+
 std::string vtableSymbol(const std::string &tag, bool microsoft) {
     const std::vector<std::string> parts = scopeComponents(tag);
     if (microsoft) {
@@ -1238,8 +1255,18 @@ std::string itaniumClassTypeNameSymbol(const Type *cls) {
     return "_ZTS" + itaniumClassNameString(cls);
 }
 
+bool itaniumTypeSpelling(const Type *t, std::string *out, std::string *problem) {
+    Itanium m;
+    m.typeInfoFor(t);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
-    if (itaniumBuiltin(t->kind()) == nullptr) {
+    // An enumeration is its integer here, but its type_info is its own - an
+    // __enum_type_info the compiler emits, not the library's fundamental one.
+    if (itaniumBuiltin(t->kind()) == nullptr || t->isEnumeration()) {
         *problem = "only a fundamental type has a type_info object the "
                    "standard library already carries; one for '" +
                    t->describe() + "' would have to be emitted here, and that "
@@ -1251,6 +1278,17 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) 
     m.typeInfoFor(t);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
+    return true;
+}
+
+bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
+                             std::string *problem) {
+    Microsoft scope;
+    scope.scopeOf(cls, cls->tag());
+    if (!scope.ok) { *problem = scope.problem; return false; }
+    Microsoft n;
+    n.vtableOffset(offset);
+    *out = "??_9" + scope.out + "$B" + n.out + "AA";
     return true;
 }
 

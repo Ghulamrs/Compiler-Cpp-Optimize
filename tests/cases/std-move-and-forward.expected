@@ -1,0 +1,9 @@
+Buf(3)
+move
+Buf(1)
+move=
+Buf(2)
+copy=
+0 0 3 3
+1 2 2 2
+5 4 3 2 1

@@ -1,1 +1,0 @@
-'new T[n]' of a class with a constructor would have to run it once per element - not supported yet

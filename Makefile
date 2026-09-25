@@ -57,7 +57,7 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
            -DCXX1_CXX_INCLUDE_DIR='"$(CXXINCDIR)"'
 # src/backend holds one file per platform: the sizes its types measure, the ABI
 # facts the front end has to know, and the code generator when there is one.
-# src/parser holds the eleven files one class is split over - see its Parser.cpp.
+# src/parser holds the twelve files one class is split over - see its Parser.cpp.
 #
 # src/optimizer holds the passes over one function and the Optimizer that runs
 # them in front of the real Spelling - see docs/OPTIMIZER-ARCHITECTURE.md.
@@ -68,8 +68,14 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
 # src/parser/Type.cpp would quietly overwrite the object made from src/Type.cpp.
 # It is the reason the parser's files kept their ParserXxx names on moving into
 # a directory that would have let them drop the prefix.
-SRCS     = $(wildcard src/*.cpp) $(wildcard src/parser/*.cpp) \
-           $(wildcard src/backend/*.cpp) $(wildcard src/optimizer/*.cpp)
+# Filtered on src/%.cpp rather than taken raw, as cc1's Makefile is. macOS
+# leaves "keep both" duplicates - `Tms6747 2.cpp` beside `Tms6747.cpp`, and two
+# of those appeared here mid-session - and $(wildcard) splits such a name into
+# two words before anything can test it for a space, so make would try to
+# build `src/backend/Tms6747` and `2.cpp` as sources. Requiring both the prefix
+# and the suffix drops both halves and keeps every real source.
+SRCS     = $(filter src/%.cpp,$(wildcard src/*.cpp) $(wildcard src/parser/*.cpp) \
+                              $(wildcard src/backend/*.cpp) $(wildcard src/optimizer/*.cpp))
 # Objects and their dependency files go under obj/ rather than beside the
 # sources they came from, so that a listing of src/ is the code and nothing
 # else. The tree under obj/ mirrors src/ - src/backend/X86_64.cpp becomes
@@ -91,7 +97,10 @@ BINDIR  ?= .
 # cxx1.exe on every machine, not only Windows. The programs in this family -
 # RStudio, cc1, shc and this one - carry one name each wherever they are, and a
 # suffix that changes by platform is one more thing a script has to know.
-TARGET   = $(BINDIR)/cxx1.exe
+# The program's name, once - src/Name.h and the project files RIDE's
+# tools/make-projects.py writes spell it the same.
+PROGRAM  = cpp11
+TARGET   = $(BINDIR)/$(PROGRAM).exe
 
 .PHONY: all test golden corpus open comments clean help
 
@@ -122,11 +131,13 @@ $(OBJDIR)/%.o: src/%.cpp
 # checks all three backends on any machine. Neither is a differential suite
 # yet - comparing cxx1's objects against clang's needs mangling and
 # extern "C", which are rung 2.
+# The suites are told which binary, since a BINDIR build puts cpp11.exe
+# somewhere other than here; unset, each falls back to ./cpp11.exe.
 test: $(TARGET)
-	@./tests/run.sh
-	@./tests/emit.sh
-	@./tests/names.sh
-	@./tests/overload.sh
+	@CXX1=$(TARGET) ./tests/run.sh
+	@CXX1=$(TARGET) ./tests/emit.sh
+	@CXX1=$(TARGET) ./tests/names.sh
+	@CXX1=$(TARGET) ./tests/overload.sh
 	@./tools/comment-lines --count
 
 # The comment-line policy, on its own, because it is about the source and not
@@ -150,18 +161,18 @@ help:
 # Before a change that is meant to emit exactly what it emits now: record, make
 # the change, run the suite, and it says how many files came out different.
 golden: $(TARGET)
-	@./tests/emit.sh --record
+	@CXX1=$(TARGET) ./tests/emit.sh --record
 
 # The inherited C corpus. Not part of `make test` and not a pass rate - see
 # tests/c-corpus/README, which says what each part of the failing set is.
 corpus: $(TARGET)
-	@./tests/corpus.sh
+	@CXX1=$(TARGET) ./tests/corpus.sh
 
 # The register of known-open defects. Not part of `make test` either, and for a
 # sharper reason: every program in it is a wrong answer, so it would be red by
 # construction. It says how many still differ from clang - see tests/open/README.
 open: $(TARGET)
-	@./tests/open.sh
+	@CXX1=$(TARGET) ./tests/open.sh
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)

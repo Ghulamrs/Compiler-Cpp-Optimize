@@ -130,20 +130,8 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         // rather than one written here.
         const Type *srcCls = e->type()->pointee()->unqualified();
         const Type *dstCls = to->pointee()->unqualified();
-        long long vbBack = 0;
-        {
-            const std::vector<Type::BaseSpec> &bs = srcCls->bases();
-            int nvb = 0, seen = 0;
-            for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
-            for (std::size_t i = bs.size(); i-- > 0; ) {
-                if (!bs[i].isVirtual) continue;
-                if (bs[i].type == dstCls) {
-                    vbBack = -static_cast<long long>(nvb + 2 - seen) * 8;
-                    break;
-                }
-                seen++;
-            }
-        }
+        const long long vbBack = target_.microsoftNames()
+                               ? 0 : itaniumVbaseOffsetSlot(srcCls, dstCls);
         // **The same walk on the Microsoft ABI, through the vbtable.**
         if (target_.microsoftNames() && srcCls->vbptrOffset() >= 0 &&
             virtualBaseSlot(srcCls, dstCls, nullptr) > 0) {
@@ -173,7 +161,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         }
         if (vbBack != 0 && !target_.microsoftNames()) {
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
-            const Type *offType = types_.get(Kind::LongLong);
+            const Type *offType = ptrdiffType();
             ExprPtr asChars(new Cast(chars, std::move(e)));
             asChars->setType(chars);
             int slot = const_cast<Parser *>(this)->allocateFrameSlot(chars);
@@ -491,7 +479,7 @@ static bool isPromotion(const Type *from, const Type *to) {
     if (to->kind() == Kind::Int) {
         switch (from->kind()) {
             case Kind::Bool: case Kind::Char: case Kind::SChar: case Kind::UChar:
-            case Kind::Short: case Kind::UShort:
+            case Kind::Short: case Kind::UShort: case Kind::WChar:
                 return true;
             default:
                 return false;
@@ -683,7 +671,27 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     if (better && worse) return false;
     if (better) return true;
     if (worse) return false;
+    if (fa.fromTemplate && fb.fromTemplate && fa.pattern != nullptr &&
+        fb.pattern != nullptr)
+        return moreSpecializedFunction(fa, fb);
     return !fa.fromTemplate && fb.fromTemplate;
+}
+
+bool Parser::moreSpecializedFunction(const Signature &a, const Signature &b) const {
+    struct Order {
+        static bool atLeast(const Parser &p, const Type *a, const Type *b) {
+            const std::vector<const Type *> &pa = a->params(), &pb = b->params();
+            if (pa.size() != pb.size()) return false;
+            // b's parameters bound afresh; a's stand as the opaque types they are.
+            std::vector<const Type *> binding(pb.size() + pa.size());
+            std::string why;
+            for (std::size_t i = 0; i < pa.size(); i++)
+                if (!p.matchPattern(pb[i], pa[i], &binding, &why)) return false;
+            return true;
+        }
+    };
+    return Order::atLeast(*this, a.pattern, b.pattern) &&
+           !Order::atLeast(*this, b.pattern, a.pattern);
 }
 
 // [over.match.oper]: one candidate set with both halves in it - a member's implicit

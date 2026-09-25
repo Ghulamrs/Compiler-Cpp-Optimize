@@ -174,6 +174,8 @@ class GnuSpelling : public Spelling {
 public:
     explicit GnuSpelling(std::string &o) : o_(o) {}
     virtual ~GnuSpelling() {}
+    // The section the function last begun lives in - see textSection_.
+    const std::string &currentText() const { return textSection_; }
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -212,6 +214,8 @@ protected:
 protected:
     std::string &o_;
     std::vector<SavedReg> saves_;
+    // The section the function lives in: .text, or its own COMDAT group when mergeable.
+    std::string textSection_ = "  .text\n";
     // Whether the last instruction spelled was a call - see stateLabel.
     bool afterCall_ = false;
 };

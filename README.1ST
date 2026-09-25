@@ -1,4 +1,4 @@
-c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+©2026 G. R. Akhtar - ISO C++ 11
 ==========================================
 
 READ THIS FIRST.  It is the whole of what a user of this compiler needs: how to
@@ -45,7 +45,7 @@ Run it with no arguments for the same list.
 multi-file build then says how many source files it has and how many threads it
 is compiling them on, one line per file as each thread takes it:
 
-    c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+    ©2026 G. R. Akhtar - ISO C++ 11
     6 source files, 6 compilation threads
       [thread 1] main.cpp
       [thread 2] parser.cpp
@@ -75,7 +75,7 @@ includes `<cstddef>` beside it, which includes `<stddef.h>` from `lib/`.
 **They are found beside the compiler**, so an unpacked release works wherever it
 is put.  The search, in order, and the first that answers wins:
 
-  1. `CXX1_INCLUDE` and `CXX1_LIB` in the environment, if set.  This is the
+  1. `CPP11_INCLUDE` and `CPP11_LIB` in the environment, if set.  This is the
      override for a packager or a test harness, and nothing else touches it.
 
   2. Beside the program: `<where cxx1.exe is>/include` and `.../lib`, then one
@@ -272,7 +272,7 @@ so that the link step is the same program as the compile step.
 
     $ make one
     cxx1.exe demo.cpp report.cpp -o demo
-    c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+    ©2026 G. R. Akhtar - ISO C++ 11
     2 source files, 1 compilation thread
       [thread 1] demo.cpp
       [thread 1] report.cpp
@@ -320,10 +320,10 @@ default and Windows does not - so a program behaves the same on all three.
 Each of the three can be replaced from the environment, which is what a
 cross-build or an unusual installation needs:
 
-    CXX1_CC      the assembler-and-linker driver on Linux and macOS   (c++)
-    CXX1_AS      the assembler on Windows                    (ml64.exe, clang)
-    CXX1_LD      the linker on Windows                              (link.exe)
-    CXX1_INCLUDE, CXX1_LIB    the two header directories of section 2
+    CPP11_CC      the assembler-and-linker driver on Linux and macOS   (c++)
+    CPP11_AS      the assembler on Windows                    (ml64.exe, clang)
+    CPP11_LD      the linker on Windows                              (link.exe)
+    CPP11_INCLUDE, CPP11_LIB    the two header directories of section 2
 
 With `-S` none of them runs: cxx1 writes assembly and stops, which is why
 assembly for another machine can be produced on this one.

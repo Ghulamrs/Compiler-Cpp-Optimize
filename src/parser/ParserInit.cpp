@@ -315,6 +315,10 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
     // makes: `const double b = (1 - f) * a;` is dynamic initialisation by the letter of
     // [basic.start.init], and folding it is what every compiler does instead.
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (const ConstexprSlot *slot = constexprSlot(*v)) {
+            *out = slot->floating ? slot->d : static_cast<long double>(slot->i);
+            return true;
+        }
         if (v->isLocal()) {
             if (const Local *l = findLocal(v->name()))
                 if (l->isConstantDouble) { *out = l->constantDouble; return true; }
@@ -358,6 +362,25 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
                            static_cast<unsigned long long>(*out));
         }
         return true;
+    }
+    // **A call to a constexpr function, as fold() runs one** (A11).
+    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+        // No expression carries a position, so the depth limit is reported at
+        // the constexpr function's own definition.
+        auto it = constexprFns_.find(c->symbol());
+        const ConstexprFn *fn = nullptr;
+        if (it == constexprFns_.end() || !enterConstexprCall(*c, &fn, it->second.pos))
+            return false;
+        const bool ok = foldDouble(*fn->value, target, out, past53, x87Rounded);
+        constexprFrames_.pop_back();
+        if (ok && !e.type()->isFloating())
+            *out = static_cast<long double>(static_cast<long long>(*out));
+        return ok;
+    }
+    if (const Conditional *c = dynamic_cast<const Conditional *>(&e)) {
+        long long t;
+        if (!fold(c->cond(), &t, 0)) return false;
+        return foldDouble(t ? c->thenArm() : c->elseArm(), target, out, past53, x87Rounded);
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
         if (u->op() == '-' &&
@@ -1077,6 +1100,102 @@ std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
     return out;
 }
 
+// **An array of a class with static storage duration**: built by the class's
+// loop before main, destroyed last first at exit by a helper calling the
+// other loop - __cxa_atexit with the array on Itanium, atexit on Microsoft.
+std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
+                                                          const std::string &symbol,
+                                                          const std::string &helper) {
+    const Type *elem = d.type;
+    long long count = 1;
+    while (elem->isArray()) { count *= elem->length(); elem = elem->pointee(); }
+    const Type *plain = elem->unqualified();
+    const Type *ptr = types_.pointerTo(plain);
+    const Type *sizeT = types_.get(target_.sizeType());
+    if (peek().is("(") || peek().is("=") || peek().is("{"))
+        src_.fail(d.pos, "an initialiser for an array of '" + plain->describe() +
+                         "' is not supported yet - each element gets the "
+                         "default constructor");
+
+    // The array's address, which is its first element's.
+    auto arrayAddress = [&]() {
+        ExprPtr addr(new Unary('&', objectAt(d, symbol, 0)));
+        addr->setType(types_.pointerTo(d.type));
+        ExprPtr first(new Cast(ptr, std::move(addr)));
+        first->setType(ptr);
+        return first;
+    };
+    std::vector<StmtPtr> out;
+    if (overloadsOf(constructorKey(plain->tag())) != nullptr) {
+        ExprPtr base = arrayAddress();
+        ExprPtr n(new Num(count));
+        n->setType(sizeT);
+        out.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+            vectorConstructor(plain, d.pos), plain, std::move(base), std::move(n), d.pos))));
+    }
+    if (destructorOf(plain) == nullptr) return out;
+
+    // The helper, in a frame of its own: `(void *)` on Itanium, the array's
+    // address arriving as the argument __cxa_atexit was given; nothing on
+    // Microsoft, where it names the array itself.
+    const bool ms = target_.microsoftNames();
+    const std::string fn = ms ? helper : "__cxx1_vec_exit_" + symbol;
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    ExprPtr first;
+    if (ms) {
+        first = arrayAddress();
+    } else {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const int argSlot = allocateFrameSlot(voidPtr);
+        params.push_back(Param{ voidPtr, argSlot });
+        ExprPtr arg(Var::local("a0", argSlot));
+        arg->setType(voidPtr);
+        first.reset(new Cast(ptr, std::move(arg)));
+    }
+    first->setType(ptr);
+    ExprPtr n2(new Num(count));
+    n2->setType(sizeT);
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+        vectorDestructor(plain, d.pos), plain, std::move(first), std::move(n2), d.pos))));
+    body.push_back(StmtPtr(new Return(nullptr)));
+    current_->functions.push_back(Function(fn, types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), true, 0,
+                                           false, 0, d.pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(fn);
+    frameSize_ = savedFrame;
+
+    std::vector<ExprPtr> args;
+    if (ms) {
+        const Type *helperType = types_.functionType(types_.get(Kind::Void),
+                                                     std::vector<const Type *>(), false);
+        args.push_back(functionAddress(fn, helperType));
+        out.push_back(StmtPtr(new ExprStmt(runtimeCall("atexit", types_.intType(), std::move(args)))));
+        return out;
+    }
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    std::vector<const Type *> ps;
+    ps.push_back(voidPtr);
+    args.push_back(functionAddress(fn, types_.functionType(types_.get(Kind::Void), ps, false)));
+    ExprPtr asVoid(new Cast(voidPtr, arrayAddress()));
+    asVoid->setType(voidPtr);
+    args.push_back(std::move(asVoid));
+    Var *dso = Var::global("__dso_handle");
+    dso->setSymbol("__dso_handle");
+    ExprPtr handle(dso);
+    handle->setType(types_.get(Kind::Char));
+    ExprPtr handleAddr(new Unary('&', std::move(handle)));
+    handleAddr->setType(voidPtr);
+    args.push_back(std::move(handleAddr));
+    current_->usesDsoHandle = true;
+    out.push_back(StmtPtr(new ExprStmt(runtimeCall("__cxa_atexit", types_.intType(), std::move(args)))));
+    return out;
+}
+
 // Itanium: __cxa_atexit(&D1, &object, &__dso_handle), the complete-object
 // destructor. Microsoft: atexit(&helper), the helper a function of its own
 // that calls the destructor on the object - measured from cl and clang.
@@ -1152,44 +1271,104 @@ void Parser::dynamicInitialise(const Declared &d, const std::string &symbol,
         !peek().is("{"))
         requireConstInitialised(d.type, d.name, d.pos);
     const FunctionState outer = enterInitFunction();
-    std::vector<StmtPtr> built = buildStaticConstruction(d, symbol, helper);
+    std::vector<StmtPtr> built = d.type->isArray()
+        ? buildStaticArrayConstruction(d, symbol, helper)
+        : buildStaticConstruction(d, symbol, helper);
     if (once) {
-        const bool ms = target_.microsoftNames();
-        const std::string guard = ms ? symbol + "$guard"
-                                     : "_ZGV" + symbol.substr(symbol.compare(0, 2, "_Z") == 0 ? 2 : 0);
-        const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
-        current_->globals.push_back(Global{ guard, guard, guardType,
-                                            std::vector<GlobalPiece>(), false,
-                                            false, false });
-        current_->globals.back().isInline = true;
-        // The first byte is what Itanium reads; the whole int on Microsoft.
-        const Type *readAs = types_.get(ms ? Kind::Int : Kind::UChar);
-        Var *seen = Var::global(guard);
-        seen->setSymbol(guard);
-        ExprPtr flag(seen);
-        flag->setType(readAs);
-        ExprPtr zero(new Num(0LL));
-        zero->setType(readAs);
-        ExprPtr fresh(new Binary(BinOp::Eq, std::move(flag), std::move(zero)));
-        fresh->setType(types_.get(Kind::Bool));
-
-        Var *mark = Var::global(guard);
-        mark->setSymbol(guard);
-        ExprPtr marked(mark);
-        marked->setType(readAs);
-        ExprPtr one(new Num(1LL));
-        one->setType(readAs);
-        ExprPtr set(new Assign(std::move(marked), std::move(one)));
-        set->setType(readAs);
-
-        std::vector<StmtPtr> body;
-        body.push_back(StmtPtr(new ExprStmt(std::move(set))));
-        for (std::size_t i = 0; i < built.size(); i++)
-            body.push_back(std::move(built[i]));
+        StmtPtr guarded = guardTemplateMember(symbol, std::move(built));
         built.clear();
-        built.push_back(StmtPtr(new If(std::move(fresh),
-                                       StmtPtr(new Block(std::move(body))),
-                                       StmtPtr())));
+        built.push_back(std::move(guarded));
+    }
+    for (std::size_t i = 0; i < built.size(); i++)
+        dynInit_.push_back(std::move(built[i]));
+    leaveInitFunction(outer);
+}
+
+// The shapes flattenInit lays down as bytes. A class object here has no
+// constructor - that path was taken earlier - so `P g = P();` and `P g = f();`
+// are trivial copies made at run time; a braced list stays with flattenInit.
+bool Parser::staticallyInitialisable(const Type *t, Init &in) {
+    if (in.value == nullptr) return true;
+    if (in.isList)
+        return in.items.size() != 1 || in.items[0].isList || t->isArray() ||
+               t->isStructOrUnion() || staticallyInitialisable(t, in.items[0]);
+    if (t->isArray()) return true;
+    if (t->isStructOrUnion()) return false;
+    in.value = decay(std::move(in.value));
+    if (t->isFloating()) { long double d; return foldFloating(*in.value, &d); }
+    long long v;
+    if (t->isPointer()) {
+        std::string sym;
+        if (foldAddress(*in.value, &sym, &v)) return true;
+    }
+    return fold(*in.value, &v, in.pos);
+}
+
+void Parser::dynamicInitialiseScalar(const std::string &name, const Type *type,
+                                     Init &in) {
+    const FunctionState outer = enterInitFunction();
+    std::vector<InitStep> path;
+    emitInit(name, path, type, in, dynInit_);
+    flushTemporaries(dynInit_);
+    leaveInitFunction(outer);
+}
+
+StmtPtr Parser::guardTemplateMember(const std::string &symbol,
+                                    std::vector<StmtPtr> built) {
+    const bool ms = target_.microsoftNames();
+    const std::string guard = ms ? symbol + "$guard"
+                                 : "_ZGV" + symbol.substr(symbol.compare(0, 2, "_Z") == 0 ? 2 : 0);
+    const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
+    current_->globals.push_back(Global{ guard, guard, guardType,
+                                        std::vector<GlobalPiece>(), false,
+                                        false, false });
+    current_->globals.back().isInline = true;
+    // The first byte is what Itanium reads; the whole int on Microsoft.
+    const Type *readAs = types_.get(ms ? Kind::Int : Kind::UChar);
+    Var *seen = Var::global(guard);
+    seen->setSymbol(guard);
+    ExprPtr flag(seen);
+    flag->setType(readAs);
+    ExprPtr zero(new Num(0LL));
+    zero->setType(readAs);
+    ExprPtr fresh(new Binary(BinOp::Eq, std::move(flag), std::move(zero)));
+    fresh->setType(types_.get(Kind::Bool));
+
+    Var *mark = Var::global(guard);
+    mark->setSymbol(guard);
+    ExprPtr marked(mark);
+    marked->setType(readAs);
+    ExprPtr one(new Num(1LL));
+    one->setType(readAs);
+    ExprPtr set(new Assign(std::move(marked), std::move(one)));
+    set->setType(readAs);
+
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(std::move(set))));
+    for (std::size_t i = 0; i < built.size(); i++)
+        body.push_back(std::move(built[i]));
+    return StmtPtr(new If(std::move(fresh), StmtPtr(new Block(std::move(body))),
+                          StmtPtr()));
+}
+
+void Parser::dynamicInitialiseStaticMember(const std::string &name,
+                                           const std::string &symbol,
+                                           const Type *type, Init &in, bool once) {
+    const FunctionState outer = enterInitFunction();
+    std::vector<StmtPtr> built;
+    Var *v = Var::global(name);
+    v->setSymbol(symbol);
+    ExprPtr target(v);
+    target->setType(type);
+    checkAssignable(*in.value, type, in.pos, "'" + name + "'");
+    ExprPtr a(new Assign(std::move(target), convert(decay(std::move(in.value)), type)));
+    a->setType(type);
+    built.push_back(StmtPtr(new ExprStmt(std::move(a))));
+    flushTemporaries(built);
+    if (once) {
+        StmtPtr guarded = guardTemplateMember(symbol, std::move(built));
+        built.clear();
+        built.push_back(std::move(guarded));
     }
     for (std::size_t i = 0; i < built.size(); i++)
         dynInit_.push_back(std::move(built[i]));
@@ -1293,7 +1472,9 @@ void Parser::staticLocalWithConstructor(const Declared &d,
                 ? currentFunction_ : "?" + currentFunction_ + "@@9";
         helper = atexitHelperName(d.name + "@?1?" + owner);
     }
-    std::vector<StmtPtr> body = buildStaticConstruction(d, symbol, helper);
+    std::vector<StmtPtr> body = d.type->isArray()
+        ? buildStaticArrayConstruction(d, symbol, helper)
+        : buildStaticConstruction(d, symbol, helper);
     declareStaticLocal(d.name, d.type, d.pos, symbol);
     locals_.back().isConst = d.type->isConst();
     // Not `isConst`: the constructor writes it, so it cannot live in .rodata.

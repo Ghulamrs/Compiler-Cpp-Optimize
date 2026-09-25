@@ -13,6 +13,7 @@ int DarwinArm64Target::sizeOf(Kind k) const {
     case Kind::Bool:                                       return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar:   return 1;
     case Kind::Short: case Kind::UShort:                   return 2;
+    case Kind::WChar:                                      return sizeOf(wcharType());
     case Kind::Int: case Kind::UInt:                       return 4;
     case Kind::Long: case Kind::ULong:                     return 8;
     case Kind::LongLong: case Kind::ULongLong:             return 8;
@@ -922,7 +923,7 @@ static int p2AlignOf(int bytes) {
 
 void Arm64Darwin::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
-    int p2 = p2AlignOf(objectAlign(g.type, target_));
+    int p2 = p2AlignOf(g.align > objectAlign(g.type, target_) ? g.align : objectAlign(g.type, target_));
     if (!g.isStatic) out_ << "  .globl _" << g.symbol << "\n";
     // A writable weak object is one object across the program - a template's
     // static member - so it may not be hidden per unit; clang writes

@@ -1,0 +1,1 @@
+x86_64-windows  refused before it reaches the question it asks: D has virtual functions in a base that is not the first, which the Microsoft ABI lays out with two vftable symbols and cxx1 refuses by name for this target (thunk.notarget). The base conversion this case is about is the same on that ABI.

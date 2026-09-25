@@ -12,8 +12,8 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
-    <ProjectGuid>{96BFA646-92F9-AE58-884D-3665B748CC59}</ProjectGuid>
-    <RootNamespace>cxx1</RootNamespace>
+    <ProjectGuid>{5078E6B7-D059-7508-FC3B-57B478C4D567}</ProjectGuid>
+    <RootNamespace>cpp11</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -31,7 +31,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
-    <TargetName>cxx1</TargetName>
+    <TargetName>cpp11</TargetName>
   </PropertyGroup>
   <!-- OutDir is left to the C++ default on purpose: this project's
        own x64\$(Configuration)\ when built alone, and the solution's
@@ -75,24 +75,38 @@
     <ClCompile Include="src\parser\ParserTemplate.cpp" />
     <ClCompile Include="src\parser\ParserTopLevel.cpp" />
     <ClCompile Include="src\parser\ParserType.cpp" />
+    <ClCompile Include="src\parser\ParserVtable.cpp" />
     <ClCompile Include="src\backend\Arm64Darwin.cpp" />
     <ClCompile Include="src\backend\Backend.cpp" />
     <ClCompile Include="src\backend\Dwarf.cpp" />
     <ClCompile Include="src\backend\Masm.cpp" />
-    <ClCompile Include="src\backend\MirWebs.cpp" />
-    <ClCompile Include="src\backend\OptDead.cpp" />
-    <ClCompile Include="src\backend\OptEffects.cpp" />
-    <ClCompile Include="src\backend\OptFlow.cpp" />
-    <ClCompile Include="src\backend\OptIr.cpp" />
-    <ClCompile Include="src\backend\OptFrame.cpp" />
-    <ClCompile Include="src\backend\OptMemory.cpp" />
-    <ClCompile Include="src\backend\OptShrink.cpp" />
-    <ClCompile Include="src\backend\OptValues.cpp" />
-    <ClCompile Include="src\backend\Optimizer.cpp" />
     <ClCompile Include="src\backend\Spelling.cpp" />
+    <ClCompile Include="src\backend\Tms6747.cpp" />
     <ClCompile Include="src\backend\Walker.cpp" />
     <ClCompile Include="src\backend\X86_64Linux.cpp" />
     <ClCompile Include="src\backend\X86_64Windows.cpp" />
+    <ClCompile Include="src\optimizer\Inliner.cpp" />
+    <ClCompile Include="src\optimizer\MirAlloc.cpp" />
+    <ClCompile Include="src\optimizer\MirLocals.cpp" />
+    <ClCompile Include="src\optimizer\MirWebs.cpp" />
+    <ClCompile Include="src\optimizer\OptAlign.cpp" />
+    <ClCompile Include="src\optimizer\OptDataflow.cpp" />
+    <ClCompile Include="src\optimizer\OptDead.cpp" />
+    <ClCompile Include="src\optimizer\OptDivide.cpp" />
+    <ClCompile Include="src\optimizer\OptEffects.cpp" />
+    <ClCompile Include="src\optimizer\OptFlow.cpp" />
+    <ClCompile Include="src\optimizer\OptFrame.cpp" />
+    <ClCompile Include="src\optimizer\OptHoist.cpp" />
+    <ClCompile Include="src\optimizer\OptIr.cpp" />
+    <ClCompile Include="src\optimizer\OptJumps.cpp" />
+    <ClCompile Include="src\optimizer\OptLoops.cpp" />
+    <ClCompile Include="src\optimizer\OptMemory.cpp" />
+    <ClCompile Include="src\optimizer\OptPass.cpp" />
+    <ClCompile Include="src\optimizer\OptPipeline.cpp" />
+    <ClCompile Include="src\optimizer\OptShrink.cpp" />
+    <ClCompile Include="src\optimizer\OptTable.cpp" />
+    <ClCompile Include="src\optimizer\OptValues.cpp" />
+    <ClCompile Include="src\optimizer\Optimizer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

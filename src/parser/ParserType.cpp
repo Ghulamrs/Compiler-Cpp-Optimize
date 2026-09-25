@@ -33,6 +33,15 @@ const Type *Parser::memberTypeWalk(const Type *t) {
                                      member + "' without an object is C++11 "
                                      "and is not supported yet - 'sizeof' an "
                                      "object of the class, or its type");
+        // A static data member reached through a template's argument list,
+        // `Box<int>::count`, is the refusal EXCLUSIONS names - not a missing
+        // type (the cl review's A23); a typedef for the instantiation reaches it.
+        if (found == nullptr && t->isSpecialization() && t->findStaticMember(member) != nullptr &&
+            (peekAt(2).is("=") || peekAt(2).is(";")))
+            src_.fail(peekAt(1).pos, "'" + t->tag() + "::" + member + "' names a static "
+                                     "member through the template's argument list, which "
+                                     "is not supported yet - a typedef for '" + t->tag() +
+                                     "' reaches it: typedef " + t->tag() + " B; B::" + member);
         if (found == nullptr)
             src_.fail(peekAt(1).pos, "'" + t->tag() + "' has no member type "
                                      "called '" + member + "'");
@@ -55,6 +64,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     struct Packed {
         static int to(int a, int cap) { return cap != 0 && a > cap ? cap : a; }
     };
+
+    // `struct alignas(16) S` - the class's own alignment, folded into the
+    // layout below as if a member had asked for it.
+    int classAlign = 0;
+    while (peek().is("alignas")) {
+        int a = alignasSpecifier();
+        if (a > classAlign) classAlign = a;
+    }
 
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
@@ -267,6 +284,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         }
     };
 
+    std::size_t membersFromBases = 0;
     for (std::size_t li = 0; li < layOrder.size(); li++) {
         // A virtual base is not in that order at all: it goes after every
         // non-virtual byte, which is not known until the members have been read.
@@ -333,8 +351,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (m.access == Access::Private) m.access = Access::Private;
             else if (how == Access::Private) m.access = Access::Private;
             else if (how == Access::Protected) m.access = Access::Protected;
+            // The same name already copied down from an earlier base: both
+            // are ambiguous in this class - [class.member.lookup] - though a
+            // member the class writes itself, added after, hides them both.
+            for (std::size_t j = 0; j < membersFromBases; j++)
+                if (members[j].name == m.name) { members[j].ambiguous = true; m.ambiguous = true; }
             members.push_back(m);
         }
+        membersFromBases = members.size();
         baseAt[bi] = at;
         endsZero = b->endsWithZeroSized();
         if (!leadsKnown) { leadsZero = b->leadsWithZeroSized(); leadsKnown = true; }
@@ -356,7 +380,76 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // constructor and the destructor walk this list.
     for (std::size_t bi = 0; bi < written.size(); bi++)
         if (!written[bi].isVirtual)
-            type->addBase(written[bi].type, baseAt[bi], written[bi].access);
+            type->addBase(written[bi].type, baseAt[bi], written[bi].access,
+                          false, true, static_cast<int>(bi));
+    const std::size_t nonVirtualBases = type->bases().size();
+    // **The virtual bases, one each, and the set is transitive.**
+    struct Gather {
+        // `Dia : D1, D2` writes no `virtual` yet lays V down, "most derived"
+        // being about the object; and the walk is clang's preorder: each
+        // direct base as written, a virtual one as met, then those behind it.
+        static void of(const Type *t, std::vector<const Type *> &out,
+                       std::vector<Access> &how, Access through) {
+            const std::vector<const Type::BaseSpec *> bs = t->directBases();
+            for (std::size_t i = 0; i < bs.size(); i++) {
+                Access a = (bs[i]->access == Access::Private ||
+                            through == Access::Private) ? Access::Private
+                         : (bs[i]->access == Access::Protected ||
+                            through == Access::Protected) ? Access::Protected
+                                                          : Access::Public;
+                if (bs[i]->isVirtual) {
+                    bool seen = false;
+                    for (std::size_t k = 0; k < out.size(); k++)
+                        if (out[k] == bs[i]->type) seen = true;
+                    if (!seen) { out.push_back(bs[i]->type); how.push_back(a); }
+                }
+                of(bs[i]->type, out, how, a);
+            }
+        }
+    };
+    std::vector<const Type *> vbases;
+    std::vector<Access> vaccess;
+    for (std::size_t bi = 0; bi < written.size(); bi++) {
+        if (written[bi].isVirtual) {
+            bool seen = false;
+            for (std::size_t k = 0; k < vbases.size(); k++)
+                if (vbases[k] == written[bi].type) seen = true;
+            if (!seen) { vbases.push_back(written[bi].type);
+                         vaccess.push_back(written[bi].access); }
+        }
+        Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
+    }
+    // The ones this class *wrote* `virtual` for keep the access it wrote and
+    // are its direct bases; the rest are laid down here all the same but
+    // are not - see BaseSpec::direct.
+    std::vector<int> vwritten(vbases.size(), -1);
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (written[bi].isVirtual)
+            for (std::size_t k = 0; k < vbases.size(); k++)
+                if (vbases[k] == written[bi].type && vwritten[k] < 0) {
+                    vwritten[k] = static_cast<int>(bi);
+                    vaccess[k] = written[bi].access;
+                }
+
+    // **A polymorphic virtual base is refused for the Microsoft ABI**: cl
+    // reaches its functions through vtordisp fields and thunks measured for
+    // no class yet, and the Itanium machinery below is not that.
+    if (target_.microsoftNames())
+        for (std::size_t bi = 0; bi < vbases.size(); bi++)
+            if (vbases[bi]->polymorphic())
+                src_.fail(pos, "'" + tag + "' has a virtual base '" +
+                               vbases[bi]->tag() + "' with virtual functions, "
+                               "and the Microsoft ABI dispatches through that "
+                               "base with vtordisp fields and thunks of its "
+                               "own - not supported for this target yet; the "
+                               "Itanium targets and the C6000 compile it");
+    // **Recorded now, at no offset yet**, so that a member function declared
+    // below is seen to override one of theirs; where each sits is settled
+    // once the non-virtual part is measured.
+    for (std::size_t bi = 0; bi < vbases.size(); bi++)
+        type->addBase(vbases[bi], 0, vaccess[bi], true, vwritten[bi] >= 0,
+                      vwritten[bi]);
+
 
     // **A vptr sits at offset 0**, so the members start after it - measured.
     const bool inheritsVptr = primary != nullptr;
@@ -855,7 +948,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      d.type->describe() + "' - `void` is a "
                                      "type like any other here, and clang "
                                      "refuses that spelling too");
-                const bool memberIsStatic = msc == StorageStatic;
+                // [class.free]/1 and /2: allocation and deallocation
+                // functions are static members whether or not they say so.
+                const bool memberIsStatic = msc == StorageStatic ||
+                    d.name == "operatornew" || d.name == "operatordelete";
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
@@ -961,6 +1057,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const Type *slot = d.type->isReference()
                              ? types_.pointerTo(d.type->referent()) : d.type;
             int a = Packed::to(slot->align(target_), pack);
+            refuseWeakAlignas(mquals.alignAs, slot, d.pos);
+            if (mquals.alignAs > a) a = mquals.alignAs;
             if (a > widest) widest = a;
             const long long openEnd = (msBits && msUnitBits != 0)
                 ? msUnitStart + msUnitBits : bitCursor;
@@ -998,9 +1096,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // not name this member in its own list reads them again.
             if (peek().is("=")) {
                 at_++;
-                if (peek().is("{"))
-                    src_.fail(peek().pos, "a braced member initialiser is not "
-                                          "supported yet - write the value");
+                // **`= {}` and `= {0}` zero the member** - [dcl.init.list]/3
+                // for an array or a scalar - and are the braced forms read;
+                // a list with values in it is refused by name.
+                if (peek().is("{")) {
+                    const bool zeroing = peekAt(1).is("}") ||
+                        (peekAt(1).kind == TokenKind::Num && !peekAt(1).isFloat && peekAt(1).value == 0 &&
+                         peekAt(2).is("}"));
+                    const Type *inner = d.type;
+                    while (inner->isArray()) inner = inner->pointee();
+                    if (!zeroing || d.type->isReference() ||
+                        inner->unqualified()->isStructOrUnion())
+                        src_.fail(peek().pos, "a braced member initialiser with "
+                                              "values is not supported yet - "
+                                              "'= {}' and '= {0}' zero an array "
+                                              "or a scalar member; write the "
+                                              "rest as a value");
+                }
                 memberInit_[tag + "::" + d.name] = at_;
                 skipMemberInitialiser();
             }
@@ -1065,15 +1177,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         }
     } else if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
                kind != Kind::Union) {
-        // **The same rule on Itanium, and the same correction.** A class with
-        // no primary base to take a vptr from puts one at offset 0, in front
-        // of every base: clang lays `Z : A` as vptr 0, A 8, z 12.
-        const int slot = 8;
+        // **The same rule on Itanium, and the same correction.** With no
+        // primary base to take a vptr from, one goes at offset 0, in front of
+        // every base (clang: `Z : A` is vptr 0, A 8, z 12).
+
+        // The vptr is one pointer wide - four on the C6000 - and what follows
+        // keeps its own alignment: a double after a four-byte vptr sits at 8,
+        // so the shift is the vptr rounded up to the widest alignment so far.
+        const int vptr = pointerBytes();
+        const int slot = alignTo(vptr, widest);
         for (std::size_t i = 0; i < members.size(); i++)
             members[i].offset += slot;
         type->shiftBaseOffsets(slot);
         bitCursor += static_cast<long long>(slot) * 8;
-        if (widest < slot) widest = slot;
+        if (widest < vptr) widest = vptr;
     }
 
     // The open unit's full width counts toward the class's size, not just the
@@ -1097,47 +1214,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (anyVirtualBase)
         type->setNvDataSize(static_cast<int>((totalBits + 7) / 8));
 
-    // **The virtual bases, one each, after all the non-virtual data**, and the set is transitive:
-    // `Dia : D1, D2` writes no `virtual` itself yet is the class that has to lay V down, because
-    // "most derived" is about the object being built and not about who wrote the keyword.
-    struct Gather {
-        static void of(const Type *t, std::vector<const Type *> &out,
-                       std::vector<Access> &how, Access through) {
-            const std::vector<Type::BaseSpec> &bs = t->bases();
-            for (std::size_t i = 0; i < bs.size(); i++) {
-                Access a = (bs[i].access == Access::Private ||
-                            through == Access::Private) ? Access::Private
-                         : (bs[i].access == Access::Protected ||
-                            through == Access::Protected) ? Access::Protected
-                                                          : Access::Public;
-                if (bs[i].isVirtual) {
-                    bool seen = false;
-                    for (std::size_t k = 0; k < out.size(); k++)
-                        if (out[k] == bs[i].type) seen = true;
-                    if (!seen) { out.push_back(bs[i].type); how.push_back(a); }
-                }
-                of(bs[i].type, out, how, a);
-            }
-        }
-    };
-    std::vector<const Type *> vbases;
-    std::vector<Access> vaccess;
-    // The ones this class *wrote* `virtual` for. The gather below adds those
-    // it only inherits, which are laid down here all the same but are not
-    // direct bases of it - see BaseSpec::direct.
-    std::size_t vbasesWritten = 0;
-    for (std::size_t bi = 0; bi < written.size(); bi++)
-        if (written[bi].isVirtual) {
-            bool seen = false;
-            for (std::size_t k = 0; k < vbases.size(); k++)
-                if (vbases[k] == written[bi].type) seen = true;
-            if (!seen) { vbases.push_back(written[bi].type);
-                         vaccess.push_back(written[bi].access); }
-        }
-    vbasesWritten = vbases.size();
-    for (std::size_t bi = 0; bi < written.size(); bi++)
-        Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
-
     for (std::size_t bi = 0; bi < vbases.size(); bi++) {
         const Type *b = vbases[bi];
         const long long byteCursor = (totalBits + 7) / 8;
@@ -1147,6 +1223,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         for (std::size_t i = 0; i < inherited.size(); i++) {
             Member m = inherited[i];
             m.offset += at;
+            // Its own virtual bases are this class's to lay down, once each:
+            // the members it holds past its non-virtual part are theirs.
+            if (b->hasVirtualBase() && m.offset >= b->nvDataSize() + at) continue;
             if (m.declaredIn == nullptr) m.declaredIn = b;
             if (m.access == Access::Private) m.access = Access::Private;
             else if (vaccess[bi] == Access::Private) m.access = Access::Private;
@@ -1154,8 +1233,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (m.inVirtualBase == nullptr) m.inVirtualBase = b;
             members.push_back(m);
         }
-        type->addBase(b, at, vaccess[bi], true, bi < vbasesWritten);
-        totalBits = static_cast<long long>(at + b->dataSize()) * 8;
+        type->setBaseOffset(nonVirtualBases + bi, at);
+        totalBits = static_cast<long long>(at + b->nvDataSize()) * 8;
         if (balign > widest) widest = balign;
     }
 
@@ -1170,10 +1249,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                        "compiler can lay out: its members need " +
                        std::to_string((totalBits + 7) / 8) + " bytes, past "
                        "the 2147483647 an object here is measured in");
+    if (classAlign > widest) widest = classAlign;
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     if (sizeFloor > size) size = static_cast<int>(alignTo(static_cast<int>(sizeFloor), widest));
     int align = widest;
     if (members.empty() && totalBits == 0 && sizeFloor == 0) { size = 1; align = 1; }
+    if (classAlign > align) { align = classAlign; size = static_cast<int>(alignTo(size, align)); }
     // **An empty class has sizeof 1 and a data size of 0**, which is the empty base
     // optimisation Itanium requires and both oracles do. **And tail padding is reused
     // only where the ABI says**: Itanium for a non-POD base, never on Microsoft.
@@ -1244,6 +1325,36 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     return type;
 }
 
+// [dcl.align]/5: an alignment weaker than the type's own is ill-formed, not
+// ignored - clang refuses it, and a program that asks is mistaken.
+void Parser::refuseWeakAlignas(int asked, const Type *t, std::size_t pos) {
+    if (asked == 0 || asked >= t->align(target_)) return;
+    src_.fail(pos, "'alignas(" + std::to_string(asked) + ")' is weaker than "
+                   "the " + std::to_string(t->align(target_)) + " that '" +
+                   t->describe() + "' already needs");
+}
+
+// `alignas(N)` or `alignas(T)`: the alignment asked for, a power of two.
+// [dcl.align]/2 - one weaker than the type's own is ignored, not an error.
+int Parser::alignasSpecifier() {
+    std::size_t pos = peek().pos;
+    expect("alignas");
+    expect("(");
+    long long asked;
+    if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
+        StorageClass sc;
+        const Type *t = declarator(specifiers(&sc), true).type;
+        asked = t->align(target_);
+    } else {
+        asked = constantExpression("an alignment");
+    }
+    expect(")");
+    if (asked < 0 || asked > 4096 || (asked & (asked - 1)) != 0)
+        src_.fail(pos, "an alignment must be a power of two up to 4096, and " +
+                       std::to_string(asked) + " is not");
+    return static_cast<int>(asked);
+}
+
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
 
@@ -1260,13 +1371,18 @@ const Type *Parser::enumSpecifier() {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
-    // **An enum-base fixes the underlying type**, `enum E : unsigned char`,
-    // which is what makes the enumeration's size and range something the
-    // program chose.
-    if (peek().is(":"))
-        src_.fail(peek().pos, "an enum-base - 'enum E : T' - is not supported "
-                              "yet: every enumeration is an int here, so the "
-                              "underlying type cannot be chosen");
+    // **An enum-base fixes the underlying type** - `enum E : unsigned char` -
+    // and with it the enumeration's size, signedness and the type of each
+    // enumerator; [dcl.enum]/5 wants an integral type that is not bool.
+    const Type *underlying = nullptr;
+    if (consume(":")) {
+        std::size_t upos = peek().pos;
+        StorageClass usc;
+        underlying = specifiers(&usc)->unqualified();
+        if (!underlying->isInteger() || underlying->kind() == Kind::Bool)
+            src_.fail(upos, "an enum-base must be an integral type other than "
+                            "bool, and '" + underlying->describe() + "' is not");
+    }
 
     // **An enum is named through what encloses it**, the same way a class is:
     // `C::Kind` inside a class and `n::Kind` inside a namespace.
@@ -1276,12 +1392,21 @@ const Type *Parser::enumSpecifier() {
     else if (!namespaceStack_.empty()) prefix = namespacePrefix();
 
     // The tag names a type, as a class tag does. What it does not yet name is
-    // a *distinct* type: an enumeration is still int here, so the conversions
-    // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
-    if (!tag.empty())
-        declareTypeName(prefix + tag, types_.enumType(prefix + tag));
+    // a *distinct* type: an enumeration is still its integer here, so the
+    // conversions C++ refuses in both directions are accepted (CONFORMANCE.md).
+    const Type *self = nullptr;
+    if (!tag.empty()) {
+        self = types_.enumType(prefix + tag,
+                               underlying != nullptr ? underlying->kind() : Kind::Int);
+        declareTypeName(prefix + tag, self);
+    }
+    // What a based enumeration's values are: its own type, so that `sizeof(A)`
+    // and the promotions come out as the base says. An int enum stays int.
+    const Type *valueType = underlying == nullptr ? nullptr
+                          : self != nullptr ? self : underlying;
+    const Type *narrowAs = underlying != nullptr ? underlying : types_.intType();
 
-    if (!peek().is("{")) return types_.intType();
+    if (!peek().is("{")) return valueType != nullptr ? valueType : types_.intType();
     at_++;
 
     long long next = 0;
@@ -1290,16 +1415,23 @@ const Type *Parser::enumSpecifier() {
         std::string name = expectIdent("an enumerator");
         if (findEnum(prefix + name))
             src_.fail(npos, "'" + name + "' is declared twice");
-        if (consume("="))
-            next = narrowTo(constantExpression("a constant"), types_.intType());
+        if (consume("=")) {
+            const long long given = constantExpression("a constant");
+            next = narrowTo(given, narrowAs);
+            // [dcl.enum]/5: a value the base cannot hold is ill-formed, not wrapped.
+            if (underlying != nullptr && next != given)
+                src_.fail(npos, "'" + name + " = " + std::to_string(given) +
+                                "' does not fit the enum-base '" +
+                                underlying->describe() + "'");
+        }
         enumIndex_[prefix + name] = enums_.size();
-        enums_.push_back(EnumConst{ prefix + name, next });
+        enums_.push_back(EnumConst{ prefix + name, next, valueType });
         next = next + 1;
         if (!consume(",")) break;
     }
     expect("}");
     if (enums_.empty()) src_.fail(pos, "enum has no enumerators");
-    return types_.intType();
+    return valueType != nullptr ? valueType : types_.intType();
 }
 
 // The specifiers are read without their qualifiers here, and specifiers() folds the
@@ -1404,6 +1536,28 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     }
 
     for (;;) {
+        if (peek().is("alignas")) {
+            int a = alignasSpecifier();
+            if (a > quals->alignAs) quals->alignAs = a;
+            continue;
+        }
+        // **The two C++11 attributes are read and change nothing** - a
+        // promise about the function, a memory order - `[[deprecated]]` is
+        // C++14 and anything else is not standard: both refused by name.
+        if (peek().is("[") && peekAt(1).is("[")) {
+            const std::size_t apos = peek().pos;
+            at_ += 2;
+            const std::string which = peek().kind == TokenKind::Ident ? peek().text : "";
+            if (which != "noreturn" && which != "carries_dependency")
+                src_.fail(apos, "the attribute '[[" + which + "]]' is not "
+                                "supported - C++11 has '[[noreturn]]' and "
+                                "'[[carries_dependency]]', which are read; "
+                                "'[[deprecated]]' is C++14");
+            at_++;
+            expect("]");
+            expect("]");
+            continue;
+        }
         if (consume("static"))  { *storage = StorageStatic; continue; }
         // **`extern template` suppresses an implicit instantiation** in this
         // translation unit and promises one elsewhere. Every specialization
@@ -1440,7 +1594,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     }
 
     // wchar_t is a type of its own in C++, not the typedef C makes it.
-    if (consume("wchar_t")) return types_.get(target_.wcharType());
+    if (consume("wchar_t")) return types_.get(Kind::WChar);
     // **`Point::Point(...)` has no type before the name, and the name is a type.**
     if (atUntypedMemberDefinition()) return types_.get(Kind::Void);
 
@@ -1456,11 +1610,24 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // **`typename` is a hint this compiler does not need, so it is read and dropped.**
     // It tells a parser that a dependent qualified name is a type, which matters only
     // where a body is parsed before its arguments; this one replays at instantiation.
+    bool sawTypename = false;
     if (consume("typename")) {
+        sawTypename = true;
         if (peek().kind != TokenKind::Ident)
             src_.fail(peek().pos, "'typename' introduces a qualified type "
                                   "name, and this is not one");
     }
+    // **`X::type` with X a template parameter needs the `typename`** -
+    // [temp.res]/3, cl's C7510. The body is replayed with X bound, so the
+    // member is found either way; the rule is kept because cl keeps it (A27).
+    if (!sawTypename && peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        peekAt(2).kind == TokenKind::Ident &&
+        boundTypeParams_.find(peek().text) != boundTypeParams_.end())
+        src_.fail(peek().pos, "'" + peek().text + "::" + peekAt(2).text +
+                              "' names a member of the template parameter '" +
+                              peek().text + "', and whether that is a type "
+                              "depends on the argument - write 'typename " +
+                              peek().text + "::" + peekAt(2).text + "'");
 
     // A class template with its arguments *is* a type. A function template
     // named where a type was expected is not, and is refused by name.
@@ -1746,18 +1913,21 @@ std::string Parser::operatorName() {
 
     const std::string spelling = peek().text;
 
-    if (spelling == "new" || spelling == "delete")
-        src_.fail(pos, "'operator " + spelling + "' is not supported yet - "
-                       "a new-expression here calls the platform's '" +
-                       spelling + "' by name, and replacing that one is more "
-                       "than giving this a name");
+    // **The array forms are refused by name**: `new T[n]` calls the
+    // platform's `operator new[]` and a class's plain `operator new` is not
+    // consulted for it, so a declared one could not be reached.
+    if ((spelling == "new" || spelling == "delete") && peekAt(1).is("["))
+        src_.fail(pos, "'operator " + spelling + "[]' is not supported yet - "
+                       "the array forms are the platform's; 'operator " +
+                       spelling + "' can be declared, replaced and given to a class");
     if (spelling == "->*")
         src_.fail(pos, "'operator->*' is not supported yet");
     if (peek().kind == TokenKind::Str)
         src_.fail(pos, "a user-defined literal is not supported yet");
     // **A type after `operator` is a conversion function**, not an operator
-    // that happens to be spelled with letters.
-    if (peek().kind != TokenKind::Punct) {
+    // that happens to be spelled with letters - `new` and `delete` being the
+    // two that are.
+    if (peek().kind != TokenKind::Punct && spelling != "new" && spelling != "delete") {
         StorageClass csc;
         Qualifiers cq;
         const Type *to = specifiers(&csc, &cq);
@@ -1797,9 +1967,42 @@ std::string Parser::operatorName() {
 // list, so it is asked once that is read. Accepting one leaves an uncallable function.
 void Parser::checkOperatorDeclarable(const std::string &name,
                                      const std::vector<const Type *> &params,
-                                     bool member, std::size_t pos) {
+                                     bool member, std::size_t pos,
+                                     bool internal) {
     const std::string spelling = operatorSpelling(name);
     if (spelling.empty() || findOperator(spelling) == nullptr) return;
+    // **An allocation function is an operator in name only** - [basic.stc.dynamic]:
+    // `operator new` takes a size_t and `operator delete` a `void *`, member or
+    // not, and nothing below applies to them.
+    if (spelling == "new" || spelling == "delete") {
+        if (!member && internal)
+            src_.fail(pos, "'" + name + "' at namespace scope cannot be "
+                           "static - [basic.stc.dynamic]/2 makes the "
+                           "replacement the one the whole program calls");
+        const bool sized = spelling == "new";
+        const Type *first = params.empty() ? nullptr : params[0]->unqualified();
+        const bool ok = first != nullptr &&
+                        (sized ? first == types_.get(target_.sizeType())
+                               : (first->isPointer() && first->pointee()->unqualified()->isVoid()));
+        if (!ok)
+            src_.fail(pos, "'" + name + "' must take " +
+                           std::string(sized ? "a size_t" : "a 'void *'") +
+                           " first - [basic.stc.dynamic.allocation]");
+        // The library's placement pair - `(size_t, void *)`, `(void *, void
+        // *)` - may be declared, as <new> declares it; `new (p) T` builds at
+        // p without calling it, which is what that pair does.
+        if (params.size() == 2 && !member) {
+            const Type *second = params[1]->unqualified();
+            if (second->isPointer() && second->pointee()->unqualified()->isVoid()) return;
+        }
+        if (params.size() != 1)
+            src_.fail(pos, "'" + name + "' with " + std::to_string(params.size()) +
+                           " parameters is not supported yet - the one-parameter "
+                           "form is what a new-expression and a delete-expression "
+                           "call here, and the library's placement form may be "
+                           "declared");
+        return;
+    }
 
     // **[over.oper]/6: a non-member operator needs a class or an enumeration
     // among its parameters**, or a reference to one.
@@ -1930,10 +2133,11 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         std::size_t open = at_;
         at_++;
         // `int (*p)()` and `int (S::*p)()` are the same shape to this branch: what is
-        // inside the parentheses points at something, so what follows them is a
-        // parameter list and not an array bound - or the inner base is wrong.
-        const bool wrapsMemberPointer = peek().kind == TokenKind::Ident &&
-                                        peekAt(1).is("::") && peekAt(2).is("*");
+        // inside the parentheses points at something, so what follows them is a parameter
+        // list, not an array bound. The class may be nested: `(Nest::In::*m)` (A20).
+        std::size_t q = 0;
+        while (peekAt(q).kind == TokenKind::Ident && peekAt(q + 1).is("::")) q += 2;
+        const bool wrapsMemberPointer = q > 0 && peekAt(q).is("*");
         bool wrapsAPointer = peek().is("*") || wrapsMemberPointer;
 
         declarator(types_.intType(), true, true);

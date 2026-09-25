@@ -14,6 +14,11 @@
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The compiler under test: named by CXX1 when the binary was built elsewhere
+# (a BINDIR build), else the one beside this tree. Relative names are made
+# absolute here because the calls below happen after a cd.
+CXX1="${CXX1:-$ROOT/cpp11.exe}"
+case "$CXX1" in /*) ;; *) CXX1="$(pwd)/$CXX1" ;; esac
 SRC=$1
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
@@ -133,7 +138,7 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     done
     if [ "${skip:-}" = yes ]; then skip=; continue; fi
 
-    if ! "$ROOT/cxx1.exe" -S -arch "$mine" "$SRC" -o "$OUT/mine.s" 2>"$OUT/mine.err"; then
+    if ! "$CXX1" -S -arch "$mine" "$SRC" -o "$OUT/mine.s" 2>"$OUT/mine.err"; then
         echo "$mine: cxx1 refused it"
         sed 's/^/    /' "$OUT/mine.err" | head -3
         status=1

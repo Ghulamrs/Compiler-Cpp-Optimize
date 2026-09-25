@@ -3,9 +3,11 @@
   <ItemGroup>
     <Filter Include="Header Files"><UniqueIdentifier>{B1043908-38C6-799F-9FFA-F085E08CBA37}</UniqueIdentifier></Filter>
     <Filter Include="Header Files\backend"><UniqueIdentifier>{DA402ED2-5280-A303-1883-541A88579ED4}</UniqueIdentifier></Filter>
+    <Filter Include="Header Files\optimizer"><UniqueIdentifier>{968B60CF-71CB-C68D-AE8F-0E31CA89BC24}</UniqueIdentifier></Filter>
     <Filter Include="Header Files\parser"><UniqueIdentifier>{4EF6DBE6-71E9-9BB6-D7FF-6A93564BBB34}</UniqueIdentifier></Filter>
     <Filter Include="Source Files"><UniqueIdentifier>{17D24EA4-A08E-901F-6B67-41767BC0C46F}</UniqueIdentifier></Filter>
     <Filter Include="Source Files\backend"><UniqueIdentifier>{BAC44DA1-1890-263F-43B6-2DBBD19F7288}</UniqueIdentifier></Filter>
+    <Filter Include="Source Files\optimizer"><UniqueIdentifier>{ED5EE651-2AB1-29E2-BCB5-10A86AC974CB}</UniqueIdentifier></Filter>
     <Filter Include="Source Files\parser"><UniqueIdentifier>{F7683C0D-65EA-CABF-2CF9-EF5D0C23C3DF}</UniqueIdentifier></Filter>
   </ItemGroup>
   <ItemGroup>
@@ -31,14 +33,38 @@
     <ClCompile Include="..\src\parser\ParserTemplate.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserTopLevel.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserType.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserVtable.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Backend.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Dwarf.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Masm.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Spelling.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Tms6747.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Walker.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\X86_64Linux.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\X86_64Windows.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\Inliner.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\MirAlloc.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\MirLocals.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\MirWebs.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptAlign.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptDataflow.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptDead.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptDivide.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptEffects.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptFlow.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptFrame.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptHoist.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptIr.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptJumps.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptLoops.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptMemory.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptPass.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptPipeline.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptShrink.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptTable.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\OptValues.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\Optimizer.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\Abi.h"><Filter>Header Files</Filter></ClInclude>
@@ -46,6 +72,7 @@
     <ClInclude Include="..\src\Driver.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\Lexer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\Mangle.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Name.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\Operator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\Preprocessor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\Source.h"><Filter>Header Files</Filter></ClInclude>
@@ -58,8 +85,26 @@
     <ClInclude Include="..\src\backend\Dwarf.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Masm.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Spelling.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Tms6747.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Walker.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Linux.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Windows.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\Inliner.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\Mir.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\MirAlloc.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\MirLocals.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptCore.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptCosts.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptDataflow.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptEffects.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptFlow.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptFunction.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptIr.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptLoops.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptPass.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptPasses.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptPipeline.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptTable.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\Optimizer.h"><Filter>Header Files\optimizer</Filter></ClInclude>
   </ItemGroup>
 </Project>

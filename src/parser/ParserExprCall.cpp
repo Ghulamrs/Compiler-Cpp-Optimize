@@ -455,10 +455,13 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     if (slot != 0 && destructorOf(returns) != nullptr)
         pendingTemps_.push_back(Temporary{ slot, returns->unqualified(), 0 });
 
-    // A call that returns a reference is an lvalue, and useReference is what
-    // makes it one: the address comes back in a register and the dereference
-    // around it is what the caller actually named.
-    return useReference(std::move(n));
+    // A call that returns a reference is a glvalue - useReference wraps the
+    // returned address in the dereference the caller named - an lvalue for
+    // `T &` and an xvalue for `T &&`, [expr.call]/10: what std::move binds.
+    const bool xvalue = n->type()->isReference() && n->type()->isRValueReference();
+    ExprPtr made = useReference(std::move(n));
+    if (xvalue) made->setXvalue();
+    return made;
 }
 
 void Parser::claimCallResult(Call &c, int slot) {
@@ -575,6 +578,18 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
                 break;
             }
         }
+        // **A function of a base off the primary chain** - a second base, a
+        // virtual one - is not in this class's table: `addr` is that base's
+        // subobject by now, and its own vptr and slot are what dispatch it.
+        if (index < 0 && owner != plain) {
+            const std::vector<VSlot> &theirs = vtables_[owner->tag()];
+            for (std::size_t i = 0; i < theirs.size(); i++) {
+                if (overrides(theirs[i], name, sig.params, sig.constThis)) {
+                    index = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
         if (index < 0)
             src_.fail(pos, "'" + name + "' is virtual but has no vtable slot in "
                            "'" + plain->describe() + "'");
@@ -663,8 +678,12 @@ static bool derivesFrom(const Type *cls, const Type *want) {
 }
 
 bool Parser::insideAccessOf(const Type *cls, Access access) const {
-    if (cls == nullptr || currentClass_ == nullptr) return false;
+    if (cls == nullptr) return false;
     const Type *want = cls->unqualified();
+    // The class's own body reaches everything it declares - [class.access]/1.
+    for (std::size_t i = 0; i < classStack_.size(); i++)
+        if (classStack_[i] == want) return true;
+    if (currentClass_ == nullptr) return false;
     if (currentClass_ == want) return true;
     if (access == Access::Protected && derivesFrom(currentClass_, want))
         return true;

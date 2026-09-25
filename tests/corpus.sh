@@ -19,7 +19,7 @@
 # Each case says what its program should exit with, in a `// expect: N` line.
 set -u
 cd "$(dirname "$0")/.."
-CXX1=./cxx1.exe
+CXX1="${CXX1:-./cpp11.exe}"
 OUT=tests/out-corpus
 rm -rf "$OUT"; mkdir -p "$OUT"
 

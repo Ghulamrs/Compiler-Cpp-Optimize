@@ -17,7 +17,7 @@
 namespace std {
 
 template <class In, class Out>
-static Out copy(In from, In to, Out into) {
+Out copy(In from, In to, Out into) {
     while (from != to) {
         *into = *from;
         ++into;
@@ -32,25 +32,25 @@ static Out copy(In from, In to, Out into) {
 // reference, and this compiler reads the conditional as a temporary and refuses
 // it. The two forms say the same thing; this one compiles.
 template <class T>
-static const T &min(const T &a, const T &b) {
+const T &min(const T &a, const T &b) {
     if (b < a) return b;
     return a;
 }
 
 template <class T>
-static const T &max(const T &a, const T &b) {
+const T &max(const T &a, const T &b) {
     if (a < b) return b;
     return a;
 }
 
 template <class In, class T>
-static In find(In from, In to, const T &want) {
+In find(In from, In to, const T &want) {
     while (from != to && !(*from == want)) ++from;
     return from;
 }
 
 template <class In, class T>
-static std::size_t count(In from, In to, const T &want) {
+std::size_t count(In from, In to, const T &want) {
     std::size_t seen = 0;
     while (from != to) {
         if (*from == want) seen++;
@@ -66,7 +66,7 @@ static std::size_t count(In from, In to, const T &want) {
 // It needs no scratch memory and moves through the iterator alone, so it works
 // for any iterator that can step both ways.
 template <class It, class Less>
-static void sort(It from, It to, Less less) {
+void sort(It from, It to, Less less) {
     for (It i = from; i != to; ++i)
         for (It j = i; j != from; ) {
             It prev = j;
@@ -81,7 +81,7 @@ static void sort(It from, It to, Less less) {
 
 // The same, ordered by `<` - which is what the two-argument form means.
 template <class It>
-static void sort(It from, It to) {
+void sort(It from, It to) {
     for (It i = from; i != to; ++i)
         for (It j = i; j != from; ) {
             It prev = j;
@@ -98,12 +98,32 @@ static void sort(It from, It to) {
 
 #endif
 
+// **reverse - [alg.reverse].** Swaps from both ends until they meet; the
+// element type is deduced from a pointer to one, this header having no
+// iterator_traits.
+template <class It, class T>
+void reverseSwap(It a, It b, T *) {
+    T held(*a);
+    *a = *b;
+    *b = held;
+}
+
+template <class It>
+void reverse(It from, It to) {
+    while (from != to) {
+        --to;
+        if (from == to) break;
+        reverseSwap(from, to, &*from);
+        ++from;
+    }
+}
+
 // **max_element and min_element - [alg.min.max].** The first iterator whose
 // element no other beats, which is what makes them stable: `<` is asked in the
 // order the standard fixes, so an earlier equal element wins for max_element
 // and for min_element alike. `to` is returned for an empty range.
 template <class It>
-static It max_element(It from, It to) {
+It max_element(It from, It to) {
     if (from == to) return to;
     It best = from;
     for (It i = from; i != to; ++i)
@@ -113,7 +133,7 @@ static It max_element(It from, It to) {
 
 // The same, ordered by a comparison the caller writes.
 template <class It, class Less>
-static It max_element(It from, It to, Less less) {
+It max_element(It from, It to, Less less) {
     if (from == to) return to;
     It best = from;
     for (It i = from; i != to; ++i)
@@ -122,7 +142,7 @@ static It max_element(It from, It to, Less less) {
 }
 
 template <class It>
-static It min_element(It from, It to) {
+It min_element(It from, It to) {
     if (from == to) return to;
     It best = from;
     for (It i = from; i != to; ++i)
@@ -131,7 +151,7 @@ static It min_element(It from, It to) {
 }
 
 template <class It, class Less>
-static It min_element(It from, It to, Less less) {
+It min_element(It from, It to, Less less) {
     if (from == to) return to;
     It best = from;
     for (It i = from; i != to; ++i)

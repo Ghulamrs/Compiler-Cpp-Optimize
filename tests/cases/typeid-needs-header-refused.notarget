@@ -1,0 +1,1 @@
+x86_64-windows  answered first by the target's own refusal: 'typeid' is not built for the Microsoft ABI (typeid.notarget), and that is said before the header is looked for.

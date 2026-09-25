@@ -26,7 +26,7 @@ suites, every commit pushed:
   as a problem, consumed by `webs`.
 - `Pass`/`Group`/`PassManager`, properties (`kPropFlow`, `kPropPhysical`),
   start TODOs, the pipeline in `OptPipeline.cpp`, dumps via
-  `CXX1_DUMP_MIR`.
+  `CPP11_DUMP_MIR`.
 
 Not built (documented stubs, see the architecture doc section 7): EH
 edges, def-use chains, any client of the dominators, the inliner's and the
@@ -113,7 +113,7 @@ Where: `OptDataflow.{h,cpp}` - `DefUse` built from `ReachingDefs`
 defs and each def its uses. `Flow::dominators()` gets its first client.
 Prerequisite: S2, S3.
 
-Verify: no output change (an analysis); a `CXX1_DUMP_MIR` section that
+Verify: no output change (an analysis); a `CPP11_DUMP_MIR` section that
 prints the chains for a case.
 
 ### S5. The register allocator (study step 6; GCC `ira` + `lra`, reduced)

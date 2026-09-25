@@ -31,7 +31,7 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-Two are here now (open.sh counts), and both halves of the movement below are the point. **Five of
+None is here now (open.sh counts), and both halves of the movement below are the point. **Five of
 the original fourteen have been mended and moved out** with their .expected,
 which is the movement the rule above asks for: capture-default-this,
 polymorphic-class-template-zts, catch-return-end-catch, and then
@@ -44,10 +44,20 @@ operator-plus-int-int - each becoming a refusal case in tests/cases with the
 legal shape beside it in refusals-that-must-not-fire.cpp. two-d-array-member,
 the only *miscompile* the register ever held, went with them. A register that only ever
 grows is a list of complaints, and one that only ever shrinks is finished.
-**One arrived in Compiler-Cppi and left the same day** (2026-09-15), and came
-here with 1.3: dtor-throws-unwinding, a destructor that throws while another exception
-unwinds, which the standard says terminates - the Itanium hosts got a
-catch-all row whose pad aborts, and the case sits in tests/cases with only
+**virtual-base-dispatch arrived on 2026-09-15** from the third review: a
+class with a virtual base had no function slots in its vtable, no secondary
+vtable, VTT or virtual thunk, and no deleting destructor - the Itanium
+machinery of virtual inheritance. **It left the same evening with
+virtual-base-second-base and virtual-dtor-through-virtual-base**, the three
+that were that machinery seen from three sides, when it was written
+(CLAUDE.md, "Virtual inheritance proper"); all three sit in tests/cases.
+**wchar-distinct left on 2026-09-15**, wchar_t being a Kind of its own now,
+mangled `w`, an overload apart from int - the third review's T8, seen from
+the link. **One arrived from the fourth target and left the same day** (2026-09-15):
+dtor-throws-unwinding, a destructor that throws while another exception
+unwinds, which the standard says terminates - the C6000 table had cl6x's
+catch-and-terminate scope first, the Itanium hosts got a catch-all row whose
+pad aborts a few hours later, and the case sits in tests/cases with only
 x86_64-windows excused by name.
 
 The original fourteen were re-measured on 2026-09-09 at 48f28a3, one program each,
@@ -72,13 +82,5 @@ same day**, found by the fourth of those: lambda-static-local, a static local
 inside a lambda's body named `operator().n`, which no assembler takes - and
 `~S.d` in a destructor, and one `f.n` for S::f, T::f, f(int) and f(double)
 alike. A static local is named by its function's mangled symbol now, and the
-case in tests/cases holds all of those shapes.
-
-**Two stay here in Compiler-Cpp**, and both are closed elsewhere:
-virtual-base-second-base and virtual-dtor-through-virtual-base are the
-Itanium machinery of virtual inheritance - the vtable group, its `_ZTv`
-thunks, the VTT and the construction vtables - which Compiler-Cppi wrote on
-2026-09-15 (its commit 149f624, 1,491 lines) and 1.3 does not carry. The
-seven fixes above came here from that tree by cherry-pick on 2026-09-17,
-which is why their notes speak of it. An empty register is not a finished
-one: the next program that answers differently from clang goes here.
+case in tests/cases holds all of those shapes. An empty register is not a
+finished one: the next program that answers differently from clang goes here.

@@ -575,7 +575,7 @@ ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
     }
 
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
-    const Type *offsetType = types_.get(Kind::LongLong);
+    const Type *offsetType = ptrdiffType();
     const long long word = charPtr->size(target_);
 
     // The operand is read three times - tested, dereferenced for its vptr, and
@@ -958,10 +958,28 @@ ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,
 }
 
 ExprPtr Parser::newExpression(std::size_t pos) {
-    if (peek().is("("))
-        src_.fail(peek().pos, "placement new is not supported yet - and a "
-                              "parenthesised type after 'new' is read the same "
-                              "way, so write 'new int' rather than 'new (int)'");
+    // **`new (p) T` builds T where p points** - [expr.new]/15 with the
+    // library's placement `operator new(size_t, void *)`, which returns its
+    // argument, so the address is used as it stands; one pointer argument.
+    ExprPtr placement;
+    if (peek().is("(")) {
+        const std::size_t ppos = peek().pos;
+        at_++;
+        if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }())
+            src_.fail(ppos, "a parenthesised type after 'new' is read as a "
+                            "placement here, so write 'new int' rather than "
+                            "'new (int)'");
+        placement = decay(assign());
+        if (peek().is(","))
+            src_.fail(peek().pos, "placement new with more than one argument "
+                                  "is not supported yet - only 'new (p) T', "
+                                  "which builds T at p");
+        expect(")");
+        if (!placement->type()->unqualified()->isPointer())
+            src_.fail(ppos, "the placement argument of 'new' is '" +
+                            placement->type()->describe() + "', and only a "
+                            "pointer - the address to build at - is supported");
+    }
 
     StorageClass sc = StorageNone;
     const Type *made = specifiers(&sc);
@@ -1045,18 +1063,35 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             expect(")");
         }
     }
-    if (constructed && array)
-        src_.fail(pos, "'new T[n]' of a class with a constructor would have to "
-                       "run it once per element - not supported yet");
-
     const Type *sizeT = types_.get(target_.sizeType());
     ExprPtr bytes(new Num(static_cast<long long>(made->size(target_))));
     bytes->setType(sizeT);
+    // **An array of a class**: the count is wanted by the cookie and by the
+    // constructor loop as well as by the allocator, so it goes into a slot.
+    const int cookie = array && placement == nullptr ? arrayCookie(made) : 0;
+    int countSlot = 0;
+    std::string countTemp;
     if (array) {
         ExprPtr n = convert(decay(std::move(count)), sizeT);
+        if (constructed || cookie != 0) {
+            countSlot = allocateFrameSlot(sizeT);
+            countTemp = ".newc" + std::to_string(newTemps_++);
+            ExprPtr held(Var::local(countTemp, countSlot));
+            held->setType(sizeT);
+            ExprPtr save(new Assign(std::move(held), std::move(n)));
+            save->setType(sizeT);
+            n = std::move(save);
+        }
         ExprPtr total(new Binary(BinOp::Mul, std::move(n), std::move(bytes)));
         total->setType(sizeT);
         bytes = std::move(total);
+        if (cookie != 0) {
+            ExprPtr extra(new Num(static_cast<long long>(cookie)));
+            extra->setType(sizeT);
+            ExprPtr sum(new Binary(BinOp::Add, std::move(bytes), std::move(extra)));
+            sum->setType(sizeT);
+            bytes = std::move(sum);
+        }
     }
     // The byte count is wanted twice for `new T[n]()` - once by the allocator
     // and once by the zeroing - and n is any expression, so it is computed
@@ -1074,12 +1109,91 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     const Type *pointer = types_.pointerTo(made);
-    ExprPtr raw = callAllocator(array ? "_Znam" : "_Znwm",
-                                array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
-                                types_.pointerTo(types_.get(Kind::Void)),
-                                std::move(bytes), pos);
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    ExprPtr raw;
+    if (placement != nullptr) {
+        if (array)
+            src_.fail(pos, "placement 'new (p) T[n]' is not supported yet");
+        raw.reset(new Cast(voidPtr, std::move(placement)));
+        raw->setType(voidPtr);
+    } else if (const Signature *own = array ? nullptr : classAllocator(made, "operatornew")) {
+        // [class.free]/2: a class's own `operator new` allocates its objects.
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(bytes));
+        raw = completeCall(own->name, own->symbol, nullptr, own->returns,
+                           own->params, false, pos, std::move(args));
+    } else {
+        // operator new takes a size_t, and its name says which type that is:
+        // `m` on the LP64 targets, `y` on Windows, `j` on the C6000 (_Znwj).
+        const std::string alloc = std::string(array ? "_Zna" : "_Znw") +
+                                  itaniumBuiltinCode(target_.sizeType());
+        raw = callAllocator(alloc.c_str(),
+                            array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
+                            voidPtr, std::move(bytes), pos);
+    }
+    // The cookie: the allocation held, the count written into its last
+    // size_t, and the array beginning after it.
+    if (cookie != 0) {
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        const int rawSlot = allocateFrameSlot(voidPtr);
+        const std::string rawTemp = ".newr" + std::to_string(newTemps_++);
+        auto rawVar = [&]() { ExprPtr e(Var::local(rawTemp, rawSlot)); e->setType(voidPtr); return e; };
+        ExprPtr keep(new Assign(rawVar(), std::move(raw)));
+        keep->setType(voidPtr);
+        ExprPtr asChars(new Cast(chars, rawVar()));
+        asChars->setType(chars);
+        ExprPtr countAt(new Num(static_cast<long long>(cookie - sizeT->size(target_))));
+        countAt->setType(types_.intType());
+        ExprPtr countAddr(new Binary(BinOp::Add, std::move(asChars), std::move(countAt)));
+        countAddr->setType(chars);
+        ExprPtr countPtr(new Cast(types_.pointerTo(sizeT), std::move(countAddr)));
+        countPtr->setType(types_.pointerTo(sizeT));
+        ExprPtr countCell(new Unary('*', std::move(countPtr)));
+        countCell->setType(sizeT);
+        ExprPtr countVal(Var::local(countTemp, countSlot));
+        countVal->setType(sizeT);
+        ExprPtr write(new Assign(std::move(countCell), std::move(countVal)));
+        write->setType(sizeT);
+        ExprPtr asChars2(new Cast(chars, rawVar()));
+        asChars2->setType(chars);
+        ExprPtr skip(new Num(static_cast<long long>(cookie)));
+        skip->setType(types_.intType());
+        ExprPtr start(new Binary(BinOp::Add, std::move(asChars2), std::move(skip)));
+        start->setType(chars);
+        ExprPtr seq1(new Comma(std::move(keep), std::move(write)));
+        seq1->setType(sizeT);
+        ExprPtr seq2(new Comma(std::move(seq1), std::move(start)));
+        seq2->setType(chars);
+        raw.reset(new Cast(voidPtr, std::move(seq2)));
+        raw->setType(voidPtr);
+    }
     ExprPtr typed(new Cast(pointer, std::move(raw)));
     typed->setType(pointer);
+
+    // **`new T[n]` of a class runs the default constructor once per element**
+    // - [expr.new]/17 - by the class's loop, given the array and the count.
+    if (constructed && array) {
+        const int baseSlot = allocateFrameSlot(pointer);
+        const std::string baseTemp = ".newb" + std::to_string(newTemps_++);
+        ExprPtr held(Var::local(baseTemp, baseSlot));
+        held->setType(pointer);
+        ExprPtr keep(new Assign(std::move(held), std::move(typed)));
+        keep->setType(pointer);
+        ExprPtr again(Var::local(baseTemp, baseSlot));
+        again->setType(pointer);
+        ExprPtr n(Var::local(countTemp, countSlot));
+        n->setType(sizeT);
+        ExprPtr built = callVectorLoop(vectorConstructor(made, pos), made,
+                                       std::move(again), std::move(n), pos);
+        ExprPtr seq(new Comma(std::move(keep), std::move(built)));
+        seq->setType(types_.get(Kind::Void));
+        ExprPtr result(Var::local(baseTemp, baseSlot));
+        result->setType(pointer);
+        ExprPtr whole(new Comma(std::move(seq), std::move(result)));
+        whole->setType(pointer);
+        return whole;
+    }
 
     if (!hasInit && !constructed) return typed;
 
@@ -1248,14 +1362,10 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // **The destructor runs before the memory goes back**, as clang emits it.
     const Signature *dtor = destructorOf(t->pointee());
 
-    // **A virtual destructor is reached through the vtable**, the static type not
-    // being the one that has to be destroyed. The slot holds the deleting form,
-    // which frees as well, so this path calls once and never operator delete.
-    if (dtor != nullptr && dtor->isVirtual) {
-        if (array)
-            src_.fail(pos, "'delete[]' of a polymorphic type is not supported "
-                           "yet - the count and the dynamic type are both "
-                           "needed and neither is recorded");
+    // **A virtual destructor is reached through the vtable**, the static type
+    // not being the one to destroy; the slot's deleting form frees as well.
+    // `delete[]` takes the static type - [expr.delete]/3 - and goes below.
+    if (dtor != nullptr && dtor->isVirtual && !array) {
         const Type *cls = t->pointee()->unqualified();
         const std::vector<VSlot> &slots = vtables_[cls->tag()];
         int index = -1;
@@ -1319,11 +1429,52 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         return both;
     }
 
+    // **`delete[] p` of a class with a destructor**: the count from the
+    // cookie in front of the array, the elements destroyed last first by
+    // the class's loop, and the allocation freed from where it began.
+    if (dtor != nullptr && array) {
+        const Type *sizeT = types_.get(target_.sizeType());
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        const int cookie = arrayCookie(t->pointee());
+        const int slot = allocateFrameSlot(t);
+        const std::string temp = ".del" + std::to_string(refTemps_++);
+        auto held = [&]() { ExprPtr e(Var::local(temp, slot)); e->setType(t); return e; };
+        ExprPtr save(new Assign(held(), std::move(what)));
+        save->setType(t);
+
+        ExprPtr asChars(new Cast(chars, held()));
+        asChars->setType(chars);
+        ExprPtr back(new Num(static_cast<long long>(-sizeT->size(target_))));
+        back->setType(types_.intType());
+        ExprPtr countAddr(new Binary(BinOp::Add, std::move(asChars), std::move(back)));
+        countAddr->setType(chars);
+        ExprPtr countPtr(new Cast(types_.pointerTo(sizeT), std::move(countAddr)));
+        countPtr->setType(types_.pointerTo(sizeT));
+        ExprPtr n(new Unary('*', std::move(countPtr)));
+        n->setType(sizeT);
+        ExprPtr run = callVectorLoop(vectorDestructor(t->pointee()->unqualified(), pos),
+                                     t->pointee()->unqualified(), held(), std::move(n), pos);
+
+        ExprPtr asChars2(new Cast(chars, held()));
+        asChars2->setType(chars);
+        ExprPtr toStart(new Num(static_cast<long long>(-cookie)));
+        toStart->setType(types_.intType());
+        ExprPtr start(new Binary(BinOp::Add, std::move(asChars2), std::move(toStart)));
+        start->setType(chars);
+        const Type *vp = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr freed(new Cast(vp, std::move(start)));
+        freed->setType(vp);
+        ExprPtr release = callAllocator("_ZdaPv", "??_V@YAXPEAX@Z",
+                                        types_.get(Kind::Void), std::move(freed), pos);
+        ExprPtr both(new Comma(std::move(run), std::move(release)));
+        both->setType(types_.get(Kind::Void));
+        ExprPtr all(new Comma(std::move(save),
+                              guardAgainstNull(temp, slot, t, std::move(both))));
+        all->setType(types_.get(Kind::Void));
+        return all;
+    }
+
     if (dtor != nullptr) {
-        if (array)
-            src_.fail(pos, "'delete[]' of a type with a destructor needs the "
-                           "count that 'new[]' recorded, and this compiler does "
-                           "not write one - not supported yet");
         int slot = allocateFrameSlot(t);
         std::string temp = ".del" + std::to_string(refTemps_++);
 
@@ -1345,9 +1496,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         const Type *vp = types_.pointerTo(types_.get(Kind::Void));
         ExprPtr freed(new Cast(vp, std::move(again)));
         freed->setType(vp);
-        ExprPtr release = callAllocator("_ZdlPv", "??3@YAXPEAX@Z",
-                                        types_.get(Kind::Void),
-                                        std::move(freed), pos);
+        ExprPtr release = deallocate(t->pointee(), std::move(freed), pos);
         ExprPtr all(new Comma(std::move(both), std::move(release)));
         all->setType(types_.get(Kind::Void));
         return all;
@@ -1357,9 +1506,38 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     ExprPtr raw(new Cast(voidPtr, std::move(what)));
     raw->setType(voidPtr);
 
-    return callAllocator(array ? "_ZdaPv" : "_ZdlPv",
-                         array ? "??_V@YAXPEAX@Z" : "??3@YAXPEAX@Z",
-                         types_.get(Kind::Void), std::move(raw), pos);
+    if (array)
+        return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
+                             std::move(raw), pos);
+    return deallocate(t->pointee(), std::move(raw), pos);
+}
+
+// A class's own `operator new` or `operator delete`, else null - looked up
+// in the class and then its bases, as [class.free] finds them.
+const Parser::Signature *Parser::classAllocator(const Type *made,
+                                                const char *which) {
+    const Type *cls = made->unqualified();
+    while (cls != nullptr && cls->isStructOrUnion() && !cls->tag().empty()) {
+        if (const std::vector<std::size_t> *set = overloadsOf(cls->tag() + "::" + which))
+            return &functions_[(*set)[0]];
+        const std::vector<Type::BaseSpec> &bs = cls->bases();
+        cls = bs.empty() ? nullptr : bs[0].type->unqualified();
+    }
+    return nullptr;
+}
+
+// What `delete p` frees with: the class's own `operator delete` where it
+// declared one, else the platform's.
+ExprPtr Parser::deallocate(const Type *pointee, ExprPtr raw, std::size_t pos) {
+    if (const Signature *own = classAllocator(pointee, "operatordelete")) {
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(raw));
+        return completeCall(own->name, own->symbol, nullptr, own->returns,
+                            own->params, false, pos, std::move(args));
+    }
+    return callAllocator("_ZdlPv", "??3@YAXPEAX@Z", types_.get(Kind::Void),
+                         std::move(raw), pos);
 }
 
 // **[expr.delete]/2: deleting a null pointer has no effect**, and running the
@@ -1386,4 +1564,85 @@ ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
                                     std::move(skipped)));
     guarded->setType(types_.intType());
     return guarded;
+}
+
+// **`typeid` names a type_info object** - [expr.typeid]: the static type's
+// for a type-id or a non-polymorphic operand, unevaluated; read through the
+// vptr for a polymorphic glvalue, a word before the vtable's address point.
+ExprPtr Parser::typeidExpression(std::size_t pos) {
+    if (target_.microsoftNames())
+        src_.fail(pos, "'typeid' is not supported yet for x86_64-windows - the "
+                       "Microsoft ABI answers it with a type descriptor per "
+                       "type and __RTtypeid, which are not built here");
+    const Type *info = findTypedef("std::type_info");
+    if (info == nullptr || !info->isStructOrUnion())
+        src_.fail(pos, "'typeid' needs std::type_info, so include <typeinfo>");
+    const Type *infoPtr = types_.pointerTo(types_.withConst(info));
+    expect("(");
+
+    const Type *named = nullptr;
+    ExprPtr operand;
+    // The temporaries an operand makes are kept only when it is evaluated -
+    // the polymorphic glvalue below; the static form is unevaluated and
+    // hands them back the way sizeof does.
+    const std::vector<Temporary> savedTemps = pendingTemps_;
+    const std::vector<Alive> savedAlive = alive_;
+    if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
+        StorageClass sc;
+        named = declarator(specifiers(&sc), true).type;
+    } else {
+        operand = expr();
+    }
+    expect(")");
+
+    ExprPtr address;
+    const Type *subject = named != nullptr ? named : operand->type();
+    if (subject->isReference()) subject = subject->referent();
+    subject = subject->unqualified();
+    const bool glvalue = operand != nullptr &&
+        (operand->type()->isReference() ||
+         dynamic_cast<const MemberAccess *>(operand.get()) != nullptr ||
+         (dynamic_cast<const Unary *>(operand.get()) != nullptr &&
+          static_cast<const Unary *>(operand.get())->op() == '*') ||
+         (dynamic_cast<const Var *>(operand.get()) != nullptr &&
+          !static_cast<const Var *>(operand.get())->noAddress()));
+    if (!(glvalue && subject->isStructOrUnion() && subject->polymorphic())) {
+        pendingTemps_ = savedTemps;
+        alive_ = savedAlive;
+    }
+    if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
+        // The object's first word is the vptr; the type_info pointer sits
+        // one word below the address point it holds.
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        ExprPtr at(new Unary('&', std::move(operand)));
+        at->setType(types_.pointerTo(subject));
+        ExprPtr vptrAt(new Cast(types_.pointerTo(chars), std::move(at)));
+        vptrAt->setType(types_.pointerTo(chars));
+        ExprPtr vptr(new Unary('*', std::move(vptrAt)));
+        vptr->setType(chars);
+        ExprPtr back(new Num(static_cast<long long>(-pointerBytes())));
+        back->setType(types_.intType());
+        ExprPtr slot(new Binary(BinOp::Add, std::move(vptr), std::move(back)));
+        slot->setType(chars);
+        ExprPtr slotPtr(new Cast(types_.pointerTo(infoPtr), std::move(slot)));
+        slotPtr->setType(types_.pointerTo(infoPtr));
+        address.reset(new Unary('*', std::move(slotPtr)));
+        address->setType(infoPtr);
+    } else {
+        std::string why;
+        const std::string sym = typeInfoSymbolFor(subject, pos, &why);
+        if (sym.empty())
+            src_.fail(pos, "'typeid' cannot name the type of this: " + why);
+        Var *ti = Var::global(sym);
+        ti->setSymbol(sym);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(types_.pointerTo(types_.get(Kind::Char)));
+        address.reset(new Cast(infoPtr, std::move(addr)));
+        address->setType(infoPtr);
+    }
+    ExprPtr object(new Unary('*', std::move(address)));
+    object->setType(types_.withConst(info));
+    return object;
 }

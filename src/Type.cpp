@@ -52,7 +52,7 @@ int Type::size(const Target &t) const {
 
 int Type::align(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->align(t);
-    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
+    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : t.alignOf(Kind::Pointer);
     if (isReference()) return pointee_->align(t);
     if (kind_ == Kind::Array) return pointee_->align(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return align_;
@@ -326,10 +326,10 @@ Type *TypeTable::structType(Kind kind, const std::string &tag) {
     return t;
 }
 
-Type *TypeTable::enumType(const std::string &tag) {
+Type *TypeTable::enumType(const std::string &tag, Kind underlying) {
     for (Type *d : derived_)
-        if (!d->isConst() && d->kind() == Kind::Int && d->tag_ == tag) return d;
-    Type *t = new Type(Kind::Int);
+        if (!d->isConst() && d->isEnumeration() && d->tag_ == tag) return d;
+    Type *t = new Type(underlying);
     t->tag_ = tag;
     derived_.push_back(t);
     return t;
@@ -344,6 +344,7 @@ Type *TypeTable::anonymousStruct(Kind kind) {
 bool Type::isSigned(const Target &t) const {
     switch (kind_) {
     case Kind::Char:      return t.plainCharIsSigned();
+    case Kind::WChar:     return t.wcharType() != Kind::UShort && t.wcharType() != Kind::UInt;
     case Kind::SChar:
     case Kind::Short:
     case Kind::Int:
@@ -361,6 +362,7 @@ int Type::rank() const {
     case Kind::Bool:                                           return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar:       return 1;
     case Kind::Short: case Kind::UShort:                       return 2;
+    case Kind::WChar:                                          return 2;   // promotes to int whatever its width
     case Kind::Int: case Kind::UInt:                           return 3;
     case Kind::Long: case Kind::ULong:                         return 4;
     case Kind::LongLong: case Kind::ULongLong:                 return 5;
@@ -429,6 +431,7 @@ const char *Type::name() const {
     case Kind::UChar:     return "unsigned char";
     case Kind::Short:     return "short";
     case Kind::UShort:    return "unsigned short";
+    case Kind::WChar:     return "wchar_t";
     case Kind::Int:       return "int";
     case Kind::UInt:      return "unsigned int";
     case Kind::Long:      return "long";

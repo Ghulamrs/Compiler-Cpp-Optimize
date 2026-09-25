@@ -9,8 +9,10 @@
 //
 // **`static`, so each translation unit gets its own.** A header-only library
 // has no other choice: an `extern` object would need a definition in some
-// object file, and there is none to put it in. The observable difference is
-// nil for a program compiled as one unit, which is how this compiler is used.
+// object file, and there is none to put it in, and an `inline` variable is
+// C++17. The functions moved to `inline` on 2026-09-19; these cannot follow.
+// The observable difference is nil for a program compiled as one unit, and
+// for one compiled as several it is a `width`/`precision` per unit.
 #ifndef _CXX1_IOSTREAM
 #define _CXX1_IOSTREAM
 

@@ -16,6 +16,10 @@ rem  The parser is shared, so a diagnostic here usually repeats what the other
 rem  two boxes proved - except where it does not: `throw`, `try` and a class
 rem  with a destructor are refused *only* for x86_64-windows, and until this
 rem  loop existed no box checked those at all.
+rem
+rem  CXX1_CASES_FLAGS, if set, goes on every compile - `-masm=masm` with CPP11_AS
+rem  naming the project's own assembler puts the whole suite through it instead
+rem  of clang, which is how that assembler's COMDAT was proven.
 setlocal enabledelayedexpansion
 if "%~1"=="" (echo run-cases.cmd: needs the tree root & exit /b 2)
 set ROOT=%~1
@@ -40,7 +44,7 @@ for %%f in (%ROOT%\tests\cases\*.expected) do (
         echo   skip !NAME! for x86_64-windows:
         findstr /C:"x86_64-windows" %ROOT%\tests\cases\!NAME!.notarget
     ) else (
-        %ROOT%\cxx1-msvc.exe %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winout\!NAME!.exe >%ROOT%\winout\!NAME!.build 2>&1
+        %ROOT%\cxx1-msvc.exe %CXX1_CASES_FLAGS% %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winout\!NAME!.exe >%ROOT%\winout\!NAME!.build 2>&1
         if errorlevel 1 (
             echo COMPILE-FAILED !NAME!
         ) else (

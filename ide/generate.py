@@ -17,14 +17,15 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))            # the checkout
-NAME = "cxx1"
+NAME = "cxx1"                # the project files keep their name...
+PRODUCT = "cpp11"            # ...and build the program src/Name.h names
 UP = ".."                    # from ide/ to the tree, in both project dialects
 
 
 def sources():
     """Every .cpp the build compiles, in the Makefile's own order."""
     out = []
-    for d in ("", "parser", "backend"):
+    for d in ("", "parser", "backend", "optimizer"):
         base = os.path.join(ROOT, "src", d)
         for f in sorted(os.listdir(base)):
             if f.endswith(".cpp") and " " not in f:      # macOS " 2.cpp" copies
@@ -34,7 +35,7 @@ def sources():
 
 def headers():
     out = []
-    for d in ("", "parser", "backend"):
+    for d in ("", "parser", "backend", "optimizer"):
         base = os.path.join(ROOT, "src", d)
         for f in sorted(os.listdir(base)):
             if f.endswith(".h") and " " not in f:
@@ -114,7 +115,7 @@ def xcode(srcs, hdrs):
               '\t\t\t\t\t"CXX1_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n'
               '\t\t\t\t\t"CXX1_CXX_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n\t\t\t\t);\n'
               '\t\t\t\tPRODUCT_NAME = "%s";\n'
-              '\t\t\t\tHEADER_SEARCH_PATHS = "%s/src";\n' % (inc, cxxinc, NAME, ROOT))
+              '\t\t\t\tHEADER_SEARCH_PATHS = "%s/src";\n' % (inc, cxxinc, PRODUCT, ROOT))
     return files, builds, group_secs, group_children, src_phase, common
 
 
@@ -171,7 +172,7 @@ def write_xcode(srcs, hdrs, check):
 			);
 			dependencies = ();
 			name = {NAME};
-			productName = {NAME};
+			productName = {PRODUCT};
 			productReference = {ids['product']} /* {NAME} */;
 			productType = "com.apple.product-type.tool";
 		}};
@@ -228,14 +229,14 @@ def write_xcode(srcs, hdrs, check):
 		{ids['dbgT']} /* Debug */ = {{
 			isa = XCBuildConfiguration;
 			buildSettings = {{
-				PRODUCT_NAME = "{NAME}";
+				PRODUCT_NAME = "{PRODUCT}";
 			}};
 			name = Debug;
 		}};
 		{ids['relT']} /* Release */ = {{
 			isa = XCBuildConfiguration;
 			buildSettings = {{
-				PRODUCT_NAME = "{NAME}";
+				PRODUCT_NAME = "{PRODUCT}";
 			}};
 			name = Release;
 		}};
@@ -385,7 +386,7 @@ def write_vs(srcs, hdrs, check):
   <PropertyGroup>
     <OutDir>$(ProjectDir)build\\$(Configuration)\\</OutDir>
     <IntDir>$(ProjectDir)build\\$(Configuration)\\obj\\</IntDir>
-    <TargetName>{NAME}</TargetName>
+    <TargetName>{PRODUCT}</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -454,7 +455,7 @@ EndGlobal
 """
     # **The filters file is what makes it look like a project in the IDE.**
     # Without one Visual Studio shows 49 files in one flat list; with it the
-    # tree is the tree - src, src\parser, src\backend - which is how the
+    # tree is the tree - src, src\parser, src\backend, src\optimizer - as the
     # Xcode project has always presented it and how CLAUDE.md's "the parser is
     # twelve files" reads on disk.
     def folder(p):

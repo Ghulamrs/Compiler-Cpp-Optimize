@@ -1,4 +1,5 @@
 #include "Driver.h"
+#include "Name.h"
 #include "Version.h"
 #include "backend/X86_64Windows.h"
 
@@ -109,8 +110,8 @@ static bool directoryHas(const std::string &dir, const char *name) {
 
 // **Where the standard headers are, asked in the order a release wants.**
 void Driver::standardIncludeDirectories(const std::string &argv0) {
-    const char *envCxx = std::getenv("CXX1_INCLUDE");
-    const char *envC = std::getenv("CXX1_LIB");
+    const char *envCxx = std::getenv(program::env("INCLUDE").c_str());
+    const char *envC = std::getenv(program::env("LIB").c_str());
     if (envCxx != nullptr && envCxx[0] != '\0') {
         searchPath_.push_back(envCxx);
         if (envC != nullptr && envC[0] != '\0') searchPath_.push_back(envC);
@@ -119,7 +120,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
 
     // Beside the binary or one directory up. include/ is this compiler's when it
     // holds `cstddef`, a name only this library spells; the C headers <cstddef>
-    // reaches are there too (an installation) or in lib/ (a checkout, or cc1's).
+    // reaches are there too (an installation) or in lib/ (a checkout, or c90's).
     const std::string here = programDirectory(argv0);
     const std::string candidates[2] = { here, here + "/.." };
     for (const std::string &at : candidates) {
@@ -154,13 +155,17 @@ void Driver::usage(char *file) {
         "       -I adds a directory to the ones <...> searches\n"
         "       -j sets how many files are compiled at once; -j 1 is serial\n"
         "       -arch picks the architecture the code is generated for - one of\n"
-        "         x86_64-linux, x86_64-windows, arm64-darwin; the host by default,\n"
-        "         and another one only reaches -S, since the assembler here is\n"
-        "         this machine's\n"
+        "         x86_64-linux, x86_64-windows, arm64-darwin, tms6747; the host\n"
+        "         by default, and another host's only reaches -S, since the\n"
+        "         assembler here is this machine's; tms6747 is assembled on any\n"
+        "         host by asm6x, the project's own C6000 assembler (CPP11_AS, or\n"
+        "         the one beside this program), and linked into a .out by TI's\n"
+        "         lnk6x where CCS is (CPP11_TI names its C6000 compiler directory,\n"
+        "         CPP11_TILIB one holding rts6740_elf_eh.lib)\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'gnu' is\n"
         "         the default and is assembled by clang, and the only one\n"
         "         that carries a line table; 'masm' is for this project's\n"
-        "         assembler (masm.exe, or CXX1_AS), which needs no clang and\n"
+        "         assembler (masm.exe, or CPP11_AS), which needs no clang and\n"
         "         takes COMDAT; 'ml64' is the same syntax without COMDAT,\n"
         "         for ml64, which links one translation unit at a time\n"
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
@@ -193,7 +198,7 @@ static std::string askVswhere() {
     char temp[MAX_PATH];
     char folder[MAX_PATH];
     if (GetTempPathA(MAX_PATH, folder) == 0) return std::string();
-    if (GetTempFileNameA(folder, "cxx1", 0, temp) == 0) return std::string();
+    if (GetTempFileNameA(folder, program::kName, 0, temp) == 0) return std::string();
 
     std::string command =
         "\"\"C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe\""
@@ -295,7 +300,7 @@ static int runTool(const std::string &command) {
     char folder[MAX_PATH];
     char script[MAX_PATH];
     if (GetTempPathA(MAX_PATH, folder) == 0) return runShell(command);
-    if (GetTempFileNameA(folder, "cxx1", 0, script) == 0) {
+    if (GetTempFileNameA(folder, program::kName, 0, script) == 0) {
         return runShell(command);
     }
     std::string batch = script;
@@ -329,12 +334,12 @@ static void noteWindowsToolchain() {
 // four allocation operators are in libc++ or libstdc++ and the C driver links
 // neither; `c++` assembles a .s exactly as `cc` does, and rung 6 wants it too.
 const char *Driver::hostCompiler() {
-    const char *env = std::getenv("CXX1_CC");
+    const char *env = std::getenv(program::env("CC").c_str());
     return (env != nullptr && env[0] != '\0') ? env : "c++";
 }
 
 const char *Driver::hostAssembler(Syntax syntax) {
-    const char *env = std::getenv("CXX1_AS");
+    const char *env = std::getenv(program::env("AS").c_str());
     if (env != nullptr && env[0] != '\0') return env;
     return syntax == Syntax::Ml64 ? "ml64.exe" : "masm.exe";
 }
@@ -346,7 +351,7 @@ const char *Driver::hostGnuAssembler() {
     static std::string found;
     if (!found.empty()) return found.c_str();
 
-    const char *env = std::getenv("CXX1_AS");
+    const char *env = std::getenv(program::env("AS").c_str());
     if (env != nullptr && env[0] != '\0') { found = env; return found.c_str(); }
 
 #ifdef _WIN32
@@ -372,8 +377,48 @@ const char *Driver::hostGnuAssembler() {
 }
 
 const char *Driver::hostLinker() {
-    const char *env = std::getenv("CXX1_LD");
+    const char *env = std::getenv(program::env("LD").c_str());
     return (env != nullptr && env[0] != '\0') ? env : "link.exe";
+}
+
+bool Driver::targetIsTi() const {
+    return std::strcmp(backend_->name(), "tms6747") == 0;
+}
+
+// A file beside this program - RIDE lays asm6x.exe beside cpp11.exe - or
+// nothing, when argv[0] was a bare name found on PATH.
+static std::string besideProgram(const std::string &program, const char *leaf) {
+    std::size_t slash = program.find_last_of("/\\");
+    if (slash == std::string::npos) return std::string();
+    std::string path = program.substr(0, slash + 1) + leaf;
+    std::ifstream probe(path.c_str());
+    return probe.good() ? path : std::string();
+}
+
+// **asm6x, the project's C6000 assembler, which runs on every host.** CPP11_AS
+// names another; else the one beside this program; else the name, on PATH.
+std::string Driver::tiAssembler() const {
+    const char *env = std::getenv(program::env("AS").c_str());
+    if (env != nullptr && env[0] != '\0') return env;
+    std::string found = besideProgram(program_, "asm6x.exe");
+    if (found.empty()) found = besideProgram(program_, "asm6x");
+    return found.empty() ? std::string("asm6x") : found;
+}
+
+// **TI's linker, which only a machine with CCS has.** CPP11_LD names it; else
+// CPP11_TI names the C6000 compiler directory, the one with bin\lnk6x and
+// lib\rts6740_elf.lib; else lnk6x is asked for by name.
+std::string Driver::tiLinker() const {
+    const char *env = std::getenv(program::env("LD").c_str());
+    if (env != nullptr && env[0] != '\0') return env;
+    const char *ti = std::getenv(program::env("TI").c_str());
+    if (ti != nullptr && ti[0] != '\0') {
+        std::string dir = std::string(ti) + (hostIsWindows() ? "\\bin\\" : "/bin/");
+        std::ifstream exe((dir + "lnk6x.exe").c_str());
+        if (exe.good()) return dir + "lnk6x.exe";
+        return dir + "lnk6x";
+    }
+    return "lnk6x";
 }
 
 std::string Driver::temporaryName(int index) {
@@ -384,7 +429,7 @@ std::string Driver::temporaryName(int index) {
     while (!base.empty() && (base[base.size() - 1] == '/' ||
                              base[base.size() - 1] == '\\'))
         base.erase(base.size() - 1);
-    return base + (hostIsWindows() ? "\\" : "/") + "cxx1-" +
+    return base + (hostIsWindows() ? "\\" : "/") + program::kName + "-" +
            std::to_string(static_cast<long>(getpid())) + "-" +
            std::to_string(index) + ".s";
 }
@@ -447,7 +492,11 @@ bool Driver::assembleObjects() {
     commands.reserve(temporaries_.size());
     for (std::size_t i = 0; i < temporaries_.size(); i++) {
         std::string command;
-        if (hostIsWindows() && syntax_ == Syntax::Gnu) {
+        if (targetIsTi()) {
+            command = shellQuote(tiAssembler());
+            command += " " + shellQuote(temporaries_[i]);
+            command += " -o " + shellQuote(objects_[i]);
+        } else if (hostIsWindows() && syntax_ == Syntax::Gnu) {
             // **The GNU spelling is assembled by clang, not by ml64.** ml64
             // has no COMDAT directive, so every mergeable definition - a
             // vtable, an inline member, a template's.
@@ -471,7 +520,100 @@ bool Driver::assembleObjects() {
     return runCommands(commands);
 }
 
+// The linker command file lnk6x needs: one flat memory for the C6747 and
+// every section the compilers and TI's runtime write placed in it - the same
+// file RIDE and VM6747's tests link with.
+static const char *const kTiLinkCommands =
+    "--rom_model\n"
+    "--stack_size=0x4000\n"
+    "--heap_size=0x100000\n"
+    "MEMORY\n"
+    "{\n"
+    "    RAM : origin = 0xC0000000, length = 0x04000000\n"
+    "}\n"
+    "SECTIONS\n"
+    "{\n"
+    "    .text        > RAM\n"
+    "    .const       > RAM\n"
+    "    .data        > RAM\n"
+    "    .bss         > RAM\n"
+    "    .far         > RAM\n"
+    "    .fardata     > RAM\n"
+    "    .neardata    > RAM\n"
+    "    .rodata      > RAM\n"
+    "    .cinit       > RAM\n"
+    "    .init_array  > RAM\n"
+    "    .switch      > RAM\n"
+    "    .cio         > RAM\n"
+    "    .stack       > RAM\n"
+    "    .sysmem      > RAM\n"
+    "    .vm6747.eh   > RAM\n"
+    "}\n";
+
+static bool fileExists(const std::string &path) {
+    std::ifstream probe(path.c_str());
+    return probe.good();
+}
+
+// **A TI program: every .s through asm6x, the objects through lnk6x against
+// TI's runtime** - the exception-handling build where CPP11_TILIB names one,
+// since CCS ships only the other and a C++ program that throws needs it.
+bool Driver::linkTi() {
+    std::vector<std::string> objects, steps;
+    for (const std::string &t : temporaries_) {
+        std::size_t dot = t.rfind('.');
+        std::string obj = (dot == std::string::npos ? t : t.substr(0, dot)) + ".obj";
+        steps.push_back(shellQuote(tiAssembler()) + " " + shellQuote(t) +
+                        " -o " + shellQuote(obj));
+        objects.push_back(obj);
+        temporaryNames().push_back(obj);
+    }
+    if (!runCommands(steps)) return false;
+
+    std::string cmdfile = temporaryName(static_cast<int>(temporaries_.size()));
+    cmdfile.replace(cmdfile.size() - 2, 2, ".cmd");
+    {
+        std::ofstream out(cmdfile.c_str());
+        if (!out) {
+            std::fprintf(stderr, "%s: cannot write %s\n", program_.c_str(), cmdfile.c_str());
+            return false;
+        }
+        out << kTiLinkCommands;
+    }
+    temporaryNames().push_back(cmdfile);
+
+    const std::string sep = hostIsWindows() ? "\\" : "/";
+    std::vector<std::string> libraryDirs;
+    const char *ti = std::getenv(program::env("TI").c_str());
+    if (ti != nullptr && ti[0] != '\0') libraryDirs.push_back(std::string(ti) + sep + "lib");
+    const char *tilib = std::getenv(program::env("TILIB").c_str());
+    if (tilib != nullptr && tilib[0] != '\0') libraryDirs.push_back(tilib);
+    std::string rts = "rts6740_elf.lib";
+    for (const std::string &d : libraryDirs)
+        if (fileExists(d + sep + "rts6740_elf_eh.lib")) rts = "rts6740_elf_eh.lib";
+
+    std::string command = shellQuote(tiLinker()) + " -mv6740 --abi=eabi";
+    for (const std::string &d : libraryDirs) command += " -i " + shellQuote(d);
+    command += " " + shellQuote(cmdfile);
+    for (const std::string &o : objects) command += " " + shellQuote(o);
+    for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
+    command += " -l " + rts + " -o " + shellQuote(linkTo_);
+
+    int rc = runTool(command);
+    if (rc != 0) {
+        std::fprintf(stderr, "%s: the linker failed - the command was:\n  %s\n",
+                     program_.c_str(), command.c_str());
+        std::fprintf(stderr, "  lnk6x and rts6740_elf.lib are TI's, under CCS's C6000 "
+                             "compiler directory: CPP11_TI names it, CPP11_TILIB a "
+                             "directory holding rts6740_elf_eh.lib, CPP11_LD the "
+                             "linker itself.\n");
+        return false;
+    }
+    return true;
+}
+
 bool Driver::link() {
+    if (targetIsTi()) return linkTi();
     std::string command;
     if (hostIsWindows()) {
 
@@ -541,12 +683,14 @@ std::string Driver::assemblyNameFor(const std::string &source) {
     return hasSuffix ? source.substr(0, dot) + ".s" : source + ".s";
 }
 
-std::string Driver::objectNameFor(const std::string &source) {
+std::string Driver::objectNameFor(const std::string &source) const {
     std::size_t slash = source.find_last_of('/');
     std::string base = slash == std::string::npos ? source
                                                   : source.substr(slash + 1);
     std::size_t dot = base.rfind('.');
-    return (dot == std::string::npos ? base : base.substr(0, dot)) + ".o";
+    // .obj for the TI target, which is what asm6x and TI's tools call one
+    return (dot == std::string::npos ? base : base.substr(0, dot)) +
+           (targetIsTi() ? ".obj" : ".o");
 }
 
 bool Driver::parseArguments(int argc, char **argv) {
@@ -651,8 +795,8 @@ bool Driver::parseArguments(int argc, char **argv) {
                    std::strcmp(argv[i], "--version") == 0) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
-            std::printf("%s\nVersion %s, sealed %s - see %s\n", CXX1_BANNER,
-                        CXX1_VERSION, CXX1_SEAL_DATE, CXX1_SEAL_FILE);
+            std::printf("%s\nVersion %s, sealed %s\n", CXX1_BANNER,
+                        CXX1_VERSION, CXX1_SEAL_DATE);
             std::exit(0);
         } else if (std::strcmp(argv[i], "-nologo") == 0) {
             quiet_ = true;
@@ -712,6 +856,20 @@ bool Driver::parseArguments(int argc, char **argv) {
         if (inputs.empty() && alreadyObjects_.empty()) { usage(argv[0]); return false; }
     }
 
+    // A .c is turned away by name - the mirror of cc1 refusing a .cpp. cxx1
+    // compiles C++, and C read as C++ miscompiles where they disagree rather
+    // than stopping; say so and point at cc1. (.cpp/.cc/.cxx are cxx1's own.)
+    for (std::size_t k = 0; k < inputs.size(); k++) {
+        const std::size_t dot = inputs[k].find_last_of('.');
+        if (dot != std::string::npos && inputs[k].substr(dot) == ".c") {
+            std::fprintf(stderr,
+                "%s: %s looks like C (.c), and cxx1 compiles C++, not C - "
+                "compile it with cc1\n",
+                argv[0], inputs[k].c_str());
+            return false;
+        }
+    }
+
     if (assemblyOnly_ && objectOnly_) {
         std::fprintf(stderr, "%s: -S and -c ask for different things - -S stops "
                              "at assembly, -c goes one step further to an "
@@ -734,7 +892,7 @@ bool Driver::parseArguments(int argc, char **argv) {
         return true;
     }
 
-    if (backend_ != &defaultBackend()) {
+    if (backend_ != &defaultBackend() && !targetIsTi()) {
         std::fprintf(stderr,
             "%s: cannot assemble %s code on this machine, which is %s - use -S "
             "to write the assembly and take it there\n",
@@ -750,7 +908,8 @@ bool Driver::parseArguments(int argc, char **argv) {
     }
 
     if (!objectOnly_)
-        linkTo_ = !output.empty() ? output : (hostIsWindows() ? "a.exe" : "a.out");
+        linkTo_ = !output.empty() ? output
+                : (hostIsWindows() && !targetIsTi() ? "a.exe" : "a.out");
 
     for (std::size_t i = 0; i < inputs.size(); i++) {
         std::string temp = temporaryName(static_cast<int>(i));

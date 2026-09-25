@@ -1,5 +1,5 @@
 #!/bin/sh
-# Every case compiled for all three targets, stopping at assembly.
+# Every case compiled for all four targets, stopping at assembly.
 #
 #   tests/emit.sh            compile, and diff against the golden if there is one
 #   tests/emit.sh --record   compile, and keep this output as the golden
@@ -17,7 +17,7 @@
 # and a suite that refused one would be a suite people stopped recording.
 set -e
 cd "$(dirname "$0")/.."
-CXX1=./cxx1.exe
+CXX1="${CXX1:-./cpp11.exe}"
 cxx1() { ( ulimit -t 10; $CXX1 "$@" < /dev/null ); }
 OUT=tests/out-emit
 GOLD=tests/out-emit.golden
@@ -37,7 +37,7 @@ pass=0; fail=0
 for src in tests/cases/*.cpp; do
     base=$(basename "$src" .cpp)
     [ -f "tests/cases/$base.error" ] && continue
-    for target in x86_64-linux x86_64-windows arm64-darwin; do
+    for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do
         # A case may name a target it does not compile for yet, one per line in
         # <case>.notarget. **It has to say why in the file**, because a silent
         # exclusion is how a suite stops testing something without anybody

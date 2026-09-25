@@ -95,8 +95,9 @@ private:
         bool used = false;
         // **A specialization is a candidate like any other, and loses a tie.**
         // [over.match.best]: where a specialization and an ordinary function are equally
-        // good, the ordinary one wins. It is also never a redeclaration of one.
+        // good, the ordinary one wins. Its unbound parameter list serves [temp.func.order].
         bool fromTemplate = false;
+        const Type *pattern = nullptr;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -124,8 +125,136 @@ private:
     static bool overrides(const VSlot &s, const std::string &name,
                           const std::vector<const Type *> &params,
                           bool constThis);
-    // Where a class's secondary vptr for a given base points into its table, keyed "Derived::Base".
-    std::map<std::string, int> secondaryVptr_;
+    // **The Itanium vtable group and its address points**: for each base
+    // subobject with a table in it, by (class, offset in the object), how
+    // far into the symbol that table's address point sits.
+    struct VtableGroup {
+        std::vector<GlobalPiece> pieces;
+        std::map<std::pair<const Type *, int>, int> points;
+    };
+    // Every group written, by symbol: a `_ZTV`, or a construction `_ZTC`.
+    std::map<std::string, VtableGroup> groups_;
+    // **The VTT of a class with virtual bases**, by tag: where its own
+    // constructor finds the sub-VTT for a base, the secondary virtual
+    // pointer for a subobject, and the virtual VTT for a virtual base.
+    struct VttLayout {
+        std::vector<GlobalPiece> pieces;
+        std::map<const Type *, int> subVtt;
+        std::map<std::pair<const Type *, int>, int> secondary;
+        std::map<const Type *, int> virtualVtt;
+    };
+    std::map<std::string, VttLayout> vtts_;
+    // The hidden VTT parameter of the C2 or D2 being emitted, -1 outside one.
+    int vttSlot_ = -1;
+    const Type *vttType() const {
+        return types_.pointerTo(types_.pointerTo(types_.get(Kind::Void)));
+    }
+    // One subobject with a vptr, as the constructor's walk finds it.
+    struct VptrSite {
+        const Type *cls;
+        int offset;             // in the complete object being laid out
+        bool morallyVirtual;    // reached through a virtual base
+        const Type *nearestVBase;
+        int fromVBase;          // its distance from that virtual base
+    };
+    void vptrSites(const Type *cls, int at, bool morally, const Type *vbase,
+                   int fromVBase, const Type *layout,
+                   std::set<const Type *> &seen,
+                   std::vector<VptrSite> &out) const;
+    // The virtual bases of a class in the order their `vbase_offset`
+    // entries are built, each with its offset in the layout class.
+    void vbaseComponents(const Type *cls, const Type *layout, int clsAt,
+                         std::set<const Type *> &seen,
+                         std::vector<std::pair<const Type *, int> > &out)
+        const;
+    static int virtualBaseAt(const Type *layout, const Type *vbase);
+    // The final overrider of a base's slot in `root`, and where it sits.
+    struct Overrider { const Type *cls; int at; std::string symbol; bool pure; };
+    // One `vcall_offset` in a virtual base's table, and whose function it is for.
+    struct VcallEntry {
+        const Type *cls;
+        std::string name;
+        std::vector<const Type *> params;
+        bool constThis;
+        long long value;
+    };
+    void vcallEntries(const Type *y, int yAt, const Type *vbase, int vbaseAt,
+                      const Type *root, int rootAt, const Type *layout,
+                      std::vector<VcallEntry> &out, std::size_t pos);
+    const VSlot *declaredSlot(const Type *cls, const VSlot &s) const;
+    Overrider finalOverrider(const Type *root, int rootAt, const VSlot &s,
+                             const Type *target, int targetAt,
+                             const Type *layout, std::size_t pos);
+    std::string synthesizeVirtualThunk(const Type *type, const VSlot &slot,
+                                       long long fixed, long long vcallBack,
+                                       std::size_t pos);
+    // The class whose subobjects are being enumerated, with a fresh visited
+    // set per walk: a virtual base is one subobject however it is reached.
+    struct Subobject { const Type *cls; int at; };
+    void subobjectsOf(const Type *x, int xAt, const Type *layout,
+                      std::set<const Type *> &seen,
+                      std::vector<Subobject> &out) const;
+    bool containsSubobject(const Type *y, int yAt, const Type *x, int xAt,
+                           const Type *layout) const;
+    void layoutOneVtable(VtableGroup &g, const Type *x, int xAt,
+                         bool xIsVirtual, const Type *vbase, int vbaseAt,
+                         const Type *root, int rootAt, const Type *layout,
+                         const std::string &typeInfo, std::size_t pos);
+    void layoutSecondaryVtables(VtableGroup &g, const Type *x, int xAt,
+                                const Type *vbase, int vbaseAt,
+                                const Type *root, int rootAt,
+                                const Type *layout, bool construction,
+                                const std::string &typeInfo, std::size_t pos);
+    void layoutVirtualBaseVtables(VtableGroup &g, const Type *x,
+                                  const Type *root, int rootAt,
+                                  const Type *layout, bool construction,
+                                  const std::string &typeInfo,
+                                  std::set<const Type *> &seen,
+                                  std::size_t pos);
+    VtableGroup buildVtableGroup(const Type *cls, int clsAt,
+                                 bool clsIsVirtual, const Type *layout,
+                                 const std::string &typeInfo,
+                                 std::size_t pos);
+    // A group written out under `symbol`, its address points recorded.
+    void emitVtableGroup(const std::string &symbol, VtableGroup g);
+    std::string constructionVtable(const Type *base, int at,
+                                   bool baseIsVirtual, const Type *layout,
+                                   const std::string &typeInfo,
+                                   std::size_t pos);
+    void emitItaniumVtables(const Type *cls, const std::string &tag,
+                            const std::string &symbol, std::size_t pos);
+    void vttPart(const Type *cls, int clsAt, const std::string &group,
+                 const Type *layout, bool top, const std::string &typeInfo,
+                 VttLayout &out, std::size_t pos);
+    void vttSecondaryPointers(const Type *x, int xAt, bool morally,
+                              const std::string &group, const Type *layout,
+                              bool top, std::set<const Type *> &seen,
+                              VttLayout &out, int from, std::size_t pos);
+    void vttVirtualParts(const Type *x, const Type *layout,
+                         const std::string &typeInfo,
+                         std::set<const Type *> &seen, VttLayout &out,
+                         std::size_t pos);
+    // The class's mangled name alone - what `_ZTV`, `_ZTT` and `_ZTC` share.
+    std::string itaniumClassEncoding(const Type *cls) const;
+    // The VTT argument a call to a C2 or D2 carries: the sub-VTT for a
+    // non-virtual base from this function's own VTT, or an entry of the
+    // class's `_ZTT` for the complete object's calls.
+    ExprPtr vttForBase(const Type *cls, const Type *base);
+    ExprPtr vttOfClass(const Type *cls, int entry);
+    bool takesVtt(const Type *cls) const {
+        return !target_.microsoftNames() && cls != nullptr &&
+               cls->hasVirtualBase();
+    }
+    // `*(vtt + n)`, the address point an entry holds.
+    ExprPtr vttEntry(ExprPtr vtt, int entry);
+    // The offset to a virtual base read through the object's vptr.
+    ExprPtr vbaseOffsetRead(ExprPtr objectChars, const Type *cls,
+                            const Type *vbase);
+    // The vptrs a constructor or destructor of `cls` stores, the whole
+    // object's - its own, every non-primary base's at any depth, every
+    // virtual base's - and where each comes from.
+    std::vector<StmtPtr> itaniumVptrStores(const std::string &cls,
+                                           const Type *memberOf, int thisSlot);
 
     // **cl's hidden most-derived flag, and who wants it.**
     std::set<std::string> msVbaseCtors_;
@@ -317,6 +446,8 @@ private:
         bool isClass = false;
         // Written out rather than made, so there are no parameters to bind and no primary template to replay.
         bool explicitly = false;
+        // From a partial specialization: the primary's out-of-line members are not its (A16).
+        bool fromPartial = false;
         // The parameters `binding` and `values` are for. Usually the
         // template's own; for a partial specialization they are its.
         std::vector<TemplateParam> params;
@@ -411,6 +542,8 @@ private:
                                         std::string *qualifier = nullptr,
                                         const std::vector<std::vector<const Type *> > *packs = nullptr,
                                         bool *construction = nullptr);
+    // The type parameters bound now, counted: `X::type` as a type needs `typename` (A27).
+    std::map<std::string, int> boundTypeParams_;
     // What a binding does to the two name tables, and how to put them back.
     struct Shadow {
         std::string name;
@@ -537,7 +670,7 @@ private:
     // `sawInit`, when given, says the declaration ended at a `;` having passed
     // an `=` at depth zero - which is a static data member of a class template
     // being *defined* out of line, not a member left undefined.
-    bool skipTemplatedDefinition(bool *sawInit = nullptr);
+    bool skipTemplatedDefinition(bool *sawInit = nullptr, bool *sawParen = nullptr);
     void skipTemplateArguments();
     // `Box<T>::Box(` or `Box<T>::~Box(`.
     bool atOutOfLineSpecial(std::string *what);
@@ -558,13 +691,16 @@ private:
 
     // The _ZTI a throw or a catch names, emitting one for a class on the way.
     // Answers empty and fills `why` where this compiler cannot describe it.
+    std::string emitPointerTypeInfo(const Type *ptr, std::size_t pos,
+                                    std::string *why);
+    std::string emitEnumTypeInfo(const Type *e, std::size_t pos, std::string *why);
     std::string typeInfoSymbolFor(const Type *t, std::size_t pos,
                                   std::string *why);
     // The flags word and a virtual base's vtable slot, both for the
     // `__vmi_class_type_info` a class with anything but a single base at
     // offset zero needs.
     static long long itaniumVmiFlags(const Type *cls);
-    static long long itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase);
+    long long itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase) const;
     std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
                                   std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
@@ -575,13 +711,20 @@ private:
 
     // **Mark a signature that came out of `functions_` used, and the one place the pointer arithmetic this file warns about is written.**
     void markUsed(const Signature *f);
+    // **A vtable entry, a typeinfo field and the vptr are one pointer wide**
+    // - eight bytes on the 64-bit targets, four on the C6000 - and an offset
+    // stored among them (offset-to-top, a vbase_offset) is as wide, signed.
+    int pointerBytes() const { return target_.sizeOf(Kind::Pointer); }
+    const Type *ptrdiffType() const {
+        return types_.get(pointerBytes() == 8 ? Kind::LongLong : Kind::Int);
+    }
     // **How far the address point sits past the table's first byte.**
     int vtableHeaderBytes(const Type *cls) const {
         if (target_.microsoftNames()) return 0;
         int n = 0;
         const std::vector<Type::BaseSpec> &bs = cls->bases();
         for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) n++;
-        return (n + 2) * 8;
+        return (n + 2) * pointerBytes();
     }
 
     // Two parameter lists compared as C++ compares them - same length, same
@@ -637,6 +780,11 @@ private:
     // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.
     std::string synthesizeThunk(const std::string &cls, const Type *type,
                                 const VSlot &slot, int offset, std::size_t pos);
+    // cl's vcall thunk: `&S::f` on a virtual f is the address of a function
+    // that dispatches through the object's vftable, since the Microsoft
+    // member pointer is one code pointer with no room for a slot index.
+    std::string synthesizeVcallThunk(const Type *cls, const Signature &f,
+                                     int index, std::size_t pos);
 
     // How well one argument matches one parameter, in the order [over.ics.scs]
     // ranks them - the values are compared, so do not reorder this enum.
@@ -648,6 +796,8 @@ private:
     bool betterCandidate(const std::vector<Rank> &a, const std::vector<Rank> &b,
                          const Signature &fa, const Signature &fb,
                          bool ranksObjectA, bool ranksObjectB) const;
+    // [temp.func.order]: a's template beats b's when b's patterns match a's, not the reverse.
+    bool moreSpecializedFunction(const Signature &a, const Signature &b) const;
 
     // The parameter a rank position came from, or null for an implicit object
     // parameter and for anything the ellipsis swallowed.
@@ -681,6 +831,7 @@ private:
         // translation units, so it is emitted as a weak/COMDAT definition the
         // linker folds - the same treatment a template specialization gets.
         bool isInline = false;
+        int alignAs = 0;   // `alignas(N)` among the specifiers: the largest, else 0
     };
 
     struct TypedefName {
@@ -691,6 +842,8 @@ private:
     struct EnumConst {
         std::string name;
         long long value;
+        // The enumeration's type when an enum-base chose one, else null: int.
+        const Type *type = nullptr;
     };
 
     const Source &src_;
@@ -778,6 +931,7 @@ private:
         // holds the caller's pointer, so the object's address is what the slot
         // *contains* rather than where the slot sits.
         bool byAddress = false;
+        long long count = 0;   // an array of this many `cls`, destroyed last first; 0 for one object
     };
 
     // One automatic object a jump may not land past - see Local::guardsJump. The frame
@@ -925,6 +1079,20 @@ private:
                                  std::size_t pos, bool userDeclared);
     // `int i = 0; while (i < count) { one; i = i + 1; }` over an array member's elements.
     StmtPtr eachElement(int indexSlot, long long count, StmtPtr one);
+    StmtPtr eachElement(int indexSlot, ExprPtr count, StmtPtr one);
+    // The two loops an array of a class needs, each a file-local function
+    // synthesized once per class: `(T *base, size_t n)` building every
+    // element with the default constructor, and destroying them last first.
+    std::string vectorLoopName(const char *which, const Type *cls, std::size_t pos);
+    std::string vectorConstructor(const Type *cls, std::size_t pos);
+    std::string vectorDestructor(const Type *cls, std::size_t pos);
+    ExprPtr callVectorLoop(const std::string &fn, const Type *cls, ExprPtr base,
+                           ExprPtr count, std::size_t pos);
+    // The bytes before an array from `new T[n]` that hold n, for delete[].
+    int arrayCookie(const Type *elem) const;
+    std::vector<StmtPtr> buildStaticArrayConstruction(const Declared &d,
+                                                      const std::string &symbol,
+                                                      const std::string &helper);
     // The name a base subobject's constructor is called by: Itanium's C2
     // rather than the C1 the signature carries, and on Windows the one name
     // there is.
@@ -1019,10 +1187,11 @@ private:
     // which the caller destroys instead. And a cleanup region's landing pad: destroy
     // alive_[from..to), last first, and hand the exception back to the unwinder.
 
-    // A pad's steps as a block, all but the last - the resume, or the jump
-    // that hands over - in an inner block marked as running while the
-    // exception unwinds: the Itanium unwinder continues from the resume call's own site.
+    // A pad's steps as a block: all but the last (the resume, or the hand-over) in an inner block marked as unwinding.
     static StmtPtr unwindPad(std::vector<StmtPtr> steps);
+
+    // The call that hands the exception in `pointerSlot` back to the unwinder, as this target's runtime takes it.
+    StmtPtr resumeUnwinding(int pointerSlot);
     StmtPtr cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
                        const std::vector<Temporary> &temps,
                        std::size_t pos,
@@ -1254,6 +1423,8 @@ private:
     struct MadeLambda {
         const Type *type;
         std::size_t end;
+        // How many tokens the lambda spans, for a reading of a copy of them.
+        std::size_t span = 0;
         // The captures have to be copied in on *every* reading, not only the
         // one that built the class - the second reading was handing back an
         // uninitialised closure and the lambda saw whatever was on the stack.
@@ -1263,7 +1434,13 @@ private:
     };
     // One closure object: a frame slot, and each capture copied into it.
     ExprPtr buildClosure(const MadeLambda &made, std::size_t pos);
-    std::map<std::size_t, MadeLambda> lambdaAt_;
+    // A closure met while an enclosing lambda's body was read for its return type (A21),
+    // by that reading's function and the `[`'s source position: the real reading, from a
+    // copy of the tokens, takes it back, so the deduced return type and the object agree.
+    typedef std::map<std::pair<std::string, std::size_t>, MadeLambda> ClosureMap;
+    ClosureMap deducedAt_;
+    // **Keyed by the function being compiled as well**: a template's body is replayed for every instantiation, and one closure shared by `tw<int>` and `tw<double>` ran int's body for both.
+    ClosureMap lambdaAt_;
 
     std::string operatorName();
     // **The type a conversion function converts to**, set by operatorName when it reads one and read by the caller straight after.
@@ -1297,7 +1474,8 @@ private:
     // functions and only one is missing - so it is asked once the parameters are known.
     void checkOperatorDeclarable(const std::string &name,
                                  const std::vector<const Type *> &params,
-                                 bool member, std::size_t pos);
+                                 bool member, std::size_t pos,
+                                 bool internal = false);
     const Type *arraySuffix(const Type *base, std::size_t pos);
     const Type *promote(const Type *t) const;
     const Type *usualArithmetic(const Type *a, const Type *b) const;
@@ -1314,8 +1492,11 @@ private:
     void checkAssignable(const Expr &from, const Type *to, std::size_t pos,
                          const std::string &what) const;
 
-    int declare(const std::string &name, const Type *type, std::size_t pos);
-    int allocateFrameSlot(const Type *type);
+    int declare(const std::string &name, const Type *type, std::size_t pos,
+                int alignAtLeast = 0);
+    int allocateFrameSlot(const Type *type, int alignAtLeast = 0);
+    int alignasSpecifier();
+    void refuseWeakAlignas(int asked, const Type *t, std::size_t pos);
     void declareStaticLocal(const std::string &name, const Type *type,
                             std::size_t pos, const std::string &symbol);
     void requireAssignable(const Expr &e, std::size_t pos, const char *what);
@@ -1446,6 +1627,9 @@ private:
                                      std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
+    const Signature *classAllocator(const Type *made, const char *which);
+    ExprPtr typeidExpression(std::size_t pos);
+    ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;
@@ -1611,6 +1795,9 @@ private:
                            bool isStatic, std::size_t pos);
 
     ExprPtr objectRef(const std::string &name);
+    const Type *qualifiedMemberScope(const Type *obj, std::string &name,
+                                     std::size_t pos);
+    void refuseAmbiguousMember(const Type *cls, const Member &m, std::size_t pos);
     // The two halves of it, because class scope sits between them.
     ExprPtr localRef(const std::string &name);
     ExprPtr globalRef(const std::string &name);
@@ -1662,6 +1849,18 @@ private:
     // declaration loops, which compare declarators of one declaration.
     const Type *lastDeducedAuto_ = nullptr;
     Init parseInitialiser();
+    // A12/A13: whether a file-scope initialiser folds to bytes; one that does
+    // not is stored by the init function instead, once the object is declared.
+    bool staticallyInitialisable(const Type *t, Init &in);
+    void dynamicInitialiseScalar(const std::string &name, const Type *type,
+                                 Init &in);
+    void dynamicInitialiseStaticMember(const std::string &name,
+                                       const std::string &symbol, const Type *type,
+                                       Init &in, bool once);
+    // The weak guard a template's static member is built under, so a second
+    // unit's copy does not build it again; wraps `body` and returns the test.
+    StmtPtr guardTemplateMember(const std::string &symbol,
+                                std::vector<StmtPtr> body);
     // The initialiser inside the parentheses of `int z(5);` - one expression, [dcl.init]/16.
     Init parenthesisedInitialiser(const Declared &d);
     // **Is the `(` this sits on an initialiser rather than a parameter list?**
@@ -1685,8 +1884,19 @@ private:
     };
     std::map<std::string, ConstexprFn> constexprFns_;   // by mangled symbol
 
-    // One frame per call being folded, holding what each parameter slot is worth.
-    mutable std::vector<std::vector<std::pair<int, long long> > > constexprFrames_;
+    // One frame per call being folded, holding what each parameter slot is worth:
+    // an integer, or a double when the parameter's type is floating (A11).
+    struct ConstexprSlot {
+        int offset = 0;
+        bool floating = false;
+        long long i = 0;
+        long double d = 0;
+    };
+    mutable std::vector<std::vector<ConstexprSlot> > constexprFrames_;
+    const ConstexprSlot *constexprSlot(const Var &v) const;
+    // Folds the arguments and pushes a frame; false when the call cannot fold.
+    bool enterConstexprCall(const Call &c, const ConstexprFn **fn,
+                            std::size_t pos) const;
 
     const Expr *singleReturnValue(const Stmt &body) const;
     ExprPtr targetFor(const std::string &name, const std::vector<InitStep> &path);
@@ -1799,8 +2009,11 @@ private:
     ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
                                bool constObject);
     // `&S::f` - the ABI's pair, built into a slot of this frame.
+    // `vtableCode` is Itanium's 1 + slot offset for a virtual function, 0 for
+    // a plain one; `code` names the function - or cl's vcall thunk - to hold.
     ExprPtr boundMemberPointer(const Type *cls, const Signature &f,
-                               std::size_t pos);
+                               std::size_t pos, long long vtableCode = 0,
+                               const std::string &code = std::string());
     // **`o.*p` for a member *function* pointer has to carry two things to the call** -
     // the object's address and the code pointer - and no expression holds a pair. The
     // address is left here and the `(` in `postfix` picks it up. One token wide.

@@ -1,0 +1,1 @@
+an enum-base must be an integral type other than bool

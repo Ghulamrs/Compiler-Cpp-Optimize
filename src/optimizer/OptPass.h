@@ -69,7 +69,7 @@ private:
 // start work, a check of what it requires, execute, the property update,
 // the liveness marked stale if it changed, and the dump if asked for.
 //
-// CXX1_DUMP_MIR names the passes to dump after, comma-separated, or `all`;
+// CPP11_DUMP_MIR names the passes to dump after, comma-separated, or `all`;
 // the dump goes to stderr, one section per pass per function.
 class PassManager {
 public:

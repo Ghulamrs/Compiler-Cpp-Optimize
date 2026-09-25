@@ -203,7 +203,7 @@ public:
 // The free function, which is the one a program reaches for. It answers the
 // stream so that `while (std::getline(in, line))` works, and that is the whole
 // reason `istream` has a conversion to bool.
-static istream &getline(istream &in, string &s, char delim) {
+inline istream &getline(istream &in, string &s, char delim) {
     s = string();
     int c = in.get();
     if (c < 0) { in.state_ = 2; return in; }
@@ -214,11 +214,11 @@ static istream &getline(istream &in, string &s, char delim) {
     return in;
 }
 
-static istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
+inline istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
 
 // Everything left in the source, copied a byte at a time. `<ostream>` is
 // already included above, so both sides of this are complete here.
-static ostream &operator<<(ostream &out, streamsource src) {
+inline ostream &operator<<(ostream &out, streamsource src) {
     if (src.from == 0) return out;
     int c = src.from->get();
     while (c >= 0) {

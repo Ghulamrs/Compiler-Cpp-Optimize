@@ -187,6 +187,7 @@ void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
             if (it != typedefIndex_.end()) { s.had = true; s.was = it->second; }
             typedefIndex_[p.name] = typedefs_.size();
             typedefs_.push_back(TypedefName{ p.name, binding[i] });
+            boundTypeParams_[p.name]++;
         } else if (i < binding.size() && binding[i] != nullptr &&
                    binding[i]->kind() == Kind::TemplateParam) {
             // **A non-type parameter read as a pattern**, the same signal a
@@ -232,6 +233,7 @@ void Parser::unbindTemplateParameters(const std::vector<Shadow> &undo) {
         if (s.isType) {
             if (s.had) typedefIndex_[s.name] = s.was;
             else       typedefIndex_.erase(s.name);
+            if (--boundTypeParams_[s.name] <= 0) boundTypeParams_.erase(s.name);
         } else if (s.isParamRef) {
             if (s.hadParamRef) nonTypePatternParams_[s.name] = s.paramRefWas;
             else               nonTypePatternParams_.erase(s.name);
@@ -313,17 +315,19 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
 // From here to the `;` that ends the declaration, or to the `}` that closes
 // the body. Nothing inside is looked at - that is what "no instantiation"
 // means. Answers whether a body was there.
-bool Parser::skipTemplatedDefinition(bool *sawInit) {
+bool Parser::skipTemplatedDefinition(bool *sawInit, bool *sawParen) {
     bool body = false;
     int depth = 0;
     if (sawInit != nullptr) *sawInit = false;
+    if (sawParen != nullptr) *sawParen = false;
     for (;;) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this template's definition is never closed");
         // **An `=` at depth zero is an initialiser**, so what is being skipped is a definition even
-        // though it has no braces: a static data member of a class template is defined out of line
-        // as `template <class T> const R C<T>::k = R();`, which ends at a `;`.
+        // though it has no braces - `template <class T> const R C<T>::k = R();` - and a `(` is a
+        // parameter list or a construction; neither, and no braces, is `T Tm<T>::st;`, a definition.
         if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
+        if (sawParen != nullptr && depth == 0 && peek().is("(")) *sawParen = true;
         if (peek().is("{")) { depth++; body = true; at_++; continue; }
         if (peek().is("}")) {
             at_++;
@@ -446,8 +450,8 @@ bool Parser::templateDeclaration() {
     // Where it was written, for the manglers - the table's key stays bare.
     decl.ns = namespacePrefix();
     at_ = decl.afterParams;
-    bool sawInit = false;
-    const bool defined = skipTemplatedDefinition(&sawInit);
+    bool sawInit = false, sawParen = false;
+    const bool defined = skipTemplatedDefinition(&sawInit, &sawParen);
 
     // **A member of a class template defined outside it belongs to the class**, not
     // to a template of its own. The declarator already reads a qualified name; what
@@ -463,7 +467,8 @@ bool Parser::templateDeclaration() {
                                 "template");
         // The template's own name, not the qualifier: that is the pattern's
         // internal tag and holds a `$` no reader ever wrote.
-        if (!defined && !sawInit && !constructs)
+        const bool dataNoInit = !defined && !sawInit && !constructs && !sawParen;
+        if (!defined && !sawInit && !constructs && !dataNoInit)
             src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
                                 "' is declared here and not defined - a member "
                                 "is declared inside its class");
@@ -471,7 +476,7 @@ bool Parser::templateDeclaration() {
         ool.start = decl.afterParams;
         ool.member = decl.name;
         ool.destructor = !decl.name.empty() && decl.name[0] == '~';
-        ool.isData = !defined && (sawInit || constructs);
+        ool.isData = !defined && (sawInit || constructs || dataNoInit);
         owner->second.outOfLine.push_back(ool);
         return true;
     }
@@ -901,6 +906,7 @@ Parser::instantiate(const TemplateDecl &decl,
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
     functions_.back().fromTemplate = true;
+    functions_.back().pattern = patternFn;
     // **The defaults the pattern's parameter list just read.**
     if (!pendingDefaults_.empty()) {
         defaultArgs_[symbol] = pendingDefaults_;
@@ -952,7 +958,7 @@ void Parser::instantiatePending() {
                 std::vector<bool> &done = specializations_[i].outsideDone;
                 done.resize(d.outOfLine.size(), false);
                 for (std::size_t k = 0; k < d.outOfLine.size(); k++) {
-                    if (done[k]) continue;
+                    if (done[k] || specializations_[i].fromPartial) continue;
                     // A static data member has no function to be "used", so it
                     // is replayed with the specialization rather than on a call.
                     if (!d.outOfLine[k].isData &&
@@ -1178,6 +1184,11 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
         return deduceOne(pattern->pointee(), arg->pointee(), binding, values, why);
     if (pattern->isArray() && arg->isArray())
         return deduceOne(pattern->pointee(), arg->pointee(), binding, values, why);
+    // `T S::*` against `int S::*`: the member's type, and the class when it is
+    // a parameter too.
+    if (pattern->isMemberPointer() && arg->isMemberPointer())
+        return deduceOne(pattern->pointee(), arg->pointee(), binding, values, why) &&
+               deduceOne(pattern->enclosing(), arg->enclosing(), binding, values, why);
 
     // Nothing to deduce here. A parameter written out in full does not have to match
     // exactly - an ordinary conversion may still get the argument there - so this is
@@ -1326,6 +1337,10 @@ bool Parser::matchPattern(const Type *pattern, const Type *arg,
     if (pattern->isArray())
         return arg->isArray() && pattern->length() == arg->length() &&
                matchPattern(pattern->pointee(), arg->pointee(), binding, why);
+    if (pattern->isMemberPointer())
+        return arg->isMemberPointer() &&
+               matchPattern(pattern->pointee(), arg->pointee(), binding, why) &&
+               matchPattern(pattern->enclosing(), arg->enclosing(), binding, why);
 
     if (pattern->isSpecialization()) {
         if (!arg->isSpecialization() ||
@@ -1671,6 +1686,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     Specialization sp;
     sp.key = tag;
     sp.name = decl.name;
+    sp.fromPartial = partial;
     sp.params = useParams;
     sp.binding = useBinding;
     sp.values = useValues;

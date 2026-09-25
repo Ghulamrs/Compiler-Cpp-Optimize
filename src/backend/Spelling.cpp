@@ -50,14 +50,20 @@ void GnuSpelling::ins(const std::string &m, const Op &a, const Op &b) {
 
 void GnuSpelling::defLabel(const std::string &l) { o_ += sym(l); o_ += ":\n"; }
 
-// The flag is for COFF, where a mergeable definition needs its section opened
-// before the label. ELF and Mach-O say it afterwards, with `.weak`, exactly as
-// they did - so this ignores it and the emitted text is unchanged.
+// **A mergeable function is a COMDAT group of its own**, as gcc and clang
+// write one: `.weak` alone leaves every unit's copy in .text, where the linker
+// keeps it; a group is kept once. Measured on Compiler++ (docs/PORT-FROM-CPPI.md).
 void GnuSpelling::functionBegin(const std::string &name, bool exported,
                                 bool mergeable) {
-    (void)mergeable;
     if (exported) globl(name);
+    textSection_ = mergeable
+        ? "  .section .text." + sym(name) + ",\"axG\",@progbits," + sym(name) + ",comdat\n"
+        : std::string("  .text\n");
     textSection();
+    // **A function starts on an even address**: the Itanium member pointer keeps
+    // "virtual" in a code word's low bit, and a function at an odd address read
+    // as a vtable offset. Two bytes is the ABI's need; 16 is a speed choice (S10).
+    o_ += "  .p2align 1\n";
     defLabel(name);
 }
 
@@ -127,7 +133,7 @@ void GnuSpelling::initialiserEntry(const std::string &fn, bool dsoHandle) {
     o_ += '\n';
 }
 
-void GnuSpelling::textSection()   { o_ += "  .text\n"; }
+void GnuSpelling::textSection()   { o_ += textSection_; }
 void GnuSpelling::rodataSection() { o_ += "  .section .rodata\n"; }
 void GnuSpelling::dataSection()   { o_ += "  .data\n"; }
 void GnuSpelling::bssSection()    { o_ += "  .bss\n"; }

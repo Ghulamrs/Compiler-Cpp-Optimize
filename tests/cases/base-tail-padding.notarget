@@ -1,0 +1,1 @@
+tms6747  the case asserts a 64-bit layout - a pointer of eight bytes - with static_assert, and the C6000's pointer is four; the assertion fails at the front end, as it should, before the backend is reached. The layout it measures is checked for this target by the same case at run time where it holds and by tms6747.sh's corpus (tests/tms6747-lp64.txt records it).
