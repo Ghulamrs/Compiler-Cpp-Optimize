@@ -1,0 +1,3 @@
+x86_64-linux  cxx1's element loops `__cxx1_vec_del_2Dd`, `_del_2Vd`, `_del_3Dd2`, `_del_4Only` and the `_new_` ones against clang's inline code; the C1/D1 forms of the in-class members; and the guarded static local, which clang names `_ZZ4mainE1s` with `_ZGVZ4mainE1s` where cxx1 keeps its own unique static symbol, as every static-local case here does. Every declared name agrees.
+x86_64-windows  the same loops and the guarded static (`?s@?1??main@@YAHXZ@4PAUOnly@@A` in clang's spelling).
+arm64-darwin  the same.

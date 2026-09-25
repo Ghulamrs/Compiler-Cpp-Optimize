@@ -109,6 +109,18 @@ ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
 ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
                                    bool constObject) {
     const Type *mpt = mp->type()->unqualified();
+    // **[expr.mptr.oper]/3: the object is converted to the member pointer's
+    // class first** - a `&B2::f` applied to a D whose B2 is not at 0 moves
+    // `this` to that base before anything the pair or the offset says.
+    if ((mpt->isMemberFunctionPointer() || mpt->isMemberPointer()) &&
+        mpt->enclosing() != nullptr && addr->type()->isPointer()) {
+        const Type *owner = mpt->enclosing()->unqualified();
+        const Type *have = addr->type()->pointee();
+        if (have->unqualified() != owner) {
+            const Type *to = have->isConst() ? types_.withConst(owner) : owner;
+            addr = convert(std::move(addr), types_.pointerTo(to));
+        }
+    }
     // A pointer to a member *function*: read the code pointer out of it and
     // leave the object's address for the call to pick up.
     if (mpt->isMemberFunctionPointer()) {

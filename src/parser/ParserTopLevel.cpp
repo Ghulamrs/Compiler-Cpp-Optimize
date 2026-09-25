@@ -344,7 +344,8 @@ void Parser::topLevel(Program &program) {
                 const Type *plain = elem->unqualified();
                 if (d.type->isArray() && plain->isStructOrUnion() &&
                     !plain->tag().empty() &&
-                    overloadsOf(constructorKey(plain->tag())) != nullptr)
+                    (overloadsOf(constructorKey(plain->tag())) != nullptr ||
+                     destructorOf(plain) != nullptr))
                     arrayClass = plain;
             }
 

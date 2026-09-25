@@ -1111,11 +1111,13 @@ std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
         return first;
     };
     std::vector<StmtPtr> out;
-    ExprPtr base = arrayAddress();
-    ExprPtr n(new Num(count));
-    n->setType(sizeT);
-    out.push_back(StmtPtr(new ExprStmt(callVectorLoop(
-        vectorConstructor(plain, d.pos), plain, std::move(base), std::move(n), d.pos))));
+    if (overloadsOf(constructorKey(plain->tag())) != nullptr) {
+        ExprPtr base = arrayAddress();
+        ExprPtr n(new Num(count));
+        n->setType(sizeT);
+        out.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+            vectorConstructor(plain, d.pos), plain, std::move(base), std::move(n), d.pos))));
+    }
     if (destructorOf(plain) == nullptr) return out;
 
     // The helper, in a frame of its own: `(void *)` on Itanium, the array's

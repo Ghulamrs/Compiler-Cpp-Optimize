@@ -142,9 +142,13 @@ StmtPtr Parser::declarationBody() {
             const Type *elem = d.type;
             while (elem != nullptr && elem->isArray()) elem = elem->pointee();
             const Type *plain = elem == nullptr ? nullptr : elem->unqualified();
-            if (d.type->isArray() && plain != nullptr &&
+            const bool arrayCtor = d.type->isArray() && plain != nullptr &&
                 plain->isStructOrUnion() && !plain->tag().empty() &&
-                overloadsOf(constructorKey(plain->tag())) != nullptr) {
+                overloadsOf(constructorKey(plain->tag())) != nullptr;
+            const bool arrayDtor = d.type->isArray() && plain != nullptr &&
+                plain->isStructOrUnion() && !plain->tag().empty() &&
+                destructorOf(plain) != nullptr;
+            if (arrayCtor || arrayDtor) {
                 // [stmt.dcl]/4: a static one is built once, under a guard,
                 // and its elements destroyed at exit - as one object is.
                 if (sc == StorageStatic) {
@@ -158,8 +162,10 @@ StmtPtr Parser::declarationBody() {
                                      "constructor");
                 int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
-                int indexSlot = allocateFrameSlot(types_.intType());
-                inits.push_back(constructLocalArray(d, off, indexSlot));
+                if (arrayCtor) {
+                    int indexSlot = allocateFrameSlot(types_.intType());
+                    inits.push_back(constructLocalArray(d, off, indexSlot));
+                }
                 // **Destroyed last first when the scope ends** - [class.dtor]
                 // - as one entry carrying the count, by the class's loop.
                 if (destructorOf(plain) != nullptr) {

@@ -29,6 +29,9 @@ public:
         return h;
     }
 private:
+    type_info();
+    type_info(const type_info &);
+    type_info &operator=(const type_info &);
     const void *__vptr;
     const char *__name;
 };

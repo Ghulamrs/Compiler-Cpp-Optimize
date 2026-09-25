@@ -693,6 +693,7 @@ private:
     // Answers empty and fills `why` where this compiler cannot describe it.
     std::string emitPointerTypeInfo(const Type *ptr, std::size_t pos,
                                     std::string *why);
+    std::string emitEnumTypeInfo(const Type *e, std::size_t pos, std::string *why);
     std::string typeInfoSymbolFor(const Type *t, std::size_t pos,
                                   std::string *why);
     // The flags word and a virtual base's vtable slot, both for the
@@ -1464,7 +1465,8 @@ private:
     // functions and only one is missing - so it is asked once the parameters are known.
     void checkOperatorDeclarable(const std::string &name,
                                  const std::vector<const Type *> &params,
-                                 bool member, std::size_t pos);
+                                 bool member, std::size_t pos,
+                                 bool internal = false);
     const Type *arraySuffix(const Type *base, std::size_t pos);
     const Type *promote(const Type *t) const;
     const Type *usualArithmetic(const Type *a, const Type *b) const;

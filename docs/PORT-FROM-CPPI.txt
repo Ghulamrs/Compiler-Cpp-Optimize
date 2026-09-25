@@ -48,3 +48,6 @@ REFUSED virtual-base-of-virtual-base: /tmp/claude-0/sp/cppi/tests/cases/virtual-
 WRONG virtual-base-second-base
 WRONG virtual-dtor-through-virtual-base
 REFUSED wchar-distinct: /tmp/claude-0/sp/cppi/tests/cases/wchar-distinct.cpp:10:12: error: 'f' is defined twice
+
+HELD (needs a pointer to a virtual member function, skipped at the user's instruction):
+  member-pointer-virtual, member-pointer-base-on-derived, the virtual half of member-pointer-models

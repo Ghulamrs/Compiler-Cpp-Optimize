@@ -26,6 +26,10 @@ extern "C" int printf(const char *, ...);
 struct B { virtual ~B() {} int b; };
 struct D : B { int d; };
 struct Plain { int p; };
+enum Colour : unsigned char { Red, Green };
+enum Plainer { Zero };   // an enumerator of an int enum is an int here (CONFORMANCE.md)
+struct Tmp { ~Tmp() { printf("~Tmp "); } };
+B *pick(const Tmp &, B *b) { return b; }
 int side = 0;
 B *make(int k) { side++; if (k) return new D; return new B; }
 int main() {
@@ -39,5 +43,9 @@ int main() {
     printf("%s %s %s %s\n", typeid(int).name(), typeid(D).name(), typeid(*pb).name(), typeid(const char *).name());
     printf("%d %d %d\n", typeid(*make(1)) == typeid(D), typeid(make(0)) == typeid(B *), side);
     printf("%d %d\n", typeid(double).before(typeid(int)) != typeid(int).before(typeid(double)), typeid(D).hash_code() == typeid(dobj).hash_code());
+    Colour c = Green;
+    printf("%d %d %s %s\n", typeid(c) == typeid(Colour), typeid(Colour) == typeid(Plainer), typeid(Colour).name(), typeid(Plainer).name());
+    printf("%s ", typeid(*pick(Tmp(), &dobj)).name());
+    printf("| %d\n", typeid(pick(Tmp(), &dobj)) == typeid(B *));
     return 0;
 }

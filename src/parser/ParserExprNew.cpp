@@ -1362,14 +1362,10 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // **The destructor runs before the memory goes back**, as clang emits it.
     const Signature *dtor = destructorOf(t->pointee());
 
-    // **A virtual destructor is reached through the vtable**, the static type not
-    // being the one that has to be destroyed. The slot holds the deleting form,
-    // which frees as well, so this path calls once and never operator delete.
-    if (dtor != nullptr && dtor->isVirtual) {
-        if (array)
-            src_.fail(pos, "'delete[]' of a polymorphic type is not supported "
-                           "yet - the count and the dynamic type are both "
-                           "needed and neither is recorded");
+    // **A virtual destructor is reached through the vtable**, the static type
+    // not being the one to destroy; the slot's deleting form frees as well.
+    // `delete[]` takes the static type - [expr.delete]/3 - and goes below.
+    if (dtor != nullptr && dtor->isVirtual && !array) {
         const Type *cls = t->pointee()->unqualified();
         const std::vector<VSlot> &slots = vtables_[cls->tag()];
         int index = -1;
@@ -1586,11 +1582,15 @@ ExprPtr Parser::typeidExpression(std::size_t pos) {
 
     const Type *named = nullptr;
     ExprPtr operand;
+    // The temporaries an operand makes are kept only when it is evaluated -
+    // the polymorphic glvalue below; the static form is unevaluated and
+    // hands them back the way sizeof does.
+    const std::vector<Temporary> savedTemps = pendingTemps_;
+    const std::vector<Alive> savedAlive = alive_;
     if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
         StorageClass sc;
         named = declarator(specifiers(&sc), true).type;
     } else {
-        Discarded held(this);
         operand = expr();
     }
     expect(")");
@@ -1606,6 +1606,10 @@ ExprPtr Parser::typeidExpression(std::size_t pos) {
           static_cast<const Unary *>(operand.get())->op() == '*') ||
          (dynamic_cast<const Var *>(operand.get()) != nullptr &&
           !static_cast<const Var *>(operand.get())->noAddress()));
+    if (!(glvalue && subject->isStructOrUnion() && subject->polymorphic())) {
+        pendingTemps_ = savedTemps;
+        alive_ = savedAlive;
+    }
     if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
         // The object's first word is the vptr; the type_info pointer sits
         // one word below the address point it holds.
