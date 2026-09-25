@@ -1,0 +1,3 @@
+x86_64-linux  the noexcept wrap is built only around a body with no landing pads of its own - a local with a destructor is one - because on the Itanium runtime the wrap's row would cover the pad's resume and catch its own exception for ever (noexcept-terminates-callee.cpp); the exception propagates and the handler catches 2 where the standard says terminate. The C6000 says it with an exception-specification row TI's runtime reads after the cleanups, and this case measures that target.
+x86_64-windows  the same, in the Microsoft tables' terms: no noexcept wrap at all for this target.
+arm64-darwin  the same as x86_64-linux.

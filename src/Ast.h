@@ -626,7 +626,11 @@ public:
     // are named there.
     bool hasLandingPads() const { return landingPads_; }
     void setHasLandingPads(bool b) { landingPads_ = b; }
+    // Declared noexcept (or throw()): a table that says so lets the runtime end the program itself.
+    bool isNoexcept() const { return noexcept_; }
+    void setNoexcept(bool b) { noexcept_ = b; }
 private:
+    bool noexcept_ = false;
     bool hasThis_ = false;
     bool isInline_ = false;
     std::string name_;

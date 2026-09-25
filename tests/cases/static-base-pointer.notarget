@@ -1,0 +1,1 @@
+x86_64-windows  refused before it reaches the question it asks: V4 has virtual functions in a base that is not the first, which the Microsoft ABI lays out with two vftable symbols and cxx1 refuses by name for this target (thunk.notarget). The constant-initialiser adjustment this case measures is the same on that ABI.

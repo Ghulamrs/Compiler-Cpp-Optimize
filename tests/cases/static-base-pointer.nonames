@@ -1,0 +1,2 @@
+x86_64-linux  the C1 forms of the three implicit constructors, which cxx1 emits beside C2 where clang emits C2 alone (base-implicit-constructor-emitted.nonames records the same fact), and `_ZL5inner`, a static const pointer clang folds into its one use and cxx1 keeps as an object - the pointer whose adjusted value this case measures. Every name the case is about agrees: `v43`, `v4`, `_ZTV2V4`, `_ZN2V41hEv`.
+arm64-darwin  the same four, with the leading underscore.
