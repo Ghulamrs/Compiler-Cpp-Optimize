@@ -253,10 +253,6 @@ SFINAE and variadic packs. What is left:
 
 ## Conversion functions and operators
 
-- **a class's own `operator new[]` / `operator delete[]`** — `new T[n]` calls
-  the platform's array form and never consults the class; the plain forms may
-  be given to a class, and the array forms replaced at namespace scope.
-  `src/parser/ParserType.cpp:1924`
 - **`operator->*`** — `src/parser/ParserType.cpp:1546`
 - **a user-defined literal** — `src/parser/ParserType.cpp:1548`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
@@ -358,9 +354,9 @@ declaration order. What is left is the shapes where one object is many:
 
 ## `new` and `delete`
 
-- **placement new with more than one argument** — `new (p) T`, `new (p) T[n]`
-  and `new (std::nothrow) T` are read; a user placement form with two
-  arguments is not. `src/parser/ParserExprNew.cpp:999`
+- **`new (a, b) T` with no `operator new` declared to take the arguments** —
+  the class's, then the global one, is looked up by overload resolution.
+  `src/parser/ParserExprNew.cpp:1667`
 - **more than one value in a new-expression** —
   `src/parser/ParserExprNew.cpp:1167`
 - **`new T[n]` of a class with a constructor** —

@@ -1992,8 +1992,11 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     f += "  .long \"$cppxdata$" + fnSymbol_ + "\"@IMGREL\n";
     f += "  .text\n";
 
+    // **`.pdata$x`, so the funclets' entries sort after every function's**: an inline
+    // function's COMDAT code lands after `.text`, and a funclet entry among the
+    // functions' put its entry out of order - a throw from inside it found no handler.
     std::string pdata;
-    pdata += "  .section .pdata,\"dr\"" + assoc + "\n";
+    pdata += "  .section .pdata$x,\"dr\"" + assoc + "\n";
     pdata += "  .p2align 2\n";
     pdata += "  .long " + b + "@IMGREL\n";
     pdata += "  .long " + e + "@IMGREL\n";

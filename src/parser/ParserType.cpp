@@ -953,7 +953,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // [class.free]/1 and /2: allocation and deallocation
                 // functions are static members whether or not they say so.
                 const bool memberIsStatic = msc == StorageStatic ||
-                    d.name == "operatornew" || d.name == "operatordelete";
+                    d.name == "operatornew" || d.name == "operatordelete" ||
+                    d.name == "operatornew[]" || d.name == "operatordelete[]";
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
@@ -1919,15 +1920,9 @@ std::string Parser::operatorName() {
 
     const std::string spelling = peek().text;
 
-    // **The array forms as members are refused by name**: `new T[n]` calls
-    // the platform's `operator new[]` and never consults the class. At
-    // namespace scope one is a replacement or the library's own declaration.
+    // The array forms: a class's own, which `new T[n]` and `delete[] p` reach
+    // by [class.free]/2, or at namespace scope a replacement or the library's.
     if ((spelling == "new" || spelling == "delete") && peekAt(1).is("[")) {
-        if (!classStack_.empty())
-            src_.fail(pos, "a class's own array 'operator " + spelling +
-                           "[]' is not supported yet - 'new T[n]' calls the "
-                           "platform's array form and does not consult the "
-                           "class; the plain form can be given to one");
         at_ += 2;
         expect("]");
         return "operator" + spelling + "[]";
@@ -2011,12 +2006,8 @@ void Parser::checkOperatorDeclarable(const std::string &name,
             if (second->isReference() && second->pointee()->unqualified()->isStructOrUnion() &&
                 second->pointee()->unqualified()->tag() == "std::nothrow_t") return;
         }
-        if (params.size() != 1)
-            src_.fail(pos, "'" + name + "' with " + std::to_string(params.size()) +
-                           " parameters is not supported yet - the one-parameter "
-                           "form is what a new-expression and a delete-expression "
-                           "call here, and the library's placement form may be "
-                           "declared");
+        // Any further parameters are placement ones - [expr.new]/14 reaches
+        // them from `new (a, b) T`, and a deallocation's from [expr.new]/20.
         return;
     }
 

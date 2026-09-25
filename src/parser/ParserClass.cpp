@@ -839,6 +839,25 @@ void Parser::releaseGuarded(std::vector<StmtPtr> &steps, const Temporary &t) {
         both.push_back(StmtPtr(new ExprStmt(
             runtimeCall("__cxa_free_exception", types_.get(Kind::Void),
                         std::move(args)))));
+    } else if (t.newStorage) {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        ExprPtr held(Var::local("$copy", t.slot));
+        held->setType(chars);
+        if (t.newCookie != 0) {
+            // The allocation began a cookie before the first element.
+            ExprPtr back(new Num(static_cast<long long>(-t.newCookie)));
+            back->setType(types_.intType());
+            ExprPtr start(new Binary(BinOp::Add, std::move(held), std::move(back)));
+            start->setType(chars);
+            held = std::move(start);
+        }
+        ExprPtr raw(new Cast(voidPtr, std::move(held)));
+        raw->setType(voidPtr);
+        ExprPtr give = t.newNothrow ? callNothrowDeallocator(t.newArray, std::move(raw))
+                     : t.newArray  ? deallocateArray(t.type, std::move(raw), 0)
+                                   : deallocate(t.type, std::move(raw), 0);
+        both.push_back(StmtPtr(new ExprStmt(std::move(give))));
     } else {
         const Signature *dtor = destructorOf(t.type);
         if (dtor == nullptr) return;
@@ -2149,8 +2168,9 @@ std::string Parser::vectorDestructor(const Type *cls, std::size_t pos) {
 int Parser::arrayCookie(const Type *elem) const {
     if (destructorOf(elem->unqualified()) == nullptr) return 0;
     const int sizeT = types_.get(target_.sizeType())->size(target_);
+    const int words = target_.armArrayCookie() ? 2 * sizeT : sizeT;
     const int align = elem->align(target_);
-    return align > sizeT ? align : sizeT;
+    return align > words ? align : words;
 }
 
 // **A default constructor is one that can be called with no arguments, not one whose

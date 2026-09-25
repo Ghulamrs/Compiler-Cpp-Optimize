@@ -602,3 +602,16 @@ One thing is refused rather than emitted wrong: an argument that needs a
 temporary of its own allocates it in C2's frame, and C1 cannot read it there.
 `: V(f())` for a class-returning `f` is named and refused;
 `: V(v + 10)` over the parameters works. `tests/cases/virtual-base-initialiser.cpp`.
+
+## The storage of a `new (a, b) T` is not freed if the constructor throws
+
+[expr.new]/20 pairs a placement allocation with the deallocation function
+that takes the same placement arguments, `operator delete(void *, A, B)`, and
+calls it if the constructor throws. cxx1 does that for the plain, class-own,
+array and `std::nothrow` forms - the storage is a guarded temporary of the
+full expression and the cleanup pad gives it back - but a user placement
+form's storage is not freed: the placement values would have to be kept in
+slots of the frame for the pad to pass them again. clang emits `_ZdlPvid`
+there. Nor are the elements of a `new T[n]` built before the element whose
+constructor threw destroyed: the storage is freed and the built elements
+are not, where clang's `__cxa_vec_new` destroys them last first.

@@ -1,0 +1,9 @@
+1 7 1
+same-array 1 0
+same-scalar 1 1
+7 1 2
+[global] 10 9
+freed -1 2 2
+freed-array 5 2 2
+1 3 2
+freed fixed loose

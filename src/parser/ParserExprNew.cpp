@@ -924,7 +924,9 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     int storageGuard = 0;
     if (copyMayThrow) {
         storageGuard = guardFlag();
-        statementTemps_.push_back(Temporary{ slot, voidPtr, storageGuard, true });
+        Temporary storage{ slot, voidPtr, storageGuard };
+        storage.exceptionStorage = true;
+        statementTemps_.push_back(storage);
     }
     ExprPtr first(new Comma(std::move(save), std::move(store)));
     first->setType(types_.get(Kind::Void));
@@ -986,6 +988,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     // library's placement `operator new(size_t, void *)`, which returns its
     // argument, so the address is used as it stands; one pointer argument.
     ExprPtr placement;
+    std::vector<ExprPtr> userPlacement;
     bool nothrow = false;
     if (peek().is("(")) {
         const std::size_t ppos = peek().pos;
@@ -995,21 +998,23 @@ ExprPtr Parser::newExpression(std::size_t pos) {
                             "placement here, so write 'new int' rather than "
                             "'new (int)'");
         placement = decay(assign());
-        if (peek().is(","))
-            src_.fail(peek().pos, "placement new with more than one argument "
-                                  "is not supported yet - only 'new (p) T', "
-                                  "which builds T at p");
+        while (consume(",")) userPlacement.push_back(decay(assign()));
         expect(")");
         // **`new (std::nothrow) T`** - [support.dynamic]: the library's
         // nothrow allocator, which answers null where the plain one throws.
         const Type *pt = placement->type()->unqualified();
-        nothrow = pt->isStructOrUnion() && pt->tag() == "std::nothrow_t";
-        if (!nothrow && !pt->isPointer())
-            src_.fail(ppos, "the placement argument of 'new' is '" +
-                            placement->type()->describe() + "', and only a "
-                            "pointer - the address to build at - or "
-                            "'std::nothrow' is supported");
+        nothrow = userPlacement.empty() && pt->isStructOrUnion() &&
+                  pt->tag() == "std::nothrow_t";
+        // **Anything else reaches a user-declared `operator new`** - [expr.new]/14:
+        // a second argument, or a first that is not a pointer, is a placement
+        // argument the class's or the global allocation functions are asked to take.
+        if (!nothrow && (!userPlacement.empty() || !pt->isPointer())) {
+            userPlacement.insert(userPlacement.begin(), std::move(placement));
+            placement = nullptr;
+        }
+        (void)ppos;
     }
+    const bool userAlloc = !userPlacement.empty();
 
     StorageClass sc = StorageNone;
     const Type *made = specifiers(&sc);
@@ -1154,7 +1159,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             counted->setType(voidPtr);
             raw = std::move(counted);
         }
-    } else if (const Signature *own = array ? nullptr : classAllocator(made, "operatornew")) {
+    } else if (userAlloc) {
+        raw = userPlacementAllocation(made, array, std::move(bytes), userPlacement, pos);
+    } else if (const Signature *own = classAllocator(made, array ? "operatornew[]" : "operatornew")) {
         // [class.free]/2: a class's own `operator new` allocates its objects.
         markUsed(own);
         std::vector<ExprPtr> args;
@@ -1193,6 +1200,26 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         countVal->setType(sizeT);
         ExprPtr write(new Assign(std::move(countCell), std::move(countVal)));
         write->setType(sizeT);
+        // The ARM cookie's first word is the element size, in front of the count.
+        if (target_.armArrayCookie()) {
+            ExprPtr asChars3(new Cast(chars, rawVar()));
+            asChars3->setType(chars);
+            ExprPtr sizeAt(new Num(static_cast<long long>(cookie - 2 * sizeT->size(target_))));
+            sizeAt->setType(types_.intType());
+            ExprPtr sizeAddr(new Binary(BinOp::Add, std::move(asChars3), std::move(sizeAt)));
+            sizeAddr->setType(chars);
+            ExprPtr sizePtr(new Cast(types_.pointerTo(sizeT), std::move(sizeAddr)));
+            sizePtr->setType(types_.pointerTo(sizeT));
+            ExprPtr sizeCell(new Unary('*', std::move(sizePtr)));
+            sizeCell->setType(sizeT);
+            ExprPtr elemSize(new Num(static_cast<long long>(made->size(target_))));
+            elemSize->setType(sizeT);
+            ExprPtr writeSize(new Assign(std::move(sizeCell), std::move(elemSize)));
+            writeSize->setType(sizeT);
+            ExprPtr both(new Comma(std::move(writeSize), std::move(write)));
+            both->setType(sizeT);
+            write = std::move(both);
+        }
         ExprPtr asChars2(new Cast(chars, rawVar()));
         asChars2->setType(chars);
         ExprPtr skip(new Num(static_cast<long long>(cookie)));
@@ -1226,6 +1253,19 @@ ExprPtr Parser::newExpression(std::size_t pos) {
                                        std::move(again), std::move(n), pos);
         // [expr.new]/13: a null from the nothrow allocator initialises nothing.
         if (nothrow) built = guardAgainstNull(baseTemp, baseSlot, pointer, std::move(built));
+        // [expr.new]/20: an element constructor that throws gives the storage back.
+        if ((placement == nullptr && !userAlloc) || nothrow) {
+            const int g = guardFlag();
+            Temporary t{ baseSlot, made, g };
+            t.newStorage = true; t.newArray = true; t.newNothrow = nothrow; t.newCookie = cookie;
+            statementTemps_.push_back(t);
+            ExprPtr armed(new Comma(std::move(keep), setGuard(g, 1)));
+            armed->setType(types_.intType());
+            keep = std::move(armed);
+            ExprPtr done(new Comma(std::move(built), setGuard(g, 0)));
+            done->setType(types_.intType());
+            built = std::move(done);
+        }
         ExprPtr seq(new Comma(std::move(keep), std::move(built)));
         seq->setType(types_.get(Kind::Void));
         ExprPtr result(Var::local(baseTemp, baseSlot));
@@ -1327,6 +1367,19 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             }
         }
         if (nothrow) build = guardAgainstNull(temp, slot, pointer, std::move(build));
+        // [expr.new]/20: a constructor that throws gives the storage back.
+        if (!ctor.isNoexcept && ((placement == nullptr && !userAlloc) || nothrow)) {
+            const int g = guardFlag();
+            Temporary t{ slot, made, g };
+            t.newStorage = true; t.newNothrow = nothrow;
+            statementTemps_.push_back(t);
+            ExprPtr armed(new Comma(std::move(keep), setGuard(g, 1)));
+            armed->setType(types_.intType());
+            keep = std::move(armed);
+            ExprPtr done(new Comma(std::move(build), setGuard(g, 0)));
+            done->setType(types_.intType());
+            build = std::move(done);
+        }
         ExprPtr made2(new Comma(std::move(keep), std::move(build)));
         made2->setType(types_.get(Kind::Void));
 
@@ -1459,8 +1512,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         const Type *vp = types_.pointerTo(types_.get(Kind::Void));
         ExprPtr freed(new Cast(vp, std::move(start)));
         freed->setType(vp);
-        ExprPtr release = callAllocator("_ZdaPv", "??_V@YAXPEAX@Z",
-                                        types_.get(Kind::Void), std::move(freed), pos);
+        ExprPtr release = deallocateArray(t->pointee(), std::move(freed), pos);
         ExprPtr both(new Comma(std::move(run), std::move(release)));
         both->setType(types_.get(Kind::Void));
         ExprPtr all(new Comma(std::move(save),
@@ -1501,9 +1553,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     ExprPtr raw(new Cast(voidPtr, std::move(what)));
     raw->setType(voidPtr);
 
-    if (array)
-        return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
-                             std::move(raw), pos);
+    if (array) return deallocateArray(t->pointee(), std::move(raw), pos);
     return deallocate(t->pointee(), std::move(raw), pos);
 }
 
@@ -1589,6 +1639,69 @@ ExprPtr Parser::deallocate(const Type *pointee, ExprPtr raw, std::size_t pos) {
     }
     return callAllocator("_ZdlPv", "??3@YAXPEAX@Z", types_.get(Kind::Void),
                          std::move(raw), pos);
+}
+
+// What `delete[] p` frees with, by the same rule - [class.free]/2 for the array form.
+ExprPtr Parser::deallocateArray(const Type *pointee, ExprPtr raw, std::size_t pos) {
+    if (const Signature *own = classAllocator(pointee, "operatordelete[]")) {
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(raw));
+        return completeCall(own->name, own->symbol, nullptr, own->returns,
+                            own->params, false, pos, std::move(args));
+    }
+    return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
+                         std::move(raw), pos);
+}
+
+// **`new (a, b) T` asks for `operator new(size_t, A, B)`** - [expr.new]/14, and
+// [class.free]/2 asks the class first: a class that declares any `operator new`
+// hides the global ones, as clang refuses `new (1, 2.0) S` for such an S.
+ExprPtr Parser::userPlacementAllocation(const Type *made, bool array, ExprPtr bytes,
+                                        std::vector<ExprPtr> &extra, std::size_t pos) {
+    const char *which = array ? "operatornew[]" : "operatornew";
+    std::string key = which;
+    for (const Type *cls = made->unqualified();
+         cls != nullptr && cls->isStructOrUnion() && !cls->tag().empty();
+         cls = cls->bases().empty() ? nullptr : cls->bases()[0].type->unqualified())
+        if (overloadsOf(cls->tag() + "::" + which) != nullptr) { key = cls->tag() + "::" + which; break; }
+    if (overloadsOf(key) == nullptr)
+        src_.fail(pos, "'new' with placement arguments needs an 'operator " +
+                       std::string(array ? "new[]" : "new") + "' declared to "
+                       "take them, and none is declared");
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(bytes));
+    for (std::size_t i = 0; i < extra.size(); i++) args.push_back(std::move(extra[i]));
+    const Signature sig = resolveOverload(key, args, pos);
+    for (std::size_t i = 1; i < args.size() && i < sig.params.size(); i++)
+        if (!sig.params[i]->isReference()) args[i] = convert(std::move(args[i]), sig.params[i]);
+    return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
+                        false, pos, std::move(args));
+}
+
+// `operator delete(void *, const std::nothrow_t &)` and its array twin, for the
+// storage a nothrow allocation made - [expr.new]/20 pairs it with the allocator.
+ExprPtr Parser::callNothrowDeallocator(bool array, ExprPtr raw) {
+    const char *itanium = array ? "_ZdaPvRKSt9nothrow_t" : "_ZdlPvRKSt9nothrow_t";
+    const char *microsoft = array ? "??_V@YAXPEAXAEBUnothrow_t@std@@@Z"
+                                  : "??3@YAXPEAXAEBUnothrow_t@std@@@Z";
+    const char *tag = target_.microsoftNames() ? "?nothrow@std@@3Unothrow_t@1@B" : "_ZSt7nothrow";
+    Var *tv = Var::global(tag);
+    tv->setSymbol(tag);
+    ExprPtr tref(tv);
+    tref->setType(types_.get(Kind::Char));
+    ExprPtr taddr(new Unary('&', std::move(tref)));
+    taddr->setType(types_.pointerTo(types_.get(Kind::Char)));
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(raw));
+    args.push_back(std::move(taddr));
+    std::vector<int> argSlots(args.size(), 0);
+    const std::string name = target_.microsoftNames() ? microsoft : itanium;
+    Call *call = new Call(name, nullptr, std::move(args), false, 0, 2, std::move(argSlots));
+    call->setSymbol(name);
+    ExprPtr n(call);
+    n->setType(types_.get(Kind::Void));
+    return n;
 }
 
 // **[expr.delete]/2: deleting a null pointer has no effect**, and running the

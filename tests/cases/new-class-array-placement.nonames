@@ -1,0 +1,3 @@
+x86_64-linux  the case includes <cstdlib> and <cstdio>, which clang compiles against its own library headers and refuses on the cross targets outright; the names this case is about were measured on a header-free probe - a class's `operator new[]` is _ZN1SnaEm and ??_US@@SAPEAX_K@Z, its `operator delete[]` _ZN1SdaEPv and ??_VS@@SAXPEAX@Z, a two-argument placement `operator new(size_t, int, double)` _Znwmid and ??2@YAPEAX_KHN@Z, and cxx1 spells all six as clang does. The array constructor and destructor loops (__cxx1_vec_new_*, __cxx1_vec_del_*) are cxx1's own where clang inlines the loop.
+arm64-darwin  the same.
+x86_64-windows  the same.

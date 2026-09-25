@@ -1121,6 +1121,11 @@ private:
         int slot;
         const Type *type;
         int flag;
+        // Storage a new-expression allocated and is still building in: [expr.new]/20
+        // gives it back through the matching deallocation function if that throws.
+        bool newStorage = false;
+        bool newArray = false, newNothrow = false;
+        int newCookie = 0;
         // **The storage `__cxa_allocate_exception` handed back**, which is a
         // temporary of the throw's own full expression and is released with
         // `__cxa_free_exception` rather than destroyed.
@@ -1642,6 +1647,11 @@ private:
     const Signature *classAllocator(const Type *made, const char *which);
     ExprPtr typeidExpression(std::size_t pos);
     ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
+    ExprPtr deallocateArray(const Type *pointee, ExprPtr raw, std::size_t pos);
+    // `new (a, b) T`: the `operator new` the placement arguments reach, class first.
+    ExprPtr userPlacementAllocation(const Type *made, bool array, ExprPtr bytes,
+                                    std::vector<ExprPtr> &extra, std::size_t pos);
+    ExprPtr callNothrowDeallocator(bool array, ExprPtr raw);
     ExprPtr callNothrowAllocator(bool array, ExprPtr bytes, ExprPtr tag, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
