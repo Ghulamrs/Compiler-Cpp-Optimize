@@ -787,6 +787,7 @@ private:
         // holds the caller's pointer, so the object's address is what the slot
         // *contains* rather than where the slot sits.
         bool byAddress = false;
+        long long count = 0;   // an array of this many `cls`, destroyed last first; 0 for one object
     };
 
     // One automatic object a jump may not land past - see Local::guardsJump. The frame
@@ -934,6 +935,20 @@ private:
                                  std::size_t pos, bool userDeclared);
     // `int i = 0; while (i < count) { one; i = i + 1; }` over an array member's elements.
     StmtPtr eachElement(int indexSlot, long long count, StmtPtr one);
+    StmtPtr eachElement(int indexSlot, ExprPtr count, StmtPtr one);
+    // The two loops an array of a class needs, each a file-local function
+    // synthesized once per class: `(T *base, size_t n)` building every
+    // element with the default constructor, and destroying them last first.
+    std::string vectorLoopName(const char *which, const Type *cls, std::size_t pos);
+    std::string vectorConstructor(const Type *cls, std::size_t pos);
+    std::string vectorDestructor(const Type *cls, std::size_t pos);
+    ExprPtr callVectorLoop(const std::string &fn, const Type *cls, ExprPtr base,
+                           ExprPtr count, std::size_t pos);
+    // The bytes before an array from `new T[n]` that hold n, for delete[].
+    int arrayCookie(const Type *elem) const;
+    std::vector<StmtPtr> buildStaticArrayConstruction(const Declared &d,
+                                                      const std::string &symbol,
+                                                      const std::string &helper);
     // The name a base subobject's constructor is called by: Itanium's C2
     // rather than the C1 the signature carries, and on Windows the one name
     // there is.

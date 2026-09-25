@@ -145,31 +145,31 @@ StmtPtr Parser::declarationBody() {
             if (d.type->isArray() && plain != nullptr &&
                 plain->isStructOrUnion() && !plain->tag().empty() &&
                 overloadsOf(constructorKey(plain->tag())) != nullptr) {
-                if (sc == StorageStatic)
-                    src_.fail(d.pos, "'" + d.name + "' is static and its "
-                                     "elements have a constructor - an array "
-                                     "with static storage duration whose "
-                                     "elements have a constructor is not "
-                                     "supported yet");
+                // [stmt.dcl]/4: a static one is built once, under a guard,
+                // and its elements destroyed at exit - as one object is.
+                if (sc == StorageStatic) {
+                    staticLocalWithConstructor(d, inits);
+                    continue;
+                }
                 if (peek().is("(") || peek().is("="))
                     src_.fail(d.pos, "an initialiser for an array of '" +
                                      plain->describe() + "' is not supported "
                                      "yet - each element gets the default "
                                      "constructor");
-                // **Destruction is refused rather than half-built.** [class.dtor]
-                // destroys the elements in reverse, and the shared code that emits a
-                // scope's destructors knows one object per entry and not a count.
-                if (destructorOf(plain) != nullptr)
-                    src_.fail(d.pos, "an array of '" + plain->describe() +
-                                     "' is not supported yet because it has a "
-                                     "destructor, and the elements would have "
-                                     "to be destroyed in reverse when the scope "
-                                     "ends - an array of a class with only "
-                                     "constructors works");
                 int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
                 int indexSlot = allocateFrameSlot(types_.intType());
                 inits.push_back(constructLocalArray(d, off, indexSlot));
+                // **Destroyed last first when the scope ends** - [class.dtor]
+                // - as one entry carrying the count, by the class's loop.
+                if (destructorOf(plain) != nullptr) {
+                    long long count = 1;
+                    for (const Type *t = d.type; t->isArray(); t = t->pointee())
+                        count *= t->length();
+                    Alive whole{ d.name, off, plain };
+                    whole.count = count;
+                    alive_.push_back(whole);
+                }
                 // **The comma belongs to the loop condition.**
                 continue;
             }

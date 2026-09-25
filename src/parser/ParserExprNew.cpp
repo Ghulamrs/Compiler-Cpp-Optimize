@@ -1063,18 +1063,35 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             expect(")");
         }
     }
-    if (constructed && array)
-        src_.fail(pos, "'new T[n]' of a class with a constructor would have to "
-                       "run it once per element - not supported yet");
-
     const Type *sizeT = types_.get(target_.sizeType());
     ExprPtr bytes(new Num(static_cast<long long>(made->size(target_))));
     bytes->setType(sizeT);
+    // **An array of a class**: the count is wanted by the cookie and by the
+    // constructor loop as well as by the allocator, so it goes into a slot.
+    const int cookie = array && placement == nullptr ? arrayCookie(made) : 0;
+    int countSlot = 0;
+    std::string countTemp;
     if (array) {
         ExprPtr n = convert(decay(std::move(count)), sizeT);
+        if (constructed || cookie != 0) {
+            countSlot = allocateFrameSlot(sizeT);
+            countTemp = ".newc" + std::to_string(newTemps_++);
+            ExprPtr held(Var::local(countTemp, countSlot));
+            held->setType(sizeT);
+            ExprPtr save(new Assign(std::move(held), std::move(n)));
+            save->setType(sizeT);
+            n = std::move(save);
+        }
         ExprPtr total(new Binary(BinOp::Mul, std::move(n), std::move(bytes)));
         total->setType(sizeT);
         bytes = std::move(total);
+        if (cookie != 0) {
+            ExprPtr extra(new Num(static_cast<long long>(cookie)));
+            extra->setType(sizeT);
+            ExprPtr sum(new Binary(BinOp::Add, std::move(bytes), std::move(extra)));
+            sum->setType(sizeT);
+            bytes = std::move(sum);
+        }
     }
     // The byte count is wanted twice for `new T[n]()` - once by the allocator
     // and once by the zeroing - and n is any expression, so it is computed
@@ -1115,8 +1132,68 @@ ExprPtr Parser::newExpression(std::size_t pos) {
                             array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
                             voidPtr, std::move(bytes), pos);
     }
+    // The cookie: the allocation held, the count written into its last
+    // size_t, and the array beginning after it.
+    if (cookie != 0) {
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        const int rawSlot = allocateFrameSlot(voidPtr);
+        const std::string rawTemp = ".newr" + std::to_string(newTemps_++);
+        auto rawVar = [&]() { ExprPtr e(Var::local(rawTemp, rawSlot)); e->setType(voidPtr); return e; };
+        ExprPtr keep(new Assign(rawVar(), std::move(raw)));
+        keep->setType(voidPtr);
+        ExprPtr asChars(new Cast(chars, rawVar()));
+        asChars->setType(chars);
+        ExprPtr countAt(new Num(static_cast<long long>(cookie - sizeT->size(target_))));
+        countAt->setType(types_.intType());
+        ExprPtr countAddr(new Binary(BinOp::Add, std::move(asChars), std::move(countAt)));
+        countAddr->setType(chars);
+        ExprPtr countPtr(new Cast(types_.pointerTo(sizeT), std::move(countAddr)));
+        countPtr->setType(types_.pointerTo(sizeT));
+        ExprPtr countCell(new Unary('*', std::move(countPtr)));
+        countCell->setType(sizeT);
+        ExprPtr countVal(Var::local(countTemp, countSlot));
+        countVal->setType(sizeT);
+        ExprPtr write(new Assign(std::move(countCell), std::move(countVal)));
+        write->setType(sizeT);
+        ExprPtr asChars2(new Cast(chars, rawVar()));
+        asChars2->setType(chars);
+        ExprPtr skip(new Num(static_cast<long long>(cookie)));
+        skip->setType(types_.intType());
+        ExprPtr start(new Binary(BinOp::Add, std::move(asChars2), std::move(skip)));
+        start->setType(chars);
+        ExprPtr seq1(new Comma(std::move(keep), std::move(write)));
+        seq1->setType(sizeT);
+        ExprPtr seq2(new Comma(std::move(seq1), std::move(start)));
+        seq2->setType(chars);
+        raw.reset(new Cast(voidPtr, std::move(seq2)));
+        raw->setType(voidPtr);
+    }
     ExprPtr typed(new Cast(pointer, std::move(raw)));
     typed->setType(pointer);
+
+    // **`new T[n]` of a class runs the default constructor once per element**
+    // - [expr.new]/17 - by the class's loop, given the array and the count.
+    if (constructed && array) {
+        const int baseSlot = allocateFrameSlot(pointer);
+        const std::string baseTemp = ".newb" + std::to_string(newTemps_++);
+        ExprPtr held(Var::local(baseTemp, baseSlot));
+        held->setType(pointer);
+        ExprPtr keep(new Assign(std::move(held), std::move(typed)));
+        keep->setType(pointer);
+        ExprPtr again(Var::local(baseTemp, baseSlot));
+        again->setType(pointer);
+        ExprPtr n(Var::local(countTemp, countSlot));
+        n->setType(sizeT);
+        ExprPtr built = callVectorLoop(vectorConstructor(made, pos), made,
+                                       std::move(again), std::move(n), pos);
+        ExprPtr seq(new Comma(std::move(keep), std::move(built)));
+        seq->setType(types_.get(Kind::Void));
+        ExprPtr result(Var::local(baseTemp, baseSlot));
+        result->setType(pointer);
+        ExprPtr whole(new Comma(std::move(seq), std::move(result)));
+        whole->setType(pointer);
+        return whole;
+    }
 
     if (!hasInit && !constructed) return typed;
 
@@ -1356,11 +1433,52 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         return both;
     }
 
+    // **`delete[] p` of a class with a destructor**: the count from the
+    // cookie in front of the array, the elements destroyed last first by
+    // the class's loop, and the allocation freed from where it began.
+    if (dtor != nullptr && array) {
+        const Type *sizeT = types_.get(target_.sizeType());
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        const int cookie = arrayCookie(t->pointee());
+        const int slot = allocateFrameSlot(t);
+        const std::string temp = ".del" + std::to_string(refTemps_++);
+        auto held = [&]() { ExprPtr e(Var::local(temp, slot)); e->setType(t); return e; };
+        ExprPtr save(new Assign(held(), std::move(what)));
+        save->setType(t);
+
+        ExprPtr asChars(new Cast(chars, held()));
+        asChars->setType(chars);
+        ExprPtr back(new Num(static_cast<long long>(-sizeT->size(target_))));
+        back->setType(types_.intType());
+        ExprPtr countAddr(new Binary(BinOp::Add, std::move(asChars), std::move(back)));
+        countAddr->setType(chars);
+        ExprPtr countPtr(new Cast(types_.pointerTo(sizeT), std::move(countAddr)));
+        countPtr->setType(types_.pointerTo(sizeT));
+        ExprPtr n(new Unary('*', std::move(countPtr)));
+        n->setType(sizeT);
+        ExprPtr run = callVectorLoop(vectorDestructor(t->pointee()->unqualified(), pos),
+                                     t->pointee()->unqualified(), held(), std::move(n), pos);
+
+        ExprPtr asChars2(new Cast(chars, held()));
+        asChars2->setType(chars);
+        ExprPtr toStart(new Num(static_cast<long long>(-cookie)));
+        toStart->setType(types_.intType());
+        ExprPtr start(new Binary(BinOp::Add, std::move(asChars2), std::move(toStart)));
+        start->setType(chars);
+        const Type *vp = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr freed(new Cast(vp, std::move(start)));
+        freed->setType(vp);
+        ExprPtr release = callAllocator("_ZdaPv", "??_V@YAXPEAX@Z",
+                                        types_.get(Kind::Void), std::move(freed), pos);
+        ExprPtr both(new Comma(std::move(run), std::move(release)));
+        both->setType(types_.get(Kind::Void));
+        ExprPtr all(new Comma(std::move(save),
+                              guardAgainstNull(temp, slot, t, std::move(both))));
+        all->setType(types_.get(Kind::Void));
+        return all;
+    }
+
     if (dtor != nullptr) {
-        if (array)
-            src_.fail(pos, "'delete[]' of a type with a destructor needs the "
-                           "count that 'new[]' recorded, and this compiler does "
-                           "not write one - not supported yet");
         int slot = allocateFrameSlot(t);
         std::string temp = ".del" + std::to_string(refTemps_++);
 

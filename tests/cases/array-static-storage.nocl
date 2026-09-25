@@ -1,0 +1,1 @@
+cl builds an array with static storage duration by calling its runtime's vector constructor, `??_H@YAXPEAX_K1P6APEAX0@Z@Z` (`__ehvec_ctor`), where cxx1 loops the constructor in a file-local function of its own - the shape array-of-class.nocl records. Every name the program declares agrees.

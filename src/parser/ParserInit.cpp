@@ -1062,6 +1062,100 @@ std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
     return out;
 }
 
+// **An array of a class with static storage duration**: built by the class's
+// loop before main, destroyed last first at exit by a helper calling the
+// other loop - __cxa_atexit with the array on Itanium, atexit on Microsoft.
+std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
+                                                          const std::string &symbol,
+                                                          const std::string &helper) {
+    const Type *elem = d.type;
+    long long count = 1;
+    while (elem->isArray()) { count *= elem->length(); elem = elem->pointee(); }
+    const Type *plain = elem->unqualified();
+    const Type *ptr = types_.pointerTo(plain);
+    const Type *sizeT = types_.get(target_.sizeType());
+    if (peek().is("(") || peek().is("=") || peek().is("{"))
+        src_.fail(d.pos, "an initialiser for an array of '" + plain->describe() +
+                         "' is not supported yet - each element gets the "
+                         "default constructor");
+
+    // The array's address, which is its first element's.
+    auto arrayAddress = [&]() {
+        ExprPtr addr(new Unary('&', objectAt(d, symbol, 0)));
+        addr->setType(types_.pointerTo(d.type));
+        ExprPtr first(new Cast(ptr, std::move(addr)));
+        first->setType(ptr);
+        return first;
+    };
+    std::vector<StmtPtr> out;
+    ExprPtr base = arrayAddress();
+    ExprPtr n(new Num(count));
+    n->setType(sizeT);
+    out.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+        vectorConstructor(plain, d.pos), plain, std::move(base), std::move(n), d.pos))));
+    if (destructorOf(plain) == nullptr) return out;
+
+    // The helper, in a frame of its own: `(void *)` on Itanium, the array's
+    // address arriving as the argument __cxa_atexit was given; nothing on
+    // Microsoft, where it names the array itself.
+    const bool ms = target_.microsoftNames();
+    const std::string fn = ms ? helper : "__cxx1_vec_exit_" + symbol;
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    ExprPtr first;
+    if (ms) {
+        first = arrayAddress();
+    } else {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const int argSlot = allocateFrameSlot(voidPtr);
+        params.push_back(Param{ voidPtr, argSlot });
+        ExprPtr arg(Var::local("a0", argSlot));
+        arg->setType(voidPtr);
+        first.reset(new Cast(ptr, std::move(arg)));
+    }
+    first->setType(ptr);
+    ExprPtr n2(new Num(count));
+    n2->setType(sizeT);
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(callVectorLoop(
+        vectorDestructor(plain, d.pos), plain, std::move(first), std::move(n2), d.pos))));
+    body.push_back(StmtPtr(new Return(nullptr)));
+    current_->functions.push_back(Function(fn, types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), true, 0,
+                                           false, 0, d.pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(fn);
+    frameSize_ = savedFrame;
+
+    std::vector<ExprPtr> args;
+    if (ms) {
+        const Type *helperType = types_.functionType(types_.get(Kind::Void),
+                                                     std::vector<const Type *>(), false);
+        args.push_back(functionAddress(fn, helperType));
+        out.push_back(StmtPtr(new ExprStmt(runtimeCall("atexit", types_.intType(), std::move(args)))));
+        return out;
+    }
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    std::vector<const Type *> ps;
+    ps.push_back(voidPtr);
+    args.push_back(functionAddress(fn, types_.functionType(types_.get(Kind::Void), ps, false)));
+    ExprPtr asVoid(new Cast(voidPtr, arrayAddress()));
+    asVoid->setType(voidPtr);
+    args.push_back(std::move(asVoid));
+    Var *dso = Var::global("__dso_handle");
+    dso->setSymbol("__dso_handle");
+    ExprPtr handle(dso);
+    handle->setType(types_.get(Kind::Char));
+    ExprPtr handleAddr(new Unary('&', std::move(handle)));
+    handleAddr->setType(voidPtr);
+    args.push_back(std::move(handleAddr));
+    current_->usesDsoHandle = true;
+    out.push_back(StmtPtr(new ExprStmt(runtimeCall("__cxa_atexit", types_.intType(), std::move(args)))));
+    return out;
+}
+
 // Itanium: __cxa_atexit(&D1, &object, &__dso_handle), the complete-object
 // destructor. Microsoft: atexit(&helper), the helper a function of its own
 // that calls the destructor on the object - measured from cl and clang.
@@ -1137,7 +1231,9 @@ void Parser::dynamicInitialise(const Declared &d, const std::string &symbol,
         !peek().is("{"))
         requireConstInitialised(d.type, d.name, d.pos);
     const FunctionState outer = enterInitFunction();
-    std::vector<StmtPtr> built = buildStaticConstruction(d, symbol, helper);
+    std::vector<StmtPtr> built = d.type->isArray()
+        ? buildStaticArrayConstruction(d, symbol, helper)
+        : buildStaticConstruction(d, symbol, helper);
     if (once) {
         const bool ms = target_.microsoftNames();
         const std::string guard = ms ? symbol + "$guard"
@@ -1278,7 +1374,9 @@ void Parser::staticLocalWithConstructor(const Declared &d,
                 ? currentFunction_ : "?" + currentFunction_ + "@@9";
         helper = atexitHelperName(d.name + "@?1?" + owner);
     }
-    std::vector<StmtPtr> body = buildStaticConstruction(d, symbol, helper);
+    std::vector<StmtPtr> body = d.type->isArray()
+        ? buildStaticArrayConstruction(d, symbol, helper)
+        : buildStaticConstruction(d, symbol, helper);
     declareStaticLocal(d.name, d.type, d.pos, symbol);
     locals_.back().isConst = d.type->isConst();
     // Not `isConst`: the constructor writes it, so it cannot live in .rodata.
