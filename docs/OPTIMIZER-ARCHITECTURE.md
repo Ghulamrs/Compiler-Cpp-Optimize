@@ -654,3 +654,11 @@ if-conversion and tail calls.
   arithmetic; `sal`/`rol`/`ror` are shifts but opaque; `testl`/`testq`/`cmpq`
   are not explicit-only) - each a one-line candidate change for session 2,
   each to be measured, none made here.
+- `divide-by-constant` keeps the signed sign correction (`shr $63; add`)
+  whether or not the dividend can be negative. S11 priced dropping it by
+  hand on the hash kernel's fill loop: 12% of that kernel, the one edit of
+  five that paid. It is not built because the stream cannot prove the
+  fact soundly: `add` does not say whether the source's addition was
+  signed (`(int)((unsigned)r + i)` is well-defined and can wrap negative),
+  and the loop counters are frame slots at the round the pass runs in. What
+  it needs is written in `docs/HANDOVER-SESSION-10.md`.
