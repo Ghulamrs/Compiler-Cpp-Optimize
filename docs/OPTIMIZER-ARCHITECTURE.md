@@ -437,6 +437,17 @@ in OptCosts.h and CLAUDE.md ("A hot loop that straddles a 64-byte line"):
 16-byte alignment leaves a 38-byte loop straddling half the time and was
 measured to buy nothing; a straddle costs up to 40% here.
 
+**`align-entry` was built in session 10 and not landed** - the same pad in
+front of a whole function that fits a line, the `functionBegin` held as the
+stream's first event so the pad can precede it. It does what it claims (a
+23-byte callee that straddles a line costs its caller 6-8%, and the pad
+recovers exactly that) and it is not what decides the virtual-call kernel:
+two small callees at line offsets 0 and 2 read 187-196 ms, both at 0 read
+122, and the other non-straddling placements 144-147 - a two-target effect
+no per-function rule reaches, which turned the gate from 510 to 585 ms with
+one change of cap. Uncapped it grew -O2 `.text` 7.9%. The shape and the
+numbers are in `docs/HANDOVER-SESSION-9.md`.
+
 **`divide-by-constant`** (session 7, last in `rounds`, gated to a speed
 level). `mov $d, %R; cdq; idiv %R` and `xor %edx, %edx; div %R`, R dead
 after, become Hacker's Delight's multiply-and-shift with eax and edx left
