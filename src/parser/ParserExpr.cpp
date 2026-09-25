@@ -458,6 +458,8 @@ const Type *Parser::simpleTypeKeyword() const {
     for (const auto &k : t)
         if (peek().is(k.word)) return types_.get(k.kind);
     if (peek().is("wchar_t")) return types_.get(Kind::WChar);
+    if (peek().is("char16_t")) return types_.get(Kind::Char16);
+    if (peek().is("char32_t")) return types_.get(Kind::Char32);
     return nullptr;
 }
 
@@ -712,6 +714,8 @@ ExprPtr Parser::primary(Program *program) {
         switch (want->kind()) {
         case Kind::Char: case Kind::SChar: case Kind::UChar:
         case Kind::Short: case Kind::UShort: case Kind::WChar: promotes = "int"; break;
+        case Kind::Char16:                   promotes = "int"; break;
+        case Kind::Char32:                   promotes = "unsigned int"; break;
         case Kind::Float:                    promotes = "double"; break;
         default: break;
         }
@@ -745,28 +749,54 @@ ExprPtr Parser::primary(Program *program) {
         at_++;
 
         bool wide = tokens_[at_ - 1].wide;
+        char prefix = tokens_[at_ - 1].prefix;
         while (peek().kind == TokenKind::Str) {
             text += peek().text;
 
             wide = wide || peek().wide;
+            if (peek().prefix != 0 && prefix != 0 && peek().prefix != prefix)
+                src_.fail(peek().pos, "adjacent string literals with different "
+                                      "encoding prefixes - [lex.string]/13");
+            if (peek().prefix != 0) prefix = peek().prefix;
             at_++;
         }
 
-        const Type *elem = wide ? types_.get(Kind::WChar)
-                                : types_.charType();
+        const Type *elem = prefix == 'u' ? types_.get(Kind::Char16)
+                         : prefix == 'U' ? types_.get(Kind::Char32)
+                         : wide          ? types_.get(Kind::WChar)
+                                         : types_.charType();
         int width = elem->size(target_);
 
-        std::string bytes;
-        for (unsigned char ch : text) {
-            bytes.push_back(static_cast<char>(ch));
-            for (int k = 1; k < width; k++) bytes.push_back('\0');
+        // **A u or U literal is UTF-8 in the source and code units in the object**
+        // - [lex.string]/8 and /9; a wide one keeps the bytes as it always did.
+        std::vector<unsigned long long> units;
+        if (prefix == 'u' || prefix == 'U') {
+            for (std::size_t i = 0; i < text.size(); ) {
+                const unsigned char c = static_cast<unsigned char>(text[i]);
+                int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+                unsigned long long cp = extra == 0 ? c : c & (0x3F >> extra);
+                i++;
+                for (int k = 0; k < extra && i < text.size(); k++, i++)
+                    cp = (cp << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+                if (prefix == 'u' && cp >= 0x10000) {
+                    units.push_back(0xD800 + ((cp - 0x10000) >> 10));
+                    units.push_back(0xDC00 + ((cp - 0x10000) & 0x3FF));
+                } else {
+                    units.push_back(cp);
+                }
+            }
+        } else {
+            for (unsigned char ch : text) units.push_back(ch);
         }
+        std::string bytes;
+        for (unsigned long long u : units)
+            for (int k = 0; k < width; k++) bytes.push_back(static_cast<char>((u >> (8 * k)) & 0xFF));
         for (int k = 0; k < width; k++) bytes.push_back('\0');
 
         program->strings.push_back(StringLit{ label, bytes, width });
         ExprPtr n(new StrLit(label, text));
         n->setType(types_.arrayOf(types_.withConst(elem),
-                                  static_cast<long long>(text.size()) + 1));
+                                  static_cast<long long>(units.size()) + 1));
         return n;
     }
 
@@ -822,6 +852,8 @@ ExprPtr Parser::primary(Program *program) {
                                                                ? types_.get(Kind::LongLong)
                                             : types_.get(Kind::ULongLong);
 
+        else if (t.prefix == 'u')        ty = types_.get(Kind::Char16);
+        else if (t.prefix == 'U')        ty = types_.get(Kind::Char32);
         else if (t.wide)                 ty = types_.get(Kind::WChar);
         // [lex.ccon]/2: an ordinary character literal has type char, where C gives it int.
         else if (t.isChar)               ty = types_.get(Kind::Char);

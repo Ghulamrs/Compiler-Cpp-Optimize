@@ -471,10 +471,11 @@ declaration order. What is left is the shapes where one object is many:
 
 - **GNU's named variadic macro parameter** — write `...` and use `__VA_ARGS__`.
   `src/Preprocessor.cpp:925`
-- **a literal prefix**, `R"(...)"`, `u8"..."`, `u'...'`, `U"..."` and the raw
-  forms — an ordinary `"..."` is a narrow string of char here. `L` is not on
-  this list: a wide literal is read further up and works.
-  `src/Lexer.cpp:341`
+- **a raw string literal**, `R"(...)"`, `u8R`, `LR`, `uR` and `UR` — an
+  ordinary `"..."` is a narrow string of char here. `L`, `u`, `U` and `u8`
+  string literals and `u`/`U` character literals are read and work.
+  `src/Lexer.cpp:392`
+- **a `u8` character literal** is C++17. `src/Lexer.cpp:389`
 
 ## Refused because of the standard version
 
@@ -525,8 +526,9 @@ declaration, and a name — rather than as a parse error further along:
 `src/parser/Parser.cpp:97`, `src/parser/ParserExpr.cpp:645`,
 `src/parser/ParserType.cpp:1438`.
 
-    alignas   alignof   asm       char16_t  char32_t
-    export    thread_local        typeid
+    alignas   alignof   asm       export    thread_local   typeid
+
+`char16_t` and `char32_t` left it on 2026-09-26 by being implemented.
 
 **Eleven left this list on 2026-09-06 by being implemented**: `and`, `and_eq`,
 `bitand`, `bitor`, `compl`, `not`, `not_eq`, `or`, `or_eq`, `xor` and `xor_eq`

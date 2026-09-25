@@ -17,6 +17,7 @@ enum class Kind {
     // overload apart from the integer it is represented as - which the target
     // names (Target::wcharType), and which its size, alignment and sign follow.
     WChar,
+    Char16, Char32,
     Int, UInt,
     Long, ULong,
     LongLong, ULongLong,

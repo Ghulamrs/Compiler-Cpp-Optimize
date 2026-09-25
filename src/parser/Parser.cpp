@@ -18,7 +18,6 @@ int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "asm",
-        "char16_t", "char32_t",
         "export",
         "thread_local"
     };
@@ -357,6 +356,7 @@ bool Parser::atUntypedMemberDefinition() const {
 bool Parser::atTypeName() const {
     static const char *const t[] = { "void", "bool", "char", "short", "int",
                                      "long", "signed", "unsigned", "wchar_t",
+                                     "char16_t", "char32_t",
                                      "float", "double",
                                      "struct", "union", "enum",
                                      "const", "volatile",

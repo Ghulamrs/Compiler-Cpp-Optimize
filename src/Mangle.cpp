@@ -43,6 +43,8 @@ const char *itaniumBuiltin(Kind k) {
     case Kind::Short:      return "s";
     case Kind::UShort:     return "t";
     case Kind::WChar:      return "w";
+    case Kind::Char16:     return "Ds";
+    case Kind::Char32:     return "Di";
     case Kind::Int:        return "i";
     case Kind::UInt:       return "j";
     case Kind::Long:       return "l";
@@ -68,6 +70,8 @@ const char *microsoftBuiltin(Kind k) {
     case Kind::Short:      return "F";
     case Kind::UShort:     return "G";
     case Kind::WChar:      return "_W";
+    case Kind::Char16:     return "_S";
+    case Kind::Char32:     return "_U";
     case Kind::Int:        return "H";
     case Kind::UInt:       return "I";
     case Kind::Long:       return "J";

@@ -363,6 +363,8 @@ int Type::rank() const {
     case Kind::Char: case Kind::SChar: case Kind::UChar:       return 1;
     case Kind::Short: case Kind::UShort:                       return 2;
     case Kind::WChar:                                          return 2;   // promotes to int whatever its width
+    case Kind::Char16:                                         return 2;
+    case Kind::Char32:                                         return 3;   // promotes to unsigned int
     case Kind::Int: case Kind::UInt:                           return 3;
     case Kind::Long: case Kind::ULong:                         return 4;
     case Kind::LongLong: case Kind::ULongLong:                 return 5;
@@ -432,6 +434,8 @@ const char *Type::name() const {
     case Kind::Short:     return "short";
     case Kind::UShort:    return "unsigned short";
     case Kind::WChar:     return "wchar_t";
+    case Kind::Char16:    return "char16_t";
+    case Kind::Char32:    return "char32_t";
     case Kind::Int:       return "int";
     case Kind::UInt:      return "unsigned int";
     case Kind::Long:      return "long";

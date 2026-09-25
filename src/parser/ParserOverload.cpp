@@ -21,6 +21,8 @@ const Type *Parser::unsignedVersion(const Type *t) const {
 const Type *Parser::promote(const Type *t) const {
     if (t->isInteger() && t->rank() < types_.intType()->rank())
         return types_.intType();
+    // [conv.prom]/2: char32_t goes to the first of int, unsigned int that holds it.
+    if (t->kind() == Kind::Char32) return types_.get(Kind::UInt);
     return t;
 }
 
@@ -479,12 +481,13 @@ static bool isPromotion(const Type *from, const Type *to) {
     if (to->kind() == Kind::Int) {
         switch (from->kind()) {
             case Kind::Bool: case Kind::Char: case Kind::SChar: case Kind::UChar:
-            case Kind::Short: case Kind::UShort: case Kind::WChar:
+            case Kind::Short: case Kind::UShort: case Kind::WChar: case Kind::Char16:
                 return true;
             default:
                 return false;
         }
     }
+    if (to->kind() == Kind::UInt && from->kind() == Kind::Char32) return true;
     return to->kind() == Kind::Double && from->kind() == Kind::Float;
 }
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
