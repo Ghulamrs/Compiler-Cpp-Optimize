@@ -1536,6 +1536,11 @@ private:
 
     ExprPtr newExpression(std::size_t pos);
     ExprPtr deleteExpression(std::size_t pos);
+    // `p->~T()`, `o.~T()`, `p->B::~B()` and the pseudo-destructor on a scalar; null, nothing read, when the tokens are not that.
+    ExprPtr explicitDestructorCall(ExprPtr &object, std::size_t pos);
+    // The virtual destructor read out of the object held in `temp`: Itanium's D1 or D0 slot, Microsoft's `??_G` with the flag.
+    ExprPtr virtualDestructorCall(const std::string &temp, int slot, const Type *t,
+                                  const Type *cls, bool deleting, std::size_t pos);
     // `try { ... } catch (T e) { ... }` - rung 6.3.
     StmtPtr tryStatement(std::size_t pos);
     // Set while a try's body is read, so a try inside one is refused.

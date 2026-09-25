@@ -1367,62 +1367,13 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // `delete[]` takes the static type - [expr.delete]/3 - and goes below.
     if (dtor != nullptr && dtor->isVirtual && !array) {
         const Type *cls = t->pointee()->unqualified();
-        const std::vector<VSlot> &slots = vtables_[cls->tag()];
-        int index = -1;
-        for (std::size_t i = 0; i < slots.size(); i++) {
-            const bool ms = target_.microsoftNames();
-            if (slots[i].name == (ms ? "~" : "~$deleting")) { index = static_cast<int>(i); break; }
-        }
-        if (index < 0)
-            src_.fail(pos, "'" + cls->describe() + "' has a virtual destructor "
-                           "with no deleting slot");
-
-        const bool ms = target_.microsoftNames();
-        std::vector<const Type *> full;
-        full.push_back(t);
-        const Type *flagType = types_.get(Kind::UInt);
-        if (ms) full.push_back(flagType);
-        const Type *ret = ms ? types_.pointerTo(types_.get(Kind::Void))
-                             : types_.get(Kind::Void);
-
         int slot = allocateFrameSlot(t);
         std::string temp = ".dv" + std::to_string(refTemps_++);
         ExprPtr keep(Var::local(temp, slot));
         keep->setType(t);
         ExprPtr save(new Assign(std::move(keep), std::move(what)));
         save->setType(t);
-
-        const Type *fnType = types_.functionType(ret, full, false);
-        const Type *fnPtr = types_.pointerTo(fnType);
-        const Type *table = types_.pointerTo(fnPtr);
-
-        ExprPtr load(Var::local(temp, slot));
-        load->setType(t);
-        ExprPtr asTable(new Cast(types_.pointerTo(table), std::move(load)));
-        asTable->setType(types_.pointerTo(table));
-        ExprPtr vptr(new Unary('*', std::move(asTable)));
-        vptr->setType(table);
-        if (index != 0) {
-            ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
-            at->setType(types_.intType());
-            ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
-            moved->setType(table);
-            vptr = std::move(moved);
-        }
-        ExprPtr entry(new Unary('*', std::move(vptr)));
-        entry->setType(fnPtr);
-
-        std::vector<ExprPtr> args;
-        ExprPtr self(Var::local(temp, slot));
-        self->setType(t);
-        args.push_back(std::move(self));
-        if (ms) {
-            ExprPtr flag(new Num(1LL));      // 1 = free the memory too
-            flag->setType(flagType);
-            args.push_back(std::move(flag));
-        }
-        ExprPtr call = completeCall("~", std::string(), std::move(entry), ret,
-                                    full, false, pos, std::move(args));
+        ExprPtr call = virtualDestructorCall(temp, slot, t, cls, true, pos);
         ExprPtr both(new Comma(std::move(save),
                                guardAgainstNull(temp, slot, t, std::move(call))));
         both->setType(types_.get(Kind::Void));
@@ -1510,6 +1461,62 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
                              std::move(raw), pos);
     return deallocate(t->pointee(), std::move(raw), pos);
+}
+
+// **The deleting slot frees; the complete-object slot does not.** Itanium
+// keeps the two side by side, D1 then D0; Microsoft keeps one `??_G` and a
+// flag whose low bit says whether to free - measured from cl, and 0 is safe.
+ExprPtr Parser::virtualDestructorCall(const std::string &temp, int slot,
+                                      const Type *t, const Type *cls,
+                                      bool deleting, std::size_t pos) {
+    const bool ms = target_.microsoftNames();
+    const std::vector<VSlot> &slots = vtables_[cls->tag()];
+    int index = -1;
+    const char *want = ms || !deleting ? "~" : "~$deleting";
+    for (std::size_t i = 0; i < slots.size(); i++)
+        if (slots[i].name == want) { index = static_cast<int>(i); break; }
+    if (index < 0)
+        src_.fail(pos, "'" + cls->describe() + "' has a virtual destructor "
+                       "with no slot for it");
+
+    std::vector<const Type *> full;
+    full.push_back(t);
+    const Type *flagType = types_.get(Kind::UInt);
+    if (ms) full.push_back(flagType);
+    const Type *ret = ms ? types_.pointerTo(types_.get(Kind::Void))
+                         : types_.get(Kind::Void);
+    const Type *fnType = types_.functionType(ret, full, false);
+    const Type *fnPtr = types_.pointerTo(fnType);
+    const Type *table = types_.pointerTo(fnPtr);
+
+    ExprPtr load(Var::local(temp, slot));
+    load->setType(t);
+    ExprPtr asTable(new Cast(types_.pointerTo(table), std::move(load)));
+    asTable->setType(types_.pointerTo(table));
+    ExprPtr vptr(new Unary('*', std::move(asTable)));
+    vptr->setType(table);
+    if (index != 0) {
+        // Bytes, not entries: a hand-built Add is not scaled by the pointee.
+        ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
+        at->setType(types_.intType());
+        ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
+        moved->setType(table);
+        vptr = std::move(moved);
+    }
+    ExprPtr entry(new Unary('*', std::move(vptr)));
+    entry->setType(fnPtr);
+
+    std::vector<ExprPtr> args;
+    ExprPtr self(Var::local(temp, slot));
+    self->setType(t);
+    args.push_back(std::move(self));
+    if (ms) {
+        ExprPtr flag(new Num(deleting ? 1LL : 0LL));
+        flag->setType(flagType);
+        args.push_back(std::move(flag));
+    }
+    return completeCall("~", std::string(), std::move(entry), ret, full, false,
+                        pos, std::move(args));
 }
 
 // A class's own `operator new` or `operator delete`, else null - looked up
