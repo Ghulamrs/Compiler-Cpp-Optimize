@@ -69,3 +69,54 @@ f273c6e to a branch, then reset `gcc-scheme` to origin.
 
 **The user's rule:** work only under /Users/g.r.akhtar/Documents/Claude on
 their machines, and ask permission before going beyond it.
+
+## State at the end of the cloud session, 2026-09-25
+
+The cloud session was closed because it cannot reach the Mac, the Windows box
+or the Linux box. Everything it did is on the branch
+`claude/fable-5-1-background-work-kguwml`. It is **not yet merged** into
+`gcc-scheme`: S13 and the whole port are waiting for a run on the boxes.
+
+**Done on the branch, in order:**
+- S13 (18d2236): the Windows index scaled at pointer width.
+- tms6747 port, step 1 (8743547, ba50daf, 982cb5a): the backend is in.
+  tests/tms6747.sh runs 280/0 on the VM6747 emulator. To run it, clone
+  github.com/Ghulamrs/VM6747, `make` in Emulator/, and pass VM=.../vm6747.exe.
+- Compiler-Cppi features, one cherry-pick each (`-x` names the origin):
+  enum-base/alignas (c2a4255), pointer throw/catch (4bbc1b6), operator new and
+  delete (28bf9bb, plus Compiler-Cppi's lib/ C headers and include/new), typeid
+  (d8dd41f), arrays of a class with a destructor (d7203ae), wchar_t (b26cf25),
+  virtual inheritance proper (149f624), the cl-review rows bd03342 and 64d7f16,
+  51ab91b, and 6a725f4.
+- tools/windows/bench-own.cmd: cxx1 through the project's own MASM and LINK, compared with
+  ml64 + link.exe and with cl, at -O1 and -O2. Not run yet. MASM was checked
+  here: it assembles cxx1's -O1 and -O2 output of the benchmark.
+
+**The guard held at every step:** tools/port-gate.sh. The x86 output of every
+existing case is byte-identical to the S13 build, except where a step was meant
+to change it. Those changes are named in each commit: virtual-inheritance
+layout and thunks (17 cases), weak template statics, the A21 lambda reuse
+(nested closure named `$deduced_0` where clang writes `$_0`), and one register
+choice. The benchmark's -O2 assembly is byte-identical to S13's throughout, so
+no speed was lost.
+Last numbers: run.sh 521/0, names 324/0, overload 30/0, tms6747 313/0,
+comments 63.
+
+**Next, in this order.** Compiler-Cppi commits still to port:
+1. 87abbb2 - the noexcept table; one comment conflict in src/Ast.h, take Cppi's.
+2. e7ea77d - a base pointer adjusted from a derived object's address.
+3. 8d506e9 - A19, a qualification conversion into an array element.
+Then re-run Compiler-Cppi's own tests/cases against this tree (docs/PORT-FROM-CPPI.txt
+has the method). What was still failing at the close: noexcept-local-terminates,
+static-base-pointer, qualification-into-array (the three commits above),
+operator-delete-virtual (wrong output), runtime-shapes (needs <cstdint>), and
+three refusal cases that are accepted here (enum-base-range-refused,
+operator-new-static-refused, typeid-copy-refused).
+
+**Held back at the user's instruction:** the pointer to a virtual member function
+(Compiler-Cppi f31fd96). It needs every function at an even address. Compiler-Cppi does that
+with `.p2align 4` on every function, which slowed the virtual kernel from 142 to
+183 ms here. `.p2align 1` would be enough for correctness and was never measured.
+
+**Not decided:** merging into gcc-scheme; renaming the binary cxx1 -> cpp11 as
+Compiler-Cppi did; an optimizer for tms6747 (it runs unoptimized today).
