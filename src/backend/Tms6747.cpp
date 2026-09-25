@@ -1108,7 +1108,7 @@ void Tms6747::visit(const MemberAccess &n) {
 void Tms6747::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     // The type's own alignment: lifting a 16-byte object to 16 is x86's rule.
-    int align = g.type->align(target_);
+    int align = g.align > g.type->align(target_) ? g.align : g.type->align(target_);
     // An inline object - a vtable, a typeinfo, a template's static member -
     // is one object however many units define it: `.weak` in place of
     // `.global`, and zero-filled ones in .data by .space, not the .bss form.

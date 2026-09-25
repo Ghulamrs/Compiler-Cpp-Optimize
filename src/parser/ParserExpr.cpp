@@ -921,7 +921,7 @@ ExprPtr Parser::primary(Program *program) {
         if (ExprPtr v = objectRef(full)) return v;
         if (const EnumConst *e = findEnum(full)) {
             ExprPtr n(new Num(e->value));
-            n->setType(types_.intType());
+            n->setType(e->type != nullptr ? e->type : types_.intType());
             return n;
         }
         // `take(N::nl)` - the function itself, written qualified and not called.
@@ -1315,7 +1315,7 @@ ExprPtr Parser::primary(Program *program) {
         // Namespace scope, last of the three.
         if (const EnumConst *e = findEnum(name)) {
             ExprPtr n(new Num(e->value));
-            n->setType(types_.intType());
+            n->setType(e->type != nullptr ? e->type : types_.intType());
             return n;
         }
         if (ExprPtr v = globalRef(name)) return v;
@@ -1998,6 +1998,21 @@ ExprPtr Parser::unary() {
         return n;
     }
 
+    // `alignof(T)` - [expr.alignof] takes a type-id and nothing else; the
+    // answer is the type's alignment requirement, as sizeof's is its size.
+    if (peek().is("alignof")) {
+        at_++;
+        expect("(");
+        StorageClass sc;
+        const Type *measured = declarator(specifiers(&sc), true).type;
+        expect(")");
+        if (measured->isReference()) measured = measured->referent();
+        if (!measured->isComplete())
+            src_.fail(pos, "alignof needs a complete type");
+        ExprPtr n(new Num(static_cast<long long>(measured->align(target_))));
+        n->setType(types_.get(target_.sizeType()));
+        return n;
+    }
     if (peek().is("sizeof")) {
         at_++;
         const Type *measured = nullptr;

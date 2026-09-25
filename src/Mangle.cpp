@@ -975,9 +975,10 @@ private:
     }
 
     void returnType(const Type *t) {
-        // A class returned by value carries its cv-qualification in front of
-        // it; everything else is written as it stands.
-        if (t->isStructOrUnion()) out += "?A";
+        // A class or an enumeration returned by value carries its
+        // cv-qualification in front of it; everything else is written as it
+        // stands. Measured: `Small pick(int)` is `?pick@@YA?AW4Small@@H@Z`.
+        if (t->isStructOrUnion() || t->isEnumeration()) out += "?A";
         type(t);
     }
 

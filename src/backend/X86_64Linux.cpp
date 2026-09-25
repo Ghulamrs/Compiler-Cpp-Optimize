@@ -2131,7 +2131,7 @@ void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
         a_->objectType(g.symbol);
         a_->objectSize(g.symbol, size);
     }
-    a_->align(objectAlign(g.type, target_));
+    a_->align(g.align > objectAlign(g.type, target_) ? g.align : objectAlign(g.type, target_));
     // The word in front, where there is one: laid down after the alignment so
     // that it is the label - not the block - that ends up aligned, which is
     // what makes `vftable - 8` the locator the runtime reads.
