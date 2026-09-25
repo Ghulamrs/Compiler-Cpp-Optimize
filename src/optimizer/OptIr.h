@@ -5,7 +5,7 @@
 // kept in one ordered stream with the labels and the events between them.
 
 #include "OptCore.h"
-#include "Spelling.h"
+#include "../backend/Spelling.h"
 
 #include <functional>
 #include <string>

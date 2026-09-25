@@ -10,7 +10,7 @@
 #include "OptFlow.h"
 #include "OptLoops.h"
 #include "OptPasses.h"
-#include "Spelling.h"
+#include "../backend/Spelling.h"
 
 #include <memory>
 #include <set>

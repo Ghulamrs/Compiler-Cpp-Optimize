@@ -6,7 +6,7 @@
 
 #include "OptFunction.h"
 #include "OptPass.h"
-#include "Spelling.h"
+#include "../backend/Spelling.h"
 
 #include <cstddef>
 #include <memory>

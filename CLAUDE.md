@@ -134,7 +134,8 @@ the three boxes proved it: 97 / 153 / 52 on the Mac, 97 / 153 on Linux, 94 on
 Windows and the C corpus at 379/424 — every number identical to the commit
 before.
 
-**A basename may not repeat across `src/`, `src/parser/` and `src/backend/`.**
+**A basename may not repeat across `src/`, `src/parser/`, `src/backend/` and
+`src/optimizer/`.**
 That is why the nine kept their `ParserXxx` names on moving into a directory
 that would have let them drop the prefix — `src/parser/Type.cpp` beside
 `src/Type.cpp` reads better and does not work. `obj/` mirrors `src/`, so make
@@ -150,6 +151,20 @@ Those three — `alignTo`, `isLvalue`, `isNullConstant` — lost the keyword and
 live in `Parser.cpp`, declared in `src/ParserInternal.h`. That header is the
 whole cost of the split, and it is deliberately short: if a later change wants
 to add a fourth entry, consider moving the function instead.
+
+## The optimizer is its own directory, 2026-09-25
+
+`src/optimizer/` holds the optimizer that the backend's walker hands each
+function to: `Optimizer`, the `Inliner`, the pass manager and pipeline
+(`OptPass`, `OptPipeline`), every pass and analysis (`Opt*`), and the register
+allocator's IR (`Mir*`) - 39 files moved out of `src/backend/` by `git mv`
+with no code changed, the way `src/parser/` was split out. The directory owns
+its headers, reaches the shared ones as `../Ast.h`, `../Abi.h` and
+`../backend/Spelling.h`, and is included from the backend by path
+(`../optimizer/Optimizer.h`). Both builds glob it - `SRCS` in the Makefile and
+the source list in `msvc/build.cmd`. Proved a move and nothing else:
+`tools/identical.sh` against the build before, all 2,328 outputs byte-identical
+at -O0, -O1 and -O2 for both Windows spellings and x86_64-linux.
 
 ## Refusing by name reaches declarations now, not only expressions
 

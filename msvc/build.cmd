@@ -50,7 +50,7 @@ cl /nologo /std:c++14 /permissive- /EHsc /W4 /WX /O2 ^
    /DCXX1_INCLUDE_DIR="\"%ROOTFWD%/lib\"" ^
    /DCXX1_CXX_INCLUDE_DIR="\"%ROOTFWD%/include\"" ^
    /Fo"%ROOT%\obj-msvc\\" /Fe"%ROOT%\cxx1-msvc.exe" ^
-   "%ROOT%\src\*.cpp" "%ROOT%\src\parser\*.cpp" "%ROOT%\src\backend\*.cpp"
+   "%ROOT%\src\*.cpp" "%ROOT%\src\parser\*.cpp" "%ROOT%\src\backend\*.cpp" "%ROOT%\src\optimizer\*.cpp"
 if errorlevel 1 ( echo build.cmd: FAILED & exit /b 1 )
 echo build.cmd: cxx1-msvc.exe built
 endlocal

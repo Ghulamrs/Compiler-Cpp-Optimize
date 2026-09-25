@@ -142,7 +142,9 @@ classDiagram
     Group <|-- FrameGroup
 ```
 
-Files, all under `src/backend/`:
+Files, all under `src/optimizer/` since 2026-09-25 (moved there from
+`src/backend/` unchanged, byte-identical output); the walker, the targets and
+the spellings stay in `src/backend/`:
 
 | File | Holds |
 |---|---|

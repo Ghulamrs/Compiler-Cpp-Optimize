@@ -1,7 +1,7 @@
 #include "Masm.h"
 
 #include "../Mangle.h"
-#include "OptIr.h"
+#include "../optimizer/OptIr.h"
 
 #include <cstdio>
 #include <cstdlib>

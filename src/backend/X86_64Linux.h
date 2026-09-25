@@ -2,8 +2,8 @@
 
 #include "Backend.h"
 #include "Dwarf.h"
-#include "Inliner.h"
-#include "Optimizer.h"
+#include "../optimizer/Inliner.h"
+#include "../optimizer/Optimizer.h"
 #include "Spelling.h"
 #include "Walker.h"
 
