@@ -89,11 +89,13 @@
     <ClCompile Include="..\src\parser\ParserTemplate.cpp" />
     <ClCompile Include="..\src\parser\ParserTopLevel.cpp" />
     <ClCompile Include="..\src\parser\ParserType.cpp" />
+    <ClCompile Include="..\src\parser\ParserVtable.cpp" />
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />
     <ClCompile Include="..\src\backend\Backend.cpp" />
     <ClCompile Include="..\src\backend\Dwarf.cpp" />
     <ClCompile Include="..\src\backend\Masm.cpp" />
     <ClCompile Include="..\src\backend\Spelling.cpp" />
+    <ClCompile Include="..\src\backend\Tms6747.cpp" />
     <ClCompile Include="..\src\backend\Walker.cpp" />
     <ClCompile Include="..\src\backend\X86_64Linux.cpp" />
     <ClCompile Include="..\src\backend\X86_64Windows.cpp" />
@@ -139,6 +141,7 @@
     <ClInclude Include="..\src\backend\Dwarf.h" />
     <ClInclude Include="..\src\backend\Masm.h" />
     <ClInclude Include="..\src\backend\Spelling.h" />
+    <ClInclude Include="..\src\backend\Tms6747.h" />
     <ClInclude Include="..\src\backend\Walker.h" />
     <ClInclude Include="..\src\backend\X86_64Linux.h" />
     <ClInclude Include="..\src\backend\X86_64Windows.h" />

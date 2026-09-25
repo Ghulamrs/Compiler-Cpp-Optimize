@@ -28,11 +28,13 @@
 		0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */; };
 		A2E5375FA8057ECCE5FA02F3 /* ParserTopLevel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */; };
 		9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE1F463CA0C34065CAEF505B /* ParserType.cpp */; };
+		90B6BB9B00012DC9D38EB645 /* ParserVtable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FE825515B0D0A5625B5827 /* ParserVtable.cpp */; };
 		CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */; };
 		2B45FAC274DFDD7BB8B6D32A /* Backend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 12856577CF3E39497DC00394 /* Backend.cpp */; };
 		9B580F5362355E1FE8EE1106 /* Dwarf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 44939D11634EA517FF5020E4 /* Dwarf.cpp */; };
 		D3E14047F25C331F429FE184 /* Masm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 26553B240B204AB828F1E28D /* Masm.cpp */; };
 		E449C770B3AB69E828AA4C23 /* Spelling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 67D0740B42D9A977D2929C12 /* Spelling.cpp */; };
+		4C3E931330523331CA3D79DD /* Tms6747.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 24D682BAD7A7437D87895552 /* Tms6747.cpp */; };
 		ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 91CE00C0935BDE384E519CE8 /* Walker.cpp */; };
 		DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */; };
 		AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 80025E52DA32488A2EF7539F /* X86_64Windows.cpp */; };
@@ -83,11 +85,13 @@
 		DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTemplate.cpp; path = "../src/parser/ParserTemplate.cpp"; sourceTree = "<group>"; };
 		2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTopLevel.cpp; path = "../src/parser/ParserTopLevel.cpp"; sourceTree = "<group>"; };
 		BE1F463CA0C34065CAEF505B /* ParserType.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserType.cpp; path = "../src/parser/ParserType.cpp"; sourceTree = "<group>"; };
+		D1FE825515B0D0A5625B5827 /* ParserVtable.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserVtable.cpp; path = "../src/parser/ParserVtable.cpp"; sourceTree = "<group>"; };
 		201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Arm64Darwin.cpp; path = "../src/backend/Arm64Darwin.cpp"; sourceTree = "<group>"; };
 		12856577CF3E39497DC00394 /* Backend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Backend.cpp; path = "../src/backend/Backend.cpp"; sourceTree = "<group>"; };
 		44939D11634EA517FF5020E4 /* Dwarf.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Dwarf.cpp; path = "../src/backend/Dwarf.cpp"; sourceTree = "<group>"; };
 		26553B240B204AB828F1E28D /* Masm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Masm.cpp; path = "../src/backend/Masm.cpp"; sourceTree = "<group>"; };
 		67D0740B42D9A977D2929C12 /* Spelling.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Spelling.cpp; path = "../src/backend/Spelling.cpp"; sourceTree = "<group>"; };
+		24D682BAD7A7437D87895552 /* Tms6747.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Tms6747.cpp; path = "../src/backend/Tms6747.cpp"; sourceTree = "<group>"; };
 		91CE00C0935BDE384E519CE8 /* Walker.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Walker.cpp; path = "../src/backend/Walker.cpp"; sourceTree = "<group>"; };
 		334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Linux.cpp; path = "../src/backend/X86_64Linux.cpp"; sourceTree = "<group>"; };
 		80025E52DA32488A2EF7539F /* X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Windows.cpp; path = "../src/backend/X86_64Windows.cpp"; sourceTree = "<group>"; };
@@ -131,6 +135,7 @@
 		4385E0CD8761F0F11B0131BB /* Dwarf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Dwarf.h; path = "../src/backend/Dwarf.h"; sourceTree = "<group>"; };
 		326B43087F9FF0969A1F8F79 /* Masm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Masm.h; path = "../src/backend/Masm.h"; sourceTree = "<group>"; };
 		A9A1194FC9BA4491688B00EC /* Spelling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Spelling.h; path = "../src/backend/Spelling.h"; sourceTree = "<group>"; };
+		1A090AFCE8174A1DE49C9C54 /* Tms6747.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Tms6747.h; path = "../src/backend/Tms6747.h"; sourceTree = "<group>"; };
 		C681B0D6A27FF7AEF4F8EF84 /* Walker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Walker.h; path = "../src/backend/Walker.h"; sourceTree = "<group>"; };
 		12A5F71977D26CEE2AF1E2A4 /* X86_64Linux.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Linux.h; path = "../src/backend/X86_64Linux.h"; sourceTree = "<group>"; };
 		D9E2165876940A054181ABEA /* X86_64Windows.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Windows.h; path = "../src/backend/X86_64Windows.h"; sourceTree = "<group>"; };
@@ -213,6 +218,8 @@
 				326B43087F9FF0969A1F8F79 /* Masm.h */,
 				67D0740B42D9A977D2929C12 /* Spelling.cpp */,
 				A9A1194FC9BA4491688B00EC /* Spelling.h */,
+				24D682BAD7A7437D87895552 /* Tms6747.cpp */,
+				1A090AFCE8174A1DE49C9C54 /* Tms6747.h */,
 				91CE00C0935BDE384E519CE8 /* Walker.cpp */,
 				C681B0D6A27FF7AEF4F8EF84 /* Walker.h */,
 				334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */,
@@ -288,6 +295,7 @@
 				DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */,
 				2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */,
 				BE1F463CA0C34065CAEF505B /* ParserType.cpp */,
+				D1FE825515B0D0A5625B5827 /* ParserVtable.cpp */,
 			);
 			name = "src/parser";
 			sourceTree = "<group>";
@@ -358,11 +366,13 @@
 				0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */,
 				A2E5375FA8057ECCE5FA02F3 /* ParserTopLevel.cpp in Sources */,
 				9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */,
+				90B6BB9B00012DC9D38EB645 /* ParserVtable.cpp in Sources */,
 				CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */,
 				2B45FAC274DFDD7BB8B6D32A /* Backend.cpp in Sources */,
 				9B580F5362355E1FE8EE1106 /* Dwarf.cpp in Sources */,
 				D3E14047F25C331F429FE184 /* Masm.cpp in Sources */,
 				E449C770B3AB69E828AA4C23 /* Spelling.cpp in Sources */,
+				4C3E931330523331CA3D79DD /* Tms6747.cpp in Sources */,
 				ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */,
 				DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */,
 				AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */,

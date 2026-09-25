@@ -33,11 +33,13 @@
     <ClCompile Include="..\src\parser\ParserTemplate.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserTopLevel.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserType.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserVtable.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Backend.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Dwarf.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Masm.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Spelling.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Tms6747.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Walker.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\X86_64Linux.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\X86_64Windows.cpp"><Filter>Source Files\backend</Filter></ClCompile>
@@ -83,6 +85,7 @@
     <ClInclude Include="..\src\backend\Dwarf.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Masm.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Spelling.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Tms6747.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\Walker.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Linux.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Windows.h"><Filter>Header Files\backend</Filter></ClInclude>
