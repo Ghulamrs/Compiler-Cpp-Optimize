@@ -575,6 +575,18 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
                 break;
             }
         }
+        // **A function of a base off the primary chain** - a second base, a
+        // virtual one - is not in this class's table: `addr` is that base's
+        // subobject by now, and its own vptr and slot are what dispatch it.
+        if (index < 0 && owner != plain) {
+            const std::vector<VSlot> &theirs = vtables_[owner->tag()];
+            for (std::size_t i = 0; i < theirs.size(); i++) {
+                if (overrides(theirs[i], name, sig.params, sig.constThis)) {
+                    index = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
         if (index < 0)
             src_.fail(pos, "'" + name + "' is virtual but has no vtable slot in "
                            "'" + plain->describe() + "'");

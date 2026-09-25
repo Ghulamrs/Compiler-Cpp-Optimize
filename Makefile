@@ -57,7 +57,7 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
            -DCXX1_CXX_INCLUDE_DIR='"$(CXXINCDIR)"'
 # src/backend holds one file per platform: the sizes its types measure, the ABI
 # facts the front end has to know, and the code generator when there is one.
-# src/parser holds the eleven files one class is split over - see its Parser.cpp.
+# src/parser holds the twelve files one class is split over - see its Parser.cpp.
 #
 # src/optimizer holds the passes over one function and the Optimizer that runs
 # them in front of the real Spelling - see docs/OPTIMIZER-ARCHITECTURE.md.

@@ -1,0 +1,2 @@
+x86_64-linux  Four names cxx1 emits and clang does not, the complete-object default constructors of A, B, C and E: A and B are only ever bases, and C and E are built in main by C1 - which clang emits as the *alias* of C2 here, so only the C2 name appears in its listing, where cxx1 writes both labels. Every name this case is about agrees, `_ZTV1C`, `_ZTV1E` and `_ZThn8_N1E1gEv` among them.
+arm64-darwin  `__ZN1AC1Ev` and `__ZN1BC1Ev`, the same two bases' complete-object constructors, with Mach-O's leading underscore.

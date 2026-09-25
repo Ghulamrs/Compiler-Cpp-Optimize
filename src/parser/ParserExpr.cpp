@@ -1279,6 +1279,18 @@ ExprPtr Parser::primary(Program *program) {
                                    "object here to read it from");
                 const Type *held = self->type->pointee();
                 ExprPtr acc = thisMember(self->offset, held, *m);
+                // **A member of a virtual base is not at a constant offset
+                // from `this` either**: the same walk through the vtable the
+                // `.` and `->` paths take, from `*this`.
+                if (m->inVirtualBase != nullptr) {
+                    refuseVirtualBaseMember(held, *m, name, pos);
+                    ExprPtr me(Var::local("this", self->offset));
+                    me->setType(self->type);
+                    ExprPtr obj(new Unary('*', std::move(me)));
+                    obj->setType(held);
+                    if (ExprPtr viaVb = virtualBaseMember(std::move(obj), held, *m))
+                        acc = std::move(viaVb);
+                }
                 // The same two rules as the `.` and `->` paths: a const
                 // object does not reach through a reference member, and a
                 // reference member is read by dereferencing what it holds.
