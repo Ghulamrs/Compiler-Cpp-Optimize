@@ -9,6 +9,20 @@ this is what a new session needs to pick up.
 (PR #2 was the last merge, 6826941). The branch is ahead of it by the S11 and
 S12 #1 docs and whatever S12 #2 lands.
 
+**From 2026-09-25 on, Fable is retired at the user's instruction.** Opus does
+the work directly unless the user says otherwise. The paragraph below
+describes how the S5-S13 rounds ran.
+
+**Next job: one compiler for RIDE 4.0.** Base it on C++Optimize: its -O2 runs
+about 2x faster than Compiler-Cppi's (bench total 527 against 1139 ms; g++ 440).
+Port Compiler-Cppi's features into it one at a time, first the tms6747 backend.
+Compiler-Cppi's own optimizer is not ported. The repos share no git history, so
+this is a port, not a merge. Fetch Compiler-Cppi as the remote
+`cppi` (https://github.com/Ghulamrs/compiler-cppi, main 05fdbb3). The guard on
+every step: x86 and arm64 output byte-identical at -O0, -O1 and -O2 to the S13
+build (18d2236), and the benchmark no slower. The port had not started when this
+was written.
+
 **How a round runs.** Opus sends one step to a Fable subagent with a hard budget
 (about 50 tool calls, stop by 60). The subagent prices the change by hand in
 the emitted .s first and builds only if it pays at least about 5%. It commits
