@@ -662,3 +662,11 @@ if-conversion and tail calls.
   signed (`(int)((unsigned)r + i)` is well-defined and can wrap negative),
   and the loop counters are frame slots at the round the pass runs in. What
   it needs is written in `docs/HANDOVER-SESSION-10.md`.
+- `hoist-invariants` is GPR-only, and extending it to xmm was priced by
+  hand in S12 #1 on `matmul`'s inner loop, the one place the kernels
+  reload an invariant xmm value from its frame slot every turn: hoisting
+  the load into a free xmm register measured 19 ms against 19, under a
+  placement control as well. The loop is throughput-bound and an L1 slot
+  load is one uop in sixteen. Not built; `docs/HANDOVER-SESSION-11.md`
+  records what in that loop does pay (the xmm shuffles, the repeated
+  `movslq`, the `addsd mem` fold: 19 to 13 together, unseparated).
