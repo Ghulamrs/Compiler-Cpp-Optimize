@@ -1,0 +1,1 @@
+x86_64-linux  two cxx1-only names, none differing: the C1 forms of the two in-class constructors beside the C2 clang emits - implicit-move.nonames. The names that cross an object boundary agree: Box<int>::count is defined once, and Box<int *> defines no count, which is what the case is about.

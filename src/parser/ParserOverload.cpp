@@ -656,7 +656,27 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     if (better && worse) return false;
     if (better) return true;
     if (worse) return false;
+    if (fa.fromTemplate && fb.fromTemplate && fa.pattern != nullptr &&
+        fb.pattern != nullptr)
+        return moreSpecializedFunction(fa, fb);
     return !fa.fromTemplate && fb.fromTemplate;
+}
+
+bool Parser::moreSpecializedFunction(const Signature &a, const Signature &b) const {
+    struct Order {
+        static bool atLeast(const Parser &p, const Type *a, const Type *b) {
+            const std::vector<const Type *> &pa = a->params(), &pb = b->params();
+            if (pa.size() != pb.size()) return false;
+            // b's parameters bound afresh; a's stand as the opaque types they are.
+            std::vector<const Type *> binding(pb.size() + pa.size());
+            std::string why;
+            for (std::size_t i = 0; i < pa.size(); i++)
+                if (!p.matchPattern(pb[i], pa[i], &binding, &why)) return false;
+            return true;
+        }
+    };
+    return Order::atLeast(*this, a.pattern, b.pattern) &&
+           !Order::atLeast(*this, b.pattern, a.pattern);
 }
 
 // [over.match.oper]: one candidate set with both halves in it - a member's implicit

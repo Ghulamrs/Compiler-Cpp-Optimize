@@ -433,6 +433,7 @@ void Parser::topLevel(Program &program) {
             // what it is worth so one defined from it can fold.
             bool constantDoubleKnown = false;
             long double constantDoubleValue = 0;
+            Init dynamicScalar;
             if (scalarInitAhead || consume("=") || atBracedInitialiser(d.name)) {
                 Init in = scalarInitAhead ? parenthesisedInitialiser(d)
                                           : parseInitialiser();
@@ -455,8 +456,15 @@ void Parser::topLevel(Program &program) {
                                      "value has to be known while this is "
                                      "compiled, and this initialiser is not a "
                                      "constant expression");
-                flattenInit(d.type, in, 0, pieces);
-                hasInit = true;
+                // **Dynamic initialisation of a scalar or a trivial class** (A12,
+                // A13): `int gA = init(1);` and `P g = P();` are stored before main
+                // in declaration order, as a constructor runs there; the object is .bss.
+                if (staticallyInitialisable(d.type, in)) {
+                    flattenInit(d.type, in, 0, pieces);
+                    hasInit = true;
+                } else {
+                    dynamicScalar = std::move(in);
+                }
             } else if (quals.isConstexpr && sc != StorageExtern) {
                 src_.fail(d.pos, "'" + d.name + "' is 'constexpr' and has no "
                                  "initialiser - there is nothing for it to be");
@@ -485,11 +493,15 @@ void Parser::topLevel(Program &program) {
 
                 prev->type = both;
                 d.type = both;
-                if (hasInit && prev->hasInit)
+                if ((hasInit || dynamicScalar.value != nullptr) && prev->hasInit)
                     src_.fail(d.pos, "'" + d.name + "' is given an initialiser twice");
-                if (hasInit) prev->hasInit = true;
+                if (hasInit || dynamicScalar.value != nullptr) prev->hasInit = true;
+                if (dynamicScalar.value != nullptr)
+                    dynamicInitialiseScalar(gname, d.type, dynamicScalar);
 
-                if (sc != StorageExtern) {
+                // `extern` with an initialiser defines - [dcl.stc]/6 - and
+                // keeps external linkage a const object would otherwise lose.
+                if (sc != StorageExtern || hasInit || dynamicScalar.value != nullptr) {
                     if (!prev->emitted) {
                         prev->emitted = true;
                         program.globals.push_back(Global{ d.name, prev->symbol,
@@ -522,15 +534,18 @@ void Parser::topLevel(Program &program) {
                             (objectIsConst && sc != StorageExtern);
             refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
+            const bool dynamic = dynamicScalar.value != nullptr;
             globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
-                                          sc != StorageExtern, hasInit,
+                                          sc != StorageExtern || hasInit || dynamic,
+                                          hasInit || dynamic,
                                           constantKnown, constantValue });
             globals_.back().isConstantDouble = constantDoubleKnown;
             globals_.back().constantDouble = constantDoubleValue;
-            if (sc != StorageExtern) {
+            if (dynamic) dynamicInitialiseScalar(gname, d.type, dynamicScalar);
+            if (sc != StorageExtern || hasInit || dynamic) {
                 program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
-                                                  internal, objectIsConst });
+                                                  internal, objectIsConst && !dynamic });
                 program.globals.back().align = quals.alignAs;
                 refuseWeakAlignas(quals.alignAs, d.type, d.pos);
             }

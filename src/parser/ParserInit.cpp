@@ -315,6 +315,10 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
     // makes: `const double b = (1 - f) * a;` is dynamic initialisation by the letter of
     // [basic.start.init], and folding it is what every compiler does instead.
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (const ConstexprSlot *slot = constexprSlot(*v)) {
+            *out = slot->floating ? slot->d : static_cast<long double>(slot->i);
+            return true;
+        }
         if (v->isLocal()) {
             if (const Local *l = findLocal(v->name()))
                 if (l->isConstantDouble) { *out = l->constantDouble; return true; }
@@ -358,6 +362,25 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
                            static_cast<unsigned long long>(*out));
         }
         return true;
+    }
+    // **A call to a constexpr function, as fold() runs one** (A11).
+    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+        // No expression carries a position, so the depth limit is reported at
+        // the constexpr function's own definition.
+        auto it = constexprFns_.find(c->symbol());
+        const ConstexprFn *fn = nullptr;
+        if (it == constexprFns_.end() || !enterConstexprCall(*c, &fn, it->second.pos))
+            return false;
+        const bool ok = foldDouble(*fn->value, target, out, past53, x87Rounded);
+        constexprFrames_.pop_back();
+        if (ok && !e.type()->isFloating())
+            *out = static_cast<long double>(static_cast<long long>(*out));
+        return ok;
+    }
+    if (const Conditional *c = dynamic_cast<const Conditional *>(&e)) {
+        long long t;
+        if (!fold(c->cond(), &t, 0)) return false;
+        return foldDouble(t ? c->thenArm() : c->elseArm(), target, out, past53, x87Rounded);
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
         if (u->op() == '-' &&
@@ -1235,42 +1258,100 @@ void Parser::dynamicInitialise(const Declared &d, const std::string &symbol,
         ? buildStaticArrayConstruction(d, symbol, helper)
         : buildStaticConstruction(d, symbol, helper);
     if (once) {
-        const bool ms = target_.microsoftNames();
-        const std::string guard = ms ? symbol + "$guard"
-                                     : "_ZGV" + symbol.substr(symbol.compare(0, 2, "_Z") == 0 ? 2 : 0);
-        const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
-        current_->globals.push_back(Global{ guard, guard, guardType,
-                                            std::vector<GlobalPiece>(), false,
-                                            false, false });
-        current_->globals.back().isInline = true;
-        // The first byte is what Itanium reads; the whole int on Microsoft.
-        const Type *readAs = types_.get(ms ? Kind::Int : Kind::UChar);
-        Var *seen = Var::global(guard);
-        seen->setSymbol(guard);
-        ExprPtr flag(seen);
-        flag->setType(readAs);
-        ExprPtr zero(new Num(0LL));
-        zero->setType(readAs);
-        ExprPtr fresh(new Binary(BinOp::Eq, std::move(flag), std::move(zero)));
-        fresh->setType(types_.get(Kind::Bool));
-
-        Var *mark = Var::global(guard);
-        mark->setSymbol(guard);
-        ExprPtr marked(mark);
-        marked->setType(readAs);
-        ExprPtr one(new Num(1LL));
-        one->setType(readAs);
-        ExprPtr set(new Assign(std::move(marked), std::move(one)));
-        set->setType(readAs);
-
-        std::vector<StmtPtr> body;
-        body.push_back(StmtPtr(new ExprStmt(std::move(set))));
-        for (std::size_t i = 0; i < built.size(); i++)
-            body.push_back(std::move(built[i]));
+        StmtPtr guarded = guardTemplateMember(symbol, std::move(built));
         built.clear();
-        built.push_back(StmtPtr(new If(std::move(fresh),
-                                       StmtPtr(new Block(std::move(body))),
-                                       StmtPtr())));
+        built.push_back(std::move(guarded));
+    }
+    for (std::size_t i = 0; i < built.size(); i++)
+        dynInit_.push_back(std::move(built[i]));
+    leaveInitFunction(outer);
+}
+
+// The shapes flattenInit lays down as bytes. A class object here has no
+// constructor - that path was taken earlier - so `P g = P();` and `P g = f();`
+// are trivial copies made at run time; a braced list stays with flattenInit.
+bool Parser::staticallyInitialisable(const Type *t, Init &in) {
+    if (in.value == nullptr) return true;
+    if (in.isList)
+        return in.items.size() != 1 || in.items[0].isList || t->isArray() ||
+               t->isStructOrUnion() || staticallyInitialisable(t, in.items[0]);
+    if (t->isArray()) return true;
+    if (t->isStructOrUnion()) return false;
+    in.value = decay(std::move(in.value));
+    if (t->isFloating()) { long double d; return foldFloating(*in.value, &d); }
+    long long v;
+    if (t->isPointer()) {
+        std::string sym;
+        if (foldAddress(*in.value, &sym, &v)) return true;
+    }
+    return fold(*in.value, &v, in.pos);
+}
+
+void Parser::dynamicInitialiseScalar(const std::string &name, const Type *type,
+                                     Init &in) {
+    const FunctionState outer = enterInitFunction();
+    std::vector<InitStep> path;
+    emitInit(name, path, type, in, dynInit_);
+    flushTemporaries(dynInit_);
+    leaveInitFunction(outer);
+}
+
+StmtPtr Parser::guardTemplateMember(const std::string &symbol,
+                                    std::vector<StmtPtr> built) {
+    const bool ms = target_.microsoftNames();
+    const std::string guard = ms ? symbol + "$guard"
+                                 : "_ZGV" + symbol.substr(symbol.compare(0, 2, "_Z") == 0 ? 2 : 0);
+    const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
+    current_->globals.push_back(Global{ guard, guard, guardType,
+                                        std::vector<GlobalPiece>(), false,
+                                        false, false });
+    current_->globals.back().isInline = true;
+    // The first byte is what Itanium reads; the whole int on Microsoft.
+    const Type *readAs = types_.get(ms ? Kind::Int : Kind::UChar);
+    Var *seen = Var::global(guard);
+    seen->setSymbol(guard);
+    ExprPtr flag(seen);
+    flag->setType(readAs);
+    ExprPtr zero(new Num(0LL));
+    zero->setType(readAs);
+    ExprPtr fresh(new Binary(BinOp::Eq, std::move(flag), std::move(zero)));
+    fresh->setType(types_.get(Kind::Bool));
+
+    Var *mark = Var::global(guard);
+    mark->setSymbol(guard);
+    ExprPtr marked(mark);
+    marked->setType(readAs);
+    ExprPtr one(new Num(1LL));
+    one->setType(readAs);
+    ExprPtr set(new Assign(std::move(marked), std::move(one)));
+    set->setType(readAs);
+
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(std::move(set))));
+    for (std::size_t i = 0; i < built.size(); i++)
+        body.push_back(std::move(built[i]));
+    return StmtPtr(new If(std::move(fresh), StmtPtr(new Block(std::move(body))),
+                          StmtPtr()));
+}
+
+void Parser::dynamicInitialiseStaticMember(const std::string &name,
+                                           const std::string &symbol,
+                                           const Type *type, Init &in, bool once) {
+    const FunctionState outer = enterInitFunction();
+    std::vector<StmtPtr> built;
+    Var *v = Var::global(name);
+    v->setSymbol(symbol);
+    ExprPtr target(v);
+    target->setType(type);
+    checkAssignable(*in.value, type, in.pos, "'" + name + "'");
+    ExprPtr a(new Assign(std::move(target), convert(decay(std::move(in.value)), type)));
+    a->setType(type);
+    built.push_back(StmtPtr(new ExprStmt(std::move(a))));
+    flushTemporaries(built);
+    if (once) {
+        StmtPtr guarded = guardTemplateMember(symbol, std::move(built));
+        built.clear();
+        built.push_back(std::move(guarded));
     }
     for (std::size_t i = 0; i < built.size(); i++)
         dynInit_.push_back(std::move(built[i]));

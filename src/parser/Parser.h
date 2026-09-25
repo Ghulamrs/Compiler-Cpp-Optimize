@@ -95,8 +95,9 @@ private:
         bool used = false;
         // **A specialization is a candidate like any other, and loses a tie.**
         // [over.match.best]: where a specialization and an ordinary function are equally
-        // good, the ordinary one wins. It is also never a redeclaration of one.
+        // good, the ordinary one wins. Its unbound parameter list serves [temp.func.order].
         bool fromTemplate = false;
+        const Type *pattern = nullptr;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -445,6 +446,8 @@ private:
         bool isClass = false;
         // Written out rather than made, so there are no parameters to bind and no primary template to replay.
         bool explicitly = false;
+        // From a partial specialization: the primary's out-of-line members are not its (A16).
+        bool fromPartial = false;
         // The parameters `binding` and `values` are for. Usually the
         // template's own; for a partial specialization they are its.
         std::vector<TemplateParam> params;
@@ -539,6 +542,8 @@ private:
                                         std::string *qualifier = nullptr,
                                         const std::vector<std::vector<const Type *> > *packs = nullptr,
                                         bool *construction = nullptr);
+    // The type parameters bound now, counted: `X::type` as a type needs `typename` (A27).
+    std::map<std::string, int> boundTypeParams_;
     // What a binding does to the two name tables, and how to put them back.
     struct Shadow {
         std::string name;
@@ -782,6 +787,8 @@ private:
     bool betterCandidate(const std::vector<Rank> &a, const std::vector<Rank> &b,
                          const Signature &fa, const Signature &fb,
                          bool ranksObjectA, bool ranksObjectB) const;
+    // [temp.func.order]: a's template beats b's when b's patterns match a's, not the reverse.
+    bool moreSpecializedFunction(const Signature &a, const Signature &b) const;
 
     // The parameter a rank position came from, or null for an implicit object
     // parameter and for anything the ellipsis swallowed.
@@ -1406,6 +1413,8 @@ private:
     struct MadeLambda {
         const Type *type;
         std::size_t end;
+        // How many tokens the lambda spans, for a reading of a copy of them.
+        std::size_t span = 0;
         // The captures have to be copied in on *every* reading, not only the
         // one that built the class - the second reading was handing back an
         // uninitialised closure and the lambda saw whatever was on the stack.
@@ -1415,7 +1424,13 @@ private:
     };
     // One closure object: a frame slot, and each capture copied into it.
     ExprPtr buildClosure(const MadeLambda &made, std::size_t pos);
-    std::map<std::size_t, MadeLambda> lambdaAt_;
+    // A closure met while an enclosing lambda's body was read for its return type (A21),
+    // by that reading's function and the `[`'s source position: the real reading, from a
+    // copy of the tokens, takes it back, so the deduced return type and the object agree.
+    typedef std::map<std::pair<std::string, std::size_t>, MadeLambda> ClosureMap;
+    ClosureMap deducedAt_;
+    // **Keyed by the function being compiled as well**: a template's body is replayed for every instantiation, and one closure shared by `tw<int>` and `tw<double>` ran int's body for both.
+    ClosureMap lambdaAt_;
 
     std::string operatorName();
     // **The type a conversion function converts to**, set by operatorName when it reads one and read by the caller straight after.
@@ -1771,6 +1786,9 @@ private:
                            bool isStatic, std::size_t pos);
 
     ExprPtr objectRef(const std::string &name);
+    const Type *qualifiedMemberScope(const Type *obj, std::string &name,
+                                     std::size_t pos);
+    void refuseAmbiguousMember(const Type *cls, const Member &m, std::size_t pos);
     // The two halves of it, because class scope sits between them.
     ExprPtr localRef(const std::string &name);
     ExprPtr globalRef(const std::string &name);
@@ -1822,6 +1840,18 @@ private:
     // declaration loops, which compare declarators of one declaration.
     const Type *lastDeducedAuto_ = nullptr;
     Init parseInitialiser();
+    // A12/A13: whether a file-scope initialiser folds to bytes; one that does
+    // not is stored by the init function instead, once the object is declared.
+    bool staticallyInitialisable(const Type *t, Init &in);
+    void dynamicInitialiseScalar(const std::string &name, const Type *type,
+                                 Init &in);
+    void dynamicInitialiseStaticMember(const std::string &name,
+                                       const std::string &symbol, const Type *type,
+                                       Init &in, bool once);
+    // The weak guard a template's static member is built under, so a second
+    // unit's copy does not build it again; wraps `body` and returns the test.
+    StmtPtr guardTemplateMember(const std::string &symbol,
+                                std::vector<StmtPtr> body);
     // The initialiser inside the parentheses of `int z(5);` - one expression, [dcl.init]/16.
     Init parenthesisedInitialiser(const Declared &d);
     // **Is the `(` this sits on an initialiser rather than a parameter list?**
@@ -1845,8 +1875,19 @@ private:
     };
     std::map<std::string, ConstexprFn> constexprFns_;   // by mangled symbol
 
-    // One frame per call being folded, holding what each parameter slot is worth.
-    mutable std::vector<std::vector<std::pair<int, long long> > > constexprFrames_;
+    // One frame per call being folded, holding what each parameter slot is worth:
+    // an integer, or a double when the parameter's type is floating (A11).
+    struct ConstexprSlot {
+        int offset = 0;
+        bool floating = false;
+        long long i = 0;
+        long double d = 0;
+    };
+    mutable std::vector<std::vector<ConstexprSlot> > constexprFrames_;
+    const ConstexprSlot *constexprSlot(const Var &v) const;
+    // Folds the arguments and pushes a frame; false when the call cannot fold.
+    bool enterConstexprCall(const Call &c, const ConstexprFn **fn,
+                            std::size_t pos) const;
 
     const Expr *singleReturnValue(const Stmt &body) const;
     ExprPtr targetFor(const std::string &name, const std::vector<InitStep> &path);

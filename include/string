@@ -24,6 +24,13 @@
 
 namespace std {
 
+// **`at` throws `out_of_range`, and `out_of_range` holds a `string`**, so the
+// class cannot be named here. What `at` calls is declared here and defined at
+// the end of <stdexcept>, which the end of this header includes: the same
+// shape libstdc++ gives it, with the definition in every unit rather than in
+// a library, as the operators below are.
+static void __throw_out_of_range(const char *what);
+
 class string {
 public:
     typedef std::size_t size_type;
@@ -63,6 +70,15 @@ public:
 
     char &operator[](size_type i) { return buf_[i]; }
     const char &operator[](size_type i) const { return buf_[i]; }
+    // [string.access]: the checked form of the same.
+    char &at(size_type i) {
+        if (i >= len_) __throw_out_of_range("string::at");
+        return buf_[i];
+    }
+    const char &at(size_type i) const {
+        if (i >= len_) __throw_out_of_range("string::at");
+        return buf_[i];
+    }
 
     size_type size() const { return len_; }
     size_type length() const { return len_; }
@@ -319,5 +335,8 @@ static string to_string(unsigned v) { return to_string((long long)v); }
 static string to_string(unsigned long v) { return to_string((long long)v); }
 
 }  // namespace std
+
+// After the class, so <stdexcept> can hold a string; it defines what `at` calls.
+#include <stdexcept>
 
 #endif

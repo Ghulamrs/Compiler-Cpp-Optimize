@@ -1,0 +1,3 @@
+x86_64-linux  cxx1-only names, none differing: the C1 forms of Q's and S's in-class constructors beside the C2 clang emits (implicit-move.nonames), and the guard _ZGVN2TmI1PE2stE for the template's static member `T Tm<T>::st = T()`, which cxx1 stores before main under a once-guard where clang sees a trivial P value-initialised and lays the member down as zeros with no initialiser at all. Both programs print the same.
+x86_64-windows  the same guard, spelled ?st@?$Tm@UP@@@@2UP@@A$guard, for the same reason.
+arm64-darwin  the same guard, with Mach-O's leading underscore.

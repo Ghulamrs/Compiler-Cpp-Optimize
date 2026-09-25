@@ -1,0 +1,3 @@
+x86_64-linux  three cxx1-only names, none differing: the C1 forms of the implicit constructors of A, C and D beside the C2 clang emits - implicit-move.nonames.
+x86_64-windows  ten clang-only names, none differing: B's and C's RTTI objects (??_R0 to ??_R4), which clang emits for a polymorphic class wherever it is constructed and cxx1 emits where the class is defined - empty-bases-adjacent.nonames. A's are in both.
+arm64-darwin  the one C1 form, with Mach-O's leading underscore.

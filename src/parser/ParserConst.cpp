@@ -104,17 +104,58 @@ long long Parser::constantExpression(const char *what) {
     return v;
 }
 
+const Parser::ConstexprSlot *Parser::constexprSlot(const Var &v) const {
+    if (!v.isLocal() || constexprFrames_.empty()) return nullptr;
+    const std::vector<ConstexprSlot> &frame = constexprFrames_.back();
+    for (std::size_t i = 0; i < frame.size(); i++)
+        if (frame[i].offset == v.offset()) return &frame[i];
+    return nullptr;
+}
+
+bool Parser::enterConstexprCall(const Call &c, const ConstexprFn **out,
+                                std::size_t pos) const {
+    auto it = constexprFns_.find(c.symbol());
+    if (it == constexprFns_.end()) return false;
+    const ConstexprFn &fn = it->second;
+    if (fn.value == nullptr || c.args().size() != fn.slots.size())
+        return false;
+
+    // A recursion that does not end is a compiler that does not either.
+    // The standard lets an implementation set a limit and say so; this is
+    // that limit, and it is said where it is reached.
+    if (constexprFrames_.size() >= 256)
+        src_.fail(pos, "this constant expression is more than 256 calls "
+                       "deep - a 'constexpr' function that never stops "
+                           "recursing cannot be worked out while compiling");
+
+    std::vector<ConstexprSlot> frame;
+    for (std::size_t i = 0; i < c.args().size(); i++) {
+        ConstexprSlot slot;
+        slot.offset = fn.slots[i];
+        const Expr &a = *c.args()[i];
+        // **Folded outside the new frame, in the caller's.** An argument is an
+        // expression where the call is written, so `fact(n - 1)` reads the
+        // caller's n; folding it after the push would read the callee's slot.
+        slot.floating = a.type() != nullptr && a.type()->isFloating();
+        if (slot.floating ? !foldFloating(a, &slot.d) : !fold(a, &slot.i, pos))
+            return false;
+        frame.push_back(slot);
+    }
+    constexprFrames_.push_back(frame);
+    *out = &fn;
+    return true;
+}
+
 bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
     // **A name, when it names a constant.**
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         // **Inside a constexpr call, a local name is a parameter.** The body being
         // folded belongs to another function, so its Vars name slots in a frame that
         // does not exist; what they are worth is on the top of this stack.
-        if (v->isLocal() && !constexprFrames_.empty()) {
-            const std::vector<std::pair<int, long long> > &frame =
-                constexprFrames_.back();
-            for (std::size_t i = 0; i < frame.size(); i++)
-                if (frame[i].first == v->offset()) { *out = frame[i].second; return true; }
+        if (const ConstexprSlot *slot = constexprSlot(*v)) {
+            if (slot->floating) return false;   // Cast/Binary fold it as floating
+            *out = slot->i;
+            return true;
         }
         if (v->isLocal()) {
             if (const Local *l = findLocal(v->name()))
@@ -134,32 +175,10 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
     // so running it is folding that expression with the parameters standing for the
     // arguments. A call to anything else simply does not fold, which is the answer.
     if (const Call *c = dynamic_cast<const Call *>(&e)) {
-        auto it = constexprFns_.find(c->symbol());
-        if (it == constexprFns_.end()) return false;
-        const ConstexprFn &fn = it->second;
-        if (fn.value == nullptr || c->args().size() != fn.slots.size())
-            return false;
-
-        // A recursion that does not end is a compiler that does not either.
-        // The standard lets an implementation set a limit and say so; this is
-        // that limit, and it is said where it is reached.
-        if (constexprFrames_.size() >= 256)
-            src_.fail(pos, "this constant expression is more than 256 calls "
-                           "deep - a 'constexpr' function that never stops "
-                           "recursing cannot be worked out while compiling");
-
-        std::vector<std::pair<int, long long> > frame;
-        for (std::size_t i = 0; i < c->args().size(); i++) {
-            long long v = 0;
-            // **Folded outside the new frame, in the caller's.** An argument is an
-            // expression where the call is written, so `fact(n - 1)` reads the
-            // caller's n; folding it after the push would read the callee's slot.
-            if (!fold(*c->args()[i], &v, pos)) return false;
-            frame.push_back(std::make_pair(fn.slots[i], v));
-        }
-        constexprFrames_.push_back(frame);
+        const ConstexprFn *fn = nullptr;
+        if (!enterConstexprCall(*c, &fn, pos)) return false;
         long long result = 0;
-        const bool ok = fold(*fn.value, &result, pos);
+        const bool ok = fold(*fn->value, &result, pos);
         constexprFrames_.pop_back();
         if (!ok) return false;
         *out = result;
