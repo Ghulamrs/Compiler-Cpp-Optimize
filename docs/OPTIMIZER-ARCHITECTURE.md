@@ -419,6 +419,20 @@ or word extension whose destination is read only at its source's width before
 it is written again - a `char` stored and nothing wider - is a whole copy,
 which the next rewrite folds away. hash 284 to 271 ms; each is smaller too.
 
+**The xmm palette in `forward-values` and `coalesce-copies`** (session 12).
+The SSE stack discipline leaves copies a GPR value never gets, and four
+rewrites fold them, each guarded by the copy's target being dead after: a
+`movslq` whose *destination* already holds the extension is a no-op
+(`isNoop`; `extensionHeld` looked only at other registers); a whole write
+followed by `movapd` of it is retargeted, the GPR `pure` rule widened to
+xmm; `movapd %s,%d; op %d,%x` is `op %s,%x`; and `movapd %s,%d; movsd
+mem,%s; addsd %d,%s` is `addsd mem,%s` for the two commutative ops, never
+for a frame slot, which the locals pass could then not promote (it stopped
+promoting the function's counters too). matmul's inner loop 13 instructions
+to 6, 18 to 15 ms; the MASM rules for the four SSE arithmetics carry a
+QWORD PTR width for the day the last fold fires there - today it does not,
+the Windows index being `movslq; shl; movslq`.
+
 **`align-loops`** (session 9, last of all, gated to a speed level - `Costs::
 loopLine()` is 64 there and 0 at -O1). The one pass that emits no
 instruction: an `Event` entry in front of a loop head's label, replayed as

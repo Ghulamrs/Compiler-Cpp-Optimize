@@ -322,7 +322,12 @@ private:
         const Value &src = regs_[i.a.reg.id], &dst = regs_[i.b.reg.id];
         if (isMovQ(i.m) && i.a.reg.width == 8 && i.b.reg.width == 8)
             return i.a.reg.id == i.b.reg.id || dst.same(src);
-        return i.m == "movslq" && i.a.reg.id == i.b.reg.id && src.sext32;
+        if (i.m != "movslq" || i.a.reg.width != 4 || i.b.reg.width != 8) return false;
+        if (i.a.reg.id == i.b.reg.id && src.sext32) return true;
+        // The destination already holds this extension: the same `movslq` again.
+        if (src.kind != Value::Unknown || src.id == 0 || src.sext32) return false;
+        const auto it = sextOf_.find(src.id);
+        return it != sextOf_.end() && dst.same(it->second);
     }
 
     // **Nothing between a push and its pop may see the stack**: no call, no
