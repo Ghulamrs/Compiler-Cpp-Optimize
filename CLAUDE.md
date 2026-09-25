@@ -10381,6 +10381,116 @@ same bytes at the same position - and the total still beats S8's. Size: the
 (549,404 to 557,585) and 2.1% on x86_64-windows (388,707 to 396,904), all of
 it padding in front of loop heads; -O1 is byte-identical.
 
+## The explicit destructor call, `<new>` over the runtime, and placement arrays, 2026-09-26
+
+**Three things measured today at 4861997 and closed in this order**, each
+with a case whose `.expected` is clang's output: `p->~T()`, the rest of
+`<new>`, and `new (p) T[n]`. What each cost, and what each was measured
+against, in the order it landed.
+
+**`p->~T()` was answered "expected a member name"** - a message naming no
+feature, the invisible bucket - and `obj.~T()`, `p->B::~B()`, `this->~S()`
+and the pseudo-destructor `p->~Int()` with it. [class.dtor]/14 and
+[expr.pseudo]. The postfix parser reads a `~` after `->` or `.` before either
+member path wants a name: the name must be the object's class, a base of it,
+or a typedef reaching either (`explicitDestructorCall`); a virtual destructor
+called unqualified dispatches through the complete-object slot - Itanium's D1,
+Microsoft's `??_G` with its flag 0, which is the slot `delete` reads with the
+flag 1 - and a qualified call never dispatches, [expr.call]/1; a scalar's
+pseudo-destructor evaluates the operand and destroys nothing. `delete`'s own
+dispatch moved into `virtualDestructorCall`, shared with the new path, and the
+emit golden read **0 of 1305 changed** for that move.
+`explicit-destructor-call.cpp` is five spellings under the ledger - built 8,
+gone 8, live 0 - agreeing with clang on the host, on the emulator and on the
+Windows box.
+
+**`<new>` names the runtime's objects, and that took the key-function rule.**
+`std::bad_alloc`, `std::exception` under it, `std::nothrow`,
+`set_new_handler`, `get_new_handler` and the nothrow allocators are ABI
+objects the platform runtime already defines, so the header *declares* them:
+the destructor and `what()` of each class, and every function, are declared
+and not defined, and only the constructors are inline - as libc++ and
+libstdc++'s own headers have them. Measured symbol by symbol on the Mac by
+linking against each name: libc++abi exports `_ZNSt9exceptionD1Ev`,
+`_ZNKSt9exception4whatEv`, `_ZTVSt9exception`, `_ZTISt9exception`, the same
+four for `bad_alloc` and `bad_array_new_length`, `_ZSt7nothrow`,
+`_ZSt15set_new_handlerPFvvE`, `_ZSt15get_new_handlerv` and the four
+`RKSt9nothrow_t` operators; it does **not** export `_ZNSt9exceptionC1Ev`, which
+is why the constructors are inline. On Windows, cl's own object and `dumpbin
+/linkermember` on the box: `?set_new_handler@std@@YAP6AXXZP6AXXZ@Z` and
+`get_new_handler` are in **libcpmt.lib and no other static library**, so the
+driver's link line names it now; `?nothrow@std@@3Unothrow_t@1@B` and the
+`AEBUnothrow_t@std@@` operators are in libcmt; and `std::exception` is inline
+in vcruntime_exception.h over `__std_exception_data`, so `<exception>` writes
+that layout out for that target over `__std_exception_copy` and
+`__std_exception_destroy` from libvcruntime. The Linux box was not asked
+directly this round (its key was not reachable from this session); the
+libstdc++ export list has the same destructor, `what`, vtable, type_info,
+handler and nothrow names, and `tools/verify-three linux` is what proves it.
+
+**What made "declares" possible is that a class with an undefined key
+function emits no vtable, type_info or name string** - [class.virtual]'s rule
+as the Itanium ABI reads it, which clang follows and cxx1 did not: it emitted
+a weak `_ZTVSt9exception` and `_ZTISt9exception` in every unit that included
+the header, and on Apple's libc++abi a type_info is matched by *address*, so a
+`bad_alloc` the runtime threw with its `_ZTISt9bad_alloc` would never have
+matched a catch naming cxx1's copy. `pruneExternalVtables` runs at the end of
+the parse: a class whose first non-pure, non-inline virtual member is declared
+here and defined nowhere in the unit loses the three symbols
+(`classSymbols_` records what was emitted) and its synthesised deleting
+destructor. A template specialization is exempt, its vtable being emitted in
+every unit; Microsoft is exempt, cl emitting every vftable as a COMDAT with no
+key function; `Signature::inlineBody` says a member was defined in its class.
+**The C6000 keeps a self-contained `std::exception` and `bad_alloc`**: the
+emulator that runs the suite has no C++ runtime to take one from, and
+`<string>` includes `<stdexcept>`, so every case using a string would have
+referenced symbols that exist only in TI's rts6740.
+
+**Three manglings were wrong for anything in `std`, and the runtime's names
+found them.** A free function directly in `std` is `_ZSt15set_new_handlerPFvvE`
+with no `N...E`; a variable is `_ZSt7nothrow`, a static one `_ZStL4cout`, and
+`std::a::v` is `_ZNSt1a1vE`; a class's `_ZTV`, `_ZTI` and `_ZTS` are
+`_ZTVSt9exception` where cxx1 wrote `_ZTVN3std9exceptionE`. All measured from
+clang. Nothing in a single-unit cxx1 program could see any of them - which is
+why the golden moved by **69 of 1305 files**, every one a case including
+`<string>`, `<stdexcept>` or the streams, and every changed line one of: a
+`std` name respelled, the "std::exception" literal and the inline `what()`,
+D1, D2 and D0 of `std::exception` leaving each Itanium unit, and on
+x86_64-windows the MSVC-layout `std::exception` arriving.
+
+**`new (std::nothrow) T` and `new (p) T[n]`.** The nothrow form calls
+`_ZnwmRKSt9nothrow_t` (`_Znwj...` on the C6000, `??2@YAPEAX_KAEBUnothrow_t@std@@@Z`)
+or its array twin, and guards every initialising path on the pointer -
+[expr.new]/13, a null initialises nothing - through the same
+`guardAgainstNull` that `delete` uses. The reserved placement array form adds
+**no cookie**, measured from clang on both ABIs with a class carrying a
+destructor: `fd` is one `lea buf(%rip)` and a `ret`; the nothrow array form
+keeps the cookie. `operator new[]` and `operator delete[]` may be declared at
+namespace scope now (`na`/`da`, `??_U`/`??_V`) - the placement and nothrow
+array pairs are what `<new>` declares - and a class's own array form stays
+refused by name, `new T[n]` never consulting the class.
+
+**Cases**: `new-header.cpp` - a failing allocation inside the real `operator
+new` caught as `std::bad_alloc &` and as `std::exception &`, the handler the
+runtime called, `get_new_handler`, nothrow answering null for a `char`, a
+class and a value-initialised array, and the two classes thrown by the
+program; it carries a `.notarget` for x86_64-windows (a class is neither
+thrown nor caught there) and for tms6747 (the emulator has no handler and no
+nothrow allocator). `new-nothrow.cpp` is the half that needs no exception and
+runs on the Windows box, linked with libcpmt, line for line clang's;
+`placement-array-new.cpp` runs on all four, under the ledger.
+
+**Still refused, and why**: a class's own `operator new[]`/`delete[]`; a user
+placement form with more than one argument; on x86_64-windows any class throw
+or catch, so `std::bad_alloc` cannot be caught there - the Microsoft ThrowInfo
+chain for a class is its own step; on tms6747 anything that needs the runtime
+the emulator does not have. Recorded and not built: the [expr.new]/20 cleanup
+that frees the storage when a constructor throws inside a new-expression -
+clang names `_ZdlPvRKSt9nothrow_t` for it and cxx1 writes it for no form of
+`new`; and a `throw()` on the placement operators makes cxx1 wrap them in a
+terminate scope calling `abort`, which is correct and three instructions clang
+never emits.
+
 ## Build
 
 ```

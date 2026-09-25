@@ -1,0 +1,12 @@
+handler set 1
+nothrow big is null 1, handler ran 1
+nothrow big class is null 1, handler ran 2
+nothrow big zeroed is null 1
+handler cleared 1
+nothrow int 7
+Loud 3
+nothrow class 3
+Loud 0
+Loud 0
+nothrow class array 0 0
+nothrow array 0 0

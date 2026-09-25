@@ -98,6 +98,8 @@ private:
         // good, the ordinary one wins. Its unbound parameter list serves [temp.func.order].
         bool fromTemplate = false;
         const Type *pattern = nullptr;
+        // Defined inside its class, so [dcl.inline]/6 makes it inline and never the key function.
+        bool inlineBody = false;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -1059,6 +1061,11 @@ private:
     // what first calls another's.
     void defineImplicitFunctions();
     void synthesizeDefaultCtor(std::size_t which);
+    // The vtable, type_info and name string each class emitted, by tag, so the key-function rule can take them back.
+    std::map<std::string, std::vector<std::string> > classSymbols_;
+    bool keyFunctionUndefined(const std::string &tag) const;
+    void pruneExternalVtables(Program &program);
+    void markInlineBody(std::size_t which) { if (which != PendingBody::npos()) functions_[which].inlineBody = true; }
     // One body for both halves of the copy. They differ in three places -
     // which member function to call, whether the vptr is stored, and whether
     // there is a value to return - and in nothing else.
@@ -1635,6 +1642,7 @@ private:
     const Signature *classAllocator(const Type *made, const char *which);
     ExprPtr typeidExpression(std::size_t pos);
     ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
+    ExprPtr callNothrowAllocator(bool array, ExprPtr bytes, ExprPtr tag, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;

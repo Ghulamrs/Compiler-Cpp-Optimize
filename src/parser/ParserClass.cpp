@@ -1533,6 +1533,7 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                          : itaniumClassTypeInfoSymbol(tag);
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == ti) return ti;      // one per class
+    classSymbols_[tag].push_back(ti);
 
     // **Which of the three shapes this class is.**
     std::vector<Type::BaseSpec> bases;
@@ -1557,6 +1558,7 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     const bool own = cls->unqualified()->tag() == tag;
     const std::string ts = own ? itaniumClassTypeNameSymbol(cls)
                                : itaniumClassTypeNameSymbol(tag);
+    classSymbols_[tag].push_back(ts);
     const std::string text = own ? itaniumClassNameString(cls)
                                  : itaniumClassNameString(tag);
     std::vector<GlobalPiece> letters;
@@ -1705,6 +1707,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class
+    classSymbols_[tag].push_back(symbol);
 
     // **The table holding a function's address is a use of it.** The `used` flag came
     // only from calls, so a class with an implicit virtual destructor got a table
@@ -3053,6 +3056,48 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     }
     frameSize_ = savedFrame;
     vttSlot_ = savedVtt;
+}
+
+// [class.virtual]'s key function, as the Itanium ABI reads it: the first
+// non-pure virtual member declared in the class and not defined inline. Where
+// that one is not defined in this unit, the vtable and type_info are not either.
+bool Parser::keyFunctionUndefined(const std::string &tag) const {
+    std::map<std::string, std::vector<VSlot> >::const_iterator vt = vtables_.find(tag);
+    for (std::size_t i = 0; i < functions_.size(); i++) {
+        const Signature &f = functions_[i];
+        if (f.owner != tag || !f.isVirtual || f.implicit || f.inlineBody) continue;
+        bool pure = false;
+        if (vt != vtables_.end())
+            for (std::size_t k = 0; k < vt->second.size(); k++)
+                if (vt->second[k].pure && overrides(vt->second[k], f.name, f.params, f.constThis))
+                    pure = true;
+        if (pure) continue;
+        return !f.defined;
+    }
+    return false;
+}
+
+// A class whose key function lives in another unit gets its vtable, its
+// type_info and its deleting destructor from there: clang emits none of the
+// three, and so `std::exception`'s are the runtime's rather than a copy.
+void Parser::pruneExternalVtables(Program &program) {
+    if (target_.microsoftNames()) return;   // cl emits every vftable, as a COMDAT
+    for (std::map<std::string, std::vector<std::string> >::const_iterator it =
+             classSymbols_.begin(); it != classSymbols_.end(); ++it) {
+        const Type *cls = findTypedef(it->first);
+        if (cls != nullptr && cls->unqualified()->isSpecialization()) continue;
+        if (!keyFunctionUndefined(it->first)) continue;
+        std::vector<std::string> gone = it->second;
+        gone.push_back(deletingDestructorSymbol(it->first));
+        for (std::size_t g = 0; g < gone.size(); g++) {
+            for (std::size_t i = program.globals.size(); i-- > 0; )
+                if (program.globals[i].symbol == gone[g])
+                    program.globals.erase(program.globals.begin() + static_cast<long>(i));
+            for (std::size_t i = program.functions.size(); i-- > 0; )
+                if (program.functions[i].symbol() == gone[g])
+                    program.functions.erase(program.functions.begin() + static_cast<long>(i));
+        }
+    }
 }
 
 // **To a fixed point, because a body can be what first calls another.** Giving

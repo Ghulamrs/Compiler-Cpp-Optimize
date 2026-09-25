@@ -307,7 +307,11 @@ public:
         // **A name with a scope in it is a nested-name**, `_ZN1N1fEi`, and a
         // namespace component is written exactly as a class one is.
         const std::vector<std::string> parts = scopeComponents(name);
-        if (parts.size() > 1) {
+        if (isDirectlyInStd(name)) {
+            // `_ZSt15set_new_handlerPFvvE`: the abbreviation alone, no N...E.
+            out += "St";
+            writtenName(parts.back(), fn->params().size() == 1);
+        } else if (parts.size() > 1) {
             out += "N";
             // Every component but the last is a prefix, and a prefix is a
             // substitution candidate - which is what makes a parameter of type
@@ -1153,14 +1157,7 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
         for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
         return out + "@6B@";
     }
-    std::string out = "_ZTV";
-    if (parts.size() > 1) out += 'N';
-    for (const std::string &part : parts) {
-        out += std::to_string(part.size());
-        out += part;
-    }
-    if (parts.size() > 1) out += 'E';
-    return out;
+    return "_ZTV" + itaniumClassNameString(tag);   // the St abbreviation included
 }
 
 // **A class's type_info and the string beside it, which are one encoding under
@@ -1196,12 +1193,17 @@ std::string vbaseDestructorSymbol(const std::string &tag) {
 std::string itaniumClassNameString(const std::string &tag) {
     const std::vector<std::string> parts = scopeComponents(tag);
     std::string out;
-    if (parts.size() > 1) out += 'N';
-    for (const std::string &part : parts) {
-        out += std::to_string(part.size());
-        out += part;
+    // `std::X` is `St1X` and `std::a::X` is `NSt1a1XE` - the abbreviation
+    // the type encoding already writes, so `_ZTISt9bad_alloc` is the runtime's.
+    const bool inStd = parts.size() > 1 && parts[0] == "std";
+    const bool nested = parts.size() > 2 || (parts.size() > 1 && !inStd);
+    if (nested) out += 'N';
+    for (std::size_t i = 0; i < parts.size(); i++) {
+        if (i == 0 && inStd) { out += "St"; continue; }
+        out += std::to_string(parts[i].size());
+        out += parts[i];
     }
-    if (parts.size() > 1) out += 'E';
+    if (nested) out += 'E';
     return out;
 }
 
@@ -1535,14 +1537,19 @@ bool microsoftConstructorName(const std::string &cls, const Type *clsType,
     return true;
 }
 
+// **A variable in a namespace is a nested-name**, `_ZN1N1vE` - measured.
+// One at file scope keeps the name it was written with, which is what lets
+// C name it, and that is the case this used to be the whole of.
 std::string itaniumDataName(const std::string &name, bool internal) {
-    // **A variable in a namespace is a nested-name**, `_ZN1N1vE` - measured.
-    // One at file scope keeps the name it was written with, which is what lets
-    // C name it, and that is the case this used to be the whole of.
     const std::vector<std::string> parts = scopeComponents(name);
+    // `_ZSt7nothrow` and a static `_ZStL4cout`, the abbreviation alone; deeper, `_ZNSt1a1vE`. Measured.
+    if (parts.size() == 2 && parts[0] == "std")
+        return "_ZSt" + std::string(internal ? "L" : "") +
+               std::to_string(parts[1].size()) + parts[1];
     if (parts.size() > 1) {
         std::string out = "_ZN";
         for (std::size_t i = 0; i + 1 < parts.size(); i++) {
+            if (i == 0 && parts[i] == "std") { out += "St"; continue; }
             out += std::to_string(parts[i].size());
             out += parts[i];
         }

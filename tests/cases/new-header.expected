@@ -1,0 +1,12 @@
+handler set 1
+bad_alloc: std::bad_alloc
+handler ran 1
+exception: std::bad_alloc
+nothrow big is null 1
+nothrow big class is null 1
+nothrow int 7
+Loud 3
+nothrow class 3
+nothrow array 0 0
+thrown: std::bad_alloc
+thrown length: bad_array_new_length

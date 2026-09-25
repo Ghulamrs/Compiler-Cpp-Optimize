@@ -49,6 +49,9 @@ const OperatorCode table[] = {
     // exactly these codes with their parameters. cl: ??2 and ??3.
     { "new",    "nw",  nullptr, "2"  },
     { "delete", "dl",  nullptr, "3"  },
+    // The array forms: `_Znam` and `_ZdaPv`; cl ??_U and ??_V.
+    { "new[]",    "na",  nullptr, "_U" },
+    { "delete[]", "da",  nullptr, "_V" },
 };
 
 const std::size_t count = sizeof table / sizeof table[0];
