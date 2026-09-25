@@ -419,6 +419,20 @@ or word extension whose destination is read only at its source's width before
 it is written again - a `char` stored and nothing wider - is a whole copy,
 which the next rewrite folds away. hash 284 to 271 ms; each is smaller too.
 
+**The xmm palette in `forward-values` and `coalesce-copies`** (session 12).
+The SSE stack discipline leaves copies a GPR value never gets, and four
+rewrites fold them, each guarded by the copy's target being dead after: a
+`movslq` whose *destination* already holds the extension is a no-op
+(`isNoop`; `extensionHeld` looked only at other registers); a whole write
+followed by `movapd` of it is retargeted, the GPR `pure` rule widened to
+xmm; `movapd %s,%d; op %d,%x` is `op %s,%x`; and `movapd %s,%d; movsd
+mem,%s; addsd %d,%s` is `addsd mem,%s` for the two commutative ops, never
+for a frame slot, which the locals pass could then not promote (it stopped
+promoting the function's counters too). matmul's inner loop 13 instructions
+to 6, 18 to 15 ms; the MASM rules for the four SSE arithmetics carry a
+QWORD PTR width for the day the last fold fires there - today it does not,
+the Windows index being `movslq; shl; movslq`.
+
 **`align-loops`** (session 9, last of all, gated to a speed level - `Costs::
 loopLine()` is 64 there and 0 at -O1). The one pass that emits no
 instruction: an `Event` entry in front of a loop head's label, replayed as
@@ -654,3 +668,19 @@ if-conversion and tail calls.
   arithmetic; `sal`/`rol`/`ror` are shifts but opaque; `testl`/`testq`/`cmpq`
   are not explicit-only) - each a one-line candidate change for session 2,
   each to be measured, none made here.
+- `divide-by-constant` keeps the signed sign correction (`shr $63; add`)
+  whether or not the dividend can be negative. S11 priced dropping it by
+  hand on the hash kernel's fill loop: 12% of that kernel, the one edit of
+  five that paid. It is not built because the stream cannot prove the
+  fact soundly: `add` does not say whether the source's addition was
+  signed (`(int)((unsigned)r + i)` is well-defined and can wrap negative),
+  and the loop counters are frame slots at the round the pass runs in. What
+  it needs is written in `docs/HANDOVER-SESSION-10.md`.
+- `hoist-invariants` is GPR-only, and extending it to xmm was priced by
+  hand in S12 #1 on `matmul`'s inner loop, the one place the kernels
+  reload an invariant xmm value from its frame slot every turn: hoisting
+  the load into a free xmm register measured 19 ms against 19, under a
+  placement control as well. The loop is throughput-bound and an L1 slot
+  load is one uop in sixteen. Not built; `docs/HANDOVER-SESSION-11.md`
+  records what in that loop does pay (the xmm shuffles, the repeated
+  `movslq`, the `addsd mem` fold: 19 to 13 together, unseparated).

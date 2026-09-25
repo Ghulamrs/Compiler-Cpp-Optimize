@@ -60,9 +60,64 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, c
     return false;
 }
 
+bool xmm(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= kXmm0 && o.reg.id < kXmm0 + 16; }
+bool xmmCopy(const Instr &i) { return i.m == "movapd" && xmm(i.a) && xmm(i.b) && i.a.reg.id != i.b.reg.id; }
+bool sseArith(const std::string &m) { return m == "addsd" || m == "subsd" || m == "mulsd" || m == "divsd"; }
+int nextIns(const Stream &s, int k, int end) {
+    for (++k; k < end; ++k) if (s[k].kind == Entry::Ins && !s[k].dead) return k;
+    return -1;
+}
+
+// **The SSE stack discipline leaves copies a GPR value never gets**: a load
+// copied on, a copy fed to one arithmetic, and a copy kept while its source
+// is reloaded and added back. Each is folded when the copy's target is dead.
+bool coalesceXmm(Stream &s, Flow &f, const Convention &conv) {
+    f.live(s);
+    bool changed = false;
+    std::vector<Live> after(s.size());
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        const Block &blk = f.blocks[b];
+        Live live = blk.out;
+        for (int k = blk.end - 1; k >= blk.begin; --k) {
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            f.joinPads(b, k, live);
+            after[k] = live;
+            live.step(f.effects[k]);
+        }
+        for (int k = blk.begin; k < blk.end; ++k) {
+            if (s[k].kind != Entry::Ins || s[k].dead || !xmmCopy(s[k].ins)) continue;
+            const int src = s[k].ins.a.reg.id, dst = s[k].ins.b.reg.id;
+            const int u = nextIns(s, k, blk.end);
+            if (u < 0) continue;
+            Instr &n = s[u].ins;
+            // `movapd %s,%d; op %d,%x` with d dead after: `op %s,%x`.
+            if (sseArith(n.m) && xmm(n.a) && n.a.reg.id == dst && xmm(n.b) && n.b.reg.id != dst &&
+                !(after[u].regs & bit(dst))) {
+                n.a.reg.id = src;
+                f.effects[u] = effectsOf(n, conv);
+                s[k].dead = changed = true;
+                continue;
+            }
+            // `movapd %s,%d; movsd mem,%s; addsd %d,%s` with d dead: `addsd mem,%s`. A
+            // frame slot is left alone, or the locals pass could not promote it.
+            const int v = nextIns(s, u, blk.end);
+            if (v >= 0 && n.m == "movsd" && n.a.isMem() && xmm(n.b) && n.b.reg.id == src &&
+                !frameReg(n.a.reg.id) && (s[v].ins.m == "addsd" || s[v].ins.m == "mulsd") &&
+                xmm(s[v].ins.a) && s[v].ins.a.reg.id == dst && xmm(s[v].ins.b) && s[v].ins.b.reg.id == src &&
+                !(after[v].regs & bit(dst))) {
+                s[v].ins.a = n.a;
+                f.effects[v] = effectsOf(s[v].ins, conv);
+                s[k].dead = s[u].dead = changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
 }
 
 bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
+    if (coalesceXmm(s, f, conv)) return true;
     f.live(s);
     bool changed = false;
     for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
@@ -73,16 +128,16 @@ bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
             if (copy.kind != Entry::Ins || copy.dead) continue;
             f.joinPads(b, k, live);
             const Instr &c = copy.ins;
-            const bool isCopy = (c.m == "mov" || c.m == "movq") && gpr(c.a) && gpr(c.b) &&
+            const bool isCopy = ((c.m == "mov" || c.m == "movq") && gpr(c.a) && gpr(c.b) &&
                                 !frameReg(c.a.reg.id) && !frameReg(c.b.reg.id) &&
-                                c.a.reg.width == 8 && c.b.reg.width == 8 && c.a.reg.id != c.b.reg.id;
+                                c.a.reg.width == 8 && c.b.reg.width == 8 && c.a.reg.id != c.b.reg.id) || xmmCopy(c);
             int p = k - 1;
             while (p >= blk.begin && (s[p].kind == Entry::Event || s[p].dead)) --p;
             if (isCopy && p >= blk.begin && s[p].kind == Entry::Ins && !(live.regs & bit(c.a.reg.id))) {
                 Instr &w = s[p].ins;
                 const Effects &we = f.effects[p];
                 const RegSet r = bit(c.a.reg.id);
-                const bool pure = gpr(w.b) && w.b.reg.id == c.a.reg.id && w.b.reg.width >= 4 &&
+                const bool pure = (gpr(w.b) || xmm(w.b)) && w.b.reg.id == c.a.reg.id && w.b.reg.width >= 4 &&
                                   (we.writes & r) && !(we.reads & r) && !(we.partial & r) &&
                                   explicitOnly(w) && w.operands == 2 && !we.flagsWritten;
                 if (pure) {
