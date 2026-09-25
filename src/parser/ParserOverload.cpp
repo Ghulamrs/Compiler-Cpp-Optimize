@@ -173,7 +173,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         }
         if (vbBack != 0 && !target_.microsoftNames()) {
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
-            const Type *offType = types_.get(Kind::LongLong);
+            const Type *offType = wordOffsetType();
             ExprPtr asChars(new Cast(chars, std::move(e)));
             asChars->setType(chars);
             int slot = const_cast<Parser *>(this)->allocateFrameSlot(chars);

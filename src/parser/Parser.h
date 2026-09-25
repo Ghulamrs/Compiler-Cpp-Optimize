@@ -577,6 +577,8 @@ private:
     void markUsed(const Signature *f);
     // A vtable entry, a typeinfo field and the vptr: 8 bytes on the hosts, 4 on the C6000.
     int pointerBytes() const { return target_.sizeOf(Kind::Pointer); }
+    // An offset stored among them (offset-to-top, a vbase_offset): as wide, and signed.
+    const Type *wordOffsetType() const { return types_.get(pointerBytes() == 4 ? Kind::Int : Kind::LongLong); }
     // **How far the address point sits past the table's first byte.**
     int vtableHeaderBytes(const Type *cls) const {
         if (target_.microsoftNames()) return 0;

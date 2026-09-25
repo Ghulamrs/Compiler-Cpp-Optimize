@@ -575,7 +575,7 @@ ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
     }
 
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
-    const Type *offsetType = types_.get(Kind::LongLong);
+    const Type *offsetType = wordOffsetType();
     const long long word = charPtr->size(target_);
 
     // The operand is read three times - tested, dereferenced for its vptr, and
@@ -1074,7 +1074,10 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     const Type *pointer = types_.pointerTo(made);
-    ExprPtr raw = callAllocator(array ? "_Znam" : "_Znwm",
+    // operator new's name spells its size_t: `m` on LP64, `j` where it is unsigned int (the C6000).
+    const bool sizeIsUInt = target_.sizeType() == Kind::UInt;
+    ExprPtr raw = callAllocator(array ? (sizeIsUInt ? "_Znaj" : "_Znam")
+                                      : (sizeIsUInt ? "_Znwj" : "_Znwm"),
                                 array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
                                 types_.pointerTo(types_.get(Kind::Void)),
                                 std::move(bytes), pos);

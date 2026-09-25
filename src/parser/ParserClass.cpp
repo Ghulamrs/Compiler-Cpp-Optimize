@@ -1246,7 +1246,7 @@ ExprPtr Parser::virtualBaseMember(ExprPtr object, const Type *staticType,
     const long long back = -static_cast<long long>(nvb + 2 - slot) * pointerBytes();
 
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
-    const Type *offType = types_.get(Kind::LongLong);
+    const Type *offType = wordOffsetType();
 
     ExprPtr addr(new Unary('&', std::move(object)));
     addr->setType(types_.pointerTo(owner));
