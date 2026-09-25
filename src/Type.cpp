@@ -52,7 +52,7 @@ int Type::size(const Target &t) const {
 
 int Type::align(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->align(t);
-    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
+    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : t.alignOf(Kind::Pointer);
     if (isReference()) return pointee_->align(t);
     if (kind_ == Kind::Array) return pointee_->align(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return align_;
