@@ -1,6 +1,7 @@
-// The re-padding pass for the C6000: every instruction waits only as long as
-// the writes still in flight require, and a branch waits until they land by
-// the time its target executes. The latencies are the emulator's (README).
+// The C6000 passes over one function's text: the -O0 NOPs are dropped, the
+// sequential program is rewritten by three peepholes, and it is padded again
+// to the hazards that remain. The latencies are the emulator's (its README).
+
 #include "C6xSched.h"
 
 #include <cctype>
@@ -72,6 +73,13 @@ Line parse(const std::string &raw) {
     return l;
 }
 
+Line make(const std::string &mnem, const std::string &a, const std::string &b = "", const std::string &c = "") {
+    std::string raw = "\t" + mnem + "\t" + a;
+    if (!b.empty()) raw += ", " + b;
+    if (!c.empty()) raw += ", " + c;
+    return parse(raw);
+}
+
 bool isNameChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '.'; }
 
 // The registers an operand names: A0-A31 and B0-B31 as whole words, so a
@@ -102,6 +110,135 @@ void readsAndWrites(const Line &l, std::vector<std::string> &reads, std::vector<
     if (l.mnem == "MVKH") registersIn(l.ops.back(), reads);
 }
 
+bool has(const std::vector<std::string> &v, const std::string &r) {
+    for (std::size_t i = 0; i < v.size(); i++) if (v[i] == r) return true;
+    return false;
+}
+
+bool isNumber(const std::string &s) {
+    std::size_t i = s.size() > 1 && s[0] == '-' ? 1 : 0;
+    if (i >= s.size()) return false;
+    for (; i < s.size(); i++) if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+    return true;
+}
+
+bool blockEnd(const Line &l) { return !l.instr || l.mnem == "B"; }
+
+// Whether reg is overwritten before it is read on the straight path from i;
+// a label, a branch or a directive ends the path and answers no.
+bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg) {
+    for (std::size_t j = i + 1; j < v.size(); j++) {
+        if (blockEnd(v[j])) return false;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(v[j], reads, writes);
+        if (has(reads, reg)) return false;
+        if (has(writes, reg)) return true;
+    }
+    return true;
+}
+
+// MVKL then MVKH of a constant that fits sixteen signed bits is one MVK.
+void foldMvk(std::vector<Line> &v) {
+    for (std::size_t i = 0; i + 1 < v.size(); i++) {
+        const Line &a = v[i], &b = v[i + 1];
+        if (a.mnem != "MVKL" || b.mnem != "MVKH" || a.ops.size() != 2 || a.ops != b.ops || !isNumber(a.ops[0])) continue;
+        long k = std::atol(a.ops[0].c_str());
+        if (k < -32768 || k > 32767) continue;
+        v[i] = make("MVK", a.ops[0], a.ops[1]);
+        v.erase(v.begin() + static_cast<long>(i) + 1);
+    }
+}
+
+int accessSize(const std::string &m) {
+    if (m == "LDDW" || m == "STDW") return 8;   // LDW ends in DW too
+    if (endsWith(m, "W")) return 4;
+    if (endsWith(m, "H") || endsWith(m, "HU")) return 2;
+    return 1;
+}
+
+// A local's address built and used once becomes the *-A15(k) form where k
+// fits ucst5 scaled by the access: MVK k,A0; SUB A15,A0,R; LDW *R,D, and
+// the SUB A15,k,R spelling of a small k, each with R and A0 dead after.
+void foldFrame(std::vector<Line> &v) {
+    for (std::size_t i = 0; i + 1 < v.size(); i++) {
+        if (v[i].mnem != "SUB" || v[i].ops.size() != 3 || v[i].ops[0] != "A15") continue;
+        std::string reg = v[i].ops[2];
+        long k;
+        std::size_t first = i;
+        if (isNumber(v[i].ops[1])) k = std::atol(v[i].ops[1].c_str());
+        else if (v[i].ops[1] == "A0" && i > 0 && v[i - 1].mnem == "MVK" && v[i - 1].ops.size() == 2 &&
+                 v[i - 1].ops[1] == "A0" && isNumber(v[i - 1].ops[0]) && deadAfter(v, i, "A0")) {
+            k = std::atol(v[i - 1].ops[0].c_str());
+            first = i - 1;
+        } else continue;
+        Line &use = v[i + 1];
+        if (!use.instr || use.ops.size() != 2 || !use.pred.empty()) continue;
+        bool load = startsWith(use.mnem, "LD") && use.ops[0] == "*" + reg;
+        bool store = isStore(use.mnem) && use.ops[1] == "*" + reg;
+        if (!load && !store) continue;
+        int size = accessSize(use.mnem);
+        if (k < 0 || k % size != 0 || k / size > 31) continue;
+        if (!deadAfter(v, i + 1, reg)) continue;
+        std::string mem = "*-A15(" + std::to_string(k) + ")";
+        v[i + 1] = load ? make(use.mnem, mem, use.ops[1]) : make(use.mnem, use.ops[0], mem);
+        v.erase(v.begin() + static_cast<long>(first), v.begin() + static_cast<long>(i) + 1);
+        i = first;
+    }
+}
+
+bool isPush(const std::vector<Line> &v, std::size_t i) {
+    return i + 1 < v.size() && v[i].raw == "\tSUB\tB15, 8, B15" && isStore(v[i + 1].mnem) &&
+           v[i + 1].ops.size() == 2 && v[i + 1].ops[1] == "*B15" && (v[i + 1].mnem == "STW" || v[i + 1].mnem == "STDW");
+}
+bool isPop(const std::vector<Line> &v, std::size_t i) {
+    return i + 1 < v.size() && (v[i].mnem == "LDW" || v[i].mnem == "LDDW") && v[i].ops.size() == 2 &&
+           v[i].ops[0] == "*B15" && v[i + 1].raw == "\tADD\tB15, 8, B15";
+}
+
+// A push whose pop is in the same block, with no call and no other use of
+// B15 between, keeps its value in A16-A31 instead: the pair's slot d takes
+// A(16+2d):A(17+2d), and the two stack adjustments go with the memory access.
+void foldPushPop(std::vector<Line> &v) {
+    std::vector<std::size_t> open;             // pushes not yet popped, this block
+    std::vector<std::pair<std::size_t, std::size_t> > pairs;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (blockEnd(v[i])) { open.clear(); continue; }
+        if (isPush(v, i)) { open.push_back(i); i++; continue; }
+        if (isPop(v, i)) {
+            if (!open.empty()) { pairs.push_back(std::make_pair(open.back(), i)); open.pop_back(); }
+            i++;
+            continue;
+        }
+        std::vector<std::string> reads, writes;
+        readsAndWrites(v[i], reads, writes);
+        if (has(reads, "B15") || has(writes, "B15")) open.clear();
+    }
+    std::vector<bool> drop(v.size(), false);
+    for (std::size_t p = 0; p < pairs.size(); p++) {
+        std::size_t push = pairs[p].first, pop = pairs[p].second;
+        int depth = 0;
+        for (std::size_t q = 0; q < pairs.size(); q++)
+            if (pairs[q].first < push && pairs[q].second > pop) depth++;
+        if (depth >= 8) continue;
+        std::string lo = "A" + std::to_string(16 + 2 * depth), hi = "A" + std::to_string(17 + 2 * depth);
+        std::string src = v[push + 1].ops[0], dst = v[pop].ops[1];
+        if (v[push + 1].mnem == "STDW") {      // the pair's halves take the two stack lines
+            v[push] = make("MV", src.substr(src.find(':') + 1), lo);
+            v[push + 1] = make("MV", src.substr(0, src.find(':')), hi);
+            v[pop] = make("MV", lo, dst.substr(dst.find(':') + 1));
+            v[pop + 1] = make("MV", hi, dst.substr(0, dst.find(':')));
+            continue;
+        }
+        v[push + 1] = make("MV", src, lo);
+        v[pop] = make("MV", lo, dst);
+        drop[push] = true;
+        drop[pop + 1] = true;
+    }
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) if (!drop[i]) out.push_back(v[i]);
+    v.swap(out);
+}
+
 class Scheduler {
 public:
     void feed(const Line &l);
@@ -129,14 +266,11 @@ void Scheduler::waitUntil(long c) {
 
 void Scheduler::feed(const Line &l) {
     if (!l.instr) {
-        // A label needs no wait: a jump arrives with nothing in flight, and the
-        // fall-through path is scheduled as the sequence it is. A directive is
-        // a barrier, since what follows it is not known to be code.
+        // A label needs no wait, a jump arriving with nothing in flight; a directive is a barrier.
         if (!l.raw.empty() && l.raw[0] == '\t') waitUntil(allLanded());
         out_ << l.raw << "\n";
         return;
     }
-    if (l.mnem == "NOP") return;            // the -O0 padding, re-derived below
     std::vector<std::string> reads, writes;
     readsAndWrites(l, reads, writes);
     int slots = delaySlots(l.mnem);
@@ -172,9 +306,17 @@ std::string Scheduler::finish() {
 
 std::string c6xSchedule(const std::string &text, int level) {
     if (level <= 0) return text;
-    Scheduler s;
+    std::vector<Line> lines;
     std::istringstream in(text);
     std::string line;
-    while (std::getline(in, line)) s.feed(parse(line));
+    while (std::getline(in, line)) {
+        Line l = parse(line);
+        if (l.mnem != "NOP") lines.push_back(l);    // the -O0 padding, re-derived by the Scheduler
+    }
+    foldMvk(lines);
+    foldFrame(lines);
+    foldPushPop(lines);
+    Scheduler s;
+    for (std::size_t i = 0; i < lines.size(); i++) s.feed(lines[i]);
     return s.finish();
 }

@@ -1345,8 +1345,7 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(-(kSaveBytes + frame));
     }
 
-    // The parameters and the body are what the backend padded; the prologue
-    // and epilogue hold no padding, and the frame is decided after the body.
+    // The prologue and epilogue hold no padding, and the frame is decided after the body.
     out_ << c6xSchedule(params + body, optimize_);
 
     out_ << returnLabel_ << ":\n";
