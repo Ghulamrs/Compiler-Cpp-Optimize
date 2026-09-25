@@ -43,6 +43,13 @@ recursive inlining. Do not propose them again. What remains: the sound design
 for S11's hash, and the Windows index shape that blocks the S12 #2 rules on
 x86_64-windows.
 
+**Session 13 (2026-09-25, PR #6, `f761eb4`): read HANDOVER-SESSION-13.md
+first.** The Windows box found three -O1/-O2 miscompiles that S6-S12's
+Linux-only runs could not see, all mended; and cxx1 was compared with cl and
+g++ on Compiler++. The gate now includes the Windows box: `cases.cmd O0 O1
+O2` and `opt.cmd` before any round lands. The Mac's stale f273c6e is kept on
+`wip-s5-mac` and `gcc-scheme` there matches origin.
+
 **Only the user can run these:** the Windows box (`C:\cxxopt`,
 `tools\windows\bench.cmd` against cl /O2 and cl6x at `C:\ti`) and the Mac
 (`~/Documents/Claude/C++Optimize`). On the Mac, save the stale local commit
