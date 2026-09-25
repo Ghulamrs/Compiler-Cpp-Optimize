@@ -27,6 +27,7 @@ void exit(int);
 void abort(void);
 
 int atoi(const char *);
+char *getenv(const char *);
 long atol(const char *);
 
 // The one that says where it stopped. atol cannot report a failure at all - it

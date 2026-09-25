@@ -45,6 +45,10 @@ const OperatorCode table[] = {
     { "++",   "pp",  nullptr, "E"  },
     { "--",   "mm",  nullptr, "F"  },
     { "->",   "pt",  nullptr, "C"  },
+    // The allocation functions, named as operators: `_Znwm` and `_ZdlPv` are
+    // exactly these codes with their parameters. cl: ??2 and ??3.
+    { "new",    "nw",  nullptr, "2"  },
+    { "delete", "dl",  nullptr, "3"  },
 };
 
 const std::size_t count = sizeof table / sizeof table[0];

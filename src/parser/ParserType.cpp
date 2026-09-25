@@ -863,7 +863,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      d.type->describe() + "' - `void` is a "
                                      "type like any other here, and clang "
                                      "refuses that spelling too");
-                const bool memberIsStatic = msc == StorageStatic;
+                // [class.free]/1 and /2: allocation and deallocation
+                // functions are static members whether or not they say so.
+                const bool memberIsStatic = msc == StorageStatic ||
+                    d.name == "operatornew" || d.name == "operatordelete";
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
@@ -1808,18 +1811,21 @@ std::string Parser::operatorName() {
 
     const std::string spelling = peek().text;
 
-    if (spelling == "new" || spelling == "delete")
-        src_.fail(pos, "'operator " + spelling + "' is not supported yet - "
-                       "a new-expression here calls the platform's '" +
-                       spelling + "' by name, and replacing that one is more "
-                       "than giving this a name");
+    // **The array forms are refused by name**: `new T[n]` calls the
+    // platform's `operator new[]` and a class's plain `operator new` is not
+    // consulted for it, so a declared one could not be reached.
+    if ((spelling == "new" || spelling == "delete") && peekAt(1).is("["))
+        src_.fail(pos, "'operator " + spelling + "[]' is not supported yet - "
+                       "the array forms are the platform's; 'operator " +
+                       spelling + "' can be declared, replaced and given to a class");
     if (spelling == "->*")
         src_.fail(pos, "'operator->*' is not supported yet");
     if (peek().kind == TokenKind::Str)
         src_.fail(pos, "a user-defined literal is not supported yet");
     // **A type after `operator` is a conversion function**, not an operator
-    // that happens to be spelled with letters.
-    if (peek().kind != TokenKind::Punct) {
+    // that happens to be spelled with letters - `new` and `delete` being the
+    // two that are.
+    if (peek().kind != TokenKind::Punct && spelling != "new" && spelling != "delete") {
         StorageClass csc;
         Qualifiers cq;
         const Type *to = specifiers(&csc, &cq);
@@ -1862,6 +1868,34 @@ void Parser::checkOperatorDeclarable(const std::string &name,
                                      bool member, std::size_t pos) {
     const std::string spelling = operatorSpelling(name);
     if (spelling.empty() || findOperator(spelling) == nullptr) return;
+    // **An allocation function is an operator in name only** - [basic.stc.dynamic]:
+    // `operator new` takes a size_t and `operator delete` a `void *`, member or
+    // not, and nothing below applies to them.
+    if (spelling == "new" || spelling == "delete") {
+        const bool sized = spelling == "new";
+        const Type *first = params.empty() ? nullptr : params[0]->unqualified();
+        const bool ok = first != nullptr &&
+                        (sized ? first == types_.get(target_.sizeType())
+                               : (first->isPointer() && first->pointee()->unqualified()->isVoid()));
+        if (!ok)
+            src_.fail(pos, "'" + name + "' must take " +
+                           std::string(sized ? "a size_t" : "a 'void *'") +
+                           " first - [basic.stc.dynamic.allocation]");
+        // The library's placement pair - `(size_t, void *)`, `(void *, void
+        // *)` - may be declared, as <new> declares it; `new (p) T` builds at
+        // p without calling it, which is what that pair does.
+        if (params.size() == 2 && !member) {
+            const Type *second = params[1]->unqualified();
+            if (second->isPointer() && second->pointee()->unqualified()->isVoid()) return;
+        }
+        if (params.size() != 1)
+            src_.fail(pos, "'" + name + "' with " + std::to_string(params.size()) +
+                           " parameters is not supported yet - the one-parameter "
+                           "form is what a new-expression and a delete-expression "
+                           "call here, and the library's placement form may be "
+                           "declared");
+        return;
+    }
 
     // **[over.oper]/6: a non-member operator needs a class or an enumeration
     // among its parameters**, or a reference to one.

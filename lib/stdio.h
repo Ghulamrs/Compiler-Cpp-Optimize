@@ -61,6 +61,19 @@ FILE *__acrt_iob_func(unsigned);
 #define stdin  __acrt_iob_func(0)
 #define stdout __acrt_iob_func(1)
 #define stderr __acrt_iob_func(2)
+#elif defined(__TMS320C6X__)
+// TI keeps the three at the front of a table of its own FILE - six words,
+// laid out here because &_ftable[1] needs the size - and the VM6747 emulator
+// carries a table of the same stride, so one spelling links against both.
+struct _IO_FILE {
+    int fd;
+    unsigned char *buf, *pos, *bufend, *buff_stop;
+    unsigned int flags;
+};
+extern FILE _ftable[20];
+#define stdin  (&_ftable[0])
+#define stdout (&_ftable[1])
+#define stderr (&_ftable[2])
 #else
 // glibc, where they are ordinary exported objects and the plain names work.
 extern FILE *stdin;

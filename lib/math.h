@@ -83,6 +83,18 @@ double ceil(double);
 double fabs(double);
 double floor(double);
 double fmod(double, double);
+/* C99 */
+#if defined(__TMS320C6X__)
+/* What TI's runtime defines for the two (its math.h reaches them through
+   _trunc and _nround); the emulator answers to the same names. */
+double __c6xabi_trunc(double);
+double __c6xabi_nround(double);
+#define trunc __c6xabi_trunc
+#define round __c6xabi_nround
+#else
+double trunc(double);
+double round(double);
+#endif
 
 
 }  // extern "C"

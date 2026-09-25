@@ -34,7 +34,10 @@ extern "C" {
  * System V gets one for free, an array of one decaying; the other two have to
  * take the address, which is the only reason the macros differ in shape.
  */
-#if defined(_WIN32) || (defined(__APPLE__) && defined(__aarch64__))
+/* The C6000 is a fourth target and the third char *: TI's convention puts the
+ * last named argument and everything after it on the stack, a word each and
+ * an 8-byte value at an 8-byte boundary, so one pointer walks them. */
+#if defined(_WIN32) || (defined(__APPLE__) && defined(__aarch64__)) || defined(__TMS320C6X__)
 
 typedef char *va_list;
 #define va_start(ap, last) __builtin_va_start(&(ap))
