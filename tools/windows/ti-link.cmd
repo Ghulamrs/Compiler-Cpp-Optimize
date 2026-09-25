@@ -5,6 +5,7 @@ rem  assembles what it wrote with asm6x and links the object with TI's lnk6x
 rem  against rts6740_elf_eh.lib into <case>.out. The linker is the judge: it
 rem  takes every object asm6x wrote, or names the one it does not.
 rem    ti-link.cmd <tree root>
+rem  CXX1_TI_FLAGS, if set, goes on every compile - -O1 or -O2 links the optimizer's code.
 rem  asm6x.exe is ASM6x's own cl build (tests/windows.sh leaves it at
 rem  C:\asm6x-tests\build) or the one in RIDE's bin; the TI tools are CCS 7.4's.
 setlocal enabledelayedexpansion
@@ -32,7 +33,7 @@ for %%f in (%ROOT%\tests\cases\*.expected) do (
     if defined SKIP (
         set /a skipped+=1
     ) else (
-        %ROOT%\cxx1-msvc.exe -arch tms6747 -nologo %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winout\ti\!NAME!.out > %ROOT%\winout\ti\!NAME!.log 2>&1
+        %ROOT%\cxx1-msvc.exe -arch tms6747 -nologo %CXX1_TI_FLAGS% %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winout\ti\!NAME!.out > %ROOT%\winout\ti\!NAME!.log 2>&1
         if errorlevel 1 (set /a failed+=1 & echo TI-FAILED !NAME! & type %ROOT%\winout\ti\!NAME!.log | findstr /v "^$" | more +0) else (
             if exist %ROOT%\winout\ti\!NAME!.out (set /a linked+=1) else (set /a failed+=1 & echo TI-NO-OUT !NAME!)
         )
