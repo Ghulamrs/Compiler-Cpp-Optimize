@@ -14,6 +14,7 @@
 // once at pointer width rather than in 32 bits and extended again after.
 const Type *Parser::ptrdiffType() {
     const Type *l = types_.get(Kind::Long);
+    if (pointerBytes() == 4) return types_.get(Kind::Int);
     return l->size(target_) == 8 ? l : types_.get(Kind::LongLong);
 }
 

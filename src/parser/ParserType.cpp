@@ -1068,12 +1068,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // **The same rule on Itanium, and the same correction.** A class with
         // no primary base to take a vptr from puts one at offset 0, in front
         // of every base: clang lays `Z : A` as vptr 0, A 8, z 12.
-        const int slot = 8;
+        const int vptr = pointerBytes();
+        const int slot = vptr == 8 ? 8 : alignTo(vptr, widest);
         for (std::size_t i = 0; i < members.size(); i++)
             members[i].offset += slot;
         type->shiftBaseOffsets(slot);
         bitCursor += static_cast<long long>(slot) * 8;
-        if (widest < slot) widest = slot;
+        if (widest < vptr) widest = vptr;
     }
 
     // The open unit's full width counts toward the class's size, not just the

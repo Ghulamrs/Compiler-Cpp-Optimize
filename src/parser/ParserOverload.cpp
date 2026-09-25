@@ -138,7 +138,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
             for (std::size_t i = bs.size(); i-- > 0; ) {
                 if (!bs[i].isVirtual) continue;
                 if (bs[i].type == dstCls) {
-                    vbBack = -static_cast<long long>(nvb + 2 - seen) * 8;
+                    vbBack = -static_cast<long long>(nvb + 2 - seen) * pointerBytes();
                     break;
                 }
                 seen++;
