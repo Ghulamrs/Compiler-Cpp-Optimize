@@ -16,6 +16,7 @@ int LinuxX86_64Target::sizeOf(Kind k) const {
     case Kind::Bool:                                       return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar:   return 1;
     case Kind::Short: case Kind::UShort:                   return 2;
+    case Kind::WChar:                                      return sizeOf(wcharType());
     case Kind::Int: case Kind::UInt:                       return 4;
     case Kind::Long: case Kind::ULong:                     return 8;
     case Kind::LongLong: case Kind::ULongLong:             return 8;

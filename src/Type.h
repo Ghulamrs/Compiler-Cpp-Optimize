@@ -13,6 +13,10 @@ enum class Kind {
     Bool,
     Char, SChar, UChar,
     Short, UShort,
+    // **wchar_t, a type of its own** ([basic.fundamental]/5): mangled `w`, an
+    // overload apart from the integer it is represented as - which the target
+    // names (Target::wcharType), and which its size, alignment and sign follow.
+    WChar,
     Int, UInt,
     Long, ULong,
     LongLong, ULongLong,

@@ -455,7 +455,7 @@ const Type *Parser::simpleTypeKeyword() const {
     };
     for (const auto &k : t)
         if (peek().is(k.word)) return types_.get(k.kind);
-    if (peek().is("wchar_t")) return types_.get(target_.wcharType());
+    if (peek().is("wchar_t")) return types_.get(Kind::WChar);
     return nullptr;
 }
 
@@ -694,7 +694,7 @@ ExprPtr Parser::primary(Program *program) {
         const char *promotes = nullptr;
         switch (want->kind()) {
         case Kind::Char: case Kind::SChar: case Kind::UChar:
-        case Kind::Short: case Kind::UShort: promotes = "int"; break;
+        case Kind::Short: case Kind::UShort: case Kind::WChar: promotes = "int"; break;
         case Kind::Float:                    promotes = "double"; break;
         default: break;
         }
@@ -735,7 +735,7 @@ ExprPtr Parser::primary(Program *program) {
             at_++;
         }
 
-        const Type *elem = wide ? types_.get(target_.wcharType())
+        const Type *elem = wide ? types_.get(Kind::WChar)
                                 : types_.charType();
         int width = elem->size(target_);
 
@@ -805,7 +805,7 @@ ExprPtr Parser::primary(Program *program) {
                                                                ? types_.get(Kind::LongLong)
                                             : types_.get(Kind::ULongLong);
 
-        else if (t.wide)                 ty = types_.get(target_.wcharType());
+        else if (t.wide)                 ty = types_.get(Kind::WChar);
         // [lex.ccon]/2: an ordinary character literal has type char, where C gives it int.
         else if (t.isChar)               ty = types_.get(Kind::Char);
         // **[lex.icon] table 6, and the two ladders it holds.** A decimal literal
