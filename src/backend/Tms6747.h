@@ -21,6 +21,7 @@ public:
     bool resumeTakesException() const override { return false; }   // __cxa_end_cleanup(), measured from cl6x
     bool hasGetExceptionPtr() const override { return false; }     // not in rts6740_elf_eh.lib
     int stackAlign() const override { return 8; }
+    bool loadsUnaligned() const override { return false; }   // LDW faults; no LDNW is emitted
     bool microsoftNames() const override { return false; }
     const char *name() const override { return "tms6747"; }
 };

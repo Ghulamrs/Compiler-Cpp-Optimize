@@ -324,6 +324,13 @@ void Tms6747::genAddr(const Expr &e) {
     if (const Conditional *q = dynamic_cast<const Conditional *>(&e)) {
         if (q->type()->isStructOrUnion()) { q->accept(*this); return; }
     }
+    // **A constructed temporary is a Comma, and it has an address** - so is a
+    // virtual call whose result is bound to a reference; the hosts had this.
+    if (const Comma *c = dynamic_cast<const Comma *>(&e)) {
+        c->left().accept(*this);
+        genAddr(c->right());
+        return;
+    }
     unsupported("this address");
 }
 

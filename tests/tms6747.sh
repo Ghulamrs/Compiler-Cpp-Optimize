@@ -9,7 +9,9 @@
 # Two lists of cases are skipped by name, each with its reason beside it:
 # tests/tms6747-exceptions.txt, the cases that throw or need a landing pad,
 # which this target does not unwind yet; and tests/tms6747-lp64.txt, the
-# cases whose expected output was written by a 64-bit-long host.
+# cases whose expected output was written by a 64-bit-long host. A case whose
+# .notarget names tms6747 is skipped too, with its reason, as run.sh does for
+# the host: it is a construct refused by name for this target.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -19,12 +21,16 @@ OUT=tests/out-tms6747
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [ ! -x "$VM" ]; then echo "tms6747.sh: no emulator at $VM"; exit 1; fi
 
-pass=0; fail=0; skipEh=0; skipLp=0
+pass=0; fail=0; skipEh=0; skipLp=0; skipNt=0
 only="${1:-}"
 for src in tests/cases/*.cpp; do
     base=$(basename "$src" .cpp)
     [ -n "$only" ] && [ "$base" != "$only" ] && continue
     [ -f "tests/cases/$base.error" ] && continue
+    if [ -f "tests/cases/$base.notarget" ] && grep -q "^tms6747[[:space:]]" "tests/cases/$base.notarget"; then
+        echo "  skip $base for tms6747: $(grep "^tms6747[[:space:]]" "tests/cases/$base.notarget" | sed 's/^tms6747[[:space:]]*//')"
+        skipNt=$((skipNt + 1)); continue
+    fi
     if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-exceptions.txt; then skipEh=$((skipEh + 1)); continue; fi
     if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-lp64.txt; then skipLp=$((skipLp + 1)); continue; fi
 
@@ -44,5 +50,5 @@ for src in tests/cases/*.cpp; do
     fi
 done
 
-echo "tms6747.sh: $pass passed, $fail failed, $skipEh skipped for exceptions, $skipLp skipped for a 64-bit long"
+echo "tms6747.sh: $pass passed, $fail failed, $skipEh skipped for exceptions, $skipLp skipped for a 64-bit long, $skipNt not for this target"
 [ "$fail" -eq 0 ]
