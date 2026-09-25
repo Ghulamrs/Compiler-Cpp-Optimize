@@ -7,10 +7,10 @@ three-box run of 2026-09-23, Compiler++ at cxx1 -O2 was still 2.3x slower than c
 and g++. The next step is the one GCC takes: optimize an intermediate
 representation with pseudo registers, then allocate real registers once.
 
-This document records what was taken from GCC's scheme, what cxx1 builds instead,
+This document records what was learned from studying GCC, what cxx1 builds,
 and the order it is built in.
 
-## What GCC does, and what cxx1 takes from it
+## What GCC does, and what cxx1 learned from it
 
 Read from GCC 14.2's `passes.def`, `opts.cc` and the Internals manual. The code was
 read for its design only and nothing of it is copied: GCC is GPL-3 and cxx1 is
