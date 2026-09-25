@@ -19,5 +19,5 @@ if errorlevel 1 ( echo build-vs.cmd: no vcvars64 & exit /b 1 )
 
 msbuild "%HERE%cxx1.sln" /nologo /v:minimal /p:Configuration=%CONFIG% /p:Platform=x64
 if errorlevel 1 ( echo build-vs.cmd: FAILED & exit /b 1 )
-echo build-vs.cmd: %HERE%build\%CONFIG%\cxx1.exe
+echo build-vs.cmd: %HERE%build\%CONFIG%\cpp11.exe
 endlocal

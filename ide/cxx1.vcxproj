@@ -97,6 +97,28 @@
     <ClCompile Include="..\src\backend\Walker.cpp" />
     <ClCompile Include="..\src\backend\X86_64Linux.cpp" />
     <ClCompile Include="..\src\backend\X86_64Windows.cpp" />
+    <ClCompile Include="..\src\optimizer\Inliner.cpp" />
+    <ClCompile Include="..\src\optimizer\MirAlloc.cpp" />
+    <ClCompile Include="..\src\optimizer\MirLocals.cpp" />
+    <ClCompile Include="..\src\optimizer\MirWebs.cpp" />
+    <ClCompile Include="..\src\optimizer\OptAlign.cpp" />
+    <ClCompile Include="..\src\optimizer\OptDataflow.cpp" />
+    <ClCompile Include="..\src\optimizer\OptDead.cpp" />
+    <ClCompile Include="..\src\optimizer\OptDivide.cpp" />
+    <ClCompile Include="..\src\optimizer\OptEffects.cpp" />
+    <ClCompile Include="..\src\optimizer\OptFlow.cpp" />
+    <ClCompile Include="..\src\optimizer\OptFrame.cpp" />
+    <ClCompile Include="..\src\optimizer\OptHoist.cpp" />
+    <ClCompile Include="..\src\optimizer\OptIr.cpp" />
+    <ClCompile Include="..\src\optimizer\OptJumps.cpp" />
+    <ClCompile Include="..\src\optimizer\OptLoops.cpp" />
+    <ClCompile Include="..\src\optimizer\OptMemory.cpp" />
+    <ClCompile Include="..\src\optimizer\OptPass.cpp" />
+    <ClCompile Include="..\src\optimizer\OptPipeline.cpp" />
+    <ClCompile Include="..\src\optimizer\OptShrink.cpp" />
+    <ClCompile Include="..\src\optimizer\OptTable.cpp" />
+    <ClCompile Include="..\src\optimizer\OptValues.cpp" />
+    <ClCompile Include="..\src\optimizer\Optimizer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\Abi.h" />
@@ -104,6 +126,7 @@
     <ClInclude Include="..\src\Driver.h" />
     <ClInclude Include="..\src\Lexer.h" />
     <ClInclude Include="..\src\Mangle.h" />
+    <ClInclude Include="..\src\Name.h" />
     <ClInclude Include="..\src\Operator.h" />
     <ClInclude Include="..\src\Preprocessor.h" />
     <ClInclude Include="..\src\Source.h" />
@@ -119,6 +142,23 @@
     <ClInclude Include="..\src\backend\Walker.h" />
     <ClInclude Include="..\src\backend\X86_64Linux.h" />
     <ClInclude Include="..\src\backend\X86_64Windows.h" />
+    <ClInclude Include="..\src\optimizer\Inliner.h" />
+    <ClInclude Include="..\src\optimizer\Mir.h" />
+    <ClInclude Include="..\src\optimizer\MirAlloc.h" />
+    <ClInclude Include="..\src\optimizer\MirLocals.h" />
+    <ClInclude Include="..\src\optimizer\OptCore.h" />
+    <ClInclude Include="..\src\optimizer\OptCosts.h" />
+    <ClInclude Include="..\src\optimizer\OptDataflow.h" />
+    <ClInclude Include="..\src\optimizer\OptEffects.h" />
+    <ClInclude Include="..\src\optimizer\OptFlow.h" />
+    <ClInclude Include="..\src\optimizer\OptFunction.h" />
+    <ClInclude Include="..\src\optimizer\OptIr.h" />
+    <ClInclude Include="..\src\optimizer\OptLoops.h" />
+    <ClInclude Include="..\src\optimizer\OptPass.h" />
+    <ClInclude Include="..\src\optimizer\OptPasses.h" />
+    <ClInclude Include="..\src\optimizer\OptPipeline.h" />
+    <ClInclude Include="..\src\optimizer\OptTable.h" />
+    <ClInclude Include="..\src\optimizer\Optimizer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

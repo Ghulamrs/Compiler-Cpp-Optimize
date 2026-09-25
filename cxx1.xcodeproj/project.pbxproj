@@ -29,17 +29,36 @@
 		C6571D513B06BD47BE9FB772 /* src/parser/ParserTemplate.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4DB0339C83FC6B9DA4E3D304 /* src/parser/ParserTemplate.cpp */; };
 		8B035ADE5A5242756296226B /* src/parser/ParserTopLevel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5EB716BDD1D8D700594B70CF /* src/parser/ParserTopLevel.cpp */; };
 		F21AB246E67A64F4E780BDC3 /* src/parser/ParserType.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B311B9BD4DDC2639D834055E /* src/parser/ParserType.cpp */; };
-		A56A0BE9CC062ED20D315B60 /* src/parser/ParserVtable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 870E49E826C275AE38756205 /* src/parser/ParserVtable.cpp */; };
 		7C046E25331E28BAB1BFC23F /* src/backend/Arm64Darwin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1CB2D187A69C204959A8376 /* src/backend/Arm64Darwin.cpp */; };
 		FA796AB2F3B057DE38156171 /* src/backend/Backend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3D0254CEA8DBB37672376EC4 /* src/backend/Backend.cpp */; };
 		67CD6CFFA5B8BDBCE8AE9A18 /* src/backend/Dwarf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E329DF1823EBBA5395533522 /* src/backend/Dwarf.cpp */; };
 		59CED90FD3E42C044336C09A /* src/backend/Masm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 13496AD27AF27A57B428DC7A /* src/backend/Masm.cpp */; };
-		C2F551B03398E879A46AD4ED /* src/backend/Optimizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1030A69C41C80BB4A5A7F85 /* src/backend/Optimizer.cpp */; };
 		A401F764FA7B45035DAB67EB /* src/backend/Spelling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B792F3ABEB201C4F29AB6F1E /* src/backend/Spelling.cpp */; };
-		1DF35BBBBEAFF601F050E992 /* src/backend/Tms6747.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7455D42AC40526B85C035B1D /* src/backend/Tms6747.cpp */; };
 		C4AA529A8A94500C0A8BD37E /* src/backend/Walker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */; };
 		A60A4C41A2833EAEFD7983AE /* src/backend/X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */; };
 		F5792A05AD3F1AA1BF104861 /* src/backend/X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */; };
+		4A969D6BEBD6FCED24A2B7E5 /* src/optimizer/Inliner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */; };
+		1331B87085226486BB7BF8C9 /* src/optimizer/MirAlloc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */; };
+		D31D02D6EAC1EBE60AE4FBE5 /* src/optimizer/MirLocals.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */; };
+		4A1350D51C3492C28E0F1C45 /* src/optimizer/MirWebs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F664423E0D2777CC1BFB998D /* src/optimizer/MirWebs.cpp */; };
+		24DF3280E4069692EF35DD98 /* src/optimizer/OptAlign.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 46D277FA2ECDF12091C3F785 /* src/optimizer/OptAlign.cpp */; };
+		8474C28EDCBC421575C52CF1 /* src/optimizer/OptDataflow.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC7AE6046CC67EF8787ECD44 /* src/optimizer/OptDataflow.cpp */; };
+		1C70C0D69A9A164429A4860B /* src/optimizer/OptDead.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC50F048BCED7624A163A971 /* src/optimizer/OptDead.cpp */; };
+		C9BF1889C7B4B659AAD91F24 /* src/optimizer/OptDivide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D102261FB8C184BEFEAC04C7 /* src/optimizer/OptDivide.cpp */; };
+		3B4BB63267B54A6A0F727347 /* src/optimizer/OptEffects.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2E0A3B0FB9F0A44D8945FDFD /* src/optimizer/OptEffects.cpp */; };
+		D60A0B60A8B0871736AD5394 /* src/optimizer/OptFlow.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20172649B25C12DEFA076E19 /* src/optimizer/OptFlow.cpp */; };
+		D6F23A3C04FAD48C9AC0F468 /* src/optimizer/OptFrame.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 59ED3E67954A7908FEAF4340 /* src/optimizer/OptFrame.cpp */; };
+		42396CDC84C0313057E94FA5 /* src/optimizer/OptHoist.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D4CD6D056D3B3651A9D3E595 /* src/optimizer/OptHoist.cpp */; };
+		802D27986E5D33B578AA1DA5 /* src/optimizer/OptIr.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C02BE11E4A2511B5EC9A96C /* src/optimizer/OptIr.cpp */; };
+		47952A980DAD03CCA020DB0F /* src/optimizer/OptJumps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E9077FF2AF7E2C6D8550FB7B /* src/optimizer/OptJumps.cpp */; };
+		6E32D1E889D13695888FDAC7 /* src/optimizer/OptLoops.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7D4A33E5C595853BF3B28C68 /* src/optimizer/OptLoops.cpp */; };
+		C67BB45393AE85FF9A2F8B49 /* src/optimizer/OptMemory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 24B0FFCEB3D321BFDDD658AD /* src/optimizer/OptMemory.cpp */; };
+		219DCAD5253BE0696741C7A9 /* src/optimizer/OptPass.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B73D29F19C260114CF9CABD /* src/optimizer/OptPass.cpp */; };
+		C09E278B98B4EA7048397E44 /* src/optimizer/OptPipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A501E7D4B22E4747791CB3D1 /* src/optimizer/OptPipeline.cpp */; };
+		E6CA0E737A9FC927DDFA5120 /* src/optimizer/OptShrink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E6A6661B4064048C1E5FDE77 /* src/optimizer/OptShrink.cpp */; };
+		BAE534DC734A2B31AC41F4EF /* src/optimizer/OptTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 45EA26CEAB01761F4A711694 /* src/optimizer/OptTable.cpp */; };
+		3435572341F876BCB60B7F28 /* src/optimizer/OptValues.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6271FFE053B85C05AD5C465 /* src/optimizer/OptValues.cpp */; };
+		8C21EEE9A7E305A789184380 /* src/optimizer/Optimizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CD1942BEECFB89ADB2D2E0F2 /* src/optimizer/Optimizer.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,17 +84,36 @@
 		4DB0339C83FC6B9DA4E3D304 /* src/parser/ParserTemplate.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/parser/ParserTemplate.cpp; sourceTree = "<group>"; };
 		5EB716BDD1D8D700594B70CF /* src/parser/ParserTopLevel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/parser/ParserTopLevel.cpp; sourceTree = "<group>"; };
 		B311B9BD4DDC2639D834055E /* src/parser/ParserType.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/parser/ParserType.cpp; sourceTree = "<group>"; };
-		870E49E826C275AE38756205 /* src/parser/ParserVtable.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/parser/ParserVtable.cpp; sourceTree = "<group>"; };
 		E1CB2D187A69C204959A8376 /* src/backend/Arm64Darwin.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Arm64Darwin.cpp; sourceTree = "<group>"; };
 		3D0254CEA8DBB37672376EC4 /* src/backend/Backend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Backend.cpp; sourceTree = "<group>"; };
 		E329DF1823EBBA5395533522 /* src/backend/Dwarf.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Dwarf.cpp; sourceTree = "<group>"; };
 		13496AD27AF27A57B428DC7A /* src/backend/Masm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Masm.cpp; sourceTree = "<group>"; };
-		A1030A69C41C80BB4A5A7F85 /* src/backend/Optimizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Optimizer.cpp; sourceTree = "<group>"; };
 		B792F3ABEB201C4F29AB6F1E /* src/backend/Spelling.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Spelling.cpp; sourceTree = "<group>"; };
-		7455D42AC40526B85C035B1D /* src/backend/Tms6747.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Tms6747.cpp; sourceTree = "<group>"; };
 		1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Walker.cpp; sourceTree = "<group>"; };
 		CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/X86_64Linux.cpp; sourceTree = "<group>"; };
 		C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/X86_64Windows.cpp; sourceTree = "<group>"; };
+		C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/Inliner.cpp; sourceTree = "<group>"; };
+		4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/MirAlloc.cpp; sourceTree = "<group>"; };
+		6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/MirLocals.cpp; sourceTree = "<group>"; };
+		F664423E0D2777CC1BFB998D /* src/optimizer/MirWebs.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/MirWebs.cpp; sourceTree = "<group>"; };
+		46D277FA2ECDF12091C3F785 /* src/optimizer/OptAlign.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptAlign.cpp; sourceTree = "<group>"; };
+		FC7AE6046CC67EF8787ECD44 /* src/optimizer/OptDataflow.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptDataflow.cpp; sourceTree = "<group>"; };
+		CC50F048BCED7624A163A971 /* src/optimizer/OptDead.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptDead.cpp; sourceTree = "<group>"; };
+		D102261FB8C184BEFEAC04C7 /* src/optimizer/OptDivide.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptDivide.cpp; sourceTree = "<group>"; };
+		2E0A3B0FB9F0A44D8945FDFD /* src/optimizer/OptEffects.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptEffects.cpp; sourceTree = "<group>"; };
+		20172649B25C12DEFA076E19 /* src/optimizer/OptFlow.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptFlow.cpp; sourceTree = "<group>"; };
+		59ED3E67954A7908FEAF4340 /* src/optimizer/OptFrame.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptFrame.cpp; sourceTree = "<group>"; };
+		D4CD6D056D3B3651A9D3E595 /* src/optimizer/OptHoist.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptHoist.cpp; sourceTree = "<group>"; };
+		1C02BE11E4A2511B5EC9A96C /* src/optimizer/OptIr.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptIr.cpp; sourceTree = "<group>"; };
+		E9077FF2AF7E2C6D8550FB7B /* src/optimizer/OptJumps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptJumps.cpp; sourceTree = "<group>"; };
+		7D4A33E5C595853BF3B28C68 /* src/optimizer/OptLoops.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptLoops.cpp; sourceTree = "<group>"; };
+		24B0FFCEB3D321BFDDD658AD /* src/optimizer/OptMemory.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptMemory.cpp; sourceTree = "<group>"; };
+		0B73D29F19C260114CF9CABD /* src/optimizer/OptPass.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptPass.cpp; sourceTree = "<group>"; };
+		A501E7D4B22E4747791CB3D1 /* src/optimizer/OptPipeline.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptPipeline.cpp; sourceTree = "<group>"; };
+		E6A6661B4064048C1E5FDE77 /* src/optimizer/OptShrink.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptShrink.cpp; sourceTree = "<group>"; };
+		45EA26CEAB01761F4A711694 /* src/optimizer/OptTable.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptTable.cpp; sourceTree = "<group>"; };
+		A6271FFE053B85C05AD5C465 /* src/optimizer/OptValues.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/OptValues.cpp; sourceTree = "<group>"; };
+		CD1942BEECFB89ADB2D2E0F2 /* src/optimizer/Optimizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/Optimizer.cpp; sourceTree = "<group>"; };
 		2CA1A8F31608CE6FEE9B4AF4 /* src/Abi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/Abi.h; sourceTree = "<group>"; };
 		D786B3B871EB8A5B8E4BFF73 /* src/Ast.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/Ast.h; sourceTree = "<group>"; };
 		3B9E58F0C5A4065739367603 /* src/Driver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/Driver.h; sourceTree = "<group>"; };
@@ -91,12 +129,27 @@
 		6EE74B83AE6EBDDAB5E4BE95 /* src/backend/Backend.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Backend.h; sourceTree = "<group>"; };
 		5540D60099D567EFE37ADB47 /* src/backend/Dwarf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Dwarf.h; sourceTree = "<group>"; };
 		4902DC75A8BCCB2A870E0DF7 /* src/backend/Masm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Masm.h; sourceTree = "<group>"; };
-		F16CC295912D0E95792B8D8E /* src/backend/Optimizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Optimizer.h; sourceTree = "<group>"; };
 		BC87335ED287BC46161EB50A /* src/backend/Spelling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Spelling.h; sourceTree = "<group>"; };
-		3912B9333D8A8952A76175C5 /* src/backend/Tms6747.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Tms6747.h; sourceTree = "<group>"; };
 		DF1986D2D7FD507F838AF268 /* src/backend/Walker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/Walker.h; sourceTree = "<group>"; };
 		EF5C324D77DEC0D5528627DD /* src/backend/X86_64Linux.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/X86_64Linux.h; sourceTree = "<group>"; };
 		5F942826BA8BD2F3DFD0DCF4 /* src/backend/X86_64Windows.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/backend/X86_64Windows.h; sourceTree = "<group>"; };
+		02448545AE4422FD26ECB373 /* src/optimizer/Inliner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/Inliner.h; sourceTree = "<group>"; };
+		0D87B85DEEE1FBAF7178B222 /* src/optimizer/Mir.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/Mir.h; sourceTree = "<group>"; };
+		E65F1E45D484BA28A6E65800 /* src/optimizer/MirAlloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/MirAlloc.h; sourceTree = "<group>"; };
+		74B19651ED046BC67C175343 /* src/optimizer/MirLocals.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/MirLocals.h; sourceTree = "<group>"; };
+		0D60766875D24F9DEE274836 /* src/optimizer/OptCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptCore.h; sourceTree = "<group>"; };
+		48EDE5C52A62E6BDC0F6679D /* src/optimizer/OptCosts.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptCosts.h; sourceTree = "<group>"; };
+		FF40A0E808E5190D97111F71 /* src/optimizer/OptDataflow.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptDataflow.h; sourceTree = "<group>"; };
+		045C924B5A68619C6BEC9A2B /* src/optimizer/OptEffects.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptEffects.h; sourceTree = "<group>"; };
+		3E74CD7BB4386C8813DF9BE1 /* src/optimizer/OptFlow.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptFlow.h; sourceTree = "<group>"; };
+		B5613899A06FB62E39A5CD2C /* src/optimizer/OptFunction.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptFunction.h; sourceTree = "<group>"; };
+		3D120C21A347047A32561E76 /* src/optimizer/OptIr.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptIr.h; sourceTree = "<group>"; };
+		ADB9AC49615A3DC05596B905 /* src/optimizer/OptLoops.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptLoops.h; sourceTree = "<group>"; };
+		E5FFBB0FD8B81F039192879D /* src/optimizer/OptPass.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptPass.h; sourceTree = "<group>"; };
+		B84043BB872412E25851EA4D /* src/optimizer/OptPasses.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptPasses.h; sourceTree = "<group>"; };
+		80933659E69F1525A286F2FF /* src/optimizer/OptPipeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptPipeline.h; sourceTree = "<group>"; };
+		203E4EA4C3603F12F71A0438 /* src/optimizer/OptTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/OptTable.h; sourceTree = "<group>"; };
+		4197F3FAAF3A44B39DCAE61E /* src/optimizer/Optimizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/optimizer/Optimizer.h; sourceTree = "<group>"; };
 		3E4E9D6A08918BF02E1ED07D /* src/parser/Parser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/parser/Parser.h; sourceTree = "<group>"; };
 		2D964B7F6577B34313330876 /* src/parser/ParserInternal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/parser/ParserInternal.h; sourceTree = "<group>"; };
 		2DC24FDB4CCDA14233AB5364 /* cpp11.exe */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cpp11.exe; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -146,17 +199,36 @@
 				4DB0339C83FC6B9DA4E3D304 /* src/parser/ParserTemplate.cpp */,
 				5EB716BDD1D8D700594B70CF /* src/parser/ParserTopLevel.cpp */,
 				B311B9BD4DDC2639D834055E /* src/parser/ParserType.cpp */,
-				870E49E826C275AE38756205 /* src/parser/ParserVtable.cpp */,
 				E1CB2D187A69C204959A8376 /* src/backend/Arm64Darwin.cpp */,
 				3D0254CEA8DBB37672376EC4 /* src/backend/Backend.cpp */,
 				E329DF1823EBBA5395533522 /* src/backend/Dwarf.cpp */,
 				13496AD27AF27A57B428DC7A /* src/backend/Masm.cpp */,
-				A1030A69C41C80BB4A5A7F85 /* src/backend/Optimizer.cpp */,
 				B792F3ABEB201C4F29AB6F1E /* src/backend/Spelling.cpp */,
-				7455D42AC40526B85C035B1D /* src/backend/Tms6747.cpp */,
 				1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */,
 				CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */,
 				C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */,
+				C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */,
+				4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */,
+				6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */,
+				F664423E0D2777CC1BFB998D /* src/optimizer/MirWebs.cpp */,
+				46D277FA2ECDF12091C3F785 /* src/optimizer/OptAlign.cpp */,
+				FC7AE6046CC67EF8787ECD44 /* src/optimizer/OptDataflow.cpp */,
+				CC50F048BCED7624A163A971 /* src/optimizer/OptDead.cpp */,
+				D102261FB8C184BEFEAC04C7 /* src/optimizer/OptDivide.cpp */,
+				2E0A3B0FB9F0A44D8945FDFD /* src/optimizer/OptEffects.cpp */,
+				20172649B25C12DEFA076E19 /* src/optimizer/OptFlow.cpp */,
+				59ED3E67954A7908FEAF4340 /* src/optimizer/OptFrame.cpp */,
+				D4CD6D056D3B3651A9D3E595 /* src/optimizer/OptHoist.cpp */,
+				1C02BE11E4A2511B5EC9A96C /* src/optimizer/OptIr.cpp */,
+				E9077FF2AF7E2C6D8550FB7B /* src/optimizer/OptJumps.cpp */,
+				7D4A33E5C595853BF3B28C68 /* src/optimizer/OptLoops.cpp */,
+				24B0FFCEB3D321BFDDD658AD /* src/optimizer/OptMemory.cpp */,
+				0B73D29F19C260114CF9CABD /* src/optimizer/OptPass.cpp */,
+				A501E7D4B22E4747791CB3D1 /* src/optimizer/OptPipeline.cpp */,
+				E6A6661B4064048C1E5FDE77 /* src/optimizer/OptShrink.cpp */,
+				45EA26CEAB01761F4A711694 /* src/optimizer/OptTable.cpp */,
+				A6271FFE053B85C05AD5C465 /* src/optimizer/OptValues.cpp */,
+				CD1942BEECFB89ADB2D2E0F2 /* src/optimizer/Optimizer.cpp */,
 				2CA1A8F31608CE6FEE9B4AF4 /* src/Abi.h */,
 				D786B3B871EB8A5B8E4BFF73 /* src/Ast.h */,
 				3B9E58F0C5A4065739367603 /* src/Driver.h */,
@@ -172,12 +244,27 @@
 				6EE74B83AE6EBDDAB5E4BE95 /* src/backend/Backend.h */,
 				5540D60099D567EFE37ADB47 /* src/backend/Dwarf.h */,
 				4902DC75A8BCCB2A870E0DF7 /* src/backend/Masm.h */,
-				F16CC295912D0E95792B8D8E /* src/backend/Optimizer.h */,
 				BC87335ED287BC46161EB50A /* src/backend/Spelling.h */,
-				3912B9333D8A8952A76175C5 /* src/backend/Tms6747.h */,
 				DF1986D2D7FD507F838AF268 /* src/backend/Walker.h */,
 				EF5C324D77DEC0D5528627DD /* src/backend/X86_64Linux.h */,
 				5F942826BA8BD2F3DFD0DCF4 /* src/backend/X86_64Windows.h */,
+				02448545AE4422FD26ECB373 /* src/optimizer/Inliner.h */,
+				0D87B85DEEE1FBAF7178B222 /* src/optimizer/Mir.h */,
+				E65F1E45D484BA28A6E65800 /* src/optimizer/MirAlloc.h */,
+				74B19651ED046BC67C175343 /* src/optimizer/MirLocals.h */,
+				0D60766875D24F9DEE274836 /* src/optimizer/OptCore.h */,
+				48EDE5C52A62E6BDC0F6679D /* src/optimizer/OptCosts.h */,
+				FF40A0E808E5190D97111F71 /* src/optimizer/OptDataflow.h */,
+				045C924B5A68619C6BEC9A2B /* src/optimizer/OptEffects.h */,
+				3E74CD7BB4386C8813DF9BE1 /* src/optimizer/OptFlow.h */,
+				B5613899A06FB62E39A5CD2C /* src/optimizer/OptFunction.h */,
+				3D120C21A347047A32561E76 /* src/optimizer/OptIr.h */,
+				ADB9AC49615A3DC05596B905 /* src/optimizer/OptLoops.h */,
+				E5FFBB0FD8B81F039192879D /* src/optimizer/OptPass.h */,
+				B84043BB872412E25851EA4D /* src/optimizer/OptPasses.h */,
+				80933659E69F1525A286F2FF /* src/optimizer/OptPipeline.h */,
+				203E4EA4C3603F12F71A0438 /* src/optimizer/OptTable.h */,
+				4197F3FAAF3A44B39DCAE61E /* src/optimizer/Optimizer.h */,
 				3E4E9D6A08918BF02E1ED07D /* src/parser/Parser.h */,
 				2D964B7F6577B34313330876 /* src/parser/ParserInternal.h */,
 			);
@@ -283,17 +370,36 @@
 				C6571D513B06BD47BE9FB772 /* src/parser/ParserTemplate.cpp in Sources */,
 				8B035ADE5A5242756296226B /* src/parser/ParserTopLevel.cpp in Sources */,
 				F21AB246E67A64F4E780BDC3 /* src/parser/ParserType.cpp in Sources */,
-				A56A0BE9CC062ED20D315B60 /* src/parser/ParserVtable.cpp in Sources */,
 				7C046E25331E28BAB1BFC23F /* src/backend/Arm64Darwin.cpp in Sources */,
 				FA796AB2F3B057DE38156171 /* src/backend/Backend.cpp in Sources */,
 				67CD6CFFA5B8BDBCE8AE9A18 /* src/backend/Dwarf.cpp in Sources */,
 				59CED90FD3E42C044336C09A /* src/backend/Masm.cpp in Sources */,
-				C2F551B03398E879A46AD4ED /* src/backend/Optimizer.cpp in Sources */,
 				A401F764FA7B45035DAB67EB /* src/backend/Spelling.cpp in Sources */,
-				1DF35BBBBEAFF601F050E992 /* src/backend/Tms6747.cpp in Sources */,
 				C4AA529A8A94500C0A8BD37E /* src/backend/Walker.cpp in Sources */,
 				A60A4C41A2833EAEFD7983AE /* src/backend/X86_64Linux.cpp in Sources */,
 				F5792A05AD3F1AA1BF104861 /* src/backend/X86_64Windows.cpp in Sources */,
+				4A969D6BEBD6FCED24A2B7E5 /* src/optimizer/Inliner.cpp in Sources */,
+				1331B87085226486BB7BF8C9 /* src/optimizer/MirAlloc.cpp in Sources */,
+				D31D02D6EAC1EBE60AE4FBE5 /* src/optimizer/MirLocals.cpp in Sources */,
+				4A1350D51C3492C28E0F1C45 /* src/optimizer/MirWebs.cpp in Sources */,
+				24DF3280E4069692EF35DD98 /* src/optimizer/OptAlign.cpp in Sources */,
+				8474C28EDCBC421575C52CF1 /* src/optimizer/OptDataflow.cpp in Sources */,
+				1C70C0D69A9A164429A4860B /* src/optimizer/OptDead.cpp in Sources */,
+				C9BF1889C7B4B659AAD91F24 /* src/optimizer/OptDivide.cpp in Sources */,
+				3B4BB63267B54A6A0F727347 /* src/optimizer/OptEffects.cpp in Sources */,
+				D60A0B60A8B0871736AD5394 /* src/optimizer/OptFlow.cpp in Sources */,
+				D6F23A3C04FAD48C9AC0F468 /* src/optimizer/OptFrame.cpp in Sources */,
+				42396CDC84C0313057E94FA5 /* src/optimizer/OptHoist.cpp in Sources */,
+				802D27986E5D33B578AA1DA5 /* src/optimizer/OptIr.cpp in Sources */,
+				47952A980DAD03CCA020DB0F /* src/optimizer/OptJumps.cpp in Sources */,
+				6E32D1E889D13695888FDAC7 /* src/optimizer/OptLoops.cpp in Sources */,
+				C67BB45393AE85FF9A2F8B49 /* src/optimizer/OptMemory.cpp in Sources */,
+				219DCAD5253BE0696741C7A9 /* src/optimizer/OptPass.cpp in Sources */,
+				C09E278B98B4EA7048397E44 /* src/optimizer/OptPipeline.cpp in Sources */,
+				E6CA0E737A9FC927DDFA5120 /* src/optimizer/OptShrink.cpp in Sources */,
+				BAE534DC734A2B31AC41F4EF /* src/optimizer/OptTable.cpp in Sources */,
+				3435572341F876BCB60B7F28 /* src/optimizer/OptValues.cpp in Sources */,
+				8C21EEE9A7E305A789184380 /* src/optimizer/Optimizer.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
