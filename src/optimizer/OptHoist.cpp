@@ -30,7 +30,7 @@ std::string desc(long long v) { return std::to_string(v); }
 // hoisted, and which reads take the register that value is given.
 class Hoister {
 public:
-    Hoister(Function &fn, const Loops::Loop &loop) : fn_(fn), s_(fn.stream), f_(fn.flow), loop_(loop) {}
+    Hoister(Function &fn, const Loops::Loop &loop) : s_(fn.stream), f_(fn.flow), loop_(loop) {}
 
     // Whether the loop changed; the stream and the flow are then stale.
     bool run() {
@@ -60,7 +60,6 @@ private:
     struct Rename { int k; int slot; int vn; int definer; };
     struct Holder { int reg = -1; int step = -1; };    // an invariant register, or the step that computes it
 
-    Function &fn_;
     Stream &s_;
     Flow &f_;
     const Loops::Loop &loop_;
