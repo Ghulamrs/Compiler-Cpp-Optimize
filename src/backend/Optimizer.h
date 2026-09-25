@@ -79,6 +79,7 @@ public:
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
     void align(int n) override;
+    void loopAlign(int bytes) override;
     void zero(int n) override;
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &sym, long long off) override;

@@ -508,6 +508,9 @@ void MasmSpelling::bssSection() {
 void MasmSpelling::objectType(const std::string &) {}
 void MasmSpelling::objectSize(const std::string &, int) {}
 
+// ALIGN 16, the code segment's own: MASM has no "pad only if it would cross" form.
+void MasmSpelling::loopAlign(int) { flushPending(); o_ += "  ALIGN 16\n"; }
+
 void MasmSpelling::align(int n) {
     flushPending();
     if (seg_ != Code) {

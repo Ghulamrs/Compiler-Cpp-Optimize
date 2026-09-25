@@ -148,6 +148,8 @@ public:
     virtual void objectType(const std::string &name) = 0;
     virtual void objectSize(const std::string &name, int size) = 0;
     virtual void align(int n) = 0;
+    // A loop head, with the loop's estimated bytes: the pad that keeps it inside one line (OptAlign.cpp).
+    virtual void loopAlign(int bytes) { (void)bytes; }
     virtual void zero(int n) = 0;
     virtual void dataInt(int size, long long v) = 0;
 
@@ -195,6 +197,7 @@ public:
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
     void align(int n) override;
+    void loopAlign(int bytes) override;
     void zero(int n) override;
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &s, long long off) override;

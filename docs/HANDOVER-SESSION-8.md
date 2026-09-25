@@ -102,6 +102,21 @@ priced as a set.
   (`sextFrom_`: the extension's number to the unknown it extends, and
   `holding()` of that).
 
+### S9d, 2026-09-25: `align-loops`, and the two regressions that were not code
+
+A review measured S9 against S8 and found sieve and virtual slower. Swapping
+the changed functions between the two assemblies showed both were placement:
+a hot loop whose bytes straddle a 64-byte line runs up to 40% slower here,
+and S9's image had put both loops across one. `align-loops` (`OptAlign.cpp`,
+last in the pipeline at -O2) pads an innermost loop that fits a line with
+`.p2align 6,,L-1`, taken only where it would cross, and a larger loop's entry
+run the same way. Every check below is green with it: run 480/0, levels
+582/0, emit 0 of 839 changed and 12 added, overload 30/0, names 291/0,
+identical at -O0 582/0, comments 63, MASM 538/0. Size at -O2: linux 549,404
+-> 557,585, windows 388,707 -> 396,904; -O1 unchanged. The final table, and
+what the placement control still cannot pin (virtual's callees), are in
+CLAUDE.md, "A hot loop that straddles a 64-byte line".
+
 ## Measured here
 
 | Check | S9a | S9b | S9c |

@@ -148,6 +148,8 @@ void GnuSpelling::stateLabel(const std::string &l) {
 }
 
 void GnuSpelling::align(int n) { o_ += "  .align "; appendNum(o_, n); o_ += '\n'; }
+// `.p2align 6,,L-1` pads to the next 64-byte line exactly when the L bytes from here would cross one.
+void GnuSpelling::loopAlign(int bytes) { o_ += "  .p2align 6,,"; appendNum(o_, bytes - 1); o_ += '\n'; }
 void GnuSpelling::zero(int n)  { o_ += "  .zero ";  appendNum(o_, n); o_ += '\n'; }
 
 void GnuSpelling::dataInt(int size, long long v) {

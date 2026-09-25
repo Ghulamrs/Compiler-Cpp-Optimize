@@ -240,6 +240,7 @@ void Optimizer::objectSize(const std::string &name, int size) {
     event([=](Spelling &s) { s.objectSize(name, size); });
 }
 void Optimizer::align(int n) { event([=](Spelling &s) { s.align(n); }); }
+void Optimizer::loopAlign(int bytes) { event([=](Spelling &s) { s.loopAlign(bytes); }); }
 void Optimizer::zero(int n) { event([=](Spelling &s) { s.zero(n); }); }
 void Optimizer::dataInt(int size, long long v) { event([=](Spelling &s) { s.dataInt(size, v); }); }
 void Optimizer::dataSym(const std::string &sym, long long off) {

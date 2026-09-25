@@ -153,6 +153,14 @@ struct FinishFrame : Pass {
     }
 };
 
+// **Loop-head alignment**, last of all: it adds entries that hold no code,
+// and every pass after it would have to see past them.
+struct AlignLoops : Pass {
+    AlignLoops() : Pass(PassInfo{"align-loops", kFlow, 0, kFlow, kTodoBuildFlow}) {}
+    bool gate(const Function &fn) const override { return fn.costs().loopLine() > 0; }
+    bool execute(Function &fn) override { return alignLoops(fn); }
+};
+
 struct Shrink : Pass {
     Shrink() : Pass(PassInfo{"shrink", kFlow, 0, 0, 0}) {}
     bool execute(Function &fn) override { return shrink(fn.stream, fn.flow, fn.convention); }
@@ -210,6 +218,7 @@ struct Rounds : Group {
 //   finish-frame      unused saves dropped, the prologue rewritten
 //   shrink-loop       shrink, then rounds; up to three times, while shrink
 //                     found something; the flow rebuilt before each
+//   align-loops       (-O2) a loop that fits one 64-byte line padded so it does not cross one
 //
 // The two loops rebuild the flow without dropping labels, where rounds
 // does both: that is how the driver did it before the manager, and a
@@ -237,6 +246,7 @@ std::unique_ptr<Pass> pipelineFor() {
     shrinkLoop->add(std::unique_ptr<Pass>(new Shrink()));
     shrinkLoop->add(rounds<Rounds>());
     top->add(std::move(shrinkLoop));
+    top->add(std::unique_ptr<Pass>(new AlignLoops()));
     return std::unique_ptr<Pass>(top.release());
 }
 

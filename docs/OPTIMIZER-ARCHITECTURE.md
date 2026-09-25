@@ -162,6 +162,7 @@ Files, all under `src/backend/`:
 | `OptJumps.cpp` | `threadJumps`: a jump to a block that only jumps on, and a constant that decides the compare-and-branch it reaches (session 7) |
 | `OptDivide.cpp` | `divideByConstant`: a 32-bit divide by a constant as a multiply by its magic number, -O2 only (session 7) |
 | `OptHoist.cpp` | `hoistInvariants`: loop-invariant code motion after allocation, into registers the loop leaves free (session 8) |
+| `OptAlign.cpp` | `alignLoops`: a loop that fits one 64-byte line padded in front so that it does not cross one, -O2 only (session 9) |
 | `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos; `assign` and `dropSelfCopies` for whoever colours |
 | `MirLocals.{h,cpp}` | `mir::Locals`: every promotable scalar local renamed to a pseudo, its slot kept |
 | `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences, preserved registers charged their save, a local's slot given back where no register can hold it |
@@ -416,6 +417,24 @@ or word extension whose destination is read only at its source's width before
 it is written again - a `char` stored and nothing wider - is a whole copy,
 which the next rewrite folds away. hash 284 to 271 ms; each is smaller too.
 
+**`align-loops`** (session 9, last of all, gated to a speed level - `Costs::
+loopLine()` is 64 there and 0 at -O1). The one pass that emits no
+instruction: an `Event` entry in front of a loop head's label, replayed as
+`Spelling::loopAlign(L)` - `.p2align 6,,L-1` in the GNU spellings, which pads
+to the next 64-byte line exactly when the L bytes from here would cross one
+and otherwise does nothing; `ALIGN 16` in MASM, which has no such form. L is
+the loop's estimated size: for an innermost loop the whole of it, from the
+head's label to the end of its last block; for a loop that does not fit,
+or holds another, the run from the head through the first `jmp` or `ret`
+(the code every turn begins with). The estimate is by instruction shape
+(opcode, modrm, REX where a 64-bit or numbered register is named, SIB,
+displacement and immediate widths, the SSE and 0F prefixes; jumps short,
+calls five) and measured to run 0 to 9 bytes long over the benchmark's 14
+loops, so a loop estimated at up to 72 is padded as 64. Why 64 and not 16 is
+in OptCosts.h and CLAUDE.md ("A hot loop that straddles a 64-byte line"):
+16-byte alignment leaves a 38-byte loop straddling half the time and was
+measured to buy nothing; a straddle costs up to 40% here.
+
 **`divide-by-constant`** (session 7, last in `rounds`, gated to a speed
 level). `mov $d, %R; cdq; idiv %R` and `xor %edx, %edx; div %R`, R dead
 after, become Hacker's Delight's multiply-and-shift with eax and edx left
@@ -497,7 +516,12 @@ pipeline
   shrink-loop            [build-flow before each round; repeat 3; stop when the first sub-pass found nothing]
     shrink               requires flow
     rounds
+  align-loops            [build-flow before]; requires flow; destroys flow; gate: costs.loopLine() > 0
 ```
+
+`align-loops` (session 9) is last because it inserts entries that hold no
+code, which every pass after it would have to see past; its gate is the
+level's `loopLine()`, 0 at -O1, so -O1 emits exactly what it did.
 
 `hoist-invariants` (session 8) follows `fold-index` because it wants the
 indexed operand: before it, matmul's `add %r9, %rdi; movsd %xmm0, (%rdi)`

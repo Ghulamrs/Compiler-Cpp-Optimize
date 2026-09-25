@@ -37,6 +37,8 @@ public:
     // A block of three words or more copied by `rep movsq` (smaller) rather
     // than unrolled moves (faster).
     virtual bool stringCopies() const = 0;
+    // **The line a loop is kept inside**, in bytes (see OptAlign.cpp), or 0: size pads nothing.
+    virtual int loopLine() const = 0;
 
     // **The inliner's budgets**, in the walker's measure of a body (AST
     // nodes). Whether any call is walked in place at this level; how much
@@ -75,6 +77,7 @@ public:
     int registers() const override { return 2; }
     long minWeight() const override { return 6; }
     bool stringCopies() const override { return true; }
+    int loopLine() const override { return 0; }
     // **Not until a cost in bytes can tell a body smaller than its call**:
     // in nodes, "no larger than the call" admitted bodies that grew
     // Compiler++'s .text by 783 bytes, measured. The budgets below are what
@@ -89,11 +92,9 @@ public:
 
 // **-O2: speed.** Registers spent freely, and code grown where time is saved.
 //
-// **No loop-head alignment**, although cl pads with npad: measured on the
-// box with and without `.balign 16` before every loop head - Compiler++'s
-// bench 843 against 844 ms over 15 interleaved rounds, loops.cpp's five
-// kernels equal to the millisecond - for 3,904 bytes. Nothing to buy, so
-// no question for it.
+// **A loop is kept inside one 64-byte line, and 16-byte alignment is not
+// that**: `.balign 16` on every loop head measured nothing (843 against 844 ms
+// on the box), a loop straddling a line up to 40% slower - see OptAlign.cpp.
 class SpeedCosts final : public Costs {
 public:
     SpeedCosts() : Costs(2) {}
@@ -102,6 +103,7 @@ public:
     int registers() const override { return 5; }
     long minWeight() const override { return 2; }
     bool stringCopies() const override { return false; }
+    int loopLine() const override { return 64; }
     bool inlines() const override { return true; }
     // GCC's max-inline-insns-auto shape: a site inside a loop runs more
     // often, so it may take twice as much per level, up to three levels.

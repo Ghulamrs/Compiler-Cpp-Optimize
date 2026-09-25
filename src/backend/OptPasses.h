@@ -35,6 +35,9 @@ struct Function;
 // **A loop-invariant computation moves in front of the loop**, into a register dead there - see OptHoist.cpp.
 bool hoistInvariants(Function &fn);
 
+// **A loop that fits one line is padded in front so that it does not cross one** - see OptAlign.cpp.
+bool alignLoops(Function &fn);
+
 // **A jump that only jumps on, and a constant that decides the compare-and-branch it reaches** - see OptJumps.cpp.
 bool threadJumps(Function &fn);
 
