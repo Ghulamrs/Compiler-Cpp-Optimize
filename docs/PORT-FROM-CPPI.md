@@ -109,16 +109,41 @@ priced and declined (S10, `docs/HANDOVER-SESSION-9.md`); `5fea731` takes the
 ABI's need alone. What remains above the base is `64d7f16`'s library:
 `<stdexcept>`'s classes are polymorphic, and every unit that throws through
 `std::string::at` carries their vtables and virtual members as weak copies -
-143 symbols in Compiler++'s `Parser.o`, all folded at the link. The linked
-program is the floor's metric, and on the Windows box (`C:\cxxopt\port\opt.cmd`)
-the port's Compiler++ is **smaller** than the base's: `.text` 518,766 at -O1 and
-638,590 at -O2 against 558,030 and 688,814 (`opt-fix3.txt`, `d90fd19`), build
-1,757 and 2,364 ms against 1,688 and 2,327, bench.cpp 987 and 592 ms against
-1,047 and 597, the four suites and 258 of 258 cases identical to cl at both
-levels. On the Mac host (arm64, where no optimizer runs) Compiler++ built by
-each in 4 s, bench.cpp 3,873 ms base against 3,908 port, bench-kernels 2,557
-against 2,553, checksums equal, bench output identical; arm64 `.text`
-1,130,496 against 1,032,192, the static copies of the library gone.
+143 symbols in Compiler++'s `Parser.o`. **And on x86_64-linux those copies
+were never folded**: the GNU spelling wrote `.weak` and left every unit's
+copy in `.text`, where COFF's `discard` section and Mach-O's
+`.weak_def_can_be_hidden` fold theirs. `f460e2d` gives a mergeable function
+its own COMDAT group, as gcc does, with its LSDA in the group. The linked
+program is the floor's metric:
+
+| linked Compiler++ | -O1 `.text` | -O2 `.text` | build ms -O1 / -O2 | bench.cpp ms -O1 / -O2 |
+| --- | --- | --- | --- | --- |
+| EC2 base `e969743` (`~/cmp/build.csv`) | 548,359 | 726,457 | 11,249 / 16,407 | 2,388 / 1,344 |
+| EC2 port (`~/cmp-port/build.csv`) | **336,945** | **479,387** | 13,589 / 20,733 | 2,431 / 1,346 |
+| Windows base `d90fd19` (`opt-fix3.txt`) | 558,030 | 688,814 | 1,688 / 2,327 | 1,047 / 597 |
+| Windows port (`C:\cxxopt\port\opt-port.txt`) | **518,766** | **638,590** | 1,757 / 2,364 | 987 / 592 |
+
+The summed objects' 6% is a fact about `.o` files and not about the program:
+linked, the port's Compiler++ is 34% smaller than the base's at -O2 on Linux
+and 7% smaller on Windows, the four suites pass and 258 of 258 cases are
+identical to g++'s and cl's builds at both levels, the cases workload
+(seven rounds, medians) is 2,588 against 2,759 ms at -O1 and 2,622 against
+2,649 at -O2, and bench.cpp is within 2% at -O1 and equal at -O2, output
+hashes equal. On the Mac host (arm64, no optimizer) Compiler++ built by each
+in 4 s, bench.cpp 3,873 against 3,908 ms, bench-kernels 2,557 against 2,553,
+checksums equal; arm64 `.text` 1,130,496 against 1,032,192.
+
+**The one number that went the wrong way is the build time, and it is
+recorded rather than landed silently**: on the t3.nano Compiler++ takes 21%
+longer to build at -O1 and 26% at -O2 (13.6 s and 20.7 s against 11.2 and
+16.4), on the box 4% and 2%. The cause is `b1479d3` and `64d7f16` together -
+the library's functions are `inline` rather than `static`, and `<string>`
+now pulls `<stdexcept>` into every unit that includes it - so each unit
+parses, lowers and hands the assembler about 140 more functions, which the
+link then folds. Compiler-Cppi took that trade for COMDAT folding on Windows;
+what it costs here is compile time proportional to the extra bodies, and the
+remedy is a library the front end does not re-read per unit, or a `.text`
+group the assembler does not have to build - either is its own round.
 
 ## The gate
 
@@ -132,11 +157,13 @@ is the cases the later rows added.
 
 Windows box (`C:\cxxopt\port`, cl build under `/W4 /WX`): cases 303/0 at each
 of -O0, -O1, -O2 through the GNU spelling and 303/0 at each through the MASM
-spelling and the project's assembler; Compiler++ as above; ti-link.cmd: see
-the handover for the number of the run.
+spelling and the project's assembler; Compiler++ as above; ti-link.cmd 331
+programs linked by lnk6x under CCS 7.4, 0 failed, 5 not for this target.
 
-EC2 Linux (g++, `./build`): see docs/HANDOVER-PORT.md, which records the runs
-as they were made.
+EC2 Linux (g++, `./build -j2`): run.sh 532/0, emit.sh 1305/0, every case at
+-O1 and -O2 (331 each, plus the four abort-by-design cases the harness
+mis-reads - docs/HANDOVER-PORT.md says which), asm6x.sh 332/0, tms6747.sh
+325/0 on RIDE's vm6747, Compiler++ 258/258 against g++ at both levels.
 
 ## The table
 
