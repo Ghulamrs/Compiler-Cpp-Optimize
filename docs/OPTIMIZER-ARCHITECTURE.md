@@ -430,8 +430,15 @@ mem,%s; addsd %d,%s` is `addsd mem,%s` for the two commutative ops, never
 for a frame slot, which the locals pass could then not promote (it stopped
 promoting the function's counters too). matmul's inner loop 13 instructions
 to 6, 18 to 15 ms; the MASM rules for the four SSE arithmetics carry a
-QWORD PTR width for the day the last fold fires there - today it does not,
-the Windows index being `movslq; shl; movslq`.
+QWORD PTR width for the day the last fold fires there - which came in S13:
+the Windows index had been `movslq; shl $3, %eax; movslq` because the
+parser scaled a pointer offset in `long`, 4 bytes on that target, and
+`foldScale` reads only a 64-bit shift. `Parser::ptrdiffType()` scales at
+pointer width now (`long` where it is 8 bytes, `long long` on
+x86_64-windows), and no optimizer rule needed to learn a second shape:
+the same loop is 16 to 6 instructions there, and the MASM spelling emits
+`addsd xmm0, QWORD PTR [r9+rdx*8]`. A parser change, so every Windows
+-O0 emission with pointer arithmetic moved; nothing on the Itanium targets.
 
 **`align-loops`** (session 9, last of all, gated to a speed level - `Costs::
 loopLine()` is 64 there and 0 at -O1). The one pass that emits no

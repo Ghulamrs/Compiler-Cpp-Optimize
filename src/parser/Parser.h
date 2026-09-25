@@ -1838,6 +1838,7 @@ private:
     // `&obj` the ordinary address-of for a class that declares no `operator&`.
     ExprPtr overloadedUnary(const char *spelling, ExprPtr &operand,
                             std::size_t pos);
+    const Type *ptrdiffType();
     ExprPtr pointerAdd(ExprPtr p, ExprPtr n);
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 

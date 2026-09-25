@@ -9,16 +9,23 @@
 #include <climits>
 #include <cstring>
 
+// The pointer-width integer an offset is computed in: `long` where it is 8
+// bytes, `long long` where it is not (x86_64-windows), so an index is scaled
+// once at pointer width rather than in 32 bits and extended again after.
+const Type *Parser::ptrdiffType() {
+    const Type *l = types_.get(Kind::Long);
+    return l->size(target_) == 8 ? l : types_.get(Kind::LongLong);
+}
+
 ExprPtr Parser::pointerAdd(ExprPtr p, ExprPtr n) {
     const Type *pt = p->type();
     long long stride = pt->pointee()->size(target_);
+    const Type *pd = ptrdiffType();
 
     ExprPtr size(new Num(stride));
-    size->setType(types_.get(Kind::Long));
-    ExprPtr scaled(new Binary(BinOp::Mul,
-                              convert(std::move(n), types_.get(Kind::Long)),
-                              std::move(size)));
-    scaled->setType(types_.get(Kind::Long));
+    size->setType(pd);
+    ExprPtr scaled(new Binary(BinOp::Mul, convert(std::move(n), pd), std::move(size)));
+    scaled->setType(pd);
 
     ExprPtr sum(new Binary(BinOp::Add, std::move(p), std::move(scaled)));
     sum->setType(pt);
@@ -31,12 +38,13 @@ ExprPtr Parser::pointerSub(ExprPtr l, ExprPtr r, std::size_t pos) {
                        r->type()->describe() + "' needs the same pointee type");
     long long stride = l->type()->pointee()->size(target_);
 
+    const Type *pd = ptrdiffType();
     ExprPtr diff(new Binary(BinOp::Sub, std::move(l), std::move(r)));
-    diff->setType(types_.get(Kind::Long));
+    diff->setType(pd);
     ExprPtr size(new Num(stride));
-    size->setType(types_.get(Kind::Long));
+    size->setType(pd);
     ExprPtr n(new Binary(BinOp::Div, std::move(diff), std::move(size)));
-    n->setType(types_.get(Kind::Long));
+    n->setType(pd);
     return n;
 }
 
