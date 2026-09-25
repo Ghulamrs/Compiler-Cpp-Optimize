@@ -678,8 +678,12 @@ static bool derivesFrom(const Type *cls, const Type *want) {
 }
 
 bool Parser::insideAccessOf(const Type *cls, Access access) const {
-    if (cls == nullptr || currentClass_ == nullptr) return false;
+    if (cls == nullptr) return false;
     const Type *want = cls->unqualified();
+    // The class's own body reaches everything it declares - [class.access]/1.
+    for (std::size_t i = 0; i < classStack_.size(); i++)
+        if (classStack_[i] == want) return true;
+    if (currentClass_ == nullptr) return false;
     if (currentClass_ == want) return true;
     if (access == Access::Protected && derivesFrom(currentClass_, want))
         return true;

@@ -105,6 +105,10 @@ public:
         return appendBytes(s, s == 0 ? 0 : std::strlen(s));
     }
     string &append(const char *s, size_type n) { return appendBytes(s, n); }
+    string &append(size_type n, char c) {
+        for (size_type i = 0; i < n; i++) appendBytes(&c, 1);
+        return *this;
+    }
 
     // **`buf_ == 0` is a real state here, and not only before construction.**
     // This library's `vector` assigns into raw `calloc`'d storage - placement

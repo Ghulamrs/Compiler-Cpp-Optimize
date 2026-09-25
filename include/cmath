@@ -36,6 +36,21 @@ using ::sinh;
 using ::sqrt;
 using ::tan;
 using ::tanh;
+using ::trunc;
+using ::round;
+
+// The C99 classification functions, as C++11's <cmath> has them: a NaN is
+// the one value unequal to itself, an infinity is what is left when the
+// fractional part is taken off and nothing finite compares beyond it, and
+// the sign bit is read through the bits themselves.
+inline bool isnan(double v) { return v != v; }
+inline bool isinf(double v) { return v == v && (v - v) != (v - v); }
+inline bool isfinite(double v) { return v == v && (v - v) == (v - v); }
+inline bool signbit(double v) {
+    if (v != 0 || v != v) return v < 0 || (v != v && false);
+    // The zeros: 1 / -0.0 is -inf.
+    return 1.0 / v < 0;
+}
 
 }  // namespace std
 

@@ -231,6 +231,13 @@ const Type *Parser::findTypedef(const std::string &name) const {
 
     auto it = typedefIndex_.find(name);
     if (it != typedefIndex_.end()) return typedefs_[it->second].type;
+    // **`N::D` where D is in N's unnamed namespace** - [namespace.unnamed]/1
+    // gives N a using-directive for it, and a qualified name honours that.
+    const std::size_t last = name.rfind("::");
+    if (last != std::string::npos && last > 0) {
+        auto u = typedefIndex_.find(name.substr(0, last) + "::_GLOBAL__N_1" + name.substr(last));
+        if (u != typedefIndex_.end()) return typedefs_[u->second].type;
+    }
 
     // A class named without its namespace, from inside that namespace or from
     // one a `using namespace` has opened.
@@ -471,7 +478,8 @@ bool Parser::atDeclarationStart() const {
     // is a declaration and nothing else - or an expression is asked for instead.
     return atTypeName() || peek().is("static") || peek().is("extern")
         || peek().is("register") || peek().is("auto") || peek().is("typedef")
-        || peek().is("constexpr") || peek().is("alignas");
+        || peek().is("constexpr") || peek().is("alignas")
+        || (peek().is("[") && peekAt(1).is("["));
 }
 
 // From the '{' to the '}' that closes it, counting depth.
