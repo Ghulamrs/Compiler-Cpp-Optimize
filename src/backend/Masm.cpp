@@ -464,11 +464,17 @@ void MasmSpelling::weakDefinition(const std::string &name) {
     pendingComdat_ = name;
 }
 
+// A segment of its own: a COMDAT's, or - with no COMDAT pending - one whose
+// ALIGN() the simplified .DATA, .CONST and .DATA? (PARA, 16) cannot give an
+// `alignas(64)` object; its name carries the alignment, since attributes may not change.
 void MasmSpelling::openDataBlock(int align) {
-    const char *name = seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata";
+    std::string name = seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata";
+    const bool comdat = !pendingComdat_.empty();
+    if (!comdat) name += "$a" + std::to_string(align);
     o_ += std::string("\n") + name + " SEGMENT" + (seg_ == Const ? " READONLY" : "") +
           " ALIGN(" + std::to_string(align < 16 ? 16 : align) + ")" +
-          (seg_ == Bss ? " 'BSS'" : " 'DATA'") + " COMDAT(" + mangle(pendingComdat_) + ")\n";
+          (seg_ == Bss ? " 'BSS'" : " 'DATA'") +
+          (comdat ? " COMDAT(" + mangle(pendingComdat_) + ")" : "") + "\n";
     pendingComdat_.clear();
     dataBlock_ = name;
     dataBlockUsed_ = false;
@@ -516,7 +522,9 @@ void MasmSpelling::align(int n) {
     flushPending();
     if (seg_ != Code) {
         if (!dataBlock_.empty() && dataBlockUsed_) closeDataBlock();
-        if (!pendingComdat_.empty()) openDataBlock(n);
+        // An ALIGN past 16 inside .DATA is "invalid combination with segment
+        // alignment": such an object gets a segment declared for it.
+        if (!pendingComdat_.empty() || n > 16) openDataBlock(n);
         dataBlockUsed_ = true;
     }
     o_ += "  ALIGN "; appendNum(o_, n); o_ += '\n';
