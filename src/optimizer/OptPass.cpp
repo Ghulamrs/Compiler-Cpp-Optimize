@@ -102,7 +102,8 @@ std::string operandText(const Operand &o) {
     case Operand::Immediate: return "$" + (o.numeric ? std::to_string(o.value) : o.text);
     case Operand::Memory:
         return (o.hasDisp ? std::to_string(o.disp) : std::string()) + "(" +
-               (o.reg.id >= 0 ? regText(Reg{o.reg.id, 8}, o.text) : o.text) + ")";
+               (o.reg.id >= 0 ? regText(Reg{o.reg.id, 8}, o.text) : o.text) +
+               (o.scale != 0 ? "," + regText(Reg{o.index.id, 8}, "") + "," + std::to_string(o.scale) : "") + ")";
     case Operand::RipSymbol: return o.text + "(%rip)";
     case Operand::Indirect: return "*" + regText(o.reg, o.text);
     case Operand::Label: return o.text;

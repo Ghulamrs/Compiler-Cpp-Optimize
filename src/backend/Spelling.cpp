@@ -1,6 +1,6 @@
 #include "Spelling.h"
 
-#include "OptIr.h"
+#include "../optimizer/OptIr.h"
 
 #include <ostream>
 #include <string>
@@ -18,6 +18,7 @@ void GnuSpelling::op(const Op &x) {
         if (x.hasDisp) appendNum(o_, x.disp);
         o_ += '(';
         o_ += x.text;
+        if (x.scale != 0) { o_ += ','; o_ += x.index; o_ += ','; appendNum(o_, x.scale); }
         o_ += ')';
         return;
     case Op::Rip: o_ += sym(std::string(x.text.p, x.text.n)); o_ += "(%rip)"; return;
@@ -147,6 +148,8 @@ void GnuSpelling::stateLabel(const std::string &l) {
 }
 
 void GnuSpelling::align(int n) { o_ += "  .align "; appendNum(o_, n); o_ += '\n'; }
+// `.p2align 6,,L-1` pads to the next 64-byte line exactly when the L bytes from here would cross one.
+void GnuSpelling::loopAlign(int bytes) { o_ += "  .p2align 6,,"; appendNum(o_, bytes - 1); o_ += '\n'; }
 void GnuSpelling::zero(int n)  { o_ += "  .zero ";  appendNum(o_, n); o_ += '\n'; }
 
 void GnuSpelling::dataInt(int size, long long v) {
@@ -387,5 +390,6 @@ void CoffSpelling::op(const Op &x) {
     if (d != 0) appendNum(o_, d);
     o_ += '(';
     o_ += std::string(x.text.p, x.text.n);
+    if (x.scale != 0) { o_ += ','; o_ += x.index; o_ += ','; appendNum(o_, x.scale); }
     o_ += ')';
 }

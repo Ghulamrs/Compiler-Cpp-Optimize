@@ -30,9 +30,11 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
     e.ins.operands = operands;
     if (a) e.ins.a = opt::Operand::from(*a);
     if (b) e.ins.b = opt::Operand::from(*b);
+    if (argsPending_ && m == "call") { e.ins.args = args_; e.ins.exactArgs = true; }
+    argsPending_ = false;
     if (inlining_)
         for (opt::Operand *o : {&e.ins.a, &e.ins.b})
-            if (o->isMem() && o->reg.id == opt::RBP) {
+            if (o->isMem() && o->reg.id == opt::RBP && o->disp > -kTempBase) {
                 assert(o->disp < 0 && "an inlined callee reads only its own frame");
                 o->disp -= inlineBase_;
                 o->hasDisp = true;
@@ -77,6 +79,9 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     fn_.prologueAt = -1;
     fn_.inlineTop = 0;
     fn_.saves.clear();
+    fn_.promoted = false;
+    fn_.tempFrom = 0;
+    fn_.tempBase = fn_.tempCount = 0;
     fn_.shared = opt::SharedSlots();
     inlining_ = false;
 }
@@ -109,12 +114,19 @@ void Optimizer::defer(std::function<void()> call) {
 void Optimizer::sharedSlot(long long disp, int size) { fn_.shared.add(disp, size); }
 
 // **A callee walked in place keeps its frame below the caller's locals**, moved
-// down by `base`. Every site shares that region, so no slot in it is one
-// variable's, and none is offered for a register.
-void Optimizer::inlineBegin(int base, int calleeFrame) {
+// down by `base`. Its scalars are listed there once, moved the same way; two
+// callees whose slots overlap unalike are refused by `promotableLocals`.
+void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &scalars) {
     inlining_ = true;
     inlineBase_ = base;
     fn_.inlineTop = std::max(fn_.inlineTop, base + ((calleeFrame + 15) & ~15));
+    for (const opt::Local &l : scalars) {
+        const opt::Local moved{l.disp - base, l.size};
+        bool listed = false;
+        for (const opt::Local &have : fn_.locals)
+            if (have.disp == moved.disp && have.size == moved.size) listed = true;
+        if (!listed) fn_.locals.push_back(moved);
+    }
 }
 
 void Optimizer::inlineEnd() { inlining_ = false; }
@@ -132,6 +144,26 @@ void Optimizer::functionEnd(const std::string &name) {
 }
 
 void Optimizer::frame(std::vector<opt::Local> locals) { fn_.locals = std::move(locals); }
+
+void Optimizer::temporaries(int count) {
+    if (count == 0) return;
+    const long long top = fn_.frameBase();
+    for (Entry &e : fn_.stream) {
+        if (e.kind != Entry::Ins) continue;
+        for (opt::Operand *o : {&e.ins.a, &e.ins.b})
+            if (o->isMem() && o->reg.id == opt::RBP && o->disp <= -kTempBase) o->disp += kTempBase - top;
+    }
+    for (int t = 0; t < count; ++t) fn_.locals.push_back(opt::Local{-(top + 8 * (t + 1)), 8});
+    fn_.tempFrom = -(top + 8);
+    fn_.tempBase = top;
+    fn_.tempCount = count;
+    fn_.inlineTop = static_cast<int>((top + 8 * count + 15) & ~15);
+}
+
+void Optimizer::callArguments(opt::RegSet regs) {
+    argsPending_ = true;
+    args_ = regs;
+}
 
 void Optimizer::returnsPair(bool pair) {
     fn_.convention.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);
@@ -208,6 +240,7 @@ void Optimizer::objectSize(const std::string &name, int size) {
     event([=](Spelling &s) { s.objectSize(name, size); });
 }
 void Optimizer::align(int n) { event([=](Spelling &s) { s.align(n); }); }
+void Optimizer::loopAlign(int bytes) { event([=](Spelling &s) { s.loopAlign(bytes); }); }
 void Optimizer::zero(int n) { event([=](Spelling &s) { s.zero(n); }); }
 void Optimizer::dataInt(int size, long long v) { event([=](Spelling &s) { s.dataInt(size, v); }); }
 void Optimizer::dataSym(const std::string &sym, long long off) {

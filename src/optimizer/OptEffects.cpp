@@ -12,7 +12,8 @@ RegSet readsOf(const Operand &o) {
     switch (o.kind) {
     case Operand::Register:
     case Operand::Indirect:
-    case Operand::Memory: return o.reg.id >= 0 && o.reg.id < kPhysical ? bit(o.reg.id) : 0;
+    case Operand::Memory: return (o.reg.id >= 0 && o.reg.id < kPhysical ? bit(o.reg.id) : 0) |
+                                 (o.scale != 0 && o.index.id < kPhysical ? bit(o.index.id) : 0);
     default: return 0;
     }
 }
@@ -57,6 +58,7 @@ RegSet wideOf(const Instr &i, const Effects &e) {
         const bool destination = o == (i.operands == 1 ? &i.a : &i.b) && writesOnly;
         if (gpr(*o) && !destination) (o->reg.width <= 4 ? narrow : wide) |= bit(o->reg.id);
         else if (o->kind == Operand::Memory && o->reg.id >= 0) wide |= bit(o->reg.id);
+        if (o->indexed()) wide |= bit(o->index.id);
     }
     return e.reads & ~(narrow & ~wide);
 }
@@ -86,7 +88,7 @@ Roles classify(const Instr &i, const Convention &conv, Effects &e) {
     case Opcode::Call:
         r.a = kRead;
         e.control = e.memoryRead = e.memoryWritten = true;
-        e.reads = conv.arguments | bit(RSP);
+        e.reads = (i.exactArgs ? i.args : conv.arguments) | bit(RSP);
         e.writes = conv.clobbered & ~bit(RSP);
         e.flagsWritten = true;
         break;

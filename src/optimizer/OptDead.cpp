@@ -9,7 +9,7 @@ bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0
 // `movslq %eax, %rax` and `mov %eax, %eax`: the low half stays as it was.
 bool extendsInPlace(const Instr &i) {
     if (!gpr(i.a) || !gpr(i.b) || i.a.reg.id != i.b.reg.id || i.a.reg.width != 4) return false;
-    return (i.m == "movslq" && i.b.reg.width == 8) || (i.m == "mov" && i.b.reg.width == 4);
+    return (i.m == "movslq" && i.b.reg.width == 8) || (isMovQL(i.m) && i.b.reg.width == 4);
 }
 
 }
@@ -43,8 +43,10 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, c
         if (copyIn) {
             for (int q = p; q < k; ++q) {
                 if (s[q].kind != Entry::Ins || s[q].dead) continue;
-                for (Operand *o : {&s[q].ins.a, &s[q].ins.b})
+                for (Operand *o : {&s[q].ins.a, &s[q].ins.b}) {
                     if ((o->kind == Operand::Register || o->kind == Operand::Memory) && o->reg.id == t) o->reg.id = x;
+                    if (o->indexed() && o->index.id == t) o->index.id = x;
+                }
                 f.effects[q] = effectsOf(s[q].ins, conv);
             }
             s[k].dead = true;

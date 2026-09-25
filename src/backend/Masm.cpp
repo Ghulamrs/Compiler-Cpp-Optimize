@@ -1,7 +1,7 @@
 #include "Masm.h"
 
 #include "../Mangle.h"
-#include "OptIr.h"
+#include "../optimizer/OptIr.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -215,6 +215,7 @@ MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
         // target takes rbp after the allocation, exactly frameSize lower, so every
         // `[rbp + d]` becomes `[rbp + d + frameSize]` - the positive ones included.
         if (std::string(x.text.substr(1)) == "rbp") d += frameSize_;
+        if (x.scale != 0) t += "+" + std::string(x.index.substr(1)) + "*" + std::to_string(x.scale);
         if (d != 0) {
             if (d < 0) t += std::to_string(d);
             else       t += "+" + std::to_string(d);
@@ -506,6 +507,9 @@ void MasmSpelling::bssSection() {
 
 void MasmSpelling::objectType(const std::string &) {}
 void MasmSpelling::objectSize(const std::string &, int) {}
+
+// ALIGN 16, the code segment's own: MASM has no "pad only if it would cross" form.
+void MasmSpelling::loopAlign(int) { flushPending(); o_ += "  ALIGN 16\n"; }
 
 void MasmSpelling::align(int n) {
     flushPending();

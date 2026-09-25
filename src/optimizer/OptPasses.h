@@ -25,6 +25,22 @@ bool foldLoads(Stream &s, Flow &f, const Convention &c);
 // **A constant added to a register only used as an address** moves into the displacements.
 bool foldOffsets(Stream &s, Flow &f, const Convention &c);
 
+// **A register added to one only used as an address** becomes its index, a shift of it the scale.
+bool foldIndex(Stream &s, Flow &f, const Convention &c);
+
+// **A division by a constant is a multiply by its magic number** - see OptDivide.cpp.
+bool divideByConstant(Stream &s, Flow &f);
+
+struct Function;
+// **A loop-invariant computation moves in front of the loop**, into a register dead there - see OptHoist.cpp.
+bool hoistInvariants(Function &fn);
+
+// **A loop that fits one line is padded in front so that it does not cross one** - see OptAlign.cpp.
+bool alignLoops(Function &fn);
+
+// **A jump that only jumps on, and a constant that decides the compare-and-branch it reaches** - see OptJumps.cpp.
+bool threadJumps(Function &fn);
+
 // A local the walker placed in the frame, rbp-relative.
 struct Local {
     long long disp;
@@ -63,18 +79,22 @@ private:
     long long escapesFrom_ = 0;
 };
 
-// **Scalar locals whose address never escapes, kept in callee-saved
-// registers** - the busiest first, by loop depth. Returns what the prologue saves.
-std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::vector<Local> &locals,
-                                    const SharedSlots &shared, int frameSize, int maxRegs, long minWeight);
+// **The scalar locals a register could hold**: not shared, never addressed,
+// every access whole and by an instruction that takes a register there;
+// none where the frame escapes or setjmp is called. `mentioned`: every register named.
+std::vector<Local> promotableLocals(const Stream &s, const std::vector<Local> &locals, const SharedSlots &shared,
+                                    RegSet &mentioned);
+
+// Each register goes back before rsp is taken from the frame for the return, ahead of the epilogue.
+void insertRestores(Stream &s, const std::vector<SavedReg> &saves);
 
 // **A frame store never read back**, where no address reaches it; whole functions only.
 bool removeDeadStores(Stream &s, const SharedSlots &shared);
 
 // A register saved for a local that no longer names it, and its restores, go.
-void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves);
+void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves, long long top);
 
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
-bool forwardValues(Stream &s, Flow &f, const Convention &c);
+bool forwardValues(Stream &s, Flow &f, const Convention &c, long long tempFrom = 0);
 
 }

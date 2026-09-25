@@ -105,18 +105,39 @@ static const char *const kLinuxMacros[] = {
 };
 const char *const *X86_64LinuxBackend::identityMacros() const { return kLinuxMacros; }
 
-void X86_64Linux::push() { a_->ins("push", reg("%rax")); depth_++; }
-void X86_64Linux::pop(const char *into) { a_->ins("pop", reg(into)); depth_--; }
+void X86_64Linux::push() {
+    if (tempsInSlots()) {
+        a_->ins("mov", reg("%rax"), tempSlot(tempDepth_++));
+        if (tempDepth_ > tempHigh_) tempHigh_ = tempDepth_;
+        return;
+    }
+    pushArg();
+}
+void X86_64Linux::pop(const char *into) {
+    if (tempsInSlots()) { a_->ins("mov", tempSlot(--tempDepth_), reg(into)); return; }
+    a_->ins("pop", reg(into));
+    depth_--;
+}
+void X86_64Linux::pushArg() { a_->ins("push", reg("%rax")); depth_++; }
 
 void X86_64Linux::pushF() {
-    a_->ins("sub", immText("8"), reg("%rsp"));
-    a_->ins("movsd", reg("%xmm0"), mem("%rsp"));
-    depth_++;
+    if (tempsInSlots()) {
+        a_->ins("movsd", reg("%xmm0"), tempSlot(tempDepth_++));
+        if (tempDepth_ > tempHigh_) tempHigh_ = tempDepth_;
+        return;
+    }
+    pushFArg();
 }
 void X86_64Linux::popF(const char *into) {
+    if (tempsInSlots()) { a_->ins("movsd", tempSlot(--tempDepth_), reg(into)); return; }
     a_->ins("movsd", mem("%rsp"), reg(into));
     a_->ins("add", immText("8"), reg("%rsp"));
     depth_--;
+}
+void X86_64Linux::pushFArg() {
+    a_->ins("sub", immText("8"), reg("%rsp"));
+    a_->ins("movsd", reg("%xmm0"), mem("%rsp"));
+    depth_++;
 }
 
 void X86_64Linux::pushX87() {
@@ -874,6 +895,8 @@ void X86_64Linux::visit(const Binary &n) {
         a_->defLabel(label("sc", id));
         a_->ins("mov", imm((isAnd ? 0 : 1)), reg("%rax"));
         a_->defLabel(label("scend", id));
+        // Named by these jumps and nothing else, so droppable once threaded past.
+        if (optimizer_) { optimizer_->jumpOnly(label("sc", id)); optimizer_->jumpOnly(label("scend", id)); }
         return;
     }
 
@@ -1081,14 +1104,14 @@ void X86_64Linux::visit(const Call &n) {
         }
         if (byRef && t->isStructOrUnion()) {
             msAggregateToRax(t, n.argSlot(i));
-            push();
+            pushArg();
             if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
         if (!t->isStructOrUnion()) {
             if (isX87(t))             pushX87();
-            else if (t->isFloating()) pushF();
-            else                      push();
+            else if (t->isFloating()) pushFArg();
+            else                      pushArg();
             if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
@@ -1100,7 +1123,7 @@ void X86_64Linux::visit(const Call &n) {
             int left = size - off;
             if (left >= 8) {
                 a_->ins("mov", mem(off, "%rcx"), reg("%rax"));
-                push();
+                pushArg();
                 continue;
             }
             // **A partial lane is pushed as a zeroed word and then filled.** %rcx
@@ -1145,7 +1168,8 @@ void X86_64Linux::visit(const Call &n) {
 
                 if (abi_.positional && n.isVariadic() &&
                     static_cast<int>(i) >= n.namedArgs())
-                    a_->ins("mov", mem("%rsp"), reg(abi_.intRegs[place[i].regs[0]]));
+                    a_->ins("mov", tempsInSlots() ? tempSlot(tempDepth_ - 1) : mem("%rsp"),
+                            reg(abi_.intRegs[place[i].regs[0]]));
                 popF(abi_.sseRegs[place[i].regs[0]]);
             } else {
                 pop(abi_.intRegs[place[i].regs[0]]);
@@ -1197,6 +1221,14 @@ void X86_64Linux::visit(const Call &n) {
             depth_ += shadowSlots;
         }
 
+        // **The call reads the registers the plan filled and no other**: the
+        // optimizer need not keep the rest alive into it, nor copy into them.
+        if (optimizer_) {
+            opt::RegSet reads = (n.isVariadic() && abi_.variadicSseCountInAl) ? opt::bit(opt::RAX) : 0;
+            for (int k = 0; k < plan.intsUsed && k < abi_.intCount; ++k) reads |= opt::bit(opt::parseReg(abi_.intRegs[k]).id);
+            for (int k = 0; k < plan.ssesUsed && k < abi_.sseCount; ++k) reads |= opt::bit(opt::parseReg(abi_.sseRegs[k]).id);
+            optimizer_->callArguments(reads);
+        }
         if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
         else                       a_->ins("call", lbl(n.symbol()));
 
@@ -1568,6 +1600,8 @@ void X86_64Linux::emit(const Function &fn) {
         if (!calls.empty()) outgoing_ = (abi_.shadowBytes + 8 * words + 15) & ~15;
     }
     floorDepth_ = 0;
+    tempsAllowed_ = optimizer_ && !(fn.hasLandingPads() && usesFunclets());
+    tempDepth_ = tempHigh_ = 0;
     a_->prologue(frameSize_,
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string(),
@@ -1576,6 +1610,7 @@ void X86_64Linux::emit(const Function &fn) {
     receiveParameters(fn);
 
     walkBody(fn);
+    if (optimizer_) optimizer_->temporaries(tempHigh_);
     // **rsp is restored *from rbp*, never by adding to itself.** Resuming after a
     // catch it holds whatever the runtime left, and adding the frame size landed
     // on the unwind-help slot, so `ret` took -2. The renderer adds the size.
@@ -1602,9 +1637,9 @@ void X86_64Linux::emit(const Function &fn) {
         dwarfFns_.back().blocks = blocks();
     }
 
-    if (depth_ != 0) {
-        std::fprintf(stderr, "codegen: stack depth %d at the end of %s\n",
-                     depth_, fn.name().c_str());
+    if (depth_ != 0 || tempDepth_ != 0) {
+        std::fprintf(stderr, "codegen: stack depth %d and %d temporaries at the end of %s\n",
+                     depth_, tempDepth_, fn.name().c_str());
         std::exit(1);
     }
     finishChunk();
@@ -1806,7 +1841,7 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end() || it->second == current_) return nullptr;
+    if (it == bodies_.end()) return nullptr;
     const Function &callee = *it->second;
     const bool reserved = current_->hasLandingPads() && usesFunclets();
     if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) return nullptr;
@@ -1826,7 +1861,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
     inPlace_ = true;
-    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize());
+    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize(), scalarsOf(fn));
     receiveParameters(fn);
     walkBody(fn);
     optimizer_->inlineEnd();

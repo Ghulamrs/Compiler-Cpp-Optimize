@@ -6,7 +6,7 @@
 
 #include "OptFunction.h"
 #include "OptPass.h"
-#include "Spelling.h"
+#include "../backend/Spelling.h"
 
 #include <cstddef>
 #include <memory>
@@ -36,8 +36,14 @@ public:
     void returnsPair(bool pair);
     // The function's scalar locals, candidates for registers.
     void frame(std::vector<opt::Local> locals);
+    // **The walker's temporaries are slots at -(kTempBase + 8(t + 1)) while it
+    // walks**; told how many, this puts them below every frame, as more locals.
+    static constexpr long long kTempBase = 1LL << 40;
+    void temporaries(int count);
+    // The registers the next call reads its arguments from, said just before it.
+    void callArguments(opt::RegSet regs);
     // Around a callee walked in place of its call, at -O2.
-    void inlineBegin(int base, int calleeFrame);
+    void inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &scalars);
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
@@ -73,6 +79,7 @@ public:
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
     void align(int n) override;
+    void loopAlign(int bytes) override;
     void zero(int n) override;
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &sym, long long off) override;
@@ -99,6 +106,8 @@ private:
     std::size_t held_ = 0;
     bool inlining_ = false;
     int inlineBase_ = 0;
+    bool argsPending_ = false;
+    opt::RegSet args_ = 0;
 
     // Where an entry goes: the funclet being held, or the function.
     opt::Function &current() { return funclet_ ? *funclet_ : fn_; }

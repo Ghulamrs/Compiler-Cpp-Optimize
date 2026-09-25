@@ -72,6 +72,7 @@ Operand Operand::from(const Op &o) {
         x.disp = o.disp;
         x.hasDisp = o.hasDisp;
         if (x.reg.id < 0) x.text = std::string(o.text);
+        if (o.scale != 0) { x.index = parseReg(o.index); x.scale = o.scale; }
         break;
     case Op::Rip: x.kind = RipSymbol; x.text = std::string(o.text); break;
     case Op::Ind:
@@ -113,8 +114,11 @@ Op Operand::op() const {
     switch (kind) {
     case Register: return ::reg(name);
     case Immediate: return numeric ? ::imm(value) : immText(text);
-    case Memory: return hasDisp ? mem(disp, reg.id >= 0 ? Str(regName(reg.id, 8)) : Str(text))
-                                : mem(reg.id >= 0 ? Str(regName(reg.id, 8)) : Str(text));
+    case Memory: {
+        const Str base = reg.id >= 0 ? Str(regName(reg.id, 8)) : Str(text);
+        if (scale != 0) return memIndexed(disp, hasDisp, base, Str(regName(index.id, 8)), scale);
+        return hasDisp ? mem(disp, base) : mem(base);
+    }
     case RipSymbol: return rip(text);
     case Indirect: return ind(name);
     case Label: return lbl(text);

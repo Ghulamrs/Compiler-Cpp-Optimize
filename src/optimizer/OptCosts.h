@@ -32,9 +32,13 @@ public:
     // asks that the saves pay for themselves.
     virtual int registers() const = 0;
     virtual long minWeight() const = 0;
+    // The unit minWeight is measured in: one access, eight times as many per loop.
+    long loopWeight(int loopDepth) const { return 1L << (3 * (loopDepth < 5 ? loopDepth : 5)); }
     // A block of three words or more copied by `rep movsq` (smaller) rather
     // than unrolled moves (faster).
     virtual bool stringCopies() const = 0;
+    // **The line a loop is kept inside**, in bytes (see OptAlign.cpp), or 0: size pads nothing.
+    virtual int loopLine() const = 0;
 
     // **The inliner's budgets**, in the walker's measure of a body (AST
     // nodes). Whether any call is walked in place at this level; how much
@@ -48,6 +52,11 @@ public:
     // A caller smaller than this may grow as if it were this large: the
     // percentage is a cap on the large, not a bar to the small.
     virtual int largeFunction() const = 0;
+
+    // **The allocator's measure of a reference** at a loop depth - what a
+    // use is worth, what a coalesced copy saves: speed counts executions,
+    // eight times as many per loop; size counts the instruction, once.
+    virtual long referenceWeight(int loopDepth) const = 0;
 
     // The costs of a level, 1 or 2.
     static std::unique_ptr<Costs> forLevel(int level);
@@ -68,6 +77,7 @@ public:
     int registers() const override { return 2; }
     long minWeight() const override { return 6; }
     bool stringCopies() const override { return true; }
+    int loopLine() const override { return 0; }
     // **Not until a cost in bytes can tell a body smaller than its call**:
     // in nodes, "no larger than the call" admitted bodies that grew
     // Compiler++'s .text by 783 bytes, measured. The budgets below are what
@@ -77,15 +87,14 @@ public:
     int callerGrowthPercent() const override { return 0; }
     int unitGrowthPercent() const override { return 0; }
     int largeFunction() const override { return 0; }
+    long referenceWeight(int) const override { return 1; }
 };
 
 // **-O2: speed.** Registers spent freely, and code grown where time is saved.
 //
-// **No loop-head alignment**, although cl pads with npad: measured on the
-// box with and without `.balign 16` before every loop head - Compiler++'s
-// bench 843 against 844 ms over 15 interleaved rounds, loops.cpp's five
-// kernels equal to the millisecond - for 3,904 bytes. Nothing to buy, so
-// no question for it.
+// **A loop is kept inside one 64-byte line, and 16-byte alignment is not
+// that**: `.balign 16` on every loop head measured nothing (843 against 844 ms
+// on the box), a loop straddling a line up to 40% slower - see OptAlign.cpp.
 class SpeedCosts final : public Costs {
 public:
     SpeedCosts() : Costs(2) {}
@@ -94,6 +103,7 @@ public:
     int registers() const override { return 5; }
     long minWeight() const override { return 2; }
     bool stringCopies() const override { return false; }
+    int loopLine() const override { return 64; }
     bool inlines() const override { return true; }
     // GCC's max-inline-insns-auto shape: a site inside a loop runs more
     // often, so it may take twice as much per level, up to three levels.
@@ -102,6 +112,7 @@ public:
     int callerGrowthPercent() const override { return 100; }
     int unitGrowthPercent() const override { return 40; }
     int largeFunction() const override { return 2700; }
+    long referenceWeight(int loopDepth) const override { return 1L << (3 * (loopDepth < 5 ? loopDepth : 5)); }
 };
 
 inline std::unique_ptr<Costs> Costs::forLevel(int level) {

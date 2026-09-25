@@ -134,7 +134,8 @@ the three boxes proved it: 97 / 153 / 52 on the Mac, 97 / 153 on Linux, 94 on
 Windows and the C corpus at 379/424 — every number identical to the commit
 before.
 
-**A basename may not repeat across `src/`, `src/parser/` and `src/backend/`.**
+**A basename may not repeat across `src/`, `src/parser/`, `src/backend/` and
+`src/optimizer/`.**
 That is why the nine kept their `ParserXxx` names on moving into a directory
 that would have let them drop the prefix — `src/parser/Type.cpp` beside
 `src/Type.cpp` reads better and does not work. `obj/` mirrors `src/`, so make
@@ -150,6 +151,20 @@ Those three — `alignTo`, `isLvalue`, `isNullConstant` — lost the keyword and
 live in `Parser.cpp`, declared in `src/ParserInternal.h`. That header is the
 whole cost of the split, and it is deliberately short: if a later change wants
 to add a fourth entry, consider moving the function instead.
+
+## The optimizer is its own directory, 2026-09-25
+
+`src/optimizer/` holds the optimizer that the backend's walker hands each
+function to: `Optimizer`, the `Inliner`, the pass manager and pipeline
+(`OptPass`, `OptPipeline`), every pass and analysis (`Opt*`), and the register
+allocator's IR (`Mir*`) - 39 files moved out of `src/backend/` by `git mv`
+with no code changed, the way `src/parser/` was split out. The directory owns
+its headers, reaches the shared ones as `../Ast.h`, `../Abi.h` and
+`../backend/Spelling.h`, and is included from the backend by path
+(`../optimizer/Optimizer.h`). Both builds glob it - `SRCS` in the Makefile and
+the source list in `msvc/build.cmd`. Proved a move and nothing else:
+`tools/identical.sh` against the build before, all 2,328 outputs byte-identical
+at -O0, -O1 and -O2 for both Windows spellings and x86_64-linux.
 
 ## Refusing by name reaches declarations now, not only expressions
 
@@ -10178,6 +10193,95 @@ emulator and cl6x answer as before; 138 goldens changed, every one
 x86_64-windows, every one a `this` reload or a `.quad` reorder); Linux 496
 and 1187 under g++; Windows 465 under cl - the 461 cases and both directions
 of both pairs - and 190 names agreeing.
+
+## A hot loop that straddles a 64-byte line, and the two S9 "regressions" that were placement
+
+**2026-09-25, on the S9 branch before it was pushed.** An independent review
+measured S8 (`e91a4f6`) against S9 (`3eaafcf`) on `tools/windows/bench-kernels.cpp`
+and found two kernels slower - sieve 72 -> 83 ms, virtual 158 -> 199 - over 26
+rounds, so not noise. Both repeated here (sieve 74 -> 80, virtual 157 -> 198,
+15 rounds). Neither was the code.
+
+**The controlled experiment: swap the changed function between the two
+assemblies.** `_Z5sievei` and `_Z4virti` were cut out of S8's `.s` and pasted
+into S9's, and the reverse, everything else untouched:
+
+| build | sieve | virtual |
+|---|---|---|
+| S8 | 74 | 157 |
+| S9 | 80 | 198 |
+| S9 image, S8's sieve / S8's virt | 79 | 154 |
+| S8 image, S9's sieve / S9's virt | 72 | 202 |
+
+S9's sieve in S8's image is the fastest sieve of the four; S8's sieve in S9's
+image is as slow as S9. The function is not what decides it - where it lands
+is. virtual's loop body is byte-identical between S8 and S9 (the diff is the
+inlined constructors above it and one more callee-saved register), and it runs
+at 154 or 202 depending on which image it sits in.
+
+**What decides it is a 64-byte line.** Shifting `_Z4virti` in 16-byte steps
+inside one image (`.skip k` in front of it, `.p2align 4` on every function and
+loop head so nothing else moves) gives a period of 64: the 38-byte loop at 0
+or 16 mod 64 runs 152-163 ms, at 32 or 48 - where its bytes cross into the
+next line - 198-220. Finer steps agree, and so do the two images: S9's loop
+sat at 62 mod 64 and S8's at 11. Sieve's inner loop is the same story one
+size down: S8's is 27 bytes, S9's 15 (the hoisted `lea` and the sign
+extension gone), and each is slow exactly when it straddles - the S9 image had
+put S9's at 61. A `jcc`/`jmp` crossing a 32-byte boundary (the JCC erratum)
+was checked with the assembler's `-mbranches-within-32B-boundaries` and is
+not it; a 16-byte alignment of every loop head leaves a 38-byte loop
+straddling half the time, which is why `OptCosts.h` recorded that `.balign
+16` bought nothing when it was measured on the box.
+
+**So the fix is a pass, `align-loops`, last in the pipeline at -O2.** An
+innermost loop whose estimated size L is at most 64 bytes gets
+`.p2align 6,,L-1` in front of its head: the assembler pads to the next line
+exactly when the L bytes from here would cross one, and does nothing
+otherwise - a pad taken with probability L/64, costing L/2 bytes when taken,
+against `.p2align 6`'s 32 on every loop. A loop that does not fit, or holds
+another, gets the same for the run every turn begins with, from its head
+through the first `jmp` or `ret` (sieve's outer loop: 28 bytes of head, load,
+test and the jump to its step). The size is estimated from the instructions
+(`OptAlign.cpp`: opcode, modrm, REX, SIB, displacement and immediate widths,
+the SSE and 0F prefixes), measured to run 0 to 9 bytes long over the
+benchmark's 14 loops, and never short - so a loop estimated at up to 72 is
+padded as 64, and hash's 61-byte fill loop is caught. MASM gets `ALIGN 16`,
+having no conditional form. -O1 is untouched (`Costs::loopLine()` is 0
+there), -O0 does not run the optimizer.
+
+**What it does not fix, and is written down rather than claimed.** Under the
+placement control the tree has used since S8 (`.p2align 4` on every function
+entry and loop head, non-PIE, both sides) virtual still reads 145 for S8 and
+185 for S9: the loop is at 16 mod 64 in both, fits, and the difference is the
+two `area()` callees, which the pads in the functions before them move by 8
+bytes - shifting the callees alone, the loop pinned at a line start, gives
+191 at one position and 143-157 at the next seven. That granularity is not
+the line rule and no rule for it was found; with every function entry and
+loop head at `.p2align 6` on both sides, S8, S9 and S9-fixed all read 123-127
+on virtual and 71-73 on sieve, which is the experiment that says the code is
+equal. A small callee at a line start is the next candidate (145 -> 125), and
+it wants a cost, since small functions are many.
+
+**Measured at the close, 15 interleaved rounds, medians with the middle-half
+range, checksums equal; "-h" is the placement control:**
+
+| kernel | S8 | S9 | S9 fixed | S8-h | S9-h | S9 fixed-h | g++ | clang |
+|---|---|---|---|---|---|---|---|---|
+| fib | 13 (13-14) | 8 (8-9) | 10 (10-10) | 13 (13-14) | 8 (8-9) | 8 (8-8) | 3 | 0 |
+| sieve | 73 (70-82) | 78 (77-79) | 72 (70-76) | 78 (75-80) | 71 (70-73) | 71 (70-72) | 57 | 60 |
+| matmul | 38 (38-39) | 20 (20-21) | 18 (18-19) | 39 (38-40) | 18 (18-19) | 18 (18-19) | 9 | 4 |
+| isort | 25 (24-25) | 18 (18-18) | 17 (16-18) | 25 (24-26) | 17 (17-18) | 18 (17-18) | 9 | 15 |
+| hash | 289 (277-296) | 266 (264-279) | 271 (262-280) | 290 (279-295) | 268 (265-280) | 264 (261-280) | 206 | 155 |
+| virtual | 158 (151-160) | 200 (197-202) | 146 (141-156) | 145 (141-148) | 217 (211-221) | 186 (182-188) | 148 | 150 |
+| total | 596 (580-615) | 593 (591-611) | 535 (524-555) | 590 (578-604) | 601 (597-622) | 570 (564-588) | 438 | 388 |
+
+In the default build every kernel is at or under S8 and the total is 10%
+under it, 1.22x g++ where S8 was 1.36x. In the control build virtual stays
+the callee lottery described above - 186 against 145 for a loop that is the
+same bytes at the same position - and the total still beats S8's. Size: the
+290 cases' `.text` at -O2, clang-assembled, grows 1.5% on x86_64-linux
+(549,404 to 557,585) and 2.1% on x86_64-windows (388,707 to 396,904), all of
+it padding in front of loop heads; -O1 is byte-identical.
 
 ## Build
 

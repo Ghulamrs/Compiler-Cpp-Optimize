@@ -103,8 +103,8 @@ void Inliner::summarize(const Program &program) {
     }
 }
 
-// Every function measured, and every call of one this unit defines, other
-// than of itself, listed with its caller and its growth.
+// Every function measured, and every call of one this unit defines, a
+// call of itself included, listed with its caller and its growth.
 std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
     std::map<std::string, const Function *> bySymbol;
     std::vector<std::pair<const Function *, Measurer>> measured;
@@ -122,7 +122,7 @@ std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
     for (const auto &fm : measured)
         for (const auto &call : fm.second.calls) {
             const auto callee = bySymbol.find(call.first->symbol());
-            if (callee == bySymbol.end() || callee->second == fm.first || !eligible(*callee->second)) continue;
+            if (callee == bySymbol.end() || !eligible(*callee->second)) continue;
             const int growth = measures_[callee->second].size - callCost(*call.first);
             sites.push_back(Site{call.first, fm.first, callee->second, call.second, growth});
         }

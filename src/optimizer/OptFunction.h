@@ -10,7 +10,7 @@
 #include "OptFlow.h"
 #include "OptLoops.h"
 #include "OptPasses.h"
-#include "Spelling.h"
+#include "../backend/Spelling.h"
 
 #include <memory>
 #include <set>
@@ -35,6 +35,16 @@ struct Function {
     Convention convention;
     Flow flow;
     unsigned props = kPropPhysical;
+    // While the stream names pseudos: the register each web's was found in,
+    // and after those, the frame slot each promoted local's stood in.
+    std::vector<int> homes;
+    std::vector<Local> slots;
+    bool promoted = false;          // whether any local left its slot for a register
+    // The walker's temporaries: every slot at this displacement or below is
+    // one, written once per value and read once, by nothing else. 0: none.
+    long long tempFrom = 0;
+    long long tempBase = 0;         // the frame bytes the temporaries were placed below
+    int tempCount = 0;
 
     // The level's answers: what a pass asks instead of the level.
     const Costs &costs() const { return *costs_; }
