@@ -313,17 +313,20 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
 // From here to the `;` that ends the declaration, or to the `}` that closes
 // the body. Nothing inside is looked at - that is what "no instantiation"
 // means. Answers whether a body was there.
-bool Parser::skipTemplatedDefinition(bool *sawInit) {
+bool Parser::skipTemplatedDefinition(bool *sawInit, bool *sawParen) {
     bool body = false;
     int depth = 0;
     if (sawInit != nullptr) *sawInit = false;
+    if (sawParen != nullptr) *sawParen = false;
     for (;;) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this template's definition is never closed");
-        // **An `=` at depth zero is an initialiser**, so what is being skipped is a definition even
-        // though it has no braces: a static data member of a class template is defined out of line
-        // as `template <class T> const R C<T>::k = R();`, which ends at a `;`.
+        // An `=` at depth zero is an initialiser: `template <class T> const R C<T>::k = R();`.
         if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
+        // A `(` at depth zero is a function's parameter list (or a construction);
+        // without one, `=` or braces, the line defines a data member - [temp.static],
+        // `template <class T> T Tm<T>::st;` (the cl review's A14).
+        if (sawParen != nullptr && depth == 0 && peek().is("(")) *sawParen = true;
         if (peek().is("{")) { depth++; body = true; at_++; continue; }
         if (peek().is("}")) {
             at_++;
@@ -446,8 +449,8 @@ bool Parser::templateDeclaration() {
     // Where it was written, for the manglers - the table's key stays bare.
     decl.ns = namespacePrefix();
     at_ = decl.afterParams;
-    bool sawInit = false;
-    const bool defined = skipTemplatedDefinition(&sawInit);
+    bool sawInit = false, sawParen = false;
+    const bool defined = skipTemplatedDefinition(&sawInit, &sawParen);
 
     // **A member of a class template defined outside it belongs to the class**, not
     // to a template of its own. The declarator already reads a qualified name; what
@@ -463,7 +466,8 @@ bool Parser::templateDeclaration() {
                                 "template");
         // The template's own name, not the qualifier: that is the pattern's
         // internal tag and holds a `$` no reader ever wrote.
-        if (!defined && !sawInit && !constructs)
+        const bool dataNoInit = !defined && !sawInit && !constructs && !sawParen;
+        if (!defined && !sawInit && !constructs && !dataNoInit)
             src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
                                 "' is declared here and not defined - a member "
                                 "is declared inside its class");
@@ -471,7 +475,7 @@ bool Parser::templateDeclaration() {
         ool.start = decl.afterParams;
         ool.member = decl.name;
         ool.destructor = !decl.name.empty() && decl.name[0] == '~';
-        ool.isData = !defined && (sawInit || constructs);
+        ool.isData = !defined && (sawInit || constructs || dataNoInit);
         owner->second.outOfLine.push_back(ool);
         return true;
     }

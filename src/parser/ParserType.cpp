@@ -33,6 +33,15 @@ const Type *Parser::memberTypeWalk(const Type *t) {
                                      member + "' without an object is C++11 "
                                      "and is not supported yet - 'sizeof' an "
                                      "object of the class, or its type");
+        // A static data member reached through a template's argument list,
+        // `Box<int>::count`, is the refusal EXCLUSIONS names - not a missing
+        // type (the cl review's A23); a typedef for the instantiation reaches it.
+        if (found == nullptr && t->isSpecialization() && t->findStaticMember(member) != nullptr &&
+            (peekAt(2).is("=") || peekAt(2).is(";")))
+            src_.fail(peekAt(1).pos, "'" + t->tag() + "::" + member + "' names a static "
+                                     "member through the template's argument list, which "
+                                     "is not supported yet - a typedef for '" + t->tag() +
+                                     "' reaches it: typedef " + t->tag() + " B; B::" + member);
         if (found == nullptr)
             src_.fail(peekAt(1).pos, "'" + t->tag() + "' has no member type "
                                      "called '" + member + "'");

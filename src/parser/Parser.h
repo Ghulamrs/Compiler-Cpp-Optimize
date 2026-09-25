@@ -665,7 +665,7 @@ private:
     // `sawInit`, when given, says the declaration ended at a `;` having passed
     // an `=` at depth zero - which is a static data member of a class template
     // being *defined* out of line, not a member left undefined.
-    bool skipTemplatedDefinition(bool *sawInit = nullptr);
+    bool skipTemplatedDefinition(bool *sawInit = nullptr, bool *sawParen = nullptr);
     void skipTemplateArguments();
     // `Box<T>::Box(` or `Box<T>::~Box(`.
     bool atOutOfLineSpecial(std::string *what);
