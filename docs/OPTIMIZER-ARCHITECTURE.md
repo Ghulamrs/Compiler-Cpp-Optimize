@@ -108,6 +108,7 @@ classDiagram
     Pass <|-- ThreadJumps
     Pass <|-- DivideByConstant
     Pass <|-- FoldIndex
+    Pass <|-- HoistInvariants
     Pass <|-- WebsPass
     class Webs {
         -fn_ home_ pinned_ sets_ occ_ defAt_ implicitDef_ useWeb_ unknownIn_
@@ -160,6 +161,7 @@ Files, all under `src/backend/`:
 | `OptPasses.h`, `OptValues.cpp`, `OptDead.cpp`, `OptMemory.cpp`, `OptFrame.cpp`, `OptShrink.cpp` | the pass algorithms as free functions; `OptFrame.cpp` holds `promotableLocals`, `insertRestores`, `dropUnusedSaves` and the frame's shared slots; `OptMemory.cpp` holds `fold-index` beside the two older folds |
 | `OptJumps.cpp` | `threadJumps`: a jump to a block that only jumps on, and a constant that decides the compare-and-branch it reaches (session 7) |
 | `OptDivide.cpp` | `divideByConstant`: a 32-bit divide by a constant as a multiply by its magic number, -O2 only (session 7) |
+| `OptHoist.cpp` | `hoistInvariants`: loop-invariant code motion after allocation, into registers the loop leaves free (session 8) |
 | `Mir.h`, `MirWebs.cpp` | `mir::Webs`: pinned occurrences split by copies, webs to pseudos; `assign` and `dropSelfCopies` for whoever colours |
 | `MirLocals.{h,cpp}` | `mir::Locals`: every promotable scalar local renamed to a pseudo, its slot kept |
 | `MirAlloc.{h,cpp}` | `mir::Allocator`: liveness and interference over the pseudos, Chaitin-Briggs colouring with the copies as preferences, preserved registers charged their save, a local's slot given back where no register can hold it |
@@ -225,7 +227,15 @@ decides them all in badness order - the least growth for the deepest loop
 first, as GCC's queue - against three budgets the costs set, per site by
 loop depth, per caller and per unit, charging each site admitted to its
 caller and to the unit; `allows` answers for a site from that;
-`largestFrame` is what a funclet-cut caller reserves.
+`largestFrame` is what a funclet-cut caller reserves. Since session 8 a
+function's call of itself is a site like any other: the walker's `inPlace_`
+refuses a call inside a body walked in place, so a recursive function is
+walked into itself exactly one level deep (fib 13 to 11 ms). And the inlined
+callee's scalars are listed for promotion, moved down by the base as its
+operands are (`Optimizer::inlineBegin`): the region every site shares is
+still one region, but a slot in it is offered a register where every access
+is whole and alike, and `promotableLocals` refuses the rest as it refuses any
+two overlapping accesses.
 
 **`Flow`** (`FlowOf<Entry>`). The CFG and the scanning layer: `build`
 splits the stream into `Block`s at labels and after control instructions,
@@ -372,6 +382,40 @@ flags are dead at both sides. The walker registers the `&&`/`||` labels
 `sc` and `scend` as jump-only, which is what lets a threaded-past pair be
 dropped with its code by the next round; no other label gains that status.
 
+**`hoist-invariants`** (session 8, after `fold-index`, on physical registers,
+at a speed level, on a whole function). GCC's `loop-invariant` reduced to what
+can be seen after allocation: a natural loop with one entry edge, falling
+through or jumping to its head, and a two-operand instruction in it writing a
+whole general register, explicit, touching no memory, reading no flags and
+writing them only where they are dead after it and at the head, whose sources
+are registers the loop never writes or values already planned, is moved in
+front of the head. Values are numbered (mnemonic, immediate, sources), so a
+computation made twice is held once, an eight-byte copy of an invariant is the
+invariant, and a four-byte copy is its source for readers of four bytes or
+fewer. Reads of a planned value in its block take the value's register; a
+value the loop reads needs a register untouched in the loop and dead at the
+head, and the plan is refused at the value's definer (the block scanned again
+without it) where none is left, where a reader is implicit, a shift count, a
+partial write, or a read-modify-write that cannot itself move, or where the
+value is live out of its block. Intermediates take any register dead at the
+head until their last hoisted reader; a read-modify-write whose source sits
+elsewhere gets a copy first. Constants, zeroings and frame addresses are left
+alone - an immediate wherever one is taken, free, folded by forward-values.
+The innermost loop goes first, the flow rebuilt after each loop that changed,
+so an enclosing loop hoists what its inner one left in its body; a block's
+whole plan is dropped where the assignment still fails. matmul 39 to 20 ms,
+isort 26 to 17; `Flow::dominators()`' second client after `Loops`.
+
+**forward-values' three narrow rewrites** (session 8): `mov $c, %d; add %s,
+%d` is `lea c(%s), %d` where nothing reads the add's flags (`flagsDead_`, a
+backward pass per block before the walk), the base chased through the value
+model to the four-byte register a sign extension was made from, so the
+extension dies; a `movslq` whose sign extension another register already
+holds (`sextOf_`, per unknown value) is a copy of that register; and a byte
+or word extension whose destination is read only at its source's width before
+it is written again - a `char` stored and nothing wider - is a whole copy,
+which the next rewrite folds away. hash 284 to 271 ms; each is smaller too.
+
 **`divide-by-constant`** (session 7, last in `rounds`, gated to a speed
 level). `mov $d, %R; cdq; idiv %R` and `xor %edx, %edx; div %R`, R dead
 after, become Hacker's Delight's multiply-and-shift with eax and edx left
@@ -448,11 +492,17 @@ pipeline
       remove-dead-stores
       rounds
   fold-index             [build-flow before]; requires flow, physical
+  hoist-invariants       [build-flow before]; requires flow, physical; gate: whole && !costs.forSize()
   finish-frame
   shrink-loop            [build-flow before each round; repeat 3; stop when the first sub-pass found nothing]
     shrink               requires flow
     rounds
 ```
+
+`hoist-invariants` (session 8) follows `fold-index` because it wants the
+indexed operand: before it, matmul's `add %r9, %rdi; movsd %xmm0, (%rdi)`
+is a variant read-modify-write of the hoisted address and refuses the chain.
+It rebuilds the flow itself after each loop it changes.
 
 The three session-7 passes sit where their insertions are followed by a
 rebuild: `thread-jumps` and `divide-by-constant` insert entries and are
@@ -556,8 +606,9 @@ if-conversion and tail calls.
   pair (`pushX87`/`popX87`) and every stack argument stay on the real
   stack, and a function with Microsoft funclets keeps push and pop
   throughout - its frame cannot grow once a funclet is out.
-- `Flow::dominators()` and `dominates()` have `Loops` as their client;
-  value numbering over the dominator tree is still to come.
+- `Flow::dominators()` and `dominates()` have `Loops` and, through it,
+  `hoist-invariants` as their clients; value numbering over the dominator
+  tree is still to come (the hoist pass numbers values within a loop only).
 - `ReachingDefs` has one client (`webs`); def-use chains built from it are
   session 2's.
 - `Costs` answers the inliner, the allocator (`referenceWeight`) and the
