@@ -122,8 +122,10 @@ protected:
     void exceptionRegion(const std::string &begin, const std::string &end, const std::string &target) override;
 
 protected:
-    // The `.gcc_except_table` for the function just emitted.
-    void emitLsda(const std::string &symbol);
+    // The `.gcc_except_table` for the function just emitted; in the function's
+    // own COMDAT group when the function is mergeable, so a discarded copy
+    // takes its table with it rather than leaving relocations into nothing.
+    void emitLsda(const std::string &symbol, bool mergeable);
 
     // **Where the frame base sits, relative to the locals.**
     virtual bool localsAboveFrameBase() const { return target_.microsoftNames(); }
@@ -159,7 +161,7 @@ protected:
             }
             return;
         }
-        if (!callSites().empty()) emitLsda(fn.symbol());
+        if (!callSites().empty()) emitLsda(fn.symbol(), fn.isInline());
     }
     std::vector<std::string> lsdaTypes_;
     std::vector<std::string> lsdaStubs_;

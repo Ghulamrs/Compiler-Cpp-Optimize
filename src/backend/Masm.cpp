@@ -788,7 +788,7 @@ void MasmCodeGen::emitCleanupTables(const Function &fn) {
 
 void MasmCodeGen::emitExceptionTables(const Function &fn) {
     if (msTries().empty()) {
-        if (!callSites().empty()) emitLsda(fn.symbol());
+        if (!callSites().empty()) emitLsda(fn.symbol(), false);
         out_ += funclets_;
         funclets_.clear();
         funcletIndex_ = 0;

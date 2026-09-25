@@ -1472,9 +1472,14 @@ static const Walker::LsdaSpelling kElfLsda = {
     ".L", ".section .gcc_except_table,\"a\",@progbits", false, ".L", ".DW.stub"
 };
 
-void X86_64Linux::emitLsda(const std::string &symbol) {
+void X86_64Linux::emitLsda(const std::string &symbol, bool mergeable) {
     std::string &o = out_;
-    o += lsdaTable(kElfLsda, symbol, lsdaTypes_);
+    // A mergeable function's table joins its group: gcc's `.gcc_except_table.<sym>`.
+    Walker::LsdaSpelling sp = kElfLsda;
+    const std::string grouped = ".section .gcc_except_table." + symbol +
+                                ",\"aG\",@progbits," + symbol + ",comdat";
+    if (mergeable) sp.section = grouped.c_str();
+    o += lsdaTable(sp, symbol, lsdaTypes_);
 
     // **The two objects an ELF table refers to indirectly.** The type table holds
     // offsets to *pointers*, since a direct reference to one in another shared
@@ -1503,7 +1508,7 @@ void X86_64Linux::emitLsda(const std::string &symbol) {
         o += "DW.ref.__gxx_personality_v0:\n";
         o += "  .quad __gxx_personality_v0\n";
     }
-    o += "  .text\n";
+    o += gnu_.currentText();   // the function's own section, for the labels -g adds after it
 }
 
 std::string X86_64Linux::userLabel(const std::string &name) const {
