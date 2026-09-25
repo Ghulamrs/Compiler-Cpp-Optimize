@@ -1,0 +1,50 @@
+REFUSED alignas-alignof: /tmp/claude-0/sp/cppi/tests/cases/alignas-alignof.cpp:6:8: error: struct needs a tag or a body
+OTHERMSG alignas-local-past-stack-refused
+OTHERMSG alignas-weaker-refused
+ACCEPTS ambiguous-base-member-inside
+ACCEPTS ambiguous-base-member
+REFUSED array-destructor-only: /tmp/claude-0/sp/cppi/tests/cases/array-destructor-only.cpp:21:15: error: 'new T[n]' of a class with a constru
+REFUSED array-of-class-destructor: /tmp/claude-0/sp/cppi/tests/cases/array-of-class-destructor.cpp:17:7: error: an array of 'struct T' is not sup
+REFUSED array-static-local: /tmp/claude-0/sp/cppi/tests/cases/array-static-local.cpp:6:25: error: 'arr' is static and its elements have a 
+REFUSED array-static-storage: /tmp/claude-0/sp/cppi/tests/cases/array-static-storage.cpp:13:3: error: 'table' is an array of 'struct T', whi
+OTHERMSG catch-pointer-by-reference-refused
+REFUSED constexpr-call-floating: /tmp/claude-0/sp/cppi/tests/cases/constexpr-call-floating.cpp:7:18: error: 'H' is 'constexpr', so its value ha
+REFUSED dynamic-init-const: /tmp/claude-0/sp/cppi/tests/cases/dynamic-init-const.cpp:5:15: error: expected a constant initialiser, and thi
+REFUSED dynamic-init-scalar: /tmp/claude-0/sp/cppi/tests/cases/dynamic-init-scalar.cpp:9:10: error: expected a constant initialiser, and th
+OTHERMSG enum-base-bool-refused
+OTHERMSG enum-base-range-refused
+REFUSED enum-base: /tmp/claude-0/sp/cppi/tests/cases/enum-base.cpp:5:12: error: an enum-base - 'enum E : T' - is not supported ye
+REFUSED function-template-partial-ordering: /tmp/claude-0/sp/cppi/tests/cases/function-template-partial-ordering.cpp:17:47: error: this call to 'kind' is 
+REFUSED label-then-declaration: /tmp/claude-0/sp/cppi/tests/cases/label-then-declaration.cpp:9:5: error: a label cannot be followed by a decla
+REFUSED lambda-returning-lambda: /tmp/claude-0/sp/cppi/tests/cases/lambda-returning-lambda.cpp:8:79: error: 'k' was not declared
+REFUSED member-pointer-base-on-derived: /tmp/claude-0/sp/cppi/tests/cases/member-pointer-base-on-derived.cpp:14:23: error: 'B2::w' is virtual, and a p
+REFUSED member-pointer-nested-class: /tmp/claude-0/sp/cppi/tests/cases/member-pointer-nested-class.cpp:6:28: error: expected ','
+REFUSED member-pointer-virtual: /tmp/claude-0/sp/cppi/tests/cases/member-pointer-virtual.cpp:27:16: error: 'S::get' is virtual, and a pointer 
+REFUSED namespace-member-defined-outside: /tmp/claude-0/sp/cppi/tests/cases/namespace-member-defined-outside.cpp:5:5: error: 'ns' is not a class
+WRONG noexcept-local-terminates
+REFUSED operator-delete-virtual: /tmp/claude-0/sp/cppi/tests/cases/operator-delete-virtual.cpp:10:14: error: 'operator new' is not supported ye
+OTHERMSG operator-new-placement-two-refused
+OTHERMSG operator-new-static-refused
+REFUSED operator-new: /tmp/claude-0/sp/cppi/tests/cases/operator-new.cpp:9:14: error: 'operator new' is not supported yet - a new-ex
+REFUSED partial-skips-primary-out-of-line: /tmp/claude-0/sp/cppi/tests/cases/partial-skips-primary-out-of-line.cpp:6:24: error: 'Box<int>::count' is defi
+ACCEPTS pointer-compared-with-int
+REFUSED qualification-into-array: /tmp/claude-0/sp/cppi/tests/cases/qualification-into-array.cpp:8:26: error: 'g' is 'const char [3] *' and this
+REFUSED qualified-member-access: /tmp/claude-0/sp/cppi/tests/cases/qualified-member-access.cpp:12:11: error: 'struct C' has no member 'A'
+REFUSED runtime-shapes: /tmp/claude-0/sp/cppi/tests/cases/runtime-shapes.cpp:8: #include <cstdint>
+REFUSED second-base-virtual-call: /tmp/claude-0/sp/cppi/tests/cases/second-base-virtual-call.cpp:17:30: error: 'g' is virtual but has no vtable 
+WRONG static-base-pointer
+REFUSED static-member-through-template-id: /tmp/claude-0/sp/cppi/tests/cases/static-member-through-template-id.cpp:7:24: error: 'Box<int>' has no member 
+REFUSED std-move-and-forward: /tmp/claude-0/sp/cppi/tests/cases/std-move-and-forward.cpp:20:11: error: 'std::move' was not declared - a prot
+REFUSED string-at: /tmp/claude-0/sp/cppi/tests/cases/string-at.cpp:8:6: error: 'class std::string' has no member 'at'
+REFUSED template-static-member-no-init: /tmp/claude-0/sp/cppi/tests/cases/template-static-member-no-init.cpp:5:20: error: 'Tm::st' is declared here an
+REFUSED throw-pointer: /tmp/claude-0/sp/cppi/tests/cases/throw-pointer.cpp:14:17: error: 'throw' cannot name the type of this: only a
+OTHERMSG typeid-copy-refused
+OTHERMSG typeid-needs-header-refused
+REFUSED typeid: /tmp/claude-0/sp/cppi/tests/cases/typeid.cpp:29:13: error: an enum-base - 'enum E : T' - is not supported yet:
+ACCEPTS typename-missing
+REFUSED virtual-base-construction-vtable: /tmp/claude-0/sp/cppi/tests/cases/virtual-base-construction-vtable.cpp:26:39: error: 'f' is virtual but has no
+WRONG virtual-base-dispatch
+REFUSED virtual-base-of-virtual-base: /tmp/claude-0/sp/cppi/tests/cases/virtual-base-of-virtual-base.cpp:15:36: error: 'f' is virtual but has no vta
+WRONG virtual-base-second-base
+WRONG virtual-dtor-through-virtual-base
+REFUSED wchar-distinct: /tmp/claude-0/sp/cppi/tests/cases/wchar-distinct.cpp:10:12: error: 'f' is defined twice

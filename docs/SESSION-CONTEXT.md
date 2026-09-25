@@ -20,8 +20,13 @@ Compiler-Cppi's own optimizer is not ported. The repos share no git history, so
 this is a port, not a merge. Fetch Compiler-Cppi as the remote
 `cppi` (https://github.com/Ghulamrs/compiler-cppi, main 05fdbb3). The guard on
 every step: x86 and arm64 output byte-identical at -O0, -O1 and -O2 to the S13
-build (18d2236), and the benchmark no slower. The port had not started when this
-was written.
+build (18d2236), and the benchmark no slower. Step 1, the tms6747 backend,
+is done (8743547, ba50daf, 982cb5a): tests/tms6747.sh runs 280/0 on the VM6747
+emulator (clone github.com/Ghulamrs/VM6747, build Emulator/, pass
+VM=.../vm6747.exe). Step 2 is the features Compiler-Cppi has: its 58 test
+cases that this tree lacks, run here, fail 50. docs/PORT-FROM-CPPI.txt lists
+them, grouped by why each fails; work through it, one feature per commit,
+with the same guard. The reference for x86 identity is a build of 18d2236.
 
 **How a round runs.** Opus sends one step to a Fable subagent with a hard budget
 (about 50 tool calls, stop by 60). The subagent prices the change by hand in
