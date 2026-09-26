@@ -351,31 +351,44 @@ const char *Driver::hostAssembler(Syntax syntax) {
 // beside it, and the triple is what says so.
 const char *Driver::hostGnuAssembler() {
     static std::string found;
-    if (!found.empty()) return found.c_str();
+    static bool searched = false;
+    if (searched) return found.c_str();
+    searched = true;
 
     const char *env = std::getenv(program::env("AS").c_str());
     if (env != nullptr && env[0] != '\0') { found = env; return found.c_str(); }
 
 #ifdef _WIN32
+    // **Wherever Visual Studio put its clang, in any edition** - the "C++ Clang
+    // tools" component - then a standalone LLVM, then PATH.
     std::vector<std::string> tries;
-    // Visual Studio's own, which vcvars64 names the root of.
+    const std::string llvm = "\\VC\\Tools\\Llvm\\x64\\bin\\clang.exe";
     const char *vc = std::getenv("VCINSTALLDIR");
     if (vc != nullptr && vc[0] != '\0')
         tries.push_back(std::string(vc) + "Tools\\Llvm\\x64\\bin\\clang.exe");
+    const std::string vs = askVswhere();
+    if (!vs.empty()) tries.push_back(vs + llvm);
     const char *pf = std::getenv("ProgramFiles");
     if (pf != nullptr && pf[0] != '\0') {
-        tries.push_back(std::string(pf) +
-                        "\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools"
-                        "\\Llvm\\x64\\bin\\clang.exe");
+        static const char *const editions[] = {
+            "Community", "Professional", "Enterprise", "BuildTools"
+        };
+        for (const char *e : editions)
+            tries.push_back(std::string(pf) + "\\Microsoft Visual Studio\\2022\\" + e + llvm);
         tries.push_back(std::string(pf) + "\\LLVM\\bin\\clang.exe");
     }
+    char onPath[MAX_PATH];
+    if (SearchPathA(nullptr, "clang.exe", nullptr, MAX_PATH, onPath, nullptr) > 0)
+        tries.push_back(onPath);
     for (std::size_t i = 0; i < tries.size(); i++) {
         std::ifstream probe(tries[i].c_str());
         if (probe.good()) { found = tries[i]; return found.c_str(); }
     }
-#endif
+    return found.c_str();   // "" - none here: the caller falls back to masm, or says so
+#else
     found = "clang";
     return found.c_str();
+#endif
 }
 
 const char *Driver::hostLinker() {
@@ -736,6 +749,7 @@ bool Driver::parseArguments(int argc, char **argv) {
             threads_ = static_cast<unsigned>(value);
         } else if (std::strncmp(argv[i], "-masm=", 6) == 0) {
             const char *want = argv[i] + 6;
+            syntaxNamed_ = true;
             if (std::strcmp(want, "gnu") == 0) {
                 syntax_ = Syntax::Gnu;
             } else if (std::strcmp(want, "masm") == 0 ||
@@ -820,6 +834,25 @@ bool Driver::parseArguments(int argc, char **argv) {
     standardIncludeDirectories(argv[0]);
 
     if (inputs.empty()) { usage(argv[0]); return false; }
+
+    // **No clang on this Windows machine, and no spelling asked for**: the MASM
+    // spelling and masm.exe beside this program assemble what they can - a
+    // single program, not yet COMDAT or a throw - rather than every compile failing.
+    if (hostIsWindows() && syntax_ == Syntax::Gnu && !syntaxNamed_ && !assemblyOnly_ &&
+        std::strcmp(backend_->name(), "x86_64-windows") == 0 && hostGnuAssembler()[0] == '\0') {
+        syntax_ = Syntax::Masm;
+        std::fprintf(stderr, "%s: no clang found (Visual Studio's \"C++ Clang tools\" provide one) - "
+                             "assembling with masm, which handles one-file programs; a program of "
+                             "several C++ files, or one that throws, needs clang\n", argv[0]);
+    }
+
+    if (hostIsWindows() && syntax_ == Syntax::Gnu && syntaxNamed_ && !assemblyOnly_ &&
+        std::strcmp(backend_->name(), "x86_64-windows") == 0 && hostGnuAssembler()[0] == '\0') {
+        std::fprintf(stderr, "%s: -masm=gnu is assembled by clang, and none was found - install "
+                             "Visual Studio's \"C++ Clang tools\" component, name one with %s, "
+                             "or use -masm=masm\n", argv[0], program::env("AS").c_str());
+        return false;
+    }
 
     if (debug_ && !backend_->emitsLineTable(syntax_)) {
         std::fprintf(stderr,
