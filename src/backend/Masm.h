@@ -145,7 +145,8 @@ private:
     void emitThrowInfo(const Program &program);
     // The five objects the Microsoft ABI wants per class with a vftable, for the same reason and in the same place.
     void emitClassRtti(const Program &program);
-    std::string record(const char *segment, int align, const std::string &name, bool first);
+    std::string record(const char *segment, int align, const std::string &name, bool first,
+                       bool writable = false);
 
     MasmSpelling masm_;
 };

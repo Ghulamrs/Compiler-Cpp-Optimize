@@ -1782,10 +1782,7 @@ ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
 // for a type-id or a non-polymorphic operand, unevaluated; read through the
 // vptr for a polymorphic glvalue, a word before the vtable's address point.
 ExprPtr Parser::typeidExpression(std::size_t pos) {
-    if (target_.microsoftNames())
-        src_.fail(pos, "'typeid' is not supported yet for x86_64-windows - the "
-                       "Microsoft ABI answers it with a type descriptor per "
-                       "type and __RTtypeid, which are not built here");
+    const bool microsoft = target_.microsoftNames();
     const Type *info = findTypedef("std::type_info");
     if (info == nullptr || !info->isStructOrUnion())
         src_.fail(pos, "'typeid' needs std::type_info, so include <typeinfo>");
@@ -1822,7 +1819,35 @@ ExprPtr Parser::typeidExpression(std::size_t pos) {
         pendingTemps_ = savedTemps;
         alive_ = savedAlive;
     }
-    if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
+    if (glvalue && subject->isStructOrUnion() && subject->polymorphic() && microsoft) {
+        // **The Microsoft runtime reads it**: `__RTtypeid(p)` walks the vftable's
+        // locator to the descriptor, and throws bad_typeid for a null - measured from
+        // clang -target x86_64-pc-windows-msvc, one argument.
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr at(new Unary('&', std::move(operand)));
+        at->setType(types_.pointerTo(subject));
+        std::vector<ExprPtr> args;
+        args.push_back(convert(std::move(at), voidPtr));
+        ExprPtr got = runtimeCall("__RTtypeid", voidPtr, std::move(args));
+        address.reset(new Cast(infoPtr, std::move(got)));
+        address->setType(infoPtr);
+    } else if (microsoft) {
+        // The descriptor, emitted beside the throw records; a class with a
+        // vftable already has one and the emitter writes it once.
+        MicrosoftThrow names;
+        std::string why;
+        if (!microsoftTypeidNames(subject, &names, &why))
+            src_.fail(pos, "'typeid' cannot name the type of this: " + why);
+        finishMicrosoftThrow(names, false);
+        Var *ti = Var::global(names.descriptor);
+        ti->setSymbol(names.descriptor);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(types_.pointerTo(types_.get(Kind::Char)));
+        address.reset(new Cast(infoPtr, std::move(addr)));
+        address->setType(infoPtr);
+    } else if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
         // The object's first word is the vptr; the type_info pointer sits
         // one word below the address point it holds.
         const Type *chars = types_.pointerTo(types_.get(Kind::Char));

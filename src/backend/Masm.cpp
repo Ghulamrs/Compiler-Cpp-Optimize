@@ -897,8 +897,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 // For ml64, which cannot say COMDAT, the records share one plain segment:
 // `first` opens it, and the others follow in it.
 std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
-                                bool first) {
-    const std::string open = std::string(segment) + " SEGMENT READONLY ALIGN(" +
+                                bool first, bool writable) {
+    const std::string open = std::string(segment) + (writable ? " SEGMENT ALIGN(" : " SEGMENT READONLY ALIGN(") +
                              std::to_string(align) + ") 'DATA'";
     if (!masm_.comdat()) return first ? open + "\n" : std::string();
     masm_.globl(name);
@@ -932,17 +932,19 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
             contained++;
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        o += record(".rdata$r", 8, n.descriptor, true);
+        // **The descriptor is writable** - its spare word caches the undecorated
+        // name - so `.data`; the four records below it are `.rdata$r`.
+        o += record(".data", 16, n.descriptor, true, true);
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
+        o += ".data ENDS\n";
         msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual. Those
         // four numbers are constant because a class with a second base is
         // refused - its first base is always at offset zero.
-        o += record(".rdata$r", 4, n.baseDescriptor, false);
+        o += record(".rdata$r", 4, n.baseDescriptor, true);
         o += n.baseDescriptor + " DD imagerel " + n.descriptor + "\n";
         o += "  DD 0" + std::to_string(contained) + "H\n";
         o += "  DD 00H\n";              // mdisp
@@ -991,11 +993,11 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
             // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
             // has no such keyword, so the listing records what cl means.
             if (msDescriptors_.insert(c.descriptor).second) {
-                o += record(".rdata$r", 8, c.descriptor, true);
+                o += record(".data", 16, c.descriptor, true, true);
                 o += c.descriptor + " DQ ??_7type_info@@6B@\n";
                 o += "  DQ 0\n";
                 o += "  DB '" + c.decorated + "', 00H\n";
-                o += ".rdata$r ENDS\n";
+                o += ".data ENDS\n";
             }
             if (!n.thrown || !catchables.insert(c.name).second) continue;
             o += record(".xdata$x", 8, c.name, true);
@@ -1009,7 +1011,7 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
             o += ".xdata$x ENDS\n";
         }
         if (!n.thrown) continue;
-        o += record(".xdata$x", 4, n.array, false);
+        o += record(".xdata$x", 4, n.array, true);
         o += n.array + " DD " + std::to_string(n.catchables.size()) + "\n";
         for (std::size_t k = 0; k < n.catchables.size(); k++)
             o += "  DD imagerel " + n.catchables[k].name + "\n";

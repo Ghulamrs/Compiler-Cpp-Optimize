@@ -2100,8 +2100,10 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         const std::string hi = a_->labelText(n.hierarchy);
         const std::string lo = a_->labelText(n.locator);
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        coffRecord(".rdata$r", d, 3);
+        // **The descriptor is writable** - its spare word caches the undecorated name
+        // __std_type_info_name makes - so `.data`, as cl and clang have it; the four
+        // records below it are `.rdata$r`, and not `.data$r`.
+        coffRecord(".data", d, 3, "dw");
         o += "  .quad \"??_7type_info@@6B@\"\n";
         o += "  .quad 0\n";
         o += "  .asciz \"" + n.decorated + "\"\n";
@@ -2329,7 +2331,7 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
         for (std::size_t k = 0; k < n.catchables.size(); k++) {
             const MicrosoftThrow::Catchable &c = n.catchables[k];
             if (msDescriptors_.insert(c.descriptor).second) {
-                coffRecord(".rdata$r", a_->labelText(c.descriptor), 3);
+                coffRecord(".data", a_->labelText(c.descriptor), 3, "dw");
                 o += "  .quad \"??_7type_info@@6B@\"\n";
                 o += "  .quad 0\n";
                 o += "  .asciz \"" + c.decorated + "\"\n";
@@ -2366,8 +2368,8 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
 // IMAGE_COMDAT_SELECT_ANY, the choice functionBegin makes for an inline
 // function; the `.globl` is what lets one unit's copy stand for another's.
 void X86_64Linux::coffRecord(const char *section, const std::string &label,
-                             int p2align) {
-    out_ += std::string("  .section ") + section + ",\"dr\",discard," + label + "\n";
+                             int p2align, const char *flags) {
+    out_ += std::string("  .section ") + section + ",\"" + flags + "\",discard," + label + "\n";
     out_ += "  .globl " + label + "\n";
     out_ += "  .p2align " + std::to_string(p2align) + "\n";
     out_ += label + ":\n";

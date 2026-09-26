@@ -82,6 +82,9 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
                          std::string *problem);
 // The record names, once the parser has filled the copy constructors.
 void microsoftThrowFinish(MicrosoftThrow *out);
+// The descriptor `typeid` names: `??_R0H@8`, `??_R0?AUD@@@8`, `??_R0PEBD@8` - a
+// pointer keeps its pointee's const here, where a throw's record drops it.
+bool microsoftTypeidNames(const Type *t, MicrosoftThrow *out, std::string *problem);
 
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);

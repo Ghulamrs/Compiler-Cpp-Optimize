@@ -1435,6 +1435,27 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
     return true;
 }
 
+bool microsoftTypeidNames(const Type *t, MicrosoftThrow *out, std::string *problem) {
+    out->catchables.clear();
+    out->thrown = false;
+    std::string code;
+    if (t->isStructOrUnion() || microsoftBuiltin(t->kind()) != nullptr) {
+        if (!microsoftDescriptorCode(t, &code, problem)) return false;
+    } else {
+        Microsoft m;
+        m.anyType(t);
+        if (!m.ok) { *problem = m.problem; return false; }
+        code = m.out;
+    }
+    out->decorated = "." + code;
+    out->descriptor = "??_R0" + code + "@8";
+    MicrosoftThrow::Catchable self;
+    self.decorated = out->decorated;
+    self.descriptor = out->descriptor;
+    out->catchables.push_back(self);
+    return true;
+}
+
 // Measured with cl: `_CT??_R0H@84`, `_CTA1H`, `_TI1H` for an int; the copy
 // constructor's name inside a class's catchable, and its size after it.
 void microsoftThrowFinish(MicrosoftThrow *out) {

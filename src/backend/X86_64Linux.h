@@ -94,7 +94,8 @@ protected:
     void emitCoffThrowInfo(const Program &program);
     // Opens one of those records as a COMDAT of its own, public, so that the
     // linker keeps one copy where every unit that names the type wrote one.
-    void coffRecord(const char *section, const std::string &label, int p2align);
+    void coffRecord(const char *section, const std::string &label, int p2align,
+                    const char *flags = "dr");
 
     // A funclet is written by walking the handler into the ordinary output and
     // lifting the text back out - what the body appended, in order, IS the
