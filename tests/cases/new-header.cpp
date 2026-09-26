@@ -13,9 +13,9 @@
 //
 // The absurd size is computed at run time: clang refuses `new char[N]` for
 // a constant N it can see is too large, and the point is the runtime's answer.
-// `e.what()` for a runtime-thrown `bad_alloc` is the runtime's string, and
-// libc++abi and libstdc++ agree on it; the Microsoft runtime's two, measured on
-// the box, are translated back so one .expected serves all three targets.
+// `e.what()` is the runtime's string. libc++abi's are the .expected; libstdc++
+// spells bad_array_new_length with its `std::` and the Microsoft runtime both
+// in words - measured on each box - so said() maps them back to libc++abi's.
 #include <new>
 #include <cstdio>
 #include <cstddef>
@@ -26,6 +26,7 @@ static const char *said(const char *w) {
     if (std::strcmp(w, "bad allocation") == 0) return "std::bad_alloc";
     if (std::strcmp(w, "bad array new length") == 0) return "bad_array_new_length";
 #endif
+    if (std::strcmp(w, "std::bad_array_new_length") == 0) return "bad_array_new_length";
     return w;
 }
 
