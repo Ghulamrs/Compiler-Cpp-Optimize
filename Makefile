@@ -138,10 +138,11 @@ test: $(TARGET)
 	@CXX1=$(TARGET) ./tests/emit.sh
 	@CXX1=$(TARGET) ./tests/names.sh
 	@CXX1=$(TARGET) ./tests/overload.sh
-	@./tools/comment-lines --count
+	-@./tools/comment-lines --count
 
 # The comment-line policy, on its own, because it is about the source and not
-# about the compiler: three lines to a group, one over a one-liner.
+# about the compiler: three lines to a group, one over a one-liner. `make test`
+# reports the count and does not fail on it (the leading -); this target gates.
 comments:
 	@./tools/comment-lines
 
