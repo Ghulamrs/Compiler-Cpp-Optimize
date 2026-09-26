@@ -17,16 +17,14 @@ class Optimizer final : public Spelling {
 public:
     Optimizer(Spelling &under, const Abi &abi, int level);
 
-    // **A funclet is held apart from the function it belongs to.** Between
-    // these two calls every entry goes to the funclet's own stream, which is
-    // improved as a piece of its own when it ends and written out after the
-    // function; the function's stream stays held, so the passes see it whole.
+    // **A funclet is held apart from the function it belongs to.** Between these two calls every
+    // entry goes to the funclet's own stream, which is improved as a piece of its own when it ends and
+    // written out after the function; the function's stream stays held, so the passes see it whole.
     void funcletBegin();
     void funcletEnd();
     // Run where it stands in the output: after everything held before it.
     void defer(std::function<void()> call);
-    // A frame slot something outside the stream reads or writes - the
-    // runtime's scratch word - which no pass may take for its own.
+    // A frame slot something outside the stream reads or writes - the runtime's scratch word - which no pass may take for its own.
     void sharedSlot(long long disp, int size);
     // The frame as the passes left the function last written out.
     int frameSize() const { return frameSize_; }

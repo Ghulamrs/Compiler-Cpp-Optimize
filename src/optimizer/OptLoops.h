@@ -1,10 +1,8 @@
 #pragma once
 
-// **The natural loops of a flow graph**, from its dominators, as GCC's
-// loop-init finds them: each back edge b -> h whose target dominates its
-// source heads a loop made of h and every block that reaches b without
-// passing through h. What a pass asks is how many loops hold a block -
-// the weight of what happens there.
+// **The natural loops of a flow graph**, from its dominators, as GCC's loop-init finds them: each
+// back edge b -> h whose target dominates its source heads a loop made of h and every block that reaches b
+// without passing through h. What a pass asks is how many loops hold a block - the weight of what happens there.
 
 #include "OptFlow.h"
 

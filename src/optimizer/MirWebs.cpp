@@ -91,12 +91,9 @@ RegSet Webs::implicitWrites(int k) const {
     return (e.writes | e.partial) & ~named;
 }
 
-// **Where an instruction reads a register it does not name, the value is
-// copied there just before; where it writes one that is read after, the
-// value is copied out just after** - a shift's count in %cl among the
-// former, since the operand names the register but no other would do. A
-// return's implicit reads are the calling convention's own protocol - the
-// result in rax, the callee-saved registers restored - and stay as they are.
+// **Where an instruction reads a register it does not name, the value is copied there just before;
+// where it writes one that is read after, the value is copied out just after** - a shift's count in %cl among the former, since the operand names the register but no other would do.
+// A return's implicit reads are the calling convention's own protocol - the result in rax, the callee-saved registers restored - and stay as they are.
 bool Webs::splitPinned() {
     Stream &s = fn_.stream;
     Flow &f = fn_.flow;

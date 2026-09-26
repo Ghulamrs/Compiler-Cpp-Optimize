@@ -87,11 +87,9 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     opaque_.clear();
 }
 
-// **A funclet is a function of its own to the passes** - the runtime calls
-// it, with the parent's frame under rbp - and a piece, never whole: no pass
-// takes a register for it that its prologue does not save. What it reads or
-// writes of the parent's frame is shared with the parent, whose passes then
-// leave those slots alone.
+// **A funclet is a function of its own to the passes** - the runtime calls it, with the parent's
+// frame under rbp - and a piece, never whole: no pass takes a register for it that its prologue does
+// not save. What it reads or writes of the parent's frame is shared with the parent, whose passes then leave those slots alone.
 void Optimizer::funcletBegin() {
     assert(inFunction_ && !funclet_ && "a funclet inside a funclet");
     funclet_.reset(new opt::Function(*costs_));
@@ -186,9 +184,7 @@ void Optimizer::returnsPair(bool pair) {
     if (pair) fn_.convention.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
 }
 
-// **The passes, through the manager.** What ran here as hand-written loops
-// is the pipeline in OptPipeline.cpp; the manager runs it, checks what each
-// pass requires, and dumps after any pass CPP11_DUMP_MIR names.
+// **The passes, through the manager.** What ran here as hand-written loops is the pipeline in OptPipeline.cpp; the manager runs it, checks what each pass requires, and dumps after any pass CPP11_DUMP_MIR names.
 void Optimizer::improve(opt::Function &fn) { manager_.run(*pipeline_, fn); }
 
 // **The function, then its funclets**, the frame's final size having been

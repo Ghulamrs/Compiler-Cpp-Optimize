@@ -47,13 +47,9 @@ struct Local {
     int size;
 };
 
-// **Frame slots something outside the stream reads or writes** - a funclet
-// of the function, or the runtime - as if their address had escaped: no
-// register takes one, and a store to one is never dead. The two ask
-// differently, as they do of the stream itself: promotion asks whether the
-// slot is touched, the object at an address taken being that object alone;
-// dead-store removal asks whether the store may be reached, an address
-// taken reaching anything above it in the frame.
+// **Frame slots something outside the stream reads or writes** - a funclet of the function, or the runtime - as if their address had escaped: no register takes one, and a store to one is never dead.
+// The two ask differently, as they do of the stream itself: promotion asks whether the slot is touched, the object at an address taken being that object alone;
+// dead-store removal asks whether the store may be reached, an address taken reaching anything above it in the frame.
 class SharedSlots {
 public:
     void add(long long disp, int width) { slots_.push_back(Local{disp, width}); }

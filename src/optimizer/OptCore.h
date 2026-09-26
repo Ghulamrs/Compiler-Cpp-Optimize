@@ -64,19 +64,9 @@ struct EntryOf {
     bool state = false;
 };
 
-// **An edge of the flow graph**, as GCC has them: from one block to another,
-// or out of the function, with the kind that says what crosses it.
-//
-// Return carries nothing but what the return instruction reads; Leave is a
-// jump this function cannot see the end of (through a register, or to a
-// label it does not hold), so everything is live across it. Eh is an
-// exception edge from a call to its landing pad's block. GCC ends a block
-// at such a call; here the call stays inside its block - a split would
-// take from the scalar passes what they know across it, a pushed constant
-// for one - and the edge says which entry it leaves at, so liveness and
-// reaching definitions take it there: what the pad reads is live at the
-// call, and the registers the call clobbers die across it by the call's
-// own effects.
+// **An edge of the flow graph**, as GCC has them: from one block to another, or out of the function, with the kind that says what crosses it.
+// Return carries nothing but what the return instruction reads; Leave is a jump this function cannot see the end of (through a register, or to a label it does not hold), so everything is live across it. Eh is an exception edge from a call to its landing pad's block.
+// GCC ends a block at such a call; here the call stays inside its block - a split would take from the scalar passes what they know across it, a pushed constant for one - and the edge says which entry it leaves at, so liveness and reaching definitions take it there: what the pad reads is live at the call, and the registers the call clobbers die across it by the call's own effects.
 struct Edge {
     enum Kind { Fallthrough, Jump, Return, Leave, Eh };
     int from = 0;
@@ -121,10 +111,9 @@ struct Block {
     int idom = -1;                       // immediate dominator; -1 for the entry, or not computed
 };
 
-// **The function as blocks and edges, and what is live across each.** A
-// block starts at a label and ends after a jump or a return; liveness is
-// solved over the edges to a fixpoint, so a value is dead only if no path
-// reads it. Dominators are computed on request and kept until the next build.
+// **The function as blocks and edges, and what is live across each.** A block starts at a label
+// and ends after a jump or a return; liveness is solved over the edges to a fixpoint, so a value
+// is dead only if no path reads it. Dominators are computed on request and kept until the next build.
 template <class Entry>
 struct FlowOf {
     std::vector<Block> blocks;

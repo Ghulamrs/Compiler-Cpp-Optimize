@@ -9968,6 +9968,61 @@ fix, and put the story in the section of this file that owns the subject. A
 comment that wants a fourth line is a sign the story belongs here instead -
 and `make comments` will say so either way.
 
+### The second sweep, 2026-09-26: 63 groups, and the rule holds across the product
+
+**The user asked that the cap hold in every repository of the product, and this
+tree had drifted to 63 breaches** - all of them in the optimizer written after
+the first sweep and in the Windows COMDAT work beside it. Brought to 0 the same
+way as before: whole sentences kept front to back, merged into fewer and longer
+lines; nothing cut inside a sentence; no banner joined to prose. Checked by
+`clang++ -fpreprocessed -dD -E -P` over HEAD and the working copy of each of
+the 24 files, whitespace squeezed, identical for all 24 - so the change is
+comments and nothing else - and by the emit golden, 0 of 1363 files changed.
+
+Two comments lost text rather than lines, and the text is here so that a
+reader following the pointer in the source finds it.
+
+**The optimizer's design notes.** `src/optimizer/Inliner.h` opened with this,
+now three lines:
+
+> Which calls are walked in place of a call instruction. GCC's ipa-inline
+> reduced to what the walker can know before it walks: every function of the
+> unit measured once, every call site judged in one pass over the unit - the
+> best sites first, as GCC's badness queue orders them - against three budgets
+> the level's costs set, per site, per caller and per unit; then the walker
+> asks about each site as it reaches it and gets the decision already made.
+>
+> What makes a callee safe to walk in place at all (no landing pad, no cleanup
+> to run on unwind, no goto label and no switch - the parser names their labels
+> once per function, and a body walked twice would name them twice - not
+> variadic, no register save area) is decided here too; what makes a site safe
+> (a direct call, no stack arguments, not inside another callee walked in
+> place) only the walker knows, and it asks before this is asked.
+
+**The pipeline, cxx1's passes.def**, which `src/optimizer/OptPipeline.cpp`
+carried as a table in front of `pipelineFor()` and now names in one line; the
+code below that comment is the declaration and stays the authority on order:
+
+    rounds            forward-values, remove-unreachable, remove-dead,
+                      coalesce-copies, fold-loads, fold-offsets, thread-jumps,
+                      divide-by-constant (-O2); repeated
+    frame             (whole, prologue held)
+      webs            every register web a pseudo, its home kept
+      locals          every promotable scalar local a pseudo, its slot kept
+      allocate        every pseudo a register or its slot, the copies coalesced away
+      rounds          (if any was promoted)
+      dse-loop        remove-dead-stores, then rounds; up to three times,
+                      while the stores found something
+    fold-index        an added index register into the memory operand, its scale with it
+    finish-frame      unused saves dropped, the prologue rewritten
+    shrink-loop       shrink, then rounds; up to three times, while shrink
+                      found something; the flow rebuilt before each
+    align-loops       (-O2) a loop that fits one 64-byte line padded so it does not cross one
+
+The two loops rebuild the flow without dropping labels, where rounds does
+both: that is how the driver did it before the manager, and a label dropped
+there could change what is emitted - kept, and noted.
+
 ## Version 1.4, 2026-09-18: the cl review's nine wrong answers, from Compiler-Cppi
 
 **Six commits cherry-picked (`-x`) from Compiler-Cppi, the review of

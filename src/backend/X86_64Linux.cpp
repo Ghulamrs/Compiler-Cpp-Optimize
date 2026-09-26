@@ -430,10 +430,8 @@ void X86_64Linux::visit(const MemberAccess &n) {
 }
 
 // From (%rax) to (scratch), which is left as it was; %rax and %rcx are not.
-// **Where the levels part, as cl's /Os and /Ot do over a block move**: unrolled
-// is nine bytes of code a word, `rep movsq` about fifteen for the whole block
-// and slower to start, so the level that favours space takes it from three
-// words up. rsi and rdi are the caller's on Windows, and pushed round it.
+// **Where the levels part, as cl's /Os and /Ot do over a block move**: unrolled is nine bytes of code a word, `rep movsq` about fifteen
+// for the whole block and slower to start, so the level that favours space takes it from three words up. rsi and rdi are the caller's on Windows, and pushed round it.
 void X86_64Linux::copyBlock(int size) {
     const char *from = "%rax", *to = abi_.scratch;
     const int words = size / 8;
@@ -1066,14 +1064,9 @@ void X86_64Linux::visit(const Call &n) {
     const int sses = plan.ssesUsed;
     const int stackSlots = plan.stackWords;
 
-    // **At the floor, the call needs nothing of its own**: the prologue's
-    // outgoing area is at rsp and rsp is aligned, and a stack argument is
-    // stored into it where the callee will read it. That last holds only if
-    // nothing evaluated after the store makes a call there that writes the
-    // same words - the arguments are evaluated from the last stack one down,
-    // then the callee, then the register ones, so only the first of those
-    // may. Anywhere else - a value pushed above, a funclet's 32 bytes, a
-    // later argument that may call - it allocates as it always has.
+    // **At the floor, the call needs nothing of its own**: the prologue's outgoing area is at rsp and rsp is aligned, and a stack argument is stored into it where the callee will read it.
+    // That last holds only if nothing evaluated after the store makes a call there that writes the same words - the arguments are evaluated from the last stack one down, then the callee, then the register ones, so only the first of those may.
+    // Anywhere else - a value pushed above, a funclet's 32 bytes, a later argument that may call - it allocates as it always has.
     bool atFloor = outgoing_ > 0 && floorDepth_ + depth_ == 0;
     if (atFloor && stackSlots > 0) {
         atFloor = !inFunclet_ && outgoing_ >= abi_.shadowBytes + 8 * stackSlots;
@@ -1595,11 +1588,9 @@ void X86_64Linux::emit(const Function &fn) {
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
     if (optimizer_) optimizer_->frame(scalarsOf(fn));
-    // The shadow space and the widest stack arguments of a call not inside
-    // another's operands, in 16s. A nested call is evaluated with the outer
-    // one's values pushed, so it never finds the area; counting it only made
-    // frames larger, and with them the displacements into the frame - 1.6 KB
-    // of .text at -O2, measured.
+    // The shadow space and the widest stack arguments of a call not inside another's operands, in 16s.
+    // A nested call is evaluated with the outer one's values pushed, so it never finds the area; counting it
+    // only made frames larger, and with them the displacements into the frame - 1.6 KB of .text at -O2, measured.
     outgoing_ = 0;
     if (abi_.shadowBytes > 0) {
         std::vector<const Call *> outer;
@@ -1772,10 +1763,9 @@ std::vector<opt::Local> X86_64Linux::scalarsOf(const Function &fn) const {
 
 namespace {
 
-// **The calls a body or an expression makes**, which the outgoing area is
-// sized by. A call this misses keeps its own allocation, so an incomplete
-// answer costs bytes and never correctness; a handler's calls count, since a
-// funclet is walked where its try is.
+// **The calls a body or an expression makes**, which the outgoing area is sized by.
+// A call this misses keeps its own allocation, so an incomplete answer costs bytes and
+// never correctness; a handler's calls count, since a funclet is walked where its try is.
 class CallScan final : public Visitor {
 public:
     std::vector<const Call *> calls;
@@ -1844,10 +1834,9 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 
 }
 
-// **A direct call to a function of this unit, walked in its place** where
-// the site is safe - not itself inside a callee walked in place, nothing
-// on the stack, a frame that fits the room a funclet-cut caller reserved -
-// and the inliner's budgets say it is worth it.
+// **A direct call to a function of this unit, walked in its place** where the site is safe -
+// not itself inside a callee walked in place, nothing on the stack, a frame that fits the room
+// a funclet-cut caller reserved - and the inliner's budgets say it is worth it.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
     const auto it = bodies_.find(n.symbol());
@@ -1957,8 +1946,7 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     const std::string assoc =
         fnMergeable_ ? ",associative," + a_->labelText(fnSymbol_) : std::string();
 
-    // The text around the body: the head, then the body as written out,
-    // then the tail with the unwind data.
+    // The text around the body: the head, then the body as written out, then the tail with the unwind data.
     std::string head, f;
     // **Not `.globl`.**
     head += "\n  .section .text$x,\"xr\"" + assoc + "\n";
@@ -2301,11 +2289,9 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
     }
 }
 
-// **Each record is a COMDAT of its own, and public**, as cl writes them: a
-// plain `.rdata$r` is private to its object, so every unit that named a type
-// kept a copy and the linker had nothing to fold on. `discard` is
-// IMAGE_COMDAT_SELECT_ANY, the choice functionBegin makes for an inline
-// function; the `.globl` is what lets one unit's copy stand for another's.
+// **Each record is a COMDAT of its own, and public**, as cl writes them: a plain `.rdata$r` is
+// private to its object, so every unit that named a type kept a copy and the linker had nothing to fold on.
+// `discard` is IMAGE_COMDAT_SELECT_ANY, the choice functionBegin makes for an inline function; the `.globl` is what lets one unit's copy stand for another's.
 void X86_64Linux::coffRecord(const char *section, const std::string &label,
                              int p2align, const char *flags) {
     out_ += std::string("  .section ") + section + ",\"" + flags + "\",discard," + label + "\n";

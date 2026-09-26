@@ -1,14 +1,8 @@
 #pragma once
 
-// **One description of every x86 mnemonic the optimizer knows** - what GCC
-// keeps in its machine description and cxx1 kept as a dozen lists spread over
-// the passes. Each mnemonic has a kind, which says how `effectsOf` reads it,
-// a set of flags the passes ask about, and the width its suffix names.
-//
-// The table records what the passes recognised before it existed, quirks
-// included: `addq` names a width but is not arithmetic here, `sal` is a
-// shift but not arithmetic, `testl` reads only through its operands but is
-// not marked so. Each is a candidate for a later change; none is one now.
+// **One description of every x86 mnemonic the optimizer knows** - what GCC keeps in its machine description and cxx1 kept as a dozen lists spread over the passes.
+// Each mnemonic has a kind, which says how `effectsOf` reads it, a set of flags the passes ask about, and the width its suffix names.
+// The table records what the passes recognised before it existed, quirks included: `addq` names a width but is not arithmetic here, `sal` is a shift but not arithmetic, `testl` reads only through its operands but is not marked so. Each is a candidate for a later change; none is one now.
 
 #include <string>
 
@@ -50,8 +44,7 @@ struct Opcode {
     bool has(unsigned f) const { return (flags & f) != 0; }
 };
 
-// The entry for a mnemonic; an unknown one gets `Unknown`, with the flags a
-// prefix family carries (mov*, set*, cvt*, f*) so the passes see it as before.
+// The entry for a mnemonic; an unknown one gets `Unknown`, with the flags a prefix family carries (mov*, set*, cvt*, f*) so the passes see it as before.
 const Opcode &opcodeOf(const std::string &m);
 
 // The move families the passes recognise by spelling: a plain copy at eight

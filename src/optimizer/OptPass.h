@@ -1,11 +1,8 @@
 #pragma once
 
-// **The pass manager**, after GCC's: a pass has a name, a gate, an execute,
-// the properties it requires, provides and destroys, and the work the
-// manager does before it runs; a group is a pass with sub-passes, run
-// while its gate holds and repeated by its policy; the pipeline is one
-// declaration of the tree (OptPipeline.cpp), and a dump after any named
-// pass shows the stream as that pass left it.
+// **The pass manager**, after GCC's: a pass has a name, a gate, an execute, the properties it requires,
+// provides and destroys, and the work the manager does before it runs; a group is a pass with sub-passes, run
+// while its gate holds and repeated by its policy; the pipeline is one declaration of the tree (OptPipeline.cpp), and a dump after any named pass shows the stream as that pass left it.
 
 #include "OptFunction.h"
 
@@ -36,19 +33,16 @@ public:
     const PassInfo &info() const { return info_; }
     // Whether the pass runs on this function at all.
     virtual bool gate(const Function &) const { return true; }
-    // Does the work; says whether anything changed, which the manager takes
-    // as "solve the liveness again" and a group as "go round again".
+    // Does the work; says whether anything changed, which the manager takes as "solve the liveness again" and a group as "go round again".
     virtual bool execute(Function &fn) = 0;
 
 private:
     PassInfo info_;
 };
 
-// **A pass made of passes.** Run its sub-passes in order, `repeat` times
-// at most (0: the level's round count), and stop early by the policy:
-// when a whole round changed nothing, or as soon as the first sub-pass of
-// a round changed nothing - the shape of "shrink, and if that found
-// something, everything again".
+// **A pass made of passes.** Run its sub-passes in order, `repeat` times at most (0: the level's
+// round count), and stop early by the policy: when a whole round changed nothing, or as soon as the first
+// sub-pass of a round changed nothing - the shape of "shrink, and if that found something, everything again".
 class Group : public Pass {
 public:
     enum Stop { WhenNoneChanged, WhenFirstUnchanged };
@@ -65,12 +59,9 @@ private:
     Stop stop_;
 };
 
-// **Runs a pass tree over a function.** For each pass whose gate holds: the
-// start work, a check of what it requires, execute, the property update,
-// the liveness marked stale if it changed, and the dump if asked for.
-//
-// CPP11_DUMP_MIR names the passes to dump after, comma-separated, or `all`;
-// the dump goes to stderr, one section per pass per function.
+// **Runs a pass tree over a function.** For each pass whose gate holds: the start work, a check of
+// what it requires, execute, the property update, the liveness marked stale if it changed, and the dump if asked for.
+// CPP11_DUMP_MIR names the passes to dump after, comma-separated, or `all`; the dump goes to stderr, one section per pass per function.
 class PassManager {
 public:
     PassManager();
@@ -87,13 +78,10 @@ private:
     bool wanted(const Pass &pass) const;
 };
 
-// The labels only jumps name, that no jump names any more, marked dead:
-// each joins its block to the one before, so what is known flows through.
+// The labels only jumps name, that no jump names any more, marked dead: each joins its block to the one before, so what is known flows through.
 void dropUnnamedLabels(Function &fn);
 
-// One function's stream as text, for the dumps: each block with its
-// edges, what is live at its ends, and the loops that hold it - the
-// analyses asked for as a pass would ask.
+// One function's stream as text, for the dumps: each block with its edges, what is live at its ends, and the loops that hold it - the analyses asked for as a pass would ask.
 void dumpStream(std::ostream &o, Function &fn);
 
 }

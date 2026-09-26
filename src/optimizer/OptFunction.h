@@ -1,10 +1,8 @@
 #pragma once
 
-// **One function as the passes see it**: the stream the walker wrote, the
-// facts the walker told the optimizer about it, the flow graph over it, the
-// costs of the level, and what the passes have established so far. GCC's
-// `struct function` with its `cfg` and `curr_properties`, reduced to what
-// cxx1 needs.
+// **One function as the passes see it**: the stream the walker wrote, the facts the walker told the
+// optimizer about it, the flow graph over it, the costs of the level, and what the passes have established
+// so far. GCC's `struct function` with its `cfg` and `curr_properties`, reduced to what cxx1 needs.
 
 #include "OptCosts.h"
 #include "OptFlow.h"

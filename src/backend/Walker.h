@@ -157,9 +157,7 @@ protected:
     // A cleanup funclet is opened the same way and closed differently.
     virtual void endCleanupFunclet() {}
 
-    // Open a handler funclet and answer its symbol; close it naming the address
-    // in the parent to continue at, which a funclet returns in rax. Between the
-    // two the body is walked as if inline, the funclet setting rbp from the parent.
+    // Open a handler funclet and answer its symbol; close it naming the address in the parent to continue at, which a funclet returns in rax. Between the two the body is walked as if inline, the funclet setting rbp from the parent.
     virtual std::string beginFunclet() { return std::string(); }
     // Leave the handler funclet early, the runtime continuing at `label`.
     virtual void funcletLeave(const std::string &label) { (void)label; }
