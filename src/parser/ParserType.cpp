@@ -1119,6 +1119,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 }
                 memberInit_[tag + "::" + d.name] = at_;
                 skipMemberInitialiser();
+            } else if (peek().is("{")) {
+                // The other spelling of the same initialiser, named rather than left to "expected ';'".
+                src_.fail(peek().pos, "a braced member initialiser without '=' - "
+                                      "'int x{5};' - is not supported yet; write "
+                                      "'int x = 5;'");
             }
             long long endBits = (at + slot->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
