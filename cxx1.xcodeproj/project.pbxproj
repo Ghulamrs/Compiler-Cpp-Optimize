@@ -39,6 +39,7 @@
 		C4AA529A8A94500C0A8BD37E /* src/backend/Walker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */; };
 		A60A4C41A2833EAEFD7983AE /* src/backend/X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */; };
 		F5792A05AD3F1AA1BF104861 /* src/backend/X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */; };
+		C94FFB9C2A72DC2CC2D5D937 /* src/optimizer/C6xSched.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 637E649D3C931D08862A156A /* src/optimizer/C6xSched.cpp */; };
 		4A969D6BEBD6FCED24A2B7E5 /* src/optimizer/Inliner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */; };
 		1331B87085226486BB7BF8C9 /* src/optimizer/MirAlloc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */; };
 		D31D02D6EAC1EBE60AE4FBE5 /* src/optimizer/MirLocals.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */; };
@@ -96,6 +97,7 @@
 		1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/Walker.cpp; sourceTree = "<group>"; };
 		CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/X86_64Linux.cpp; sourceTree = "<group>"; };
 		C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/backend/X86_64Windows.cpp; sourceTree = "<group>"; };
+		637E649D3C931D08862A156A /* src/optimizer/C6xSched.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/C6xSched.cpp; sourceTree = "<group>"; };
 		C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/Inliner.cpp; sourceTree = "<group>"; };
 		4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/MirAlloc.cpp; sourceTree = "<group>"; };
 		6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/optimizer/MirLocals.cpp; sourceTree = "<group>"; };
@@ -214,6 +216,7 @@
 				1BE3C2991CDB066E5524502A /* src/backend/Walker.cpp */,
 				CB3A4E5BF4D87E93571BB665 /* src/backend/X86_64Linux.cpp */,
 				C237FFDEFA542F70F6678E6C /* src/backend/X86_64Windows.cpp */,
+				637E649D3C931D08862A156A /* src/optimizer/C6xSched.cpp */,
 				C92DBCC887EBECBAAFAC2931 /* src/optimizer/Inliner.cpp */,
 				4A3DC5E6696194F6E475E6E1 /* src/optimizer/MirAlloc.cpp */,
 				6A7F480496F07227862B432D /* src/optimizer/MirLocals.cpp */,
@@ -388,6 +391,7 @@
 				C4AA529A8A94500C0A8BD37E /* src/backend/Walker.cpp in Sources */,
 				A60A4C41A2833EAEFD7983AE /* src/backend/X86_64Linux.cpp in Sources */,
 				F5792A05AD3F1AA1BF104861 /* src/backend/X86_64Windows.cpp in Sources */,
+				C94FFB9C2A72DC2CC2D5D937 /* src/optimizer/C6xSched.cpp in Sources */,
 				4A969D6BEBD6FCED24A2B7E5 /* src/optimizer/Inliner.cpp in Sources */,
 				1331B87085226486BB7BF8C9 /* src/optimizer/MirAlloc.cpp in Sources */,
 				D31D02D6EAC1EBE60AE4FBE5 /* src/optimizer/MirLocals.cpp in Sources */,

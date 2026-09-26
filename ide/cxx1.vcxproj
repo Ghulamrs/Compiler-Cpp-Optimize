@@ -99,6 +99,7 @@
     <ClCompile Include="..\src\backend\Walker.cpp" />
     <ClCompile Include="..\src\backend\X86_64Linux.cpp" />
     <ClCompile Include="..\src\backend\X86_64Windows.cpp" />
+    <ClCompile Include="..\src\optimizer\C6xSched.cpp" />
     <ClCompile Include="..\src\optimizer\Inliner.cpp" />
     <ClCompile Include="..\src\optimizer\MirAlloc.cpp" />
     <ClCompile Include="..\src\optimizer\MirLocals.cpp" />
