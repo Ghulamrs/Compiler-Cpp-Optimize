@@ -778,24 +778,66 @@ ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
 // **The Microsoft ABI throws from the stack, not from the heap**: `T tmp = x;` and
 // then `_CxxThrowException(&tmp, &_TI1<letter>)`, where Itanium asks the runtime
 // for memory. Identity is the ThrowInfo chain, four objects the backend emits.
+void Parser::finishMicrosoftThrow(MicrosoftThrow &names, bool thrown) {
+    names.thrown = thrown;
+    for (std::size_t i = 0; i < names.catchables.size(); i++) {
+        MicrosoftThrow::Catchable &c = names.catchables[i];
+        if (c.cls == nullptr) continue;
+        if (c.size == 0) c.size = c.cls->unqualified()->size(target_);
+        // The runtime copies the caught object with this, so it is a use.
+        if (const Signature *cc = copyConstructorOf(c.cls->unqualified())) {
+            markUsed(cc);
+            c.copyCtor = cc->symbol;
+        }
+    }
+    if (!names.catchables.empty() && names.catchables[0].cls != nullptr)
+        if (const Signature *d = destructorOf(names.catchables[0].cls->unqualified())) {
+            markUsed(d);
+            names.destructor = d->symbol;
+        }
+    microsoftThrowFinish(&names);
+    for (std::size_t i = 0; i < current_->msThrows.size(); i++)
+        if (current_->msThrows[i].info == names.info) {
+            current_->msThrows[i].thrown |= thrown;
+            return;
+        }
+    current_->msThrows.push_back(names);
+}
+
 StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
+    value = decay(std::move(value));
     const Type *thrown = value->type()->unqualified();
     MicrosoftThrow names;
     std::string why;
     if (!microsoftThrowNames(thrown, thrown->size(target_), &names, &why))
         src_.fail(pos, "'throw' cannot name the type of this: " + why);
-
-    bool had = false;
-    for (std::size_t i = 0; i < current_->thrown.size(); i++)
-        if (current_->thrown[i] == thrown) had = true;
-    if (!had) current_->thrown.push_back(thrown);
+    finishMicrosoftThrow(names, true);
 
     const int slot = allocateFrameSlot(thrown);
     const std::string temp = ".ex" + std::to_string(refTemps_++);
     ExprPtr held(Var::local(temp, slot));
     held->setType(thrown);
-    ExprPtr store(new Assign(std::move(held), convert(std::move(value), thrown)));
-    store->setType(thrown);
+    // **[except.throw]/3 copy-initialises the exception object**: the copy
+    // constructor where there is one, the bytes where there is not.
+    ExprPtr store;
+    const Signature *cc = thrown->isStructOrUnion() ? copyConstructorOf(thrown) : nullptr;
+    if (cc != nullptr) {
+        const Type *thrownPtr = types_.pointerTo(thrown);
+        ExprPtr at(new Unary('&', std::move(held)));
+        at->setType(thrownPtr);
+        std::vector<ExprPtr> ctorArgs;
+        ctorArgs.push_back(std::move(at));
+        ctorArgs.push_back(convert(std::move(value), thrown));
+        std::vector<const Type *> ps;
+        ps.push_back(thrownPtr);
+        ps.push_back(cc->params[0]);
+        store = completeCall(thrown->tag(), cc->symbol, nullptr,
+                             types_.get(Kind::Void), ps, false, pos,
+                             std::move(ctorArgs));
+    } else {
+        store.reset(new Assign(std::move(held), convert(std::move(value), thrown)));
+        store->setType(thrown);
+    }
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     std::vector<ExprPtr> args;
@@ -815,9 +857,15 @@ StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
 
     ExprPtr thrower = runtimeCall("_CxxThrowException", types_.get(Kind::Void),
                                   std::move(args));
-    ExprPtr whole(new Comma(std::move(store), std::move(thrower)));
-    whole->setType(types_.get(Kind::Void));
-    return StmtPtr(new ExprStmt(std::move(whole)));
+    // The object is made, the operand's temporaries go, and then the throw -
+    // [except.throw]/3's order, as the Itanium path keeps it.
+    std::vector<StmtPtr> steps;
+    steps.push_back(StmtPtr(new ExprStmt(std::move(store))));
+    flushTemporaries(steps);
+    steps.push_back(StmtPtr(new ExprStmt(std::move(thrower))));
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
 }
 
 // **`throw x;` is three calls and a store, and no new machinery**:

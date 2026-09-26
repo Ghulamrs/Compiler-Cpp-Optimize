@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Type.h"
+#include "Mangle.h"
 
 #include <cstddef>
 #include <memory>
@@ -500,6 +501,7 @@ struct MsHandler {
     int objectSlot = 0;        // frame slot for the caught object, 0 if unnamed
     int objectSize = 0;
     bool byReference = false;  // the slot takes the runtime's pointer, not a copy
+    bool constPointer = false; // `catch (const T *)`: HT_IsConst, the const off the name
     StmtPtr body;
 };
 
@@ -693,6 +695,8 @@ struct Program {
     std::vector<StringLit> strings;
     // **The types this file throws**, which only the Microsoft backend reads.
     std::vector<const Type *> thrown;
+    // **The Microsoft ThrowInfo chains**, one per type thrown or caught, finished by the parser.
+    std::vector<MicrosoftThrow> msThrows;
     // **The classes wanting a Microsoft run-time description**, five each.
     std::vector<const Type *> rtti;
     // **The function that runs before main** - [basic.start.init]/2.

@@ -1602,6 +1602,8 @@ private:
     // `throw x;` - rung 6.2. Answers the statement it lowers to.
     StmtPtr throwStatement(ExprPtr value, std::size_t pos);
     StmtPtr microsoftThrow(ExprPtr value, std::size_t pos);
+    // The copy constructors and destructor a Microsoft ThrowInfo chain names, marked used, and the chain recorded.
+    void finishMicrosoftThrow(MicrosoftThrow &names, bool thrown);
     // A call to something in the runtime, named by its symbol and needing no
     // declaration - the same shape callAllocator has used for operator new.
     // A temporary built by a named constructor from arguments already parsed.

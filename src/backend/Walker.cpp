@@ -331,6 +331,7 @@ void Walker::msTryStatement(const Try &n) {
         row.descriptor = h.descriptor;
         row.objectSlot = h.objectSlot;
         row.byReference = h.byReference;
+        row.constPointer = h.constPointer;
         row.funclet = beginFunclet();
         h.body->accept(*this);
         endFunclet(r.resume);

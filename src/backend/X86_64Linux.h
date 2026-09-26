@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,9 @@ protected:
     std::size_t funcletMark_ = 0;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;
+    // The Microsoft type descriptors this file has laid down, so a class both
+    // described for RTTI and thrown gets its `??_R0` once.
+    std::set<std::string> msDescriptors_;
     const char *funcletKind_ = "$catch$";
     // The function being emitted, which the tables and funclets name.
     std::string fnSymbol_;

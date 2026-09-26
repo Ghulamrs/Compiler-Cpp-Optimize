@@ -849,7 +849,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
             // address in the slot rather than a copy of it. Measured.
             o += (i == 0 ? " DD " : "  DD ");
             o += h.descriptor.empty() ? "040H\n"
-                                      : (h.byReference ? "08H\n" : "00H\n");
+                                      : std::to_string((h.byReference ? 8 : 0) |
+                                                       (h.constPointer ? 1 : 0)) + "\n";
             o += h.descriptor.empty() ? "  DD 00H\n"
                                       : "  DD imagerel " + h.descriptor + "\n";
             o += "  DD " + std::to_string(h.objectSlot == 0
@@ -929,6 +930,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
+        msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual. Those
         // four numbers are constant because a class with a second base is
@@ -971,39 +973,42 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
 }
 
 void MasmCodeGen::emitThrowInfo(const Program &program) {
-    if (program.thrown.empty()) return;
+    if (program.msThrows.empty()) return;
     std::string &o = out_;
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        const Type *t = program.thrown[i];
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
-
-        // **Public and a COMDAT where the assembler can say so**, as cl writes it;
-        // for ml64, private to the object, the one unit it links.
-        o += record(".rdata$r", 8, n.descriptor, true);
-        // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
-        // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
-        // has no such keyword, so the listing records what cl means.
-        o += n.descriptor + " DQ ??_7type_info@@6B@\n";
-        o += "  DQ 0\n";
-        o += "  DB '" + n.decorated + "', 00H\n";
-        o += ".rdata$r ENDS\n";
-
-        o += record(".xdata$x", 8, n.catchable, true);
-        o += n.catchable + " DD 01H\n";
-        o += "  DD imagerel " + n.descriptor + "\n";
-        o += "  DD 00H\n";
-        o += "  DD 0ffffffffH\n";
-        o += "  ORG $+4\n";
-        o += "  DD 0" + std::to_string(n.size) + "H\n";
-        o += "  DD 00H\n";
+    std::set<std::string> catchables;
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        for (std::size_t k = 0; k < n.catchables.size(); k++) {
+            const MicrosoftThrow::Catchable &c = n.catchables[k];
+            // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
+            // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
+            // has no such keyword, so the listing records what cl means.
+            if (msDescriptors_.insert(c.descriptor).second) {
+                o += record(".rdata$r", 8, c.descriptor, true);
+                o += c.descriptor + " DQ ??_7type_info@@6B@\n";
+                o += "  DQ 0\n";
+                o += "  DB '" + c.decorated + "', 00H\n";
+                o += ".rdata$r ENDS\n";
+            }
+            if (!n.thrown || !catchables.insert(c.name).second) continue;
+            o += record(".xdata$x", 8, c.name, true);
+            o += c.name + (c.simple ? " DD 01H\n" : " DD 00H\n");
+            o += "  DD imagerel " + c.descriptor + "\n";
+            o += "  DD " + std::to_string(c.mdisp) + "\n";
+            o += "  DD 0ffffffffH\n";
+            o += "  DD 00H\n";
+            o += "  DD " + std::to_string(c.size) + "\n";
+            o += c.copyCtor.empty() ? "  DD 00H\n" : "  DD imagerel " + c.copyCtor + "\n";
+            o += ".xdata$x ENDS\n";
+        }
+        if (!n.thrown) continue;
         o += record(".xdata$x", 4, n.array, false);
-        o += n.array + " DD 01H\n";
-        o += "  DD imagerel " + n.catchable + "\n";
+        o += n.array + " DD " + std::to_string(n.catchables.size()) + "\n";
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            o += "  DD imagerel " + n.catchables[k].name + "\n";
         o += record(".xdata$x", 4, n.info, false);
-        o += n.info + " DD 00H\n";
-        o += "  DD 00H\n";
+        o += n.info + (n.isConst ? " DD 01H\n" : " DD 00H\n");
+        o += n.destructor.empty() ? "  DD 00H\n" : "  DD imagerel " + n.destructor + "\n";
         o += "  DD 00H\n";
         o += "  DD imagerel " + n.array + "\n";
         o += ".xdata$x ENDS\n";
@@ -1014,13 +1019,11 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
 // them in the EXTERN list it writes for everything a call mentions.
 void MasmCodeGen::run(const Program &program) {
     std::vector<std::string> mine;
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(program.thrown[i],
-                                 program.thrown[i]->size(target_), &n, &why))
-            continue;
-        mine.push_back(n.info);
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        if (n.thrown) mine.push_back(n.info);
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            mine.push_back(n.catchables[k].descriptor);
     }
     // **And every class descriptor this file defines**, for the same reason: the spelling writes an
     // EXTERN for each name a call mentions, and these are mentioned by the `lea` in front of every
@@ -1043,7 +1046,7 @@ void MasmCodeGen::run(const Program &program) {
     // **Before the code, not after it.** The base run() flushes what it has
     // built when it finishes, so anything appended afterwards goes to a buffer
     // nobody reads.
-    if (!program.thrown.empty() || !program.rtti.empty())
+    if (!program.msThrows.empty() || !program.rtti.empty())
         out_ += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
     // **A pure virtual's slot names a routine no object file here defines.**
     // GNU as takes an undeclared symbol and leaves it to the linker; ml64 will

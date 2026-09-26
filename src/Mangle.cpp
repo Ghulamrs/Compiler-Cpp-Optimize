@@ -607,6 +607,7 @@ class Microsoft : public Mangler {
 public:
     // **The class as a type descriptor spells it**, `?AUBase@@`.
     void classAsTypeName(const Type *t) { returnType(t); }
+    void anyType(const Type *t) { type(t); }   // a descriptor's pointee, `PEAUB@@`
 
     void vtableOffset(int offset) { number(offset); }   // a vcall thunk's vftable offset
 
@@ -1326,26 +1327,125 @@ bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
     return true;
 }
 
+// The code a type descriptor spells a type by: a builtin's letter, `?AUE@@` for
+// a class, `PEAUE@@` for a pointer - the Microsoft mangler's own spelling.
+static bool microsoftDescriptorCode(const Type *t, std::string *code,
+                                    std::string *problem) {
+    if (const char *letter = microsoftBuiltin(t->kind())) { *code = letter; return true; }
+    Microsoft m;
+    if (t->isStructOrUnion()) m.classAsTypeName(t);
+    else m.anyType(t);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *code = m.out;
+    return true;
+}
+
+// Every non-virtual base at any depth, with its offset in the object - the
+// types the runtime may catch this one as. A virtual base wants pdisp and
+// vdisp, which nothing here writes.
+static bool microsoftCatchableBases(const Type *cls, int at, bool pointer,
+                                    std::vector<MicrosoftThrow::Catchable> *out,
+                                    std::string *problem) {
+    const std::vector<Type::BaseSpec> &bs = cls->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (!bs[i].direct) continue;
+        if (bs[i].isVirtual) {
+            *problem = "'" + cls->describe() + "' has a virtual base, and the "
+                       "catchable-type record for one needs the vbtable "
+                       "displacements, which are not written yet";
+            return false;
+        }
+        const Type *b = bs[i].type->unqualified();
+        std::string code;
+        if (!microsoftDescriptorCode(b, &code, problem)) return false;
+        MicrosoftThrow::Catchable c;
+        c.cls = pointer ? nullptr : b;
+        c.decorated = "." + (pointer ? "PEA" + code.substr(2) : code);
+        c.descriptor = "??_R0" + c.decorated.substr(1) + "@8";
+        c.mdisp = at + bs[i].offset;
+        c.simple = pointer;
+        out->push_back(c);
+        if (!microsoftCatchableBases(b, at + bs[i].offset, pointer, out, problem))
+            return false;
+    }
+    return true;
+}
+
 bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
                          std::string *problem) {
-    const char *letter = microsoftBuiltin(t->kind());
-    if (letter == nullptr) {
-        *problem = "only a fundamental type has a type descriptor this "
-                   "compiler can name; one for '" + t->describe() + "' would "
-                   "have to be emitted here, and that is its own step";
-        return false;
-    }
-    // The type's own letter runs through all four names, which is what makes them
-    // agree without anything having to be passed between them. Measured with cl:
-    // int is ??_R0H@8, _CT??_R0H@84, _CTA1H, _TI1H, and double the same with N.
-    const std::string code = letter;
+    out->catchables.clear();
     out->size = size;
+    out->isConst = false;
+    if (t->isReference()) t = t->referent()->unqualified();
+    if (t->isPointer()) {
+        // **A pointer to const is spelled without it**, and the ThrowInfo says
+        // `C` instead: `_TIC2PEAD` for `const char *`. Measured from clang.
+        const Type *pointee = t->pointee();
+        out->isConst = pointee->isConst();
+        pointee = pointee->unqualified();
+        if (pointee->isPointer() || pointee->isFunction() ||
+            pointee->isMemberPointer() || pointee->isMemberFunctionPointer()) {
+            *problem = "a pointer to a function has no type_info here yet, nor has a "
+                       "pointer to a pointer or a member - a thrown pointer to '" +
+                       pointee->describe() + "' is not supported yet";
+            return false;
+        }
+        std::string code;
+        if (pointee->isVoid()) code = "X";
+        else if (!microsoftDescriptorCode(pointee, &code, problem)) return false;
+        if (pointee->isStructOrUnion()) code = code.substr(2);   // `?AUB@@` to `UB@@`
+        out->decorated = ".PEA" + code;
+        out->descriptor = "??_R0PEA" + code + "@8";
+        MicrosoftThrow::Catchable self;
+        self.decorated = out->decorated;
+        self.descriptor = out->descriptor;
+        self.size = size;
+        self.simple = true;
+        out->catchables.push_back(self);
+        if (pointee->isStructOrUnion() &&
+            !microsoftCatchableBases(pointee, 0, true, &out->catchables, problem))
+            return false;
+        // And `void *`, which every object pointer may be caught as.
+        if (!pointee->isVoid()) {
+            MicrosoftThrow::Catchable any;
+            any.decorated = ".PEAX";
+            any.descriptor = "??_R0PEAX@8";
+            any.size = size;
+            any.simple = true;
+            out->catchables.push_back(any);
+        }
+        for (std::size_t i = 0; i < out->catchables.size(); i++)
+            out->catchables[i].size = size;
+        return true;
+    }
+    std::string code;
+    if (!microsoftDescriptorCode(t, &code, problem)) return false;
     out->decorated = "." + code;
     out->descriptor = "??_R0" + code + "@8";
-    out->catchable = "_CT" + out->descriptor + std::to_string(size);
-    out->array = "_CTA1" + code;
-    out->info = "_TI1" + code;
+    MicrosoftThrow::Catchable self;
+    self.cls = t->isStructOrUnion() ? t : nullptr;
+    self.decorated = out->decorated;
+    self.descriptor = out->descriptor;
+    self.size = size;
+    self.simple = !t->isStructOrUnion();
+    out->catchables.push_back(self);
+    if (t->isStructOrUnion() &&
+        !microsoftCatchableBases(t, 0, false, &out->catchables, problem))
+        return false;
     return true;
+}
+
+// Measured with cl: `_CT??_R0H@84`, `_CTA1H`, `_TI1H` for an int; the copy
+// constructor's name inside a class's catchable, and its size after it.
+void microsoftThrowFinish(MicrosoftThrow *out) {
+    for (std::size_t i = 0; i < out->catchables.size(); i++) {
+        MicrosoftThrow::Catchable &c = out->catchables[i];
+        c.name = "_CT" + c.descriptor + c.copyCtor + std::to_string(c.size);
+    }
+    const std::string count = std::to_string(out->catchables.size());
+    const std::string code = out->decorated.substr(1);
+    out->array = "_CTA" + count + code;
+    out->info = std::string("_TI") + (out->isConst ? "C" : "") + count + code;
 }
 
 bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,

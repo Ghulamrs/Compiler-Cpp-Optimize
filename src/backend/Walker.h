@@ -169,6 +169,7 @@ protected:
         std::string descriptor;   // empty for catch (...)
         int objectSlot = 0;
         bool byReference = false;
+        bool constPointer = false;
         std::string funclet;
     };
     struct MsTryRegion {

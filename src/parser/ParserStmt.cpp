@@ -1244,10 +1244,14 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                  d.type->describe() + "' - is not supported "
                                  "yet: the runtime hands a handler the pointer "
                                  "itself, so catch it by value");
+            // The Itanium type_info is emitted by asking for it, so the Microsoft
+            // ABI - which names a type descriptor instead - must not ask.
             std::string why;
-            h.type = typeInfoSymbolFor(caught, cpos, &why);
-            if (h.type.empty())
-                src_.fail(cpos, "'catch' cannot name this type: " + why);
+            if (!microsoft) {
+                h.type = typeInfoSymbolFor(caught, cpos, &why);
+                if (h.type.empty())
+                    src_.fail(cpos, "'catch' cannot name this type: " + why);
+            }
             caughtName = d.name;
         }
         expect(")");
@@ -1270,16 +1274,12 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 if (!microsoftThrowNames(caught, caught->size(target_),
                                          &names, &why))
                     src_.fail(cpos, "'catch' cannot name this type: " + why);
+                // A type only ever caught still needs its descriptor emitted.
+                finishMicrosoftThrow(names, false);
                 mh.descriptor = names.descriptor;
                 mh.objectSize = caught->size(target_);
                 mh.byReference = byRef;
-                // The descriptor is emitted by the same pass that emits a thrown
-                // type's, so a type that is only ever *caught* has to join that list
-                // or the handler map would name a symbol nothing defines.
-                bool had = false;
-                for (std::size_t k = 0; k < current_->thrown.size(); k++)
-                    if (current_->thrown[k] == caught) had = true;
-                if (!had) current_->thrown.push_back(caught);
+                mh.constPointer = names.isConst;
                 if (!caughtName.empty())
                     mh.objectSlot = declare(caughtName, declaredType, cpos);
             }
@@ -1294,6 +1294,21 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             handlerSwitchDepth_.push_back(switchDepth_);
             handlerFrom_.push_back(peek().pos);
             mh.body = block();
+            // **Caught by value, the runtime built the copy and the handler destroys it**
+            // on its one way out - cl's funclet calls the destructor before returning.
+            if (caught != nullptr && !byRef && mh.objectSlot != 0)
+                if (const Signature *dtor = destructorOf(caught->unqualified())) {
+                    ExprPtr self(Var::local(caughtName, mh.objectSlot));
+                    self->setType(caught);
+                    ExprPtr at(new Unary('&', std::move(self)));
+                    at->setType(types_.pointerTo(caught));
+                    std::vector<StmtPtr> both;
+                    both.push_back(std::move(mh.body));
+                    both.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(at), *dtor, cpos))));
+                    Block *b = new Block(std::move(both));
+                    b->setScope(-1);
+                    mh.body = StmtPtr(b);
+                }
             handlerFrom_.pop_back();
             handlerSwitchDepth_.pop_back();
             handlerLoopDepth_.pop_back();

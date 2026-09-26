@@ -55,16 +55,35 @@ bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
 bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
                              std::string *problem);
 
+// **The chain a Microsoft throw hands the runtime**: one type descriptor per
+// type the object may be caught as, a catchable-type record for each (its
+// displacement in the object, its size, its copy constructor), the array of
+// those, and the ThrowInfo naming the array and the destructor. A pointer to
+// const loses the const in every name and says so in the ThrowInfo's attributes.
 struct MicrosoftThrow {
-    std::string descriptor;
-    std::string catchable;
-    std::string array;
-    std::string info;
+    struct Catchable {
+        const Type *cls = nullptr;   // the class, for the parser to find its copy constructor
+        std::string descriptor;      // ??_R0?AUBase@@@8
+        std::string decorated;       // .?AUBase@@
+        std::string name;            // _CT??_R0?AUBase@@@8??0Base@@QEAA@AEBU0@@Z4
+        std::string copyCtor;        // filled by the parser, empty for a trivial copy
+        int size = 0, mdisp = 0;
+        bool simple = false;         // a scalar: CT_IsSimpleType
+    };
+    std::string descriptor;          // the thrown or caught type's own
     std::string decorated;
+    std::vector<Catchable> catchables;
+    std::string array;               // _CTA2?AUE@@
+    std::string info;                // _TI2?AUE@@, _TIC2PEAD for a pointer to const
+    std::string destructor;          // filled by the parser
     int size = 0;
+    bool isConst = false;
+    bool thrown = false;             // a type only caught needs its descriptor and nothing else
 };
 bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
                          std::string *problem);
+// The record names, once the parser has filled the copy constructors.
+void microsoftThrowFinish(MicrosoftThrow *out);
 
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);

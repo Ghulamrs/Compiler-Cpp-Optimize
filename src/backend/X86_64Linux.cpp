@@ -2096,6 +2096,7 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         o += "  .quad \"??_7type_info@@6B@\"\n";
         o += "  .quad 0\n";
         o += "  .asciz \"" + n.decorated + "\"\n";
+        msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual.
         coffRecord(".rdata$r", bd, 2);
@@ -2270,7 +2271,8 @@ void X86_64Linux::emitCoffTryTables(const Function &fn) {
             // which puts the object's address in the slot rather than a copy.
             o += "  .long ";
             o += h.descriptor.empty() ? "0x40\n"
-                                      : (h.byReference ? "0x08\n" : "0\n");
+                                      : std::to_string((h.byReference ? 8 : 0) |
+                                                       (h.constPointer ? 1 : 0)) + "\n";
             if (h.descriptor.empty()) o += "  .long 0\n";
             else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
             o += "  .long " + std::to_string(h.objectSlot == 0
@@ -2309,40 +2311,42 @@ void X86_64Linux::emitCoffTryTables(const Function &fn) {
 // the type descriptor, one catchable type, the array listing it, and the
 // ThrowInfo itself.
 void X86_64Linux::emitCoffThrowInfo(const Program &program) {
-    if (program.thrown.empty()) return;
+    if (program.msThrows.empty()) return;
     std::string &o = out_;
+    std::set<std::string> catchables;
 
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        const Type *t = program.thrown[i];
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
-
-        const std::string d = a_->labelText(n.descriptor);
-        const std::string c = a_->labelText(n.catchable);
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        for (std::size_t k = 0; k < n.catchables.size(); k++) {
+            const MicrosoftThrow::Catchable &c = n.catchables[k];
+            if (msDescriptors_.insert(c.descriptor).second) {
+                coffRecord(".rdata$r", a_->labelText(c.descriptor), 3);
+                o += "  .quad \"??_7type_info@@6B@\"\n";
+                o += "  .quad 0\n";
+                o += "  .asciz \"" + c.decorated + "\"\n";
+            }
+            if (!n.thrown || !catchables.insert(c.name).second) continue;
+            coffRecord(".xdata$x", a_->labelText(c.name), 2);
+            o += "  .long " + std::string(c.simple ? "1" : "0") + "\n";   // properties
+            o += "  .long " + a_->labelText(c.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(c.mdisp) + "\n";          // mdisp
+            o += "  .long -1\n";                                        // pdisp: no vbtable
+            o += "  .long 0\n";                                         // vdisp
+            o += "  .long " + std::to_string(c.size) + "\n";           // sizeOrOffset
+            if (c.copyCtor.empty()) o += "  .long 0\n";                 // copyFunction
+            else o += "  .long " + a_->labelText(c.copyCtor) + "@IMGREL\n";
+        }
+        if (!n.thrown) continue;
         const std::string ar = a_->labelText(n.array);
-        const std::string ti = a_->labelText(n.info);
-
-        coffRecord(".rdata$r", d, 3);
-        o += "  .quad \"??_7type_info@@6B@\"\n";
-        o += "  .quad 0\n";
-        o += "  .asciz \"" + n.decorated + "\"\n";
-
-        coffRecord(".xdata$x", c, 2);
-        o += "  .long 1\n";                                  // properties
-        o += "  .long " + d + "@IMGREL\n";                    // the descriptor
-        o += "  .long 0\n";                                   // mdisp
-        o += "  .long -1\n";                                  // pdisp: no vbtable
-        o += "  .zero 4\n";                                   // vdisp, MASM's ORG $+4
-        o += "  .long " + std::to_string(n.size) + "\n";      // sizeOrOffset
-        o += "  .long 0\n";                                   // copyFunction
         coffRecord(".xdata$x", ar, 2);
-        o += "  .long 1\n";                                   // nCatchableTypes
-        o += "  .long " + c + "@IMGREL\n";
-        coffRecord(".xdata$x", ti, 2);
-        o += "  .long 0\n";                                   // attributes
-        o += "  .long 0\n";                                   // pmfnUnwind
-        o += "  .long 0\n";                                   // pForwardCompat
+        o += "  .long " + std::to_string(n.catchables.size()) + "\n";
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            o += "  .long " + a_->labelText(n.catchables[k].name) + "@IMGREL\n";
+        coffRecord(".xdata$x", a_->labelText(n.info), 2);
+        o += "  .long " + std::string(n.isConst ? "1" : "0") + "\n";     // attributes
+        if (n.destructor.empty()) o += "  .long 0\n";                   // pmfnUnwind
+        else o += "  .long " + a_->labelText(n.destructor) + "@IMGREL\n";
+        o += "  .long 0\n";                                             // pForwardCompat
         o += "  .long " + ar + "@IMGREL\n";
     }
 }
