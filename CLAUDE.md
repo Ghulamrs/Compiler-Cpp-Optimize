@@ -10704,3 +10704,16 @@ and the C6000's emission is byte-identical to before.
 
 Windows cases 531/0; matmul 16 -> 10 ms, isort 17 -> 12, total 381 -> 368 against
 cl /O2's 275 (15 interleaved rounds, checksums equal).
+
+## A loop's back edge takes its test with it, 2026-09-27
+
+`jmp head`, where the head block is only `cmp; jcc exit` and the exit is what
+follows the jump, becomes `cmp; j!cc body` - one branch a turn instead of two
+(`threadJumps`, OptJumps.cpp). It takes every compare spelling, `cmpl` and
+`testq` included; an SSE `cmpsd` writes a register and is excluded by name.
+
+**The labels it makes are named past every label the function has.** The
+first version counted from zero on each run of the pass, rounds run it again,
+and `.L._Z5sievei.rot.0` was defined twice - the assembler said so on the Linux
+box and on no other, the Mac's own target being arm64. Both label kinds the
+pass makes share one `fresh()` now.

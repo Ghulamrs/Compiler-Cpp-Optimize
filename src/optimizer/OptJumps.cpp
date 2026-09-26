@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace opt {
 
@@ -87,6 +88,16 @@ bool threadJumps(Function &fn) {
     f.live(s);
     const std::map<std::string, int> heads = labelBlocks(s, f);
     bool changed = false;
+    // A label this pass makes is named past every one the function has, dead ones included, as rounds run it again.
+    std::set<std::string> names;
+    for (const Entry &e : s) if (e.kind == Entry::Label) names.insert(e.label);
+    int made = 0;
+    auto fresh = [&](const char *kind) {
+        std::string name;
+        do name = ".L." + fn.name + kind + std::to_string(made++); while (names.count(name));
+        names.insert(name);
+        return name;
+    };
     // **A jump to a block that only jumps on** goes where that one goes.
     for (Entry &e : s) {
         if (e.kind != Entry::Ins || e.dead || !isJump(e.ins)) continue;
@@ -102,7 +113,6 @@ bool threadJumps(Function &fn) {
     // jump into it goes straight to the side taken, the flags dead there.
     struct Insert { int at; Entry e; };
     std::vector<Insert> inserts;
-    int made = 0;
     for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
         const Block &blk = f.blocks[b];
         const std::vector<int> own = liveInstrs(s, blk);
@@ -129,7 +139,7 @@ bool threadJumps(Function &fn) {
             for (int k = fall.begin; k < fall.end && s[k].kind != Entry::Ins; ++k)
                 if (s[k].kind == Entry::Label && !s[k].dead) { name = s[k].label; break; }
             if (name.empty()) {
-                name = ".L." + fn.name + ".thr." + std::to_string(made++);
+                name = fresh(".thr.");
                 Entry l;
                 l.kind = Entry::Label;
                 l.label = name;
@@ -145,6 +155,46 @@ bool threadJumps(Function &fn) {
             changed = true;
         }
     }
+    // **A loop's back edge takes its test with it**: `jmp head` where the head is only `cmp; jcc exit` and the exit
+    // is what follows the jump becomes `cmp; j!cc body` - one branch a turn instead of two, the loop rotated.
+    if (!changed && inserts.empty())
+        for (int b = 0; b < static_cast<int>(f.blocks.size()) - 1; ++b) {
+            const std::vector<int> own = liveInstrs(s, f.blocks[b]);
+            if (own.empty()) continue;
+            const int last = own.back();
+            if (s[last].ins.m != "jmp" || s[last].ins.a.kind != Operand::Label) continue;
+            const auto it = heads.find(s[last].ins.a.text);
+            if (it == heads.end() || it->second >= b || it->second + 1 >= static_cast<int>(f.blocks.size())) continue;
+            const int t = it->second;
+            const std::vector<int> pair = liveInstrs(s, f.blocks[t]);
+            if (pair.size() != 2) continue;
+            const Instr cmp = s[pair[0]].ins, jcc = s[pair[1]].ins;
+            const std::string cc = conditionOf(jcc.m);
+            static const std::set<std::string> tests = {"cmp", "cmpb", "cmpw", "cmpl", "cmpq", "test", "testb", "testw", "testl", "testq"};
+            if (cc.empty() || jcc.a.kind != Operand::Label || !tests.count(cmp.m)) continue;
+            const auto exit = heads.find(jcc.a.text);
+            if (exit == heads.end() || exit->second != b + 1) continue;
+            const Block &body = f.blocks[t + 1];
+            if (body.in.flags || f.blocks[b + 1].in.flags) continue;
+            std::string name;
+            for (int k = body.begin; k < body.end && s[k].kind != Entry::Ins; ++k)
+                if (s[k].kind == Entry::Label && !s[k].dead) { name = s[k].label; break; }
+            if (name.empty()) {
+                name = fresh(".rot.");
+                Entry l;
+                l.kind = Entry::Label;
+                l.label = name;
+                inserts.push_back(Insert{body.begin, l});
+                fn.jumpOnly.insert(name);
+            }
+            s[last].ins = cmp;
+            Entry back;
+            Operand to = jcc.a;
+            to.text = name;
+            back.ins = Instr{"j" + inverse(cc), to, Operand(), 1};
+            inserts.push_back(Insert{last + 1, back});
+            changed = true;
+        }
     // Highest index first, and at one index a label goes in before the jump
     // that precedes it, which the reversed push order gives.
     std::stable_sort(inserts.begin(), inserts.end(), [](const Insert &x, const Insert &y) { return x.at > y.at; });
