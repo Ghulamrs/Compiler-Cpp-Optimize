@@ -11,8 +11,7 @@
 
 class MasmSpelling final : public Spelling {
 public:
-    // `comdat` says the assembler reads `SEGMENT ... COMDAT`: the project's
-    // does, ml64 does not - see Syntax in Backend.h.
+    // `comdat` says the assembler reads `SEGMENT ... COMDAT`: the project's does, ml64 does not - see Syntax in Backend.h.
     MasmSpelling(std::string &o, bool comdat) : comdat_(comdat), o_(o) {}
 
     void ins(const std::string &m) override;
@@ -23,15 +22,13 @@ public:
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable = false) override;
     void weakDefinition(const std::string &name) override;
-    // The clause a mergeable function's unwind data, funclets and their unwind
-    // data take, so each goes with the copy of the function it belongs to.
+    // The clause a mergeable function's unwind data, funclets and their unwind data take, so each goes with the copy of the function it belongs to.
     std::string associative() { return mergeable_ ? " ASSOCIATIVE(" + mangledName() + ")" : std::string(); }
     // Whether records the linker should fold are written as COMDATs.
     bool comdat() const { return comdat_; }
     void prologue(int frameSize, const std::string &lsda, int outgoing) override;
     void stateLabel(const std::string &l) override;
-    // The registers an optimizer keeps locals in, saved after the frame pointer
-    // is set - see prologue.
+    // The registers an optimizer keeps locals in, saved after the frame pointer is set - see prologue.
     void calleeSaves(const std::vector<SavedReg> &saves) override { saves_ = saves; }
     // **Whether a FuncInfo follows is the code generator's answer, not this one's.**
     void noteHasEh(bool yes) override { hasEh_ = yes; }
@@ -42,8 +39,7 @@ public:
     std::string fnName_;
     // The frame this function allocated.
     int frameSize_ = 0;
-    // Whether this function has a handler: it decides the flags in the unwind
-    // header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
+    // Whether this function has a handler: it decides the flags in the unwind header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
     bool hasEh_ = false;
     // Whether the last instruction spelled was a call - see stateLabel.
     bool afterCall_ = false;
@@ -83,10 +79,9 @@ private:
     std::vector<SavedReg> saves_;
     enum Seg { None, Code, Data, Const, Bss } seg_ = None;
 
-    // **A mergeable definition is a COMDAT of its own.** A function opens one at
-    // functionBegin; a global's is opened at its ALIGN, where its alignment is
-    // known, and closed by the next object's ALIGN, a section change, a
-    // function or the end of the file.
+    // **A mergeable definition is a COMDAT of its own.** A function opens one at functionBegin;
+    // a global's is opened at its ALIGN, where its alignment is known, and closed by the next
+    // object's ALIGN, a section change, a function or the end of the file.
     bool mergeable_ = false;          // the open function is in a COMDAT
     std::string pendingComdat_;       // weakDefinition named the next object
     std::string dataBlock_;           // the segment an ENDS is owed to

@@ -9,9 +9,7 @@
 
 namespace opt {
 
-// **The passes, each a Pass over the function.** Every one of these does
-// what the function it calls did before the manager existed, and nothing
-// more; the manager's rules replace the driver's hand-written loops.
+// **The passes, each a Pass over the function.** Every one of these does what the function it calls did before the manager existed, and nothing more; the manager's rules replace the driver's hand-written loops.
 namespace {
 
 // A property set that says "the flow graph must describe the stream".
@@ -202,27 +200,9 @@ struct Rounds : Group {
 
 }
 
-// **The pipeline**, cxx1's passes.def. In order:
-//
-//   rounds            forward-values, remove-unreachable, remove-dead,
-//                     coalesce-copies, fold-loads, fold-offsets, thread-jumps,
-//                     divide-by-constant (-O2); repeated
-//   frame             (whole, prologue held)
-//     webs            every register web a pseudo, its home kept
-//     locals          every promotable scalar local a pseudo, its slot kept
-//     allocate        every pseudo a register or its slot, the copies coalesced away
-//     rounds          (if any was promoted)
-//     dse-loop        remove-dead-stores, then rounds; up to three times,
-//                     while the stores found something
-//   fold-index        an added index register into the memory operand, its scale with it
-//   finish-frame      unused saves dropped, the prologue rewritten
-//   shrink-loop       shrink, then rounds; up to three times, while shrink
-//                     found something; the flow rebuilt before each
-//   align-loops       (-O2) a loop that fits one 64-byte line padded so it does not cross one
-//
-// The two loops rebuild the flow without dropping labels, where rounds
-// does both: that is how the driver did it before the manager, and a
-// label dropped there could change what is emitted - kept, and noted.
+// **The pipeline**, cxx1's passes.def, in the order the code below declares it: rounds; frame (webs, locals, allocate, rounds, dse-loop); fold-index; finish-frame; shrink-loop; align-loops (-O2).
+// What each pass does, in one line apiece, is the table in CLAUDE.md, "The optimizer's design notes".
+// The two loops rebuild the flow without dropping labels, where rounds does both: that is how the driver did it before the manager, and a label dropped there could change what is emitted - kept, and noted.
 std::unique_ptr<Pass> pipelineFor() {
     std::unique_ptr<Group> top(new Group(PassInfo{"pipeline", 0, 0, 0, 0}, 1, Group::WhenNoneChanged));
     top->add(rounds<Rounds>());

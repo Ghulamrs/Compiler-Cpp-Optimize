@@ -112,19 +112,14 @@ public:
     virtual void ins(const std::string &m, const Op &a, const Op &b) = 0;
 
     virtual void defLabel(const std::string &l) = 0;
-    // **A label where a Microsoft frame's exception state changes.** The
-    // runtime reads the state at a return address, so a call must not end
-    // exactly on one; the spellings that serve that runtime pad it (cl's npad 1).
+    // **A label where a Microsoft frame's exception state changes.** The runtime reads the state at a return address, so a call must not end exactly on one; the spellings that serve that runtime pad it (cl's npad 1).
     virtual void stateLabel(const std::string &l) { defLabel(l); }
 
     virtual void functionBegin(const std::string &name, bool exported,
                                bool mergeable = false) = 0;
-// `lsda` names this function's exception table, or is empty where it has no
-// landing pad. The personality routine must be named between .cfi_startproc
-// and the first instruction, and this is the only place that sees both.
-// `outgoing` is the area at the very bottom of the frame that a call made at
-// the frame's floor finds its shadow space in - below the locals, below the
-// callee-saved spills, below anything an optimizer adds to the frame.
+// `lsda` names this function's exception table, or is empty where it has no landing pad. The
+// personality routine must be named between .cfi_startproc and the first instruction, and this is the only place that sees both.
+// `outgoing` is the area at the very bottom of the frame that a call made at the frame's floor finds its shadow space in - below the locals, below the callee-saved spills, below anything an optimizer adds to the frame.
     virtual void prologue(int frameSize, const std::string &lsda, int outgoing) = 0;
     virtual void functionEnd(const std::string &name) = 0;
     // Said before the prologue, which saves them where the unwinder looks.

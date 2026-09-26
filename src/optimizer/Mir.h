@@ -13,25 +13,14 @@ namespace mir {
 constexpr int kFirstPseudo = opt::kPhysical;
 inline bool isPseudo(int id) { return id >= kFirstPseudo; }
 
-// **A web is one value's life in one register**: every definition joined
-// with every use it reaches, over reaching definitions, as GCC's web pass
-// makes them. Those the ABI does not pin become pseudos; the register each
-// was found in is kept as its home, which is what it is given back until an
-// allocator chooses better.
-//
-// An instruction that wants a value in one register - a call its arguments,
-// a shift its count in %cl, `idiv` its dividend in rdx:rax - or that leaves
-// one there - a call its result in rax - would pin the whole web the value
-// belongs to. Split first: the value is copied into or out of that register
-// just there, so only the copy is pinned and the web that computed it is
-// free. That is how GCC's expander places every fixed-register operand, and
-// its allocator coalesces the copies it can.
+// **A web is one value's life in one register**: every definition joined with every use it reaches, over reaching definitions, as GCC's web pass makes them. Those the ABI does not pin become pseudos; the register each was found in is kept as its home, which is what it is given back until an allocator chooses better.
+// An instruction that wants a value in one register - a call its arguments, a shift its count in %cl, `idiv` its dividend in rdx:rax - or that leaves one there - a call its result in rax - would pin the whole web the value belongs to.
+// Split first: the value is copied into or out of that register just there, so only the copy is pinned and the web that computed it is free. That is how GCC's expander places every fixed-register operand, and its allocator coalesces the copies it can.
 class Webs {
 public:
     explicit Webs(opt::Function &fn);
 
-    // **A pinned occurrence becomes a copy.** Inserts the copies, rebuilds the
-    // flow, and says whether it inserted any.
+    // **A pinned occurrence becomes a copy.** Inserts the copies, rebuilds the flow, and says whether it inserted any.
     bool splitPinned();
     // Every unpinned web renamed to a pseudo; needs the flow to describe the stream.
     void build();
@@ -46,9 +35,7 @@ public:
     // kAsIs leaves the pseudo standing.
     enum { kToSlot = -1, kAsIs = -2 };
     static void assign(opt::Function &fn, const std::vector<int> &colour);
-    // A whole copy of a register to itself, which an assignment leaves where
-    // a split was made or a copy coalesced, goes; a four-byte one
-    // zero-extends and stays.
+    // A whole copy of a register to itself, which an assignment leaves where a split was made or a copy coalesced, goes; a four-byte one zero-extends and stays.
     static bool dropSelfCopies(opt::Function &fn);
 
 private:

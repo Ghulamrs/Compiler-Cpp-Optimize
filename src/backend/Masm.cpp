@@ -686,8 +686,7 @@ void MasmCodeGen::funcletLeave(const std::string &label) {
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
-    // The text around the body: the head, then the body as written out,
-    // then the tail with the unwind data.
+    // The text around the body: the head, then the body as written out, then the tail with the unwind data.
     std::string head, f;
     // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
     // segment called `text` gets data attributes, so the handler faults at its own
@@ -836,11 +835,9 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     out_ += o;
 }
 
-// **Where each RTTI or throw record begins.** For the project's assembler it is
-// a COMDAT of its own and public, so the linker keeps one copy where every unit
-// that named the type wrote one - the choice the COFF path makes in coffRecord.
-// For ml64, which cannot say COMDAT, the records share one plain segment:
-// `first` opens it, and the others follow in it.
+// **Where each RTTI or throw record begins.** For the project's assembler it is a COMDAT of its own
+// and public, so the linker keeps one copy where every unit that named the type wrote one - the choice
+// the COFF path makes in coffRecord. For ml64, which cannot say COMDAT, the records share one plain segment: `first` opens it, and the others follow in it.
 std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
                                 bool first, bool writable) {
     const std::string open = std::string(segment) + (writable ? " SEGMENT ALIGN(" : " SEGMENT READONLY ALIGN(") +

@@ -4,10 +4,9 @@
 
 namespace {
 
-// **A body's size is its node count**, every expression and statement
-// one; and each call in it is noted with the loops it sits inside. The
-// unit of GCC's inline parameters is its own estimate of instructions,
-// and a node here is near enough one to take its numbers as a start.
+// **A body's size is its node count**, every expression and statement one; and each call in
+// it is noted with the loops it sits inside. The unit of GCC's inline parameters is its own
+// estimate of instructions, and a node here is near enough one to take its numbers as a start.
 class Measurer final : public Visitor {
 public:
     int nodes = 0;
@@ -79,8 +78,7 @@ private:
     void inLoop(const Node &body) { ++depth_; body.accept(*this); --depth_; }
 };
 
-// What a call sequence costs, in the same measure: the call itself and the
-// moves that place its arguments.
+// What a call sequence costs, in the same measure: the call itself and the moves that place its arguments.
 int callCost(const Call &site) { return 1 + static_cast<int>(site.args().size()); }
 
 int roundedFrame(const Function &fn) { return (fn.frameSize() + 15) & ~15; }
@@ -149,10 +147,9 @@ void Inliner::sortByBadness(std::vector<Site> &sites) {
     });
 }
 
-// **Three budgets, all of which must hold**: the site's growth against what
-// a site this deep in loops may take; the caller's growth so far, with this
-// one, against its own size; the unit's likewise. A budget of zero percent
-// still admits a site that grows nothing.
+// **Three budgets, all of which must hold**: the site's growth against what a site this deep
+// in loops may take; the caller's growth so far, with this one, against its own size; the
+// unit's likewise. A budget of zero percent still admits a site that grows nothing.
 bool Inliner::withinBudgets(const Site &site) const {
     const int growth = site.growth;
     if (growth > costs_.inlineGrowth(site.loopDepth)) return false;

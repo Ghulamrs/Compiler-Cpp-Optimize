@@ -275,9 +275,7 @@ void CoffSpelling::objectSize(const std::string &name, int size) {
     (void)name; (void)size;
 }
 
-// **Hand-written, because `.seh_handlerdata` cannot live in a COMDAT.** The
-// `.seh_*` directives are the tidy way and the assembler builds .pdata and
-// .xdata from them - measured, and it works for every function in plain .text.
+// **Hand-written, because `.seh_handlerdata` cannot live in a COMDAT.** The `.seh_*` directives are the tidy way and the assembler builds .pdata and .xdata from them - measured, and it works for every function in plain .text.
 void CoffSpelling::prologue(int frameSize, const std::string &lsda, int outgoing) {
     // The area goes under everything, so it is simply more frame: every
     // offset below is measured up from rsp, which rbp equals.

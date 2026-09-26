@@ -26,10 +26,7 @@ enum class Segment { Code, Const, ConstRelocated, Data, Bss };
 
 Segment segmentFor(const Global &g);
 
-// **Which assembler x86_64-windows is written for**, the one target with a
-// choice: GNU syntax for clang; MASM for the project's own assembler, which
-// reads `SEGMENT ... COMDAT`; or MASM without COMDAT for ml64, which cannot,
-// and so links one translation unit at a time. The other targets ignore it.
+// **Which assembler x86_64-windows is written for**, the one target with a choice: GNU syntax for clang; MASM for the project's own assembler, which reads `SEGMENT ... COMDAT`; or MASM without COMDAT for ml64, which cannot, and so links one translation unit at a time. The other targets ignore it.
 enum class Syntax { Gnu, Masm, Ml64 };
 
 class Backend {

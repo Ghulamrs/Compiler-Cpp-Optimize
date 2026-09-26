@@ -116,8 +116,7 @@ protected:
     std::string out_;
     std::size_t emittedSize() override { return out_.size() + (optimizer_ ? optimizer_->held() : 0); }
     Spelling *a_ = &gnu_;
-    // In front of a_ at -O1 and above. It holds a function whole, its funclets
-    // apart, so anything that lifts text out of out_ goes through atOutput.
+    // In front of a_ at -O1 and above. It holds a function whole, its funclets apart, so anything that lifts text out of out_ goes through atOutput.
     std::unique_ptr<Optimizer> optimizer_;
     // Done where it stands in the output: at once, or after what an optimizer holds.
     void atOutput(std::function<void()> f) { if (optimizer_) optimizer_->defer(std::move(f)); else f(); }
@@ -137,12 +136,9 @@ protected:
     // all of them by one constant, applied once where operands are rendered.
     Op local(long long slot) const { return mem(-slot, "%rbp"); }
     int frameSize_ = 0;
-    // **The shadow space, allocated once at the floor of the frame** rather
-    // than around each call; 0 where the ABI has none or the body calls
-    // nothing. A call finds it at rsp only when nothing is pushed above it.
+    // **The shadow space, allocated once at the floor of the frame** rather than around each call; 0 where the ABI has none or the body calls nothing. A call finds it at rsp only when nothing is pushed above it.
     int outgoing_ = 0;
-    // How far below the floor rsp stood when a callee began to be walked in
-    // place; that walk counts depth_ from zero again.
+    // How far below the floor rsp stood when a callee began to be walked in place; that walk counts depth_ from zero again.
     int floorDepth_ = 0;
     // Inside a funclet, whose own frame holds 32 bytes and no more.
     bool inFunclet_ = false;
