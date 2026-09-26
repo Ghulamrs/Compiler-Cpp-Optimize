@@ -30,6 +30,7 @@ private:
     unsigned threads_ = 0;
     // **Which assembler the Windows target is written for.**
     Syntax syntax_ = Syntax::Gnu;
+    bool syntaxNamed_ = false;   // -masm= was given; the clang fallback asks this
     std::string linkTo_;
     std::vector<std::string> temporaries_;
     std::vector<std::string> objects_;
