@@ -42,8 +42,8 @@ class bad_alloc : public exception {
 public:
     bad_alloc() : exception("bad allocation", 1) {}
     virtual ~bad_alloc() {}
-protected:
-    bad_alloc(const char *msg) : exception(msg, 1) {}
+protected:   // private in vcruntime, with a friend class this compiler does not take
+    bad_alloc(const char *const msg) : exception(msg, 1) {}
 };
 
 class bad_array_new_length : public bad_alloc {

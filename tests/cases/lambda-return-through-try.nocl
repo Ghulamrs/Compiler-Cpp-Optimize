@@ -1,0 +1,1 @@
+A closure type is a unique unnamed type ([expr.prim.lambda]) and the two compilers name theirs differently: cxx1 writes `$_N` in the ?1? scope of the enclosing function, cl `<lambda_N>`, and cl inlines these call operators away. Nothing outside the function names a closure, so no name here can cross an object boundary. lambda-capture-by-reference.nocl records the same.

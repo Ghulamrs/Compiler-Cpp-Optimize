@@ -4,7 +4,7 @@
 // catchable per class in the _CTA, the base's at its offset, the copy
 // constructor named in each), a plain class (no copy constructor, `0`), a
 // pointer (the pointer, its base pointers and `void *`, all "simple"), a
-// pointer to const (`_TIC`, the const off every name and 1 in the attributes),
+// pointer to const (`_TI2C` as cl writes it, the const off every name and 1 in the attributes),
 // a base caught by reference (adjectives 8), a class caught by value (the
 // runtime copies it and the handler destroys it before it returns), and a
 // catch-all. No handler returns, and no destructible local sits beside a

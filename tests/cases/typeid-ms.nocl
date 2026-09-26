@@ -1,0 +1,1 @@
+One name, spelled the same by both: ?raw_name@type_info@@QEBAPEBDXZ. This tree's <typeinfo> defines raw_name inline, so cxx1 emits its body; cl's vcruntime_typeinfo.h has it too but cl emits none. Every other type_info member - ??8, ??9, name, before, hash_code - agrees with cl now that type_info is global on Windows and std::type_info names it, as vcruntime_typeinfo.h has it.
