@@ -10566,3 +10566,42 @@ call every case different.
 `-MMD -MP` writes header dependencies. Do not remove it: a stale object here
 links perfectly and corrupts the heap three passes away, which is exactly what
 happened in Compiler-S.
+
+## The FH3 state tree on x86_64-windows, and dispFrame, which is not a frame size
+
+**Landed 2026-09-26.** A Microsoft frame's exception tables are a tree of
+states, and cxx1 wrote them flat: one `try` per function and no cleanup
+beside it, which is why a destructible local and a `try` in one function,
+and a `try` inside a `try` body, were refused on this target long after both
+Itanium targets had them. `Walker::msTryStatement` numbers regions the way cl
+does - a region's `toState` is its enclosing region's, the body's states
+follow it so `tryLow..tryHigh` spans what nests inside, a handler's state
+sits under the try's *parent*, and a cleanup is a state whose action is a
+funclet and whose objects outlive its range. Both spellings write the four
+tables from that one tree. Measured against `cl /EHsc /d2FH4- /FAs` for the
+nested shape: `stateUnwindMap` and `tryMap` identical word for word.
+
+**Two lessons, each bought with a crash.** `dispFrame`, the handler map's
+last word, was written as the parent's frame size for a year and a half of
+green suites. It is the offset *inside the funclet's own frame* where the
+funclet saved the parent's frame pointer - `[rsp+16]` at entry, past
+`push rbp; sub rsp,32`, so 56, cl's `038H` for every handler whatever the
+parent's frame - and the runtime reads it only when an exception passes
+*through* a catch funclet. So every single-try case passed and the first
+`throw` out of an inner handler to an enclosing `try` died with 0xC0000409:
+terminate, because no parent frame was found and so no enclosing `try`
+matched. **And the unwind-help slot is one per function and must be
+allocated in that function's frame.** The parser cached one per function;
+the implicit-special-member synthesizers zero `frameSize_` mid-function and
+restore it, so the cached slot could belong to another frame and `movq $-2`
+landed on live locals - `vector-value-init` printed `zero -2`. The parser
+allocates a slot per region now and the Walker keeps the first per function.
+
+**Still refused by name on this target:** a destructible local inside a
+handler, which would be a funclet inside a funclet (`local-in-handler.notarget`).
+**Open, and pre-existing at tms-opt f5fcdd8:** the MASM spelling writes
+`SEGMENT ... COMDAT(sym)` for the throw and RTTI records, which ml64 has no
+syntax for (`A2034 must be in segment block`, `A1010 unmatched block
+nesting`), so `-masm=masm` assembles no program that throws; this round also
+opened `??_R0` in `.data`, a MASM directive name, where tms-opt wrote
+`.rdata$r`. The GNU spelling is the default and is unaffected.
