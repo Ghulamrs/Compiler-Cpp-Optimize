@@ -35,6 +35,7 @@ struct Function;
 // **A loop-invariant computation moves in front of the loop**, into a register dead there - see OptHoist.cpp.
 bool hoistInvariants(Function &fn);
 bool hoistXmmSlots(Function &fn);
+bool widenCounters(Function &fn);
 
 // **A loop that fits one line is padded in front so that it does not cross one** - see OptAlign.cpp.
 bool alignLoops(Function &fn);

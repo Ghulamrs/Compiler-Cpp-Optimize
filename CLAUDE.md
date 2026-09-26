@@ -10734,3 +10734,15 @@ slot was exactly that.
 
 Priced by hand first: rotated + 64-bit counter + x in a register took matmul
 from 10 ms to 6 on Windows, and x alone was worth nothing, as S12 had found.
+
+## A counter that cannot go negative is its own 64-bit index, 2026-09-27
+
+`widen-counters`: the latch ends `add $1, %r32; cmp X, %r32; jl head`, nothing
+else in the loop writes r, and r enters as `xor` or a constant in
+[0, INT_MAX). Then r never passes INT_MAX - the `jl` lets a turn continue only
+below a signed bound - and every write is 32-bit, so %r64 already is sext(r):
+the readers of `movslq %r32, %rD` read %r64 and the extension goes. No
+undefined-behaviour argument is used; a step other than 1 is not taken.
+
+Linux run.sh 545/0 at -O1 and -O2, Windows cases 531/0 at -O2. Windows matmul
+10 -> 8 ms (cl 3), as priced; Linux, already level with g++ there, 687 -> 685.
