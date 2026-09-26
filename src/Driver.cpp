@@ -303,13 +303,14 @@ static int runTool(const std::string &command) {
     if (GetTempFileNameA(folder, program::kName, 0, script) == 0) {
         return runShell(command);
     }
+    // **The reserved name is kept until the script is done**: removed first, a
+    // second cpp11 running at once was handed it and overwrote this script.
     std::string batch = script;
-    std::remove(batch.c_str());
     batch += ".cmd";
 
     {
         std::ofstream out(batch.c_str());
-        if (!out) return runShell(command);
+        if (!out) { std::remove(script); return runShell(command); }
         out << "@echo off\n";
         out << "call \"" << vcvars << "\" >nul 2>&1\n";
         out << command << "\n";
@@ -317,6 +318,7 @@ static int runTool(const std::string &command) {
     lastToolCommand = command + "   [inside " + vcvars + "]";
     const int rc = std::system(("\"" + batch + "\"").c_str());
     std::remove(batch.c_str());
+    std::remove(script);
     return rc;
 #else
     return runShell(command);
