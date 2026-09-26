@@ -99,6 +99,8 @@ def write():
         fh.write("-" * 66 + "\n")
         for f, c, n in rows:
             fh.write("%08X %9d  %s\n" % (c, n, f))
+        fh.write("-" * 66 + "\n")
+        fh.write("Sealed on %s\n" % datetime.date.today().strftime("%d-%m-%Y"))
     print("wrote %s: %d files, seal %08X" % (NAME, len(rows), total))
     return 0
 
