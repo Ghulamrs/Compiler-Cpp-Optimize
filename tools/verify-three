@@ -66,19 +66,32 @@ COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
 # big parser files peaks near 50 MB, so two fit inside 300 MB with room, and
 # four sit at the cap's edge where a legitimate build would be killed and
 # reported as a verification failure. Raise it deliberately, having measured,
-# or not at all.
+# or not at all. **-j1 since 2026-09-26**: the backends grew, and at -j2 the
+# cap killed cc1plus on Masm.cpp and the leg failed for want of memory alone.
 #
 # Killing this script does not stop the far side: the ssh closes and the build
 # runs on as an orphan. Clear it before starting another -
 # `ssh ... 'pkill -9 -x cc1plus; pkill -9 -x make'`.
+# **The boxes run at once, and the run ends when the slowest does.** Linux and
+# the tms6747 box on the Windows machine go to the background, each into a log
+# of its own; the x86_64-windows box runs in front; `wait` collects them all.
+LEGS=$(mktemp -d)
+BG=""
+T0=$(date +%s)
 if [ "$WHICH" = all ] || [ "$WHICH" = linux ]; then
-    echo "=== linux ($LINUX) ==="
-    scp -q -i "$KEY" -o BatchMode=yes "$TAR" "$LINUX:/tmp/cxx1src.tgz" || STATUS=1
-    ssh -i "$KEY" -o BatchMode=yes "$LINUX" '
-        rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
-        tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
-        cd ~/cxx1-verify && ./build -j2 >/dev/null && make test &&
-        ASM6X=$HOME/asm6x-build/asm6x.exe sh tests/asm6x.sh' || STATUS=1
+    (
+        t=$(date +%s); rc=0
+        echo "=== linux ($LINUX) ==="
+        scp -q -i "$KEY" -o BatchMode=yes "$TAR" "$LINUX:/tmp/cxx1src.tgz" || rc=1
+        ssh -i "$KEY" -o BatchMode=yes "$LINUX" '
+            rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
+            tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
+            cd ~/cxx1-verify && ./build -j1 >/dev/null && make test &&
+            ASM6X=$HOME/asm6x-build/asm6x.exe sh tests/asm6x.sh' || rc=1
+        echo "linux leg: $(( $(date +%s) - t ))s, $([ $rc -eq 0 ] && echo passed || echo FAILED)"
+        exit $rc
+    ) > "$LEGS/linux.log" 2>&1 &
+    BG="$BG linux:$!"
 fi
 
 if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
@@ -97,15 +110,25 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     # into a clean directory is what leaves a stale object linking perfectly,
     # so the directory goes first.
     ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $REMOTE 2>nul & mkdir $REMOTE && tar -C $REMOTE -xzf C:\\cxx1\\src.tgz" >/dev/null || STATUS=1
+    # **The tms6747 target is a second box on the same machine**: a tree of its
+    # own in C:\cxx1\verify-ti, its own cxx1-msvc.exe, TI's lnk6x over every case
+    # - asm6x on what cxx1 wrote, the linker as the judge of the objects.
+    TIREMOTE='C:\cxx1\verify-ti'
+    (
+        t=$(date +%s); rc=0
+        printf '=== tms6747 (%s, %s) ===\n' "$WINDOWS" "$TIREMOTE"   # echo reads \c as "stop"
+        ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $TIREMOTE 2>nul & mkdir $TIREMOTE && tar -C $TIREMOTE -xzf C:\\cxx1\\src.tgz" >/dev/null || rc=1
+        ssh -o BatchMode=yes "$WINDOWS" "call $TIREMOTE\\msvc\\build.cmd >nul && $TIREMOTE\\tools\\windows\\ti-link.cmd $TIREMOTE" > "$LEGS/ti.raw" 2>&1 || rc=1
+        grep -v "^$" "$LEGS/ti.raw" | tr -d '\r' | tail -8
+        echo "tms6747 leg: $(( $(date +%s) - t ))s, $([ $rc -eq 0 ] && echo passed || echo FAILED)"
+        exit $rc
+    ) > "$LEGS/tms6747.log" 2>&1 &
+    BG="$BG tms6747:$!"
+    TW=$(date +%s)
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" || STATUS=1
     # The two-half programs, linked across the boundary with cl both ways:
     # the ABI at the seam, which nothing compiled by cxx1 alone can see.
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\winlink-check.cmd $REMOTE" || STATUS=1
-    # The tms6747 target to a TI program: asm6x on what cxx1 wrote, lnk6x
-    # over that, for every case - the linker as the judge of the objects.
-    TILOG=$(mktemp -t cxx1ti)
-    ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\ti-link.cmd $REMOTE" > "$TILOG" 2>&1 || STATUS=1
-    grep -v "^$" "$TILOG" | tail -8; rm -f "$TILOG"
 
     # The comparison happens here, not there - see run-cases.cmd for why.
     OUT=$(mktemp -d)
@@ -296,7 +319,17 @@ double 2.5" ]; then
          "$nrefused cxx1-refused, $nclrefused cl-refused)"
     [ "$fail" -eq 0 ] || STATUS=1
     rm -rf "$OUT"
+    echo "x86_64-windows leg: $(( $(date +%s) - TW ))s"
 fi
+
+# Every background box, its log, and its verdict in the exit status.
+for leg in $BG; do
+    name=${leg%%:*}; pid=${leg#*:}
+    wait "$pid" || STATUS=1
+    cat "$LEGS/$name.log"
+done
+rm -rf "$LEGS"
+echo "all legs done in $(( $(date +%s) - T0 ))s, the slowest deciding"
 
 rm -f "$TAR"
 exit $STATUS

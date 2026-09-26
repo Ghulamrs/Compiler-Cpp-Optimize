@@ -47,10 +47,11 @@ namespace std {
 class exception {
 public:
     exception() { data_.what = 0; data_.doFree = false; }
-    exception(const char *msg) { data_.what = 0; data_.doFree = false;
+    // `char const *const`, as vcruntime_exception.h writes them: cl spells the parameter QEBD.
+    explicit exception(const char *const msg) { data_.what = 0; data_.doFree = false;
                                  __std_exception_data d; d.what = msg; d.doFree = true;
                                  __std_exception_copy(&d, &data_); }
-    exception(const char *msg, int) { data_.what = msg; data_.doFree = false; }
+    exception(const char *const msg, int) { data_.what = msg; data_.doFree = false; }
     exception(const exception &o) { data_.what = 0; data_.doFree = false;
                                     __std_exception_copy(&o.data_, &data_); }
     virtual ~exception() { __std_exception_destroy(&data_); }

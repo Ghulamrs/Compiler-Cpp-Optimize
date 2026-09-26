@@ -29,7 +29,12 @@ const char *__std_type_info_name(__std_type_info_data *, __type_info_node *);
 extern __type_info_node __type_info_root_node;
 #endif
 
+// **On Windows type_info is global and std names it**, as vcruntime_typeinfo.h
+// has it: cl spells a member `??8type_info@@...`, and a cl function taking a
+// `const std::type_info &` is `AEBVtype_info@@`. Anywhere else it is std's own.
+#ifndef _WIN32
 namespace std {
+#endif
 
 class type_info {
 public:
@@ -71,6 +76,10 @@ private:
 #endif
 };
 
+#ifdef _WIN32
+namespace std { typedef ::type_info type_info; }
+#else
 }
+#endif
 
 #endif

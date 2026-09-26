@@ -72,7 +72,7 @@ struct MicrosoftThrow {
     std::string decorated;
     std::vector<Catchable> catchables;
     std::string array;               // _CTA2?AUE@@
-    std::string info;                // _TI2?AUE@@, _TIC2PEAD for a pointer to const
+    std::string info;                // _TI2?AUE@@, _TI2CPEAD for a pointer to const (cl)
     std::string destructor;          // filled by the parser
     int size = 0;
     bool isConst = false;

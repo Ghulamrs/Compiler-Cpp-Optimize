@@ -1379,7 +1379,7 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
     if (t->isReference()) t = t->referent()->unqualified();
     if (t->isPointer()) {
         // **A pointer to const is spelled without it**, and the ThrowInfo says
-        // `C` instead: `_TIC2PEAD` for `const char *`. Measured from clang.
+        // `C` after its count: cl writes `_TI2CPEAD` for `const char *` where clang writes `_TIC2PEAD`.
         const Type *pointee = t->pointee();
         out->isConst = pointee->isConst();
         pointee = pointee->unqualified();
@@ -1467,7 +1467,7 @@ void microsoftThrowFinish(MicrosoftThrow *out) {
     const std::string count = std::to_string(out->catchables.size());
     const std::string code = out->decorated.substr(1);
     out->array = "_CTA" + count + code;
-    out->info = std::string("_TI") + (out->isConst ? "C" : "") + count + code;
+    out->info = std::string("_TI") + count + (out->isConst ? "C" : "") + code;
 }
 
 bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,

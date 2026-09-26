@@ -1,2 +1,3 @@
 x86_64-linux  cxx1 emits the C1 form of each in-class constructor beside the C2 where clang emits only the C2 a use asks for - the COMDAT difference implicit-move.nonames records. Nothing the pointer type_infos add differs: _ZTIP1D, _ZTSP1D, _ZTIPK1B and the class ones agree.
 arm64-darwin  the same C1 forms, and the same agreement on the type_info names.
+x86_64-windows  one name, and cl is the authority on it: the ThrowInfo for a pointer to const is `_TI2CPEAD` in cl's object (the count, then C) and `_TIC2PEAD` in clang's (C first). cpp11 follows cl - names-vs-cl agrees on it - and the object is local to its file either way, the runtime matching a thrown type by its descriptor's name.
