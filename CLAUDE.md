@@ -10660,3 +10660,30 @@ syntax for (`A2034 must be in segment block`, `A1010 unmatched block
 nesting`), so `-masm=masm` assembles no program that throws; this round also
 opened `??_R0` in `.data`, a MASM directive name, where tms-opt wrote
 `.rdata$r`. The GNU spelling is the default and is unaffected.
+
+## A runtime symbol reached from a PIE, 2026-09-27
+
+**`new-header.cpp` failed to link on x86_64-linux** with `relocation
+R_X86_64_PC32 against symbol _ZNSt9bad_allocD1Ev@@GLIBCXX_3.4 can not be used
+when making a PIE object`. `genAddr` wrote `lea sym(%rip)` for every global,
+which is right for a symbol this file defines and wrong for one in a shared
+library: a PIE reaches that through the GOT. It was latent until the `<new>`
+round stopped emitting cxx1's own `std::exception` and `bad_alloc` and left
+their destructors and vtables to libstdc++. It showed only where `c++` links
+PIE by default; the Linux box's g++ 11.5 does not, which is why its `run.sh`
+stayed green. Its `-pie` reproduced the error from the old assembly exactly.
+
+**Two changes, both gcc's own shape.** An address whose symbol is not defined
+in the file is `mov sym@GOTPCREL(%rip)`, on ELF only; a defined one keeps its
+`lea`, and a call stays `call sym`, which the assembler already relocates as
+PLT32. And a constant holding addresses - every vtable and type_info -
+goes to `.data.rel.ro,"aw"` rather than `.rodata`, where a PIE would need a
+text relocation; `Spelling::relroSection`, which COFF answers with `.rdata`
+as before and arm64-darwin already had as `__DATA,__const`.
+
+Measured: emit golden 105 of 1363 files changed, every one x86_64-linux, every
+changed line a `lea` becoming a GOT load (187) or the new section line (78);
+Windows and the other targets byte-identical. `run.sh` on the Linux box 545/0
+with the default link and 545/0 with `CPP11_CC` a `c++ -pie` wrapper;
+`new-header` links as a PIE executable and prints its `.expected`. Mac run
+545/0, names 348/0, overload 30/0.

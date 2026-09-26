@@ -301,7 +301,13 @@ void X86_64Linux::canonicalise(const Type *t) {
 void X86_64Linux::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) a_->ins("lea", local(v->offset()), reg("%rax"));
-        else              a_->ins("lea", rip(v->symbol()), reg("%rax"));
+        else if (target_.microsoftNames() || definedHere_.count(v->symbol()) != 0)
+            a_->ins("lea", rip(v->symbol()), reg("%rax"));
+        else {
+            // A symbol from another object may be in a shared library, and a PIE cannot reach it by PC32.
+            const std::string got = v->symbol() + "@GOTPCREL";
+            a_->ins("mov", rip(got), reg("%rax"));
+        }
         return;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
@@ -2225,7 +2231,7 @@ void X86_64Linux::emitData(const Program &program) {
     const Bucket order[] = {
         { Segment::Const, rodataOpen },
 
-        { Segment::ConstRelocated, rodataOpen },
+        { Segment::ConstRelocated, rodataOpen && !a_->hasRelro() },
         { Segment::Data,  false },
         { Segment::Bss,   false },
     };
@@ -2234,8 +2240,8 @@ void X86_64Linux::emitData(const Program &program) {
         for (const Global &g : program.globals) {
             if (segmentFor(g) != b.seg) continue;
             if (!opened) {
-                if (b.seg == Segment::Const ||
-                    b.seg == Segment::ConstRelocated) a_->rodataSection();
+                if (b.seg == Segment::Const) a_->rodataSection();
+                else if (b.seg == Segment::ConstRelocated) a_->relroSection();
                 else if (b.seg == Segment::Data) a_->dataSection();
                 else                             a_->bssSection();
                 opened = true;
@@ -2314,6 +2320,8 @@ void X86_64Linux::run(const Program &program) {
     for (const Global &g : program.globals) defined.push_back(g.symbol);
     for (const StringLit &s : program.strings) defined.push_back(s.label);
     a_->predefine(defined);
+    definedHere_.clear();
+    definedHere_.insert(defined.begin(), defined.end());
 
     if (const Source *src = lineSource()) {
         const std::vector<std::string> &names = src->files();
