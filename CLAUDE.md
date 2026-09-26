@@ -10772,3 +10772,18 @@ printed garbage; a callee-saved register is live at every call now.
 
 Mac run.sh 545/0 at -O1 and -O2. Total 2,485 -> 1,413 -> 960 -> 688 ms against
 clang's 174; x86 and C6000 output unchanged.
+
+## The C6000 against cl6x, round two of its optimizer, 2026-09-27
+
+Two of HANDOVER-T1's T2 items. A frame past 124 bytes is addressed
+`MVK k/size, A0; LDW *-A15[A0], D` - the scaled register offset - instead of
+`MVK k, A0; SUB A15, A0, R; LDW *R, D`. And a copy's one reader takes the
+source itself, a result only copied on is written straight into the copy, and
+a copy nobody reads goes - all on the straight path, same register file only,
+predicated lines and register pairs left alone (`A5:A4` half-renamed was the
+second of two faults the emulator caught; a four-operand `EXT` losing its
+fourth in the rebuild was the first).
+
+tms6747.sh 335/0 at -O1 and -O2; TI's lnk6x links all 342 at -O2.
+bench-c6x 62,693 -> 53,101 kilocycles; object .text through TI's assembler
+8,960 -> 8,448 (cl6x --opt_level=2: 3,712), through ASM6x 11,488 -> 9,600.

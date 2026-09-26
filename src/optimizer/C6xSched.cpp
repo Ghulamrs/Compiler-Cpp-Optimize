@@ -137,6 +137,18 @@ bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg
     return true;
 }
 
+// Whether reg is written before it is read on the straight path from i, the path's end answering no.
+bool deadAfterStrict(const std::vector<Line> &v, std::size_t i, const std::string &reg) {
+    for (std::size_t j = i + 1; j < v.size(); j++) {
+        if (blockEnd(v[j])) return false;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(v[j], reads, writes);
+        if (has(reads, reg)) return false;
+        if (has(writes, reg)) return true;
+    }
+    return false;
+}
+
 // MVKL then MVKH of a constant that fits sixteen signed bits is one MVK.
 void foldMvk(std::vector<Line> &v) {
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
@@ -177,13 +189,107 @@ void foldFrame(std::vector<Line> &v) {
         bool store = isStore(use.mnem) && use.ops[1] == "*" + reg;
         if (!load && !store) continue;
         int size = accessSize(use.mnem);
-        if (k < 0 || k % size != 0 || k / size > 31) continue;
+        if (k < 0 || k % size != 0) continue;
         if (!deadAfter(v, i + 1, reg)) continue;
-        std::string mem = "*-A15(" + std::to_string(k) + ")";
+        // Past ucst5, the scaled register offset: MVK k/size, A0; LDW *-A15[A0], D - A0 was dead after anyway.
+        const bool far = k / size > 31;
+        if (far && (first == i || k / size > 32767)) continue;
+        std::string mem = far ? "*-A15[A0]" : "*-A15(" + std::to_string(k) + ")";
         v[i + 1] = load ? make(use.mnem, mem, use.ops[1]) : make(use.mnem, use.ops[0], mem);
-        v.erase(v.begin() + static_cast<long>(first), v.begin() + static_cast<long>(i) + 1);
-        i = first;
+        if (far) {
+            v[first] = make("MVK", std::to_string(k / size), "A0");
+            v.erase(v.begin() + static_cast<long>(i));
+        } else {
+            v.erase(v.begin() + static_cast<long>(first), v.begin() + static_cast<long>(i) + 1);
+            i = first;
+        }
     }
+}
+
+// An instruction rebuilt from its parts, every operand kept.
+Line rebuilt(const std::string &mnem, const std::vector<std::string> &ops) {
+    std::string raw = "\t" + mnem;
+    for (std::size_t o = 0; o < ops.size(); o++) raw += (o == 0 ? "\t" : ", ") + ops[o];
+    return parse(raw);
+}
+
+// A register's file: 'A' or 'B', or 0 for anything else.
+char sideOf(const std::string &r) { return r.size() >= 2 && (r[0] == 'A' || r[0] == 'B') && std::isdigit(static_cast<unsigned char>(r[1])) ? r[0] : 0; }
+
+std::string renamed(const std::string &op, const std::string &from, const std::string &to) {
+    std::string out;
+    for (std::size_t i = 0; i < op.size();) {
+        std::size_t j = i;
+        if ((op[i] == 'A' || op[i] == 'B') && (i == 0 || !isNameChar(op[i - 1]))) {
+            j = i + 1;
+            while (j < op.size() && std::isdigit(static_cast<unsigned char>(op[j]))) j++;
+            if (j > i + 1 && (j >= op.size() || !isNameChar(op[j])) && op.substr(i, j - i) == from) {
+                out += to;
+                i = j;
+                continue;
+            }
+        }
+        out += op[i++];
+    }
+    return out;
+}
+
+// **A copy's one reader takes the source itself**, on the straight path and the same register file:
+// `MV S, D` then the first reader of D, neither S nor D written between and D dead after it. And the
+// other way: an instruction whose result is only copied on writes the copy's destination itself.
+bool forwardMoves(std::vector<Line> &v) {
+    bool changed = false;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        const Line &mv = v[i];
+        if (mv.mnem != "MV" || mv.ops.size() != 2 || !mv.pred.empty()) continue;
+        const std::string S = mv.ops[0], D = mv.ops[1];
+        if (!sideOf(S) || sideOf(S) != sideOf(D) || S == D || S == "A15" || D == "A15" || S == "B15" || D == "B15") continue;
+        // Retarget: the instruction before made S for this copy alone.
+        if (i > 0 && v[i - 1].instr && v[i - 1].pred.empty() && !isStore(v[i - 1].mnem) && v[i - 1].mnem != "B" &&
+            v[i - 1].mnem != "MVKH" && !v[i - 1].ops.empty() && v[i - 1].ops.back() == S && deadAfter(v, i, S)) {
+            std::vector<std::string> reads, writes;
+            readsAndWrites(v[i - 1], reads, writes);
+            if (writes.size() == 1 && delaySlots(v[i - 1].mnem) == 0) {
+                Line p = v[i - 1];
+                p.ops.back() = D;
+                v[i - 1] = rebuilt(p.mnem, p.ops);
+                v.erase(v.begin() + static_cast<long>(i));
+                i--;
+                changed = true;
+                continue;
+            }
+        }
+        for (std::size_t j = i + 1; j < v.size(); j++) {
+            if (blockEnd(v[j])) break;
+            std::vector<std::string> reads, writes;
+            readsAndWrites(v[j], reads, writes);
+            if (has(reads, D)) {
+                bool pair = false;          // a register pair is odd:even, and a half cannot be renamed alone
+                for (const std::string &op : v[j].ops) if (op.find(':') != std::string::npos) pair = true;
+                if (pair || !v[j].pred.empty() || (!has(writes, D) && !deadAfter(v, j, D))) break;
+                Line u = v[j];
+                const std::size_t last = isStore(u.mnem) || u.mnem == "B" || u.ops.back()[0] == '*' ? u.ops.size() : u.ops.size() - 1;
+                for (std::size_t o = 0; o < last; o++) u.ops[o] = renamed(u.ops[o], D, S);
+                for (std::size_t o = last; o < u.ops.size(); o++)
+                    if (u.ops[o][0] == '*') u.ops[o] = renamed(u.ops[o], D, S);
+                v[j] = rebuilt(u.mnem, u.ops);
+                v.erase(v.begin() + static_cast<long>(i));
+                i--;
+                changed = true;
+                break;
+            }
+            if (has(writes, D) || has(writes, S)) break;
+        }
+    }
+    // A copy nothing reads before it is written again.
+    for (std::size_t i = 0; i < v.size(); i++)
+        if (v[i].mnem == "MV" && v[i].ops.size() == 2 && v[i].pred.empty() && sideOf(v[i].ops[1]) &&
+            v[i].ops[1] != "A15" && v[i].ops[1] != "B15" && deadAfterStrict(v, i, v[i].ops[1])) {
+            v.erase(v.begin() + static_cast<long>(i));
+            i--;
+            changed = true;
+        }
+    return changed;
 }
 
 bool isPush(const std::vector<Line> &v, std::size_t i) {
@@ -316,6 +422,7 @@ std::string c6xSchedule(const std::string &text, int level) {
     foldMvk(lines);
     foldFrame(lines);
     foldPushPop(lines);
+    for (int round = 0; round < 6 && forwardMoves(lines); round++) {}
     Scheduler s;
     for (std::size_t i = 0; i < lines.size(); i++) s.feed(lines[i]);
     return s.finish();
