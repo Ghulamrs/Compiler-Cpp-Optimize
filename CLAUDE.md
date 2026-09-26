@@ -10687,3 +10687,20 @@ Windows and the other targets byte-identical. `run.sh` on the Linux box 545/0
 with the default link and 545/0 with `CPP11_CC` a `c++ -pie` wrapper;
 `new-header` links as a PIE executable and prints its `.expected`. Mac run
 545/0, names 348/0, overload 30/0.
+
+## S13 brought across, and not wider than a pointer, 2026-09-27
+
+**`18d2236` lived only on `origin/claude/fable-5-1-background-work-kguwml`**, so
+the tree measured against cl was missing it: matmul's inner loop on
+x86_64-windows still scaled every index in 32 bits and extended it twice. Its
+two code files were applied here; the handover beside it was not.
+
+**It was written before the C6000 joined this tree, and it would have made
+every C6000 index 64-bit arithmetic.** `ptrdiffType()` chose `long` where
+`long` is 8 bytes and `long long` otherwise - on the C6000 both a pointer and a
+`long` are 4, so the second branch fired: 136 tms6747 emissions changed. It now
+takes whichever of `long` and `long long` is exactly `sizeOf(Kind::Pointer)`,
+and the C6000's emission is byte-identical to before.
+
+Windows cases 531/0; matmul 16 -> 10 ms, isort 17 -> 12, total 381 -> 368 against
+cl /O2's 275 (15 interleaved rounds, checksums equal).
