@@ -2,6 +2,7 @@
 #include "OptPasses.h"
 
 #include <algorithm>
+#include <climits>
 #include <map>
 #include <set>
 #include <string>
@@ -404,6 +405,127 @@ private:
     }
 };
 
+}
+
+namespace {
+
+// **A double read from the frame in a loop that never writes it**, loaded once before the loop into an xmm
+// register the loop leaves alone and the convention lets any function overwrite, each read a register copy.
+bool hoistXmmSlotsIn(Function &fn, const Loops::Loop &loop) {
+    Stream &s = fn.stream;
+    Flow &f = fn.flow;
+    std::vector<bool> inLoop(f.blocks.size(), false);
+    for (int b : loop.blocks) inLoop[b] = true;
+    int entries = 0;
+    for (int e : f.blocks[loop.head].preds) {
+        const Edge &edge = f.edges[e];
+        if (inLoop[edge.from]) continue;
+        if (edge.kind != Edge::Fallthrough || edge.from != loop.head - 1) return false;
+        ++entries;
+    }
+    if (entries != 1) return false;
+    for (int b : loop.blocks)
+        for (int e : f.blocks[b].preds)
+            if (b != loop.head && !inLoop[f.edges[e].from]) return false;
+    RegSet touched = 0;
+    std::map<long long, std::vector<int>> reads;     // each slot's loads in the loop
+    std::set<long long> written;
+    for (int b : loop.blocks) {
+        const Block &blk = f.blocks[b];
+        if (blk.leaves) return false;
+        for (int k = blk.begin; k < blk.end; ++k) {
+            if (s[k].kind == Entry::Event) return false;
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            const Effects &e = f.effects[k];
+            if (e.opaque || (e.control && s[k].ins.m == "call")) return false;
+            touched |= e.reads | e.writes | e.partial;
+            const Instr &i = s[k].ins;
+            if (i.operands == 2 && i.m == "movsd" && i.a.isMem() && i.a.reg.id == RBP && i.a.scale == 0 &&
+                i.b.kind == Operand::Register && i.b.reg.id >= kXmm0)
+                reads[i.a.disp].push_back(k);
+            else if (e.memoryWritten)
+                for (const Operand *o : {&i.a, &i.b})
+                    if (o->isMem() && o->reg.id == RBP) written.insert(o->disp);
+        }
+    }
+    if (reads.empty()) return false;
+    // An address taken at L reaches that scalar local alone, or anything above L where L is no scalar's; one
+    // whose register is dead at once is taken nowhere. `taken` holds the ranges an address may reach.
+    std::vector<std::pair<long long, long long>> taken;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        Live live = f.blocks[b].out;
+        for (int k = f.blocks[b].end - 1; k >= f.blocks[b].begin; --k) {
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            f.joinPads(b, k, live);
+            const Instr &i = s[k].ins;
+            if (i.m == "lea" && i.a.isMem() && i.a.reg.id == RBP && i.a.scale == 0 &&
+                !(i.b.kind == Operand::Register && i.b.reg.id >= 0 && !(live.regs & bit(i.b.reg.id)))) {
+                long long upTo = LLONG_MAX;
+                for (const Local &l : fn.locals) if (l.disp == i.a.disp) upTo = l.disp + l.size;
+                taken.push_back({i.a.disp, upTo});
+            } else if (i.m == "lea" && i.a.isMem() && i.a.reg.id == RBP) {
+                taken.push_back({LLONG_MIN, LLONG_MAX});
+            }
+            live.step(f.effects[k]);
+        }
+    }
+    const RegSet headIn = f.blocks[loop.head].in.regs;
+    std::vector<int> free;
+    for (int r = kXmm0; r < kRegs; ++r)
+        if ((fn.convention.clobbered & bit(r)) && !(touched & bit(r)) && !(headIn & bit(r))) free.push_back(r);
+    std::vector<std::pair<long long, int>> plan;     // a slot and the register it is held in
+    for (const auto &r : reads) {
+        if (plan.size() == free.size()) break;
+        const long long d = r.first;
+        bool local = false;
+        for (const Local &l : fn.locals) if (l.disp == d && l.size == 8 && l.floating) local = true;
+        if (!local || fn.shared.overlaps(d, 8)) continue;
+        bool reached = false;
+        for (const auto &t : taken) if (t.first < d + 8 && d < t.second) reached = true;
+        if (reached) continue;
+        bool clash = false;
+        for (long long w : written) if (w < d + 8 && d < w + 16) clash = true;
+        if (clash) continue;
+        plan.push_back({d, free[plan.size()]});
+    }
+    if (plan.empty()) return false;
+    for (const auto &p : plan)
+        for (int k : reads[p.first]) {
+            Instr &i = s[k].ins;
+            i.m = "movapd";
+            i.a = Operand::ofReg(p.second, 16);
+        }
+    const int at = f.blocks[loop.head].begin;
+    for (const auto &p : plan) {
+        Entry e;
+        e.ins = Instr{"movsd", Operand::ofMem(RBP, p.first), Operand::ofReg(p.second, 16), 2};
+        s.insert(s.begin() + at, e);
+    }
+    return true;
+}
+
+}
+
+bool hoistXmmSlots(Function &fn) {
+    bool changed = false;
+    std::set<std::string> done;
+    for (;;) {
+        Flow &f = fn.flow;
+        const Loops &loops = fn.loops();
+        const Loops::Loop *pick = nullptr;
+        for (const Loops::Loop &l : loops.all()) {
+            const Entry &head = fn.stream[f.blocks[l.head].begin];
+            if (head.kind != Entry::Label || done.count(head.label)) continue;
+            if (pick == nullptr || l.blocks.size() < pick->blocks.size()) pick = &l;
+        }
+        if (pick == nullptr) break;
+        done.insert(fn.stream[f.blocks[pick->head].begin].label);
+        f.live(fn.stream);
+        if (!hoistXmmSlotsIn(fn, *pick)) continue;
+        changed = true;
+        fn.buildFlow();
+    }
+    return changed;
 }
 
 // **Loop-invariant code motion, after allocation**: a computation of what the

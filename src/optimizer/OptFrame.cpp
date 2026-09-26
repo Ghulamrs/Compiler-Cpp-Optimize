@@ -50,7 +50,7 @@ std::vector<Local> promotableLocals(const Stream &s, const std::vector<Local> &l
                                     RegSet &mentioned) {
     std::vector<Candidate> cands;
     for (const Local &l : locals)
-        if ((l.size == 4 || l.size == 8) && !shared.overlaps(l.disp, l.size)) cands.push_back(Candidate{l});
+        if (!l.floating && (l.size == 4 || l.size == 8) && !shared.overlaps(l.disp, l.size)) cands.push_back(Candidate{l});
     mentioned = 0;
     auto overlapping = [&](long long disp, int width, const std::function<void(Candidate &)> &f) {
         for (Candidate &cd : cands)

@@ -120,7 +120,7 @@ void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Lo
     inlineBase_ = base;
     fn_.inlineTop = std::max(fn_.inlineTop, base + ((calleeFrame + 15) & ~15));
     std::vector<opt::Local> moved;
-    for (const opt::Local &l : scalars) moved.push_back(opt::Local{l.disp - base, l.size});
+    for (const opt::Local &l : scalars) moved.push_back(opt::Local{l.disp - base, l.size, l.floating});
     std::sort(moved.begin(), moved.end(),
               [](const opt::Local &x, const opt::Local &y) { return x.disp < y.disp; });
     long long at = -static_cast<long long>(base + calleeFrame);
@@ -138,7 +138,7 @@ void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Lo
     for (const opt::Local &m : moved) {
         bool listed = opaque(m);
         for (const opt::Local &have : fn_.locals)
-            if (have.disp == m.disp && have.size == m.size) listed = true;
+            if (have.disp == m.disp && have.size == m.size && have.floating == m.floating) listed = true;
         if (!listed) fn_.locals.push_back(m);
     }
 }

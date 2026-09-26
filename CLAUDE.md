@@ -10717,3 +10717,20 @@ first version counted from zero on each run of the pass, rounds run it again,
 and `.L._Z5sievei.rot.0` was defined twice - the assembler said so on the Linux
 box and on no other, the Mac's own target being arm64. Both label kinds the
 pass makes share one `fresh()` now.
+
+## A double the loop only reads, held in a free xmm register, 2026-09-27
+
+`hoist-xmm-slots`, after allocation: a `movsd slot, %xmmK` in a loop with no
+call, one fallthrough entry and no write to the slot is loaded once in front of
+the loop into a caller-saved xmm register the loop leaves alone (xmm0-5 on
+Windows, any on SysV), and each read becomes a register copy.
+
+**The slot has to be a local and nobody's address.** The walker listed only
+integer and pointer locals; floating ones are listed now, marked `floating`,
+and promotion skips them exactly as it did. An address taken of a scalar local
+reaches that local alone; one taken of anything else reaches every slot above
+it; an `lea` whose register is dead at once takes nothing - matmul's return
+slot was exactly that.
+
+Priced by hand first: rotated + 64-bit counter + x in a register took matmul
+from 10 ms to 6 on Windows, and x alone was worth nothing, as S12 had found.
