@@ -5,11 +5,25 @@
 // naming any of the concrete classes includes this one, and a header deriving
 // from it needs only this one too. `<stdexcept>` includes it.
 //
+// **The class is the platform runtime's, not this header's**, on the two
+// hosts: the destructor and `what()` are declared and not defined, so cpp11
+// references `_ZNSt9exceptionD1Ev`, `_ZNKSt9exception4whatEv`, `_ZTVSt9exception`
+// and `_ZTISt9exception` in libc++abi or libstdc++ - measured exported by both
+// - and the key-function rule keeps it from emitting a vtable or a type_info
+// of its own. That is what lets a `std::bad_alloc` the runtime's `operator
+// new` throws be caught here as `std::exception &`: one type_info, the
+// runtime's, on both sides. The constructors are inline as the libraries'
+// own headers have them, and store the runtime's vptr.
+//
+// x86_64-windows has no such symbols - MSVC's `std::exception` is inline in
+// vcruntime_exception.h over `__std_exception_data` - so it is written out
+// here in that layout, over the two CRT functions cl's own header calls; a
+// type descriptor is matched by name on that ABI, so a copy is harmless. The
+// C6000 keeps a self-contained class: the emulator that runs the suite has
+// no C++ runtime library to take one from.
+//
 // What is NOT here is the rest of [exception]: `terminate`, `set_terminate`,
 // `uncaught_exception`, `exception_ptr`, `current_exception`, `nested_exception`.
-// The first three would be a runtime this compiler does not ship; the rest are
-// C++11 machinery for moving an exception between threads, and there are no
-// threads here. Named rather than silently absent.
 //
 // **`what()` is virtual and const, and returns a pointer the caller does not
 // own.** [exception]/8 says the string is valid until the object is destroyed
@@ -18,14 +32,50 @@
 #ifndef _CXX1_EXCEPTION
 #define _CXX1_EXCEPTION
 
+#if defined(_WIN32)
+struct __std_exception_data {
+    const char *what;
+    bool doFree;
+};
+extern "C" void __std_exception_copy(const __std_exception_data *, __std_exception_data *);
+extern "C" void __std_exception_destroy(__std_exception_data *);
+#endif
+
 namespace std {
 
+#if defined(_WIN32)
+class exception {
+public:
+    exception() { data_.what = 0; data_.doFree = false; }
+    exception(const char *msg) { data_.what = 0; data_.doFree = false;
+                                 __std_exception_data d; d.what = msg; d.doFree = true;
+                                 __std_exception_copy(&d, &data_); }
+    exception(const char *msg, int) { data_.what = msg; data_.doFree = false; }
+    exception(const exception &o) { data_.what = 0; data_.doFree = false;
+                                    __std_exception_copy(&o.data_, &data_); }
+    virtual ~exception() { __std_exception_destroy(&data_); }
+    virtual const char *what() const {
+        if (data_.what) return data_.what;
+        return "Unknown exception";
+    }
+private:
+    __std_exception_data data_;
+};
+#elif defined(__TMS320C6X__)
 class exception {
 public:
     exception() {}
     virtual ~exception() {}
     virtual const char *what() const { return "std::exception"; }
 };
+#else
+class exception {
+public:
+    exception() {}
+    virtual ~exception();
+    virtual const char *what() const;
+};
+#endif
 
 }  // namespace std
 

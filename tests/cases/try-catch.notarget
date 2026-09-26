@@ -1,1 +1,0 @@
-x86_64-windows  every handler in this case ends with `return`, and on this target a handler is a funclet - leaving one early means handing back the address to carry on at in the register a return value would use, which is not built yet. try-catch-value.cpp is the same feature with handlers that fall off their end, and it runs on all three.

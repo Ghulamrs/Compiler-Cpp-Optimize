@@ -98,6 +98,8 @@ private:
         // good, the ordinary one wins. Its unbound parameter list serves [temp.func.order].
         bool fromTemplate = false;
         const Type *pattern = nullptr;
+        // Defined inside its class, so [dcl.inline]/6 makes it inline and never the key function.
+        bool inlineBody = false;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -1059,6 +1061,11 @@ private:
     // what first calls another's.
     void defineImplicitFunctions();
     void synthesizeDefaultCtor(std::size_t which);
+    // The vtable, type_info and name string each class emitted, by tag, so the key-function rule can take them back.
+    std::map<std::string, std::vector<std::string> > classSymbols_;
+    bool keyFunctionUndefined(const std::string &tag) const;
+    void pruneExternalVtables(Program &program);
+    void markInlineBody(std::size_t which) { if (which != PendingBody::npos()) functions_[which].inlineBody = true; }
     // One body for both halves of the copy. They differ in three places -
     // which member function to call, whether the vptr is stored, and whether
     // there is a value to return - and in nothing else.
@@ -1114,12 +1121,25 @@ private:
         int slot;
         const Type *type;
         int flag;
+        // Storage a new-expression allocated and is still building in: [expr.new]/20
+        // gives it back through the matching deallocation function if that throws.
+        bool newStorage = false;
+        bool newArray = false, newNothrow = false;
+        int newCookie = 0;
         // **The storage `__cxa_allocate_exception` handed back**, which is a
         // temporary of the throw's own full expression and is released with
         // `__cxa_free_exception` rather than destroyed.
         bool exceptionStorage = false;
     };
 
+    // **The ways out of a Microsoft handler**, one record per `try`: a funclet
+    // cannot jump into its parent, so each early exit names a label the parent
+    // lays down after the `try` and hands it back as the address to carry on at.
+    struct MsExit {
+        std::string ret, brk, cont;   // the labels, empty until an exit asks
+        int retSlot = 0;              // the returned value, saved for the parent
+        std::string retTemp;
+    };
     // **Everything that belongs to the function currently being parsed.** cxx1
     // re-enters parsing from a saved token index in eight places.
     struct FunctionState {
@@ -1155,6 +1175,7 @@ private:
         std::vector<SwitchCtx> switches;
         std::vector<std::size_t> breakMarks;
         bool inTryBody = false, inMsHandler = false, inHandlerBody = false;
+        MsExit *msExit = nullptr;
         int handlerDepth = 0;
         std::vector<int> handlerLoopDepth, handlerSwitchDepth;
         std::vector<std::size_t> handlerFrom;
@@ -1536,12 +1557,20 @@ private:
 
     ExprPtr newExpression(std::size_t pos);
     ExprPtr deleteExpression(std::size_t pos);
+    // `p->~T()`, `o.~T()`, `p->B::~B()` and the pseudo-destructor on a scalar; null, nothing read, when the tokens are not that.
+    ExprPtr explicitDestructorCall(ExprPtr &object, std::size_t pos);
+    // The virtual destructor read out of the object held in `temp`: Itanium's D1 or D0 slot, Microsoft's `??_G` with the flag.
+    ExprPtr virtualDestructorCall(const std::string &temp, int slot, const Type *t,
+                                  const Type *cls, bool deleting, std::size_t pos);
     // `try { ... } catch (T e) { ... }` - rung 6.3.
     StmtPtr tryStatement(std::size_t pos);
     // Set while a try's body is read, so a try inside one is refused.
     bool inTryBody_ = false;
     // Inside a Microsoft `catch` body, which is compiled as a funclet - a function of its own.
     bool inMsHandler_ = false;
+    MsExit *msExit_ = nullptr;
+    int msUnwindHelp();          // a fresh slot; the walker keeps one per function
+    std::string msExitLabel(std::string &label, const char *kind);
     // Inside a handler's own block, on any target.
     bool inHandlerBody_ = false;
     // **How many Itanium handlers the statement being parsed is inside**, and
@@ -1585,6 +1614,8 @@ private:
     // `throw x;` - rung 6.2. Answers the statement it lowers to.
     StmtPtr throwStatement(ExprPtr value, std::size_t pos);
     StmtPtr microsoftThrow(ExprPtr value, std::size_t pos);
+    // The copy constructors and destructor a Microsoft ThrowInfo chain names, marked used, and the chain recorded.
+    void finishMicrosoftThrow(MicrosoftThrow &names, bool thrown);
     // A call to something in the runtime, named by its symbol and needing no
     // declaration - the same shape callAllocator has used for operator new.
     // A temporary built by a named constructor from arguments already parsed.
@@ -1630,6 +1661,12 @@ private:
     const Signature *classAllocator(const Type *made, const char *which);
     ExprPtr typeidExpression(std::size_t pos);
     ExprPtr deallocate(const Type *pointee, ExprPtr raw, std::size_t pos);
+    ExprPtr deallocateArray(const Type *pointee, ExprPtr raw, std::size_t pos);
+    // `new (a, b) T`: the `operator new` the placement arguments reach, class first.
+    ExprPtr userPlacementAllocation(const Type *made, bool array, ExprPtr bytes,
+                                    std::vector<ExprPtr> &extra, std::size_t pos);
+    ExprPtr callNothrowDeallocator(bool array, ExprPtr raw);
+    ExprPtr callNothrowAllocator(bool array, ExprPtr bytes, ExprPtr tag, std::size_t pos);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;

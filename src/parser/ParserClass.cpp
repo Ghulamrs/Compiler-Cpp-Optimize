@@ -734,7 +734,7 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
-    const int helpSlot = allocateFrameSlot(voidPtr);
+    const int helpSlot = msUnwindHelp();
     functionHasPads_ = true;
 
     std::vector<StmtPtr> out;
@@ -839,6 +839,25 @@ void Parser::releaseGuarded(std::vector<StmtPtr> &steps, const Temporary &t) {
         both.push_back(StmtPtr(new ExprStmt(
             runtimeCall("__cxa_free_exception", types_.get(Kind::Void),
                         std::move(args)))));
+    } else if (t.newStorage) {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+        ExprPtr held(Var::local("$copy", t.slot));
+        held->setType(chars);
+        if (t.newCookie != 0) {
+            // The allocation began a cookie before the first element.
+            ExprPtr back(new Num(static_cast<long long>(-t.newCookie)));
+            back->setType(types_.intType());
+            ExprPtr start(new Binary(BinOp::Add, std::move(held), std::move(back)));
+            start->setType(chars);
+            held = std::move(start);
+        }
+        ExprPtr raw(new Cast(voidPtr, std::move(held)));
+        raw->setType(voidPtr);
+        ExprPtr give = t.newNothrow ? callNothrowDeallocator(t.newArray, std::move(raw))
+                     : t.newArray  ? deallocateArray(t.type, std::move(raw), 0)
+                                   : deallocate(t.type, std::move(raw), 0);
+        both.push_back(StmtPtr(new ExprStmt(std::move(give))));
     } else {
         const Signature *dtor = destructorOf(t.type);
         if (dtor == nullptr) return;
@@ -1533,6 +1552,7 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                          : itaniumClassTypeInfoSymbol(tag);
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == ti) return ti;      // one per class
+    classSymbols_[tag].push_back(ti);
 
     // **Which of the three shapes this class is.**
     std::vector<Type::BaseSpec> bases;
@@ -1557,6 +1577,7 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     const bool own = cls->unqualified()->tag() == tag;
     const std::string ts = own ? itaniumClassTypeNameSymbol(cls)
                                : itaniumClassTypeNameSymbol(tag);
+    classSymbols_[tag].push_back(ts);
     const std::string text = own ? itaniumClassNameString(cls)
                                  : itaniumClassNameString(tag);
     std::vector<GlobalPiece> letters;
@@ -1705,6 +1726,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class
+    classSymbols_[tag].push_back(symbol);
 
     // **The table holding a function's address is a use of it.** The `used` flag came
     // only from calls, so a class with an implicit virtual destructor got a table
@@ -2146,8 +2168,9 @@ std::string Parser::vectorDestructor(const Type *cls, std::size_t pos) {
 int Parser::arrayCookie(const Type *elem) const {
     if (destructorOf(elem->unqualified()) == nullptr) return 0;
     const int sizeT = types_.get(target_.sizeType())->size(target_);
+    const int words = target_.armArrayCookie() ? 2 * sizeT : sizeT;
     const int align = elem->align(target_);
-    return align > sizeT ? align : sizeT;
+    return align > words ? align : words;
 }
 
 // **A default constructor is one that can be called with no arguments, not one whose
@@ -3053,6 +3076,48 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     }
     frameSize_ = savedFrame;
     vttSlot_ = savedVtt;
+}
+
+// [class.virtual]'s key function, as the Itanium ABI reads it: the first
+// non-pure virtual member declared in the class and not defined inline. Where
+// that one is not defined in this unit, the vtable and type_info are not either.
+bool Parser::keyFunctionUndefined(const std::string &tag) const {
+    std::map<std::string, std::vector<VSlot> >::const_iterator vt = vtables_.find(tag);
+    for (std::size_t i = 0; i < functions_.size(); i++) {
+        const Signature &f = functions_[i];
+        if (f.owner != tag || !f.isVirtual || f.implicit || f.inlineBody) continue;
+        bool pure = false;
+        if (vt != vtables_.end())
+            for (std::size_t k = 0; k < vt->second.size(); k++)
+                if (vt->second[k].pure && overrides(vt->second[k], f.name, f.params, f.constThis))
+                    pure = true;
+        if (pure) continue;
+        return !f.defined;
+    }
+    return false;
+}
+
+// A class whose key function lives in another unit gets its vtable, its
+// type_info and its deleting destructor from there: clang emits none of the
+// three, and so `std::exception`'s are the runtime's rather than a copy.
+void Parser::pruneExternalVtables(Program &program) {
+    if (target_.microsoftNames()) return;   // cl emits every vftable, as a COMDAT
+    for (std::map<std::string, std::vector<std::string> >::const_iterator it =
+             classSymbols_.begin(); it != classSymbols_.end(); ++it) {
+        const Type *cls = findTypedef(it->first);
+        if (cls != nullptr && cls->unqualified()->isSpecialization()) continue;
+        if (!keyFunctionUndefined(it->first)) continue;
+        std::vector<std::string> gone = it->second;
+        gone.push_back(deletingDestructorSymbol(it->first));
+        for (std::size_t g = 0; g < gone.size(); g++) {
+            for (std::size_t i = program.globals.size(); i-- > 0; )
+                if (program.globals[i].symbol == gone[g])
+                    program.globals.erase(program.globals.begin() + static_cast<long>(i));
+            for (std::size_t i = program.functions.size(); i-- > 0; )
+                if (program.functions[i].symbol() == gone[g])
+                    program.functions.erase(program.functions.begin() + static_cast<long>(i));
+        }
+    }
 }
 
 // **To a fixed point, because a body can be what first calls another.** Giving

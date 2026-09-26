@@ -1,1 +1,0 @@
-x86_64-windows  the case catches std::out_of_range by class, which is the class-typed throw throw-class.notarget records as its own step on this ABI. <string> itself compiles for the target: its __throw_out_of_range reports the failure and aborts there instead of throwing, which the header says.

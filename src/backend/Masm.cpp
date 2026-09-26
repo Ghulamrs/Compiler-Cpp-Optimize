@@ -487,7 +487,6 @@ void MasmSpelling::closeDataBlock() {
     dataBlockUsed_ = false;
 }
 
-
 void MasmSpelling::textSection() {
     flushPending();
     closeDataBlock();
@@ -679,6 +678,12 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
     closeFunclet("  lea rax, " + masm_.labelName(resume) + "\n");
 }
 
+// An early exit: the continuation in rax, then the funclet's epilogue.
+void MasmCodeGen::funcletLeave(const std::string &label) {
+    a_->ins("lea", rip(label), reg("%rax"));
+    a_->ins("jmp", lbl("$LNleave$" + funcletSymbol_));
+}
+
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
     // The text around the body: the head, then the body as written out,
@@ -700,6 +705,7 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     // allocation, so the handler reaches the parent's locals with no adjustment.
     head += "  mov rbp, rdx\n";
     f += tail;
+    f += "$LNleave$" + sym + ":\n";
     f += "  add rsp, 32\n";
     f += "  pop rbp\n";
     f += "  ret 0\n";
@@ -741,52 +747,8 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     if (optimizer_) optimizer_->funcletEnd();
 }
 
-// The four FH3 tables, written after the function they describe. **Every offset is
-// measured from the establisher frame**, so a slot at [rbp-N] is at frameSize-N.
-// **And a cleanup is a state, not a try block**: its action is the funclet.
-void MasmCodeGen::emitCleanupTables(const Function &fn) {
-    (void)fn;
-    const std::string m = masm_.mangledName();
-    const std::size_t states = msTries().size();
-
-    std::string o;
-    o += funclets_;
-    funclets_.clear();
-    funcletIndex_ = 0;
-
-    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
-    o += "$cppxdata$" + m + " DD 019930522H\n";
-    o += "  DD " + std::to_string(states) + "\n";
-    o += "  DD imagerel $stateUnwindMap$" + m + "\n";
-    o += "  DD 00H\n";                      // no try blocks
-    o += "  DD 00H\n";                      // and so no try map
-    o += "  DD " + std::to_string(states + 1) + "\n";
-    o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  DD 00H\n";
-    o += "  DD 01H\n";
-
-    o += "$stateUnwindMap$" + m;
-    for (std::size_t k = 0; k < states; k++) {
-        o += (k == 0 ? " DD " : "  DD ");
-        // toState: the region before this one, and -1 for the first, which is
-        // what says "nothing further in this frame".
-        o += (k == 0 ? std::string("0ffffffffH") : std::to_string(k - 1)) + "\n";
-        o += "  DD imagerel " + msTries()[k].cleanupFunclet + "\n";
-    }
-
-    o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
-    o += "  DD 0ffffffffH\n";
-    for (std::size_t k = 0; k < states; k++) {
-        o += "  DD imagerel " + masm_.labelName(msTries()[k].begin) + "\n";
-        o += "  DD " + std::to_string(k) + "\n";
-    }
-    o += ".xdata ENDS\n\n.CODE\n";
-    out_ += o;
-}
-
 void MasmCodeGen::emitExceptionTables(const Function &fn) {
-    if (msTries().empty()) {
+    if (msStates().empty()) {
         if (!callSites().empty()) emitLsda(fn.symbol(), false);
         out_ += funclets_;
         funclets_.clear();
@@ -795,89 +757,80 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     }
 
     const std::string m = masm_.mangledName();
-
-    // **Cleanups and handlers never share a function**, which the parser enforces on every target.
-    if (msTries()[0].isCleanup) { emitCleanupTables(fn); return; }
-
-    const std::size_t tries = msTries().size();
+    const std::vector<MsState> &states = msStates();
+    const std::vector<MsTryBlock> &tries = msTryBlocks();
     std::string o;
     o += funclets_;
     funclets_.clear();
     funcletIndex_ = 0;
 
-    // **Two states per try**.
-    const std::size_t states = 2 * tries;
-
-    std::size_t ipRows = 0;
-    for (std::size_t k = 0; k < tries; k++)
-        ipRows += 2 + msTries()[k].handlers.size();
-
+    // **Every offset is measured from the establisher frame**, so a slot at
+    // [rbp-N] is at frameSize-N; a cleanup is a state whose action is its funclet.
     o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
     o += "$cppxdata$" + m + " DD 019930522H\n";
-    o += "  DD " + std::to_string(states) + "\n";
+    o += "  DD " + std::to_string(states.size()) + "\n";
     o += "  DD imagerel $stateUnwindMap$" + m + "\n";
-    o += "  DD " + std::to_string(tries) + "\n";
-    o += "  DD imagerel $tryMap$" + m + "\n";
-    o += "  DD " + std::to_string(ipRows + 1) + "\n";
+    o += "  DD " + std::to_string(tries.size()) + "\n";
+    o += tries.empty() ? "  DD 00H\n" : "  DD imagerel $tryMap$" + m + "\n";
+    o += "  DD " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
+    o += "  DD " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
     o += "  DD 00H\n";                      // no exception specification
     o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
 
-    // No cleanups yet, so every state unwinds to nothing and runs nothing.
     o += "$stateUnwindMap$" + m;
-    for (std::size_t i = 0; i < states; i++)
-        o += (i == 0 ? " DD 0ffffffffH\n" : "  DD 0ffffffffH\n") + std::string("  DD 00H\n");
+    for (std::size_t k = 0; k < states.size(); k++) {
+        o += (k == 0 ? " DD " : "  DD ");
+        o += (states[k].toState < 0 ? std::string("0ffffffffH")
+                                    : std::to_string(states[k].toState)) + "\n";
+        o += states[k].action.empty() ? "  DD 00H\n"
+                                      : "  DD imagerel " + states[k].action + "\n";
+    }
 
-    o += "$tryMap$" + m;
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += (k == 0 ? " DD " : "  DD ") + std::to_string(2 * k) + "\n";   // tryLow
-        o += "  DD " + std::to_string(2 * k) + "\n";                       // tryHigh
-        o += "  DD " + std::to_string(2 * k + 1) + "\n";                   // catchHigh
-        o += "  DD " + std::to_string(r.handlers.size()) + "\n";
+    if (!tries.empty()) o += "$tryMap$" + m;
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += (k == 0 ? " DD " : "  DD ") + std::to_string(tries[k].tryLow) + "\n";
+        o += "  DD " + std::to_string(tries[k].tryHigh) + "\n";
+        o += "  DD " + std::to_string(tries[k].catchHigh) + "\n";
+        o += "  DD " + std::to_string(tries[k].handlers.size()) + "\n";
         o += "  DD imagerel $handlerMap$" + std::to_string(k) + "$" + m + "\n";
     }
 
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
+    for (std::size_t k = 0; k < tries.size(); k++) {
         o += "$handlerMap$" + std::to_string(k) + "$" + m;
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            const MsHandlerRow &h = r.handlers[i];
+        for (std::size_t i = 0; i < tries[k].handlers.size(); i++) {
+            const MsHandlerRow &h = tries[k].handlers[i];
             // 0x40 is HT_IsCatchAll, and a catch-all names no type; 0x08 is
             // HT_IsReference, which tells the runtime to put the object's
             // address in the slot rather than a copy of it. Measured.
             o += (i == 0 ? " DD " : "  DD ");
             o += h.descriptor.empty() ? "040H\n"
-                                      : (h.byReference ? "08H\n" : "00H\n");
+                                      : std::to_string((h.byReference ? 8 : 0) |
+                                                       (h.constPointer ? 1 : 0)) + "\n";
             o += h.descriptor.empty() ? "  DD 00H\n"
                                       : "  DD imagerel " + h.descriptor + "\n";
             o += "  DD " + std::to_string(h.objectSlot == 0
                                               ? 0 : establisherOffset(h.objectSlot)) + "\n";
             o += "  DD imagerel " + h.funclet + "\n";
-            // The frame size itself, not an offset into it: what the runtime
-            // adds to the establisher to reach the handler's own frame.
-            o += "  DD " + std::to_string(masm_.frameSize_) + "\n";
+            // dispFrame: where the funclet saved the parent's frame pointer, from
+            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
+            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            o += "  DD 56\n";
         }
     }
 
-    // Where each state begins. -1 is "outside any try", and a funclet is
-    // wholly inside its own handler state.
+    // Where each state begins, in address order; a funclet is wholly inside
+    // its own handler state.
     o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
     o += "  DD 0ffffffffH\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  DD imagerel " + masm_.labelName(r.begin) + "\n";
-        o += "  DD " + std::to_string(2 * k) + "\n";
-        o += "  DD imagerel " + masm_.labelName(r.end) + "\n";
-        o += "  DD 0ffffffffH\n";
+    for (std::size_t k = 0; k < msIpRows().size(); k++) {
+        o += "  DD imagerel " + masm_.labelName(msIpRows()[k].label) + "\n";
+        o += "  DD " + (msIpRows()[k].state < 0 ? std::string("0ffffffffH")
+                                                  : std::to_string(msIpRows()[k].state)) + "\n";
     }
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            o += "  DD imagerel " + r.handlers[i].funclet + "\n";
-            o += "  DD " + std::to_string(2 * k + 1) + "\n";
-        }
+    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
+        o += "  DD imagerel " + msFuncletRows()[k].label + "\n";
+        o += "  DD " + std::to_string(msFuncletRows()[k].state) + "\n";
     }
     o += ".xdata ENDS\n\n.CODE\n";
     out_ += o;
@@ -889,8 +842,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 // For ml64, which cannot say COMDAT, the records share one plain segment:
 // `first` opens it, and the others follow in it.
 std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
-                                bool first) {
-    const std::string open = std::string(segment) + " SEGMENT READONLY ALIGN(" +
+                                bool first, bool writable) {
+    const std::string open = std::string(segment) + (writable ? " SEGMENT ALIGN(" : " SEGMENT READONLY ALIGN(") +
                              std::to_string(align) + ") 'DATA'";
     if (!masm_.comdat()) return first ? open + "\n" : std::string();
     masm_.globl(name);
@@ -924,16 +877,19 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
             contained++;
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        o += record(".rdata$r", 8, n.descriptor, true);
+        // **The descriptor is writable** - its spare word caches the undecorated
+        // name - so `.data`; the four records below it are `.rdata$r`.
+        o += record(".data", 16, n.descriptor, true, true);
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
+        o += ".data ENDS\n";
+        msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual. Those
         // four numbers are constant because a class with a second base is
         // refused - its first base is always at offset zero.
-        o += record(".rdata$r", 4, n.baseDescriptor, false);
+        o += record(".rdata$r", 4, n.baseDescriptor, true);
         o += n.baseDescriptor + " DD imagerel " + n.descriptor + "\n";
         o += "  DD 0" + std::to_string(contained) + "H\n";
         o += "  DD 00H\n";              // mdisp
@@ -971,39 +927,42 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
 }
 
 void MasmCodeGen::emitThrowInfo(const Program &program) {
-    if (program.thrown.empty()) return;
+    if (program.msThrows.empty()) return;
     std::string &o = out_;
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        const Type *t = program.thrown[i];
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
-
-        // **Public and a COMDAT where the assembler can say so**, as cl writes it;
-        // for ml64, private to the object, the one unit it links.
-        o += record(".rdata$r", 8, n.descriptor, true);
-        // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
-        // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
-        // has no such keyword, so the listing records what cl means.
-        o += n.descriptor + " DQ ??_7type_info@@6B@\n";
-        o += "  DQ 0\n";
-        o += "  DB '" + n.decorated + "', 00H\n";
-        o += ".rdata$r ENDS\n";
-
-        o += record(".xdata$x", 8, n.catchable, true);
-        o += n.catchable + " DD 01H\n";
-        o += "  DD imagerel " + n.descriptor + "\n";
-        o += "  DD 00H\n";
-        o += "  DD 0ffffffffH\n";
-        o += "  ORG $+4\n";
-        o += "  DD 0" + std::to_string(n.size) + "H\n";
-        o += "  DD 00H\n";
-        o += record(".xdata$x", 4, n.array, false);
-        o += n.array + " DD 01H\n";
-        o += "  DD imagerel " + n.catchable + "\n";
+    std::set<std::string> catchables;
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        for (std::size_t k = 0; k < n.catchables.size(); k++) {
+            const MicrosoftThrow::Catchable &c = n.catchables[k];
+            // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
+            // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
+            // has no such keyword, so the listing records what cl means.
+            if (msDescriptors_.insert(c.descriptor).second) {
+                o += record(".data", 16, c.descriptor, true, true);
+                o += c.descriptor + " DQ ??_7type_info@@6B@\n";
+                o += "  DQ 0\n";
+                o += "  DB '" + c.decorated + "', 00H\n";
+                o += ".data ENDS\n";
+            }
+            if (!n.thrown || !catchables.insert(c.name).second) continue;
+            o += record(".xdata$x", 8, c.name, true);
+            o += c.name + (c.simple ? " DD 01H\n" : " DD 00H\n");
+            o += "  DD imagerel " + c.descriptor + "\n";
+            o += "  DD " + std::to_string(c.mdisp) + "\n";
+            o += "  DD 0ffffffffH\n";
+            o += "  DD 00H\n";
+            o += "  DD " + std::to_string(c.size) + "\n";
+            o += c.copyCtor.empty() ? "  DD 00H\n" : "  DD imagerel " + c.copyCtor + "\n";
+            o += ".xdata$x ENDS\n";
+        }
+        if (!n.thrown) continue;
+        o += record(".xdata$x", 4, n.array, true);
+        o += n.array + " DD " + std::to_string(n.catchables.size()) + "\n";
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            o += "  DD imagerel " + n.catchables[k].name + "\n";
         o += record(".xdata$x", 4, n.info, false);
-        o += n.info + " DD 00H\n";
-        o += "  DD 00H\n";
+        o += n.info + (n.isConst ? " DD 01H\n" : " DD 00H\n");
+        o += n.destructor.empty() ? "  DD 00H\n" : "  DD imagerel " + n.destructor + "\n";
         o += "  DD 00H\n";
         o += "  DD imagerel " + n.array + "\n";
         o += ".xdata$x ENDS\n";
@@ -1014,13 +973,11 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
 // them in the EXTERN list it writes for everything a call mentions.
 void MasmCodeGen::run(const Program &program) {
     std::vector<std::string> mine;
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(program.thrown[i],
-                                 program.thrown[i]->size(target_), &n, &why))
-            continue;
-        mine.push_back(n.info);
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        if (n.thrown) mine.push_back(n.info);
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            mine.push_back(n.catchables[k].descriptor);
     }
     // **And every class descriptor this file defines**, for the same reason: the spelling writes an
     // EXTERN for each name a call mentions, and these are mentioned by the `lea` in front of every
@@ -1043,7 +1000,7 @@ void MasmCodeGen::run(const Program &program) {
     // **Before the code, not after it.** The base run() flushes what it has
     // built when it finishes, so anything appended afterwards goes to a buffer
     // nobody reads.
-    if (!program.thrown.empty() || !program.rtti.empty())
+    if (!program.msThrows.empty() || !program.rtti.empty())
         out_ += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
     // **A pure virtual's slot names a routine no object file here defines.**
     // GNU as takes an undeclared symbol and leaves it to the linker; ml64 will

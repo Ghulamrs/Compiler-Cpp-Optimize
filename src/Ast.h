@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Type.h"
+#include "Mangle.h"
 
 #include <cstddef>
 #include <memory>
@@ -34,6 +35,7 @@ class Conditional;
 class Comma;
 class Break;
 class Continue;
+class FuncletLeave;
 class Try;
 
 class Visitor {
@@ -66,6 +68,7 @@ public:
     virtual void visit(const Comma &) = 0;
     virtual void visit(const Break &) = 0;
     virtual void visit(const Continue &) = 0;
+    virtual void visit(const FuncletLeave &) = 0;
     virtual void visit(const Try &) = 0;
 };
 
@@ -487,6 +490,17 @@ public:
     void accept(Visitor &v) const override { v.visit(*this); }
 };
 
+// **Leaving a Microsoft handler funclet early**: the runtime carries on at the
+// label named, which the parser laid down in the parent after the `try`.
+class FuncletLeave final : public Stmt {
+public:
+    explicit FuncletLeave(std::string label) : label_(std::move(label)) {}
+    const std::string &label() const { return label_; }
+    void accept(Visitor &v) const override { v.visit(*this); }
+private:
+    std::string label_;
+};
+
 struct Param {
     const Type *type;
     int offset;
@@ -500,6 +514,7 @@ struct MsHandler {
     int objectSlot = 0;        // frame slot for the caught object, 0 if unnamed
     int objectSize = 0;
     bool byReference = false;  // the slot takes the runtime's pointer, not a copy
+    bool constPointer = false; // `catch (const T *)`: HT_IsConst, the const off the name
     StmtPtr body;
 };
 
@@ -549,6 +564,10 @@ public:
     // through the FuncInfo's dispUnwindHelp.
     int unwindHelpSlot() const { return unwindHelpSlot_; }
     void setUnwindHelpSlot(int s) { unwindHelpSlot_ = s; }
+    // The labels a handler funclet may hand back as where to carry on, so the
+    // flow knows the body's calls can reach them.
+    const std::vector<std::string> &msExits() const { return msExits_; }
+    void setMsExits(std::vector<std::string> e) { msExits_ = std::move(e); }
 
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
@@ -557,6 +576,7 @@ private:
     int pointerSlot_;
     int selectorSlot_;
     bool alsoCleanup_ = false;
+    std::vector<std::string> msExits_;
     std::vector<std::string> types_;
     std::vector<int> typeIndices_;
     std::vector<MsHandler> handlers_;
@@ -693,6 +713,8 @@ struct Program {
     std::vector<StringLit> strings;
     // **The types this file throws**, which only the Microsoft backend reads.
     std::vector<const Type *> thrown;
+    // **The Microsoft ThrowInfo chains**, one per type thrown or caught, finished by the parser.
+    std::vector<MicrosoftThrow> msThrows;
     // **The classes wanting a Microsoft run-time description**, five each.
     std::vector<const Type *> rtti;
     // **The function that runs before main** - [basic.start.init]/2.

@@ -1534,6 +1534,7 @@ Program Parser::parse() {
         defineImplicitFunctions();
         if (program.functions.size() == had) break;
     }
+    pruneExternalVtables(program);
     finishDynamicInit(program);
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");

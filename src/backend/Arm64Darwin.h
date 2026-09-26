@@ -18,6 +18,7 @@ public:
     Kind sizeType() const override { return Kind::ULong; }
     Kind wcharType() const override { return Kind::Int; }
     bool microsoftNames() const override { return false; }
+    bool armArrayCookie() const override { return true; }
     const char *name() const override { return "arm64-darwin"; }
 };
 

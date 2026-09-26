@@ -49,6 +49,35 @@ static long long unescape(const std::string &s, std::size_t &i, std::size_t,
     return static_cast<unsigned char>(c);
 }
 
+// [lex.charset]/2: \u takes four hex digits and \U eight; the code point they name.
+static long long universalName(const std::string &s, std::size_t &i, int digits) {
+    long long v = 0;
+    for (int n = 0; n < digits && i < s.size() &&
+                    std::isxdigit(static_cast<unsigned char>(s[i])); n++) {
+        char d = s[i++];
+        v = v * 16 + (std::isdigit(static_cast<unsigned char>(d))
+                          ? d - '0'
+                          : std::tolower(static_cast<unsigned char>(d)) - 'a' + 10);
+    }
+    return v;
+}
+
+// A code point as the UTF-8 bytes a narrow string carries - the execution charset here.
+static void appendUtf8(std::string &text, long long cp) {
+    if (cp < 0x80) { text.push_back(static_cast<char>(cp)); return; }
+    if (cp < 0x800) {
+        text.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    } else if (cp < 0x10000) {
+        text.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        text.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    } else {
+        text.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        text.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        text.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    }
+    text.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+}
+
 // The eleven word-spelled alternative tokens of [lex.digraph] table 2. They are
 // keywords in C++ and not macros, and each behaves in every respect as the
 // operator it spells - so it becomes that token here, spelling apart.
@@ -195,10 +224,18 @@ std::vector<Token> Lexer::tokenize() {
         }
 
         bool wide = false;
+        char prefix = 0;
         if (c == 'L' && i + 1 < s.size() && (s[i + 1] == '\'' || s[i + 1] == '"')) {
             wide = true;
             i++;
             c = s[i];
+        }
+        // [lex.ccon], [lex.string]: u, U and u8 - u8 only on a string.
+        if ((c == 'u' || c == 'U') && i + 1 < s.size() &&
+            (s[i + 1] == '\'' || s[i + 1] == '"')) {
+            prefix = c; wide = true; i++; c = s[i];
+        } else if (c == 'u' && i + 2 < s.size() && s[i + 1] == '8' && s[i + 2] == '"') {
+            prefix = '8'; i += 2; c = s[i];
         }
 
         if (c == '\'') {
@@ -209,12 +246,20 @@ std::vector<Token> Lexer::tokenize() {
 
             while (i < s.size() && s[i] != '\'') {
                 long long one;
-                if (s[i] == '\\') { i++; one = unescape(s, i, start, wide); }
+                if (s[i] == '\\' && i + 1 < s.size() && (s[i + 1] == 'u' || s[i + 1] == 'U')) {
+                    const int digits = s[i + 1] == 'u' ? 4 : 8;
+                    i += 2;
+                    one = universalName(s, i, digits);
+                    if (!wide && one > 0x7F)
+                        src_.fail(start, "a universal character name past U+007F does not fit a char");
+                } else if (s[i] == '\\') { i++; one = unescape(s, i, start, wide); }
                 else one = static_cast<unsigned char>(s[i++]);
                 v = wide ? one : ((v << 8) | (one & 0xff));
                 chars++;
             }
             if (chars == 0) src_.fail(start, "empty character constant");
+            if (prefix != 0 && chars != 1)
+                src_.fail(start, "a u or U character literal holds one character - [lex.ccon]/2");
 
             if (!wide && chars == 1) v = static_cast<signed char>(v);
             bool isChar = (!wide && chars == 1);
@@ -224,7 +269,8 @@ std::vector<Token> Lexer::tokenize() {
             Token t;
             t.kind = TokenKind::Num;
             t.value = v;
-            t.wide = wide;
+            t.wide = wide && prefix == 0;
+            t.prefix = prefix;
             t.isChar = isChar;
             t.pos = start;
             out.push_back(std::move(t));
@@ -236,7 +282,11 @@ std::vector<Token> Lexer::tokenize() {
             std::string text;
             while (i < s.size() && s[i] != '"') {
                 if (s[i] == '\n') src_.fail(start, "unterminated string");
-                if (s[i] == '\\') { i++; text.push_back(static_cast<char>(unescape(s, i, start))); }
+                if (s[i] == '\\' && i + 1 < s.size() && (s[i + 1] == 'u' || s[i + 1] == 'U')) {
+                    const int digits = s[i + 1] == 'u' ? 4 : 8;
+                    i += 2;
+                    appendUtf8(text, universalName(s, i, digits));
+                } else if (s[i] == '\\') { i++; text.push_back(static_cast<char>(unescape(s, i, start))); }
                 else text.push_back(s[i++]);
             }
             if (i >= s.size()) src_.fail(start, "unterminated string");
@@ -244,7 +294,8 @@ std::vector<Token> Lexer::tokenize() {
             Token t;
             t.kind = TokenKind::Str;
             t.text = std::move(text);
-            t.wide = wide;
+            t.wide = wide && prefix == 0;
+            t.prefix = prefix;
             t.pos = start;
             out.push_back(std::move(t));
             continue;
@@ -334,9 +385,11 @@ std::vector<Token> Lexer::tokenize() {
                 const std::string pre = s.substr(start, i - start);
                 // `L` is not here: a wide literal is read further up and
                 // works. What is left is the C++11 set plus the raw forms.
-                if (pre == "R" || pre == "u8" || pre == "u8R" || pre == "u" ||
-                    pre == "U" || pre == "LR" || pre == "uR" || pre == "UR")
-                    src_.fail(start, "a '" + pre + "' literal is not "
+                if (pre == "u8")
+                    src_.fail(start, "a u8 character literal is C++17, and this compiler is C++11");
+                if (pre == "R" || pre == "u8R" || pre == "LR" || pre == "uR" ||
+                    pre == "UR")
+                    src_.fail(start, "a '" + pre + "' literal is a raw string, not "
                                 "supported yet - an ordinary \"...\" is a "
                                 "narrow string of char here");
             }

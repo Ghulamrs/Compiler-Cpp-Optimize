@@ -17,6 +17,8 @@ int LinuxX86_64Target::sizeOf(Kind k) const {
     case Kind::Char: case Kind::SChar: case Kind::UChar:   return 1;
     case Kind::Short: case Kind::UShort:                   return 2;
     case Kind::WChar:                                      return sizeOf(wcharType());
+    case Kind::Char16:                                     return 2;
+    case Kind::Char32:                                     return 4;
     case Kind::Int: case Kind::UInt:                       return 4;
     case Kind::Long: case Kind::ULong:                     return 8;
     case Kind::LongLong: case Kind::ULongLong:             return 8;
@@ -156,7 +158,6 @@ Kind X86_64Linux::genKind(const Type *t) const {
     if (t->kind() == Kind::LongDouble && !isX87(t)) return Kind::Double;
     return t->kind();
 }
-
 
 const char *X86_64Linux::acc(const Type *t) const {
     return t->size(target_) == 8 ? "%rax" : "%eax";
@@ -1634,7 +1635,7 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
     // The tables are written below; tell the spelling whether there are any,
     // so its unwind info does not name a FuncInfo that never appears.
-    if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
+    if (target_.microsoftNames()) a_->noteHasEh(!msStates().empty());
     a_->functionEnd(fn.symbol());
     // The tables below measure slots from the frame as the passes left it.
     if (optimizer_) frameSize_ = optimizer_->frameSize();
@@ -1786,6 +1787,7 @@ public:
     void visit(const Goto &) override {}
     void visit(const Break &) override {}
     void visit(const Continue &) override {}
+    void visit(const FuncletLeave &) override {}
     void visit(const Call &n) override {
         calls.push_back(&n);
         if (inCall == 0) outer.push_back(&n);
@@ -1927,6 +1929,13 @@ void X86_64Linux::endFunclet(const std::string &resume) {
     closeFunclet("  lea " + a_->labelText(resume) + "(%rip), %rax\n");
 }
 
+// An early exit: the continuation in rax, then the funclet's own epilogue,
+// which closeFunclet labels. The jump leaves the stream, so nothing is dead.
+void X86_64Linux::funcletLeave(const std::string &label) {
+    a_->ins("lea", rip(label), reg("%rax"));
+    a_->ins("jmp", lbl("$LNleave$" + funcletSymbol_));
+}
+
 // Write -2 into the runtime's scratch word: the personality routine reads it
 // through the FuncInfo's dispUnwindHelp to know how far this frame had got.
 void X86_64Linux::storeUnwindHelp(int slot) {
@@ -1965,6 +1974,7 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     // handler reaches the parent's locals with no adjustment.
     head += "  mov %rdx, %rbp\n";
     f += tail;
+    f += "\"$LNleave$" + funcletSymbol_ + "\":\n";
     f += "  add $32, %rsp\n";
     f += "  pop %rbp\n";
     f += "  ret\n";
@@ -1990,8 +2000,11 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     f += "  .long \"$cppxdata$" + fnSymbol_ + "\"@IMGREL\n";
     f += "  .text\n";
 
+    // **`.pdata$x`, so the funclets' entries sort after every function's**: an inline
+    // function's COMDAT code lands after `.text`, and a funclet entry among the
+    // functions' put its entry out of order - a throw from inside it found no handler.
     std::string pdata;
-    pdata += "  .section .pdata,\"dr\"" + assoc + "\n";
+    pdata += "  .section .pdata$x,\"dr\"" + assoc + "\n";
     pdata += "  .p2align 2\n";
     pdata += "  .long " + b + "@IMGREL\n";
     pdata += "  .long " + e + "@IMGREL\n";
@@ -2008,10 +2021,11 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
 }
 
 // **The FH3 tables for a frame that only cleans up.**
-void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
+void X86_64Linux::emitCoffEhTables(const Function &fn) {
     (void)fn;
     const std::string m = fnSymbol_;
-    const std::size_t states = msTries().size();
+    const std::vector<MsState> &states = msStates();
+    const std::vector<MsTryBlock> &tries = msTryBlocks();
 
     std::string o;
     o += funclets_;
@@ -2022,33 +2036,68 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
     o += "  .p2align 2\n";
     o += "\"$cppxdata$" + m + "\":\n";
     o += "  .long 0x19930522\n";
-    o += "  .long " + std::to_string(states) + "\n";
+    o += "  .long " + std::to_string(states.size()) + "\n";
     o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
-    o += "  .long 0\n";                     // no try blocks
-    o += "  .long 0\n";                     // and so no try map
-    o += "  .long " + std::to_string(states + 1) + "\n";
+    o += "  .long " + std::to_string(tries.size()) + "\n";
+    if (tries.empty()) o += "  .long 0\n";
+    else o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
+    o += "  .long " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
     o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
-    o += "  .long " +
-         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  .long 0\n";
-    o += "  .long 1\n";
+    o += "  .long " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
+    o += "  .long 0\n";                     // no exception specification
+    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
 
+    // toState, then the action: a cleanup's funclet, or nothing.
     o += "\"$stateUnwindMap$" + m + "\":\n";
-    for (std::size_t k = 0; k < states; k++) {
-        // toState.
-        o += "  .long " + (k == 0 ? std::string("-1") : std::to_string(k - 1)) + "\n";
-        // **A state with no funclet runs nothing, and says so with a zero.**
-        const std::string &act = msTries()[k].cleanupFunclet;
-        if (act.empty()) o += "  .long 0\n";
-        else             o += "  .long " + a_->labelText(act) + "@IMGREL\n";
+    for (std::size_t k = 0; k < states.size(); k++) {
+        o += "  .long " + std::to_string(states[k].toState) + "\n";
+        if (states[k].action.empty()) o += "  .long 0\n";
+        else o += "  .long " + a_->labelText(states[k].action) + "@IMGREL\n";
     }
 
+    if (!tries.empty()) o += "\"$tryMap$" + m + "\":\n";
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += "  .long " + std::to_string(tries[k].tryLow) + "\n";
+        o += "  .long " + std::to_string(tries[k].tryHigh) + "\n";
+        o += "  .long " + std::to_string(tries[k].catchHigh) + "\n";
+        o += "  .long " + std::to_string(tries[k].handlers.size()) + "\n";
+        o += "  .long \"$handlerMap$" + std::to_string(k) + "$" + m + "\"@IMGREL\n";
+    }
+
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += "\"$handlerMap$" + std::to_string(k) + "$" + m + "\":\n";
+        for (std::size_t i = 0; i < tries[k].handlers.size(); i++) {
+            const MsHandlerRow &h = tries[k].handlers[i];
+            // 0x40 is HT_IsCatchAll and names no type; 0x08 is HT_IsReference,
+            // which puts the object's address in the slot rather than a copy.
+            o += "  .long ";
+            o += h.descriptor.empty() ? "0x40\n"
+                                      : std::to_string((h.byReference ? 8 : 0) |
+                                                       (h.constPointer ? 1 : 0)) + "\n";
+            if (h.descriptor.empty()) o += "  .long 0\n";
+            else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(h.objectSlot == 0
+                                  ? 0 : establisherOffset(h.objectSlot)) + "\n";
+            o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
+            // dispFrame: where the funclet saved the parent's frame pointer, from
+            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
+            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            o += "  .long 56\n";
+        }
+    }
+
+    // Where each state begins, in address order: the body's rows as walked,
+    // then the funclets, each wholly inside its own handler state.
     o += "\"$ip2state$" + m + "\":\n";
-    o += "  .long " + a_->labelText(m) + "@IMGREL\n";
+    o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
     o += "  .long -1\n";
-    for (std::size_t k = 0; k < states; k++) {
-        o += "  .long " + a_->labelText(msTries()[k].begin) + "@IMGREL\n";
-        o += "  .long " + std::to_string(k) + "\n";
+    for (std::size_t k = 0; k < msIpRows().size(); k++) {
+        o += "  .long " + a_->labelText(msIpRows()[k].label) + "@IMGREL\n";
+        o += "  .long " + std::to_string(msIpRows()[k].state) + "\n";
+    }
+    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
+        o += "  .long " + a_->labelText(msFuncletRows()[k].label) + "@IMGREL\n";
+        o += "  .long " + std::to_string(msFuncletRows()[k].state) + "\n";
     }
     o += "  .text\n";
     out_ += o;
@@ -2086,11 +2135,14 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         const std::string hi = a_->labelText(n.hierarchy);
         const std::string lo = a_->labelText(n.locator);
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        coffRecord(".rdata$r", d, 3);
+        // **The descriptor is writable** - its spare word caches the undecorated name
+        // __std_type_info_name makes - so `.data`, as cl and clang have it; the four
+        // records below it are `.rdata$r`, and not `.data$r`.
+        coffRecord(".data", d, 3, "dw");
         o += "  .quad \"??_7type_info@@6B@\"\n";
         o += "  .quad 0\n";
         o += "  .asciz \"" + n.decorated + "\"\n";
+        msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual.
         coffRecord(".rdata$r", bd, 2);
@@ -2205,139 +2257,46 @@ void X86_64Linux::emitData(const Program &program) {
     }
 }
 
-// **The FH3 tables for a frame that catches.**
-void X86_64Linux::emitCoffTryTables(const Function &fn) {
-    (void)fn;
-    const std::string m = fnSymbol_;
-    const std::size_t tries = msTries().size();
-
-    std::string o;
-    o += funclets_;
-    funclets_.clear();
-    funcletIndex_ = 0;
-
-    // Two states per try - the body is one and its handlers the next - so try
-    // k owns states 2k and 2k+1, which is what tryLow and tryHigh say.
-    const std::size_t states = 2 * tries;
-    std::size_t ipRows = 0;
-    for (std::size_t k = 0; k < tries; k++)
-        ipRows += 2 + msTries()[k].handlers.size();
-
-    o += "\n  .section .xdata,\"dr\"\n";
-    o += "  .p2align 2\n";
-    o += "\"$cppxdata$" + m + "\":\n";
-    o += "  .long 0x19930522\n";
-    o += "  .long " + std::to_string(states) + "\n";
-    o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
-    o += "  .long " + std::to_string(tries) + "\n";
-    o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
-    o += "  .long " + std::to_string(ipRows + 1) + "\n";
-    o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
-    o += "  .long " +
-         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  .long 0\n";                     // no exception specification
-    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
-
-    // No cleanups in such a frame, so every state unwinds to nothing.
-    o += "\"$stateUnwindMap$" + m + "\":\n";
-    for (std::size_t i = 0; i < states; i++) {
-        o += "  .long -1\n";
-        o += "  .long 0\n";
-    }
-
-    o += "\"$tryMap$" + m + "\":\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  .long " + std::to_string(2 * k) + "\n";          // tryLow
-        o += "  .long " + std::to_string(2 * k) + "\n";          // tryHigh
-        o += "  .long " + std::to_string(2 * k + 1) + "\n";      // catchHigh
-        o += "  .long " + std::to_string(r.handlers.size()) + "\n";
-        o += "  .long \"$handlerMap$" + std::to_string(k) + "$" + m +
-             "\"@IMGREL\n";
-    }
-
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "\"$handlerMap$" + std::to_string(k) + "$" + m + "\":\n";
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            const MsHandlerRow &h = r.handlers[i];
-            // 0x40 is HT_IsCatchAll and names no type; 0x08 is HT_IsReference,
-            // which puts the object's address in the slot rather than a copy.
-            o += "  .long ";
-            o += h.descriptor.empty() ? "0x40\n"
-                                      : (h.byReference ? "0x08\n" : "0\n");
-            if (h.descriptor.empty()) o += "  .long 0\n";
-            else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
-            o += "  .long " + std::to_string(h.objectSlot == 0
-                                  ? 0 : establisherOffset(h.objectSlot)) + "\n";
-            o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
-            // The frame size itself: what the runtime adds to the establisher
-            // to reach the handler's own frame.
-            o += "  .long " + std::to_string(frameSize_ + outgoing_) + "\n";
-        }
-    }
-
-    // Where each state begins. -1 is "outside any try", and a funclet is
-    // wholly inside its own handler state.
-    o += "\"$ip2state$" + m + "\":\n";
-    o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
-    o += "  .long -1\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  .long " + a_->labelText(r.begin) + "@IMGREL\n";
-        o += "  .long " + std::to_string(2 * k) + "\n";
-        o += "  .long " + a_->labelText(r.end) + "@IMGREL\n";
-        o += "  .long -1\n";
-    }
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            o += "  .long " + a_->labelText(r.handlers[i].funclet) + "@IMGREL\n";
-            o += "  .long " + std::to_string(2 * k + 1) + "\n";
-        }
-    }
-    o += "  .text\n";
-    out_ += o;
-}
-
 // The four objects a Microsoft `throw` hands the runtime, spelled for GNU-as:
 // the type descriptor, one catchable type, the array listing it, and the
 // ThrowInfo itself.
 void X86_64Linux::emitCoffThrowInfo(const Program &program) {
-    if (program.thrown.empty()) return;
+    if (program.msThrows.empty()) return;
     std::string &o = out_;
+    std::set<std::string> catchables;
 
-    for (std::size_t i = 0; i < program.thrown.size(); i++) {
-        const Type *t = program.thrown[i];
-        MicrosoftThrow n;
-        std::string why;
-        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
-
-        const std::string d = a_->labelText(n.descriptor);
-        const std::string c = a_->labelText(n.catchable);
+    for (std::size_t i = 0; i < program.msThrows.size(); i++) {
+        const MicrosoftThrow &n = program.msThrows[i];
+        for (std::size_t k = 0; k < n.catchables.size(); k++) {
+            const MicrosoftThrow::Catchable &c = n.catchables[k];
+            if (msDescriptors_.insert(c.descriptor).second) {
+                coffRecord(".data", a_->labelText(c.descriptor), 3, "dw");
+                o += "  .quad \"??_7type_info@@6B@\"\n";
+                o += "  .quad 0\n";
+                o += "  .asciz \"" + c.decorated + "\"\n";
+            }
+            if (!n.thrown || !catchables.insert(c.name).second) continue;
+            coffRecord(".xdata$x", a_->labelText(c.name), 2);
+            o += "  .long " + std::string(c.simple ? "1" : "0") + "\n";   // properties
+            o += "  .long " + a_->labelText(c.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(c.mdisp) + "\n";          // mdisp
+            o += "  .long -1\n";                                        // pdisp: no vbtable
+            o += "  .long 0\n";                                         // vdisp
+            o += "  .long " + std::to_string(c.size) + "\n";           // sizeOrOffset
+            if (c.copyCtor.empty()) o += "  .long 0\n";                 // copyFunction
+            else o += "  .long " + a_->labelText(c.copyCtor) + "@IMGREL\n";
+        }
+        if (!n.thrown) continue;
         const std::string ar = a_->labelText(n.array);
-        const std::string ti = a_->labelText(n.info);
-
-        coffRecord(".rdata$r", d, 3);
-        o += "  .quad \"??_7type_info@@6B@\"\n";
-        o += "  .quad 0\n";
-        o += "  .asciz \"" + n.decorated + "\"\n";
-
-        coffRecord(".xdata$x", c, 2);
-        o += "  .long 1\n";                                  // properties
-        o += "  .long " + d + "@IMGREL\n";                    // the descriptor
-        o += "  .long 0\n";                                   // mdisp
-        o += "  .long -1\n";                                  // pdisp: no vbtable
-        o += "  .zero 4\n";                                   // vdisp, MASM's ORG $+4
-        o += "  .long " + std::to_string(n.size) + "\n";      // sizeOrOffset
-        o += "  .long 0\n";                                   // copyFunction
         coffRecord(".xdata$x", ar, 2);
-        o += "  .long 1\n";                                   // nCatchableTypes
-        o += "  .long " + c + "@IMGREL\n";
-        coffRecord(".xdata$x", ti, 2);
-        o += "  .long 0\n";                                   // attributes
-        o += "  .long 0\n";                                   // pmfnUnwind
-        o += "  .long 0\n";                                   // pForwardCompat
+        o += "  .long " + std::to_string(n.catchables.size()) + "\n";
+        for (std::size_t k = 0; k < n.catchables.size(); k++)
+            o += "  .long " + a_->labelText(n.catchables[k].name) + "@IMGREL\n";
+        coffRecord(".xdata$x", a_->labelText(n.info), 2);
+        o += "  .long " + std::string(n.isConst ? "1" : "0") + "\n";     // attributes
+        if (n.destructor.empty()) o += "  .long 0\n";                   // pmfnUnwind
+        else o += "  .long " + a_->labelText(n.destructor) + "@IMGREL\n";
+        o += "  .long 0\n";                                             // pForwardCompat
         o += "  .long " + ar + "@IMGREL\n";
     }
 }
@@ -2348,8 +2307,8 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
 // IMAGE_COMDAT_SELECT_ANY, the choice functionBegin makes for an inline
 // function; the `.globl` is what lets one unit's copy stand for another's.
 void X86_64Linux::coffRecord(const char *section, const std::string &label,
-                             int p2align) {
-    out_ += std::string("  .section ") + section + ",\"dr\",discard," + label + "\n";
+                             int p2align, const char *flags) {
+    out_ += std::string("  .section ") + section + ",\"" + flags + "\",discard," + label + "\n";
     out_ += "  .globl " + label + "\n";
     out_ += "  .p2align " + std::to_string(p2align) + "\n";
     out_ += label + ":\n";

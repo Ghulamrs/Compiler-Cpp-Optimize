@@ -1,10 +1,94 @@
-// <new> - the placement pair, as the library declares it. A new-expression
-// here reads `new (p) T` as a built-in that builds T at p and calls
-// nothing, which is what this pair does; the replaceable `operator
-// new(size_t)` and `operator delete(void *)` need no declaration to be
-// replaced, a definition of either being the replacement.
+// <new> - [support.dynamic], as C++11 declares it, over the platform's own
+// runtime rather than a copy of it.
+//
+// **These are ABI objects, and the header declares them so cpp11 references
+// the runtime's**: `std::bad_alloc`'s destructor, `what()`, vtable and
+// type_info, `std::bad_array_new_length`'s, `std::nothrow`, `set_new_handler`,
+// `get_new_handler` and the four nothrow operators all live in libc++abi /
+// libstdc++ on the hosts (measured, symbol by symbol, on the Mac; the
+// libstdc++ export list on Linux) and in libcmt and libcpmt on Windows
+// (measured with dumpbin). What is defined here is only what those libraries
+// define inline too: the constructors, and the placement pair, which the
+// standard makes non-replaceable and which a new-expression here reads as a
+// built-in that builds at the address and calls nothing.
+//
+// `new (std::nothrow) T` calls the nothrow allocator and initialises nothing
+// when it answers null - [expr.new]/13; `new (p) T[n]` adds no cookie -
+// [expr.new]/12, measured from clang on both ABIs for a class with a
+// destructor. The replaceable `operator new(size_t)` and `operator delete(void
+// *)` need no declaration to be replaced, a definition of either being the
+// replacement.
+//
+// x86_64-windows: `std::bad_alloc` follows the MSVC layout `<exception>`
+// gives its base; catching one the CRT threw needs a class throw and catch on
+// that ABI, which is refused by name there. The C6000: the emulator has no
+// nothrow allocator and no new handler, so a program using either compiles and
+// does not run there; `bad_alloc` is self-contained as its base is.
 #pragma once
 #include <cstddef>
+#include <exception>
+
+namespace std {
+
+struct nothrow_t {};
+extern const nothrow_t nothrow;
+
+typedef void (*new_handler)();
+new_handler set_new_handler(new_handler) throw();
+new_handler get_new_handler() throw();
+
+#if defined(_WIN32)
+class bad_alloc : public exception {
+public:
+    bad_alloc() : exception("bad allocation", 1) {}
+    virtual ~bad_alloc() {}
+protected:
+    bad_alloc(const char *msg) : exception(msg, 1) {}
+};
+
+class bad_array_new_length : public bad_alloc {
+public:
+    bad_array_new_length() : bad_alloc("bad array new length") {}
+    virtual ~bad_array_new_length() {}
+};
+#elif defined(__TMS320C6X__)
+class bad_alloc : public exception {
+public:
+    bad_alloc() {}
+    virtual ~bad_alloc() {}
+    virtual const char *what() const { return "std::bad_alloc"; }
+};
+
+class bad_array_new_length : public bad_alloc {
+public:
+    bad_array_new_length() {}
+    virtual ~bad_array_new_length() {}
+    virtual const char *what() const { return "bad_array_new_length"; }
+};
+#else
+class bad_alloc : public exception {
+public:
+    bad_alloc() {}
+    virtual ~bad_alloc();
+    virtual const char *what() const;
+};
+
+class bad_array_new_length : public bad_alloc {
+public:
+    bad_array_new_length() {}
+    virtual ~bad_array_new_length();
+    virtual const char *what() const;
+};
+#endif
+
+}  // namespace std
+
+void *operator new(std::size_t, const std::nothrow_t &) throw();
+void *operator new[](std::size_t, const std::nothrow_t &) throw();
+void operator delete(void *, const std::nothrow_t &) throw();
+void operator delete[](void *, const std::nothrow_t &) throw();
 
 inline void *operator new(std::size_t, void *where) throw() { return where; }
+inline void *operator new[](std::size_t, void *where) throw() { return where; }
 inline void operator delete(void *, void *) throw() {}
+inline void operator delete[](void *, void *) throw() {}

@@ -1,0 +1,15 @@
+~S 1
+~S 2
+~S 3
+~S 4
+~S 5
+1 2
+~Derived
+~Base
+~TB
+qualified done
+plain 9
+int 7
+~Self 6
+end
+LEDGER built=8 gone=8 live=0 double=0 phantom=0 over=0 lost=0

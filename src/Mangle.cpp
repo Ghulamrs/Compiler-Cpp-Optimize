@@ -43,6 +43,8 @@ const char *itaniumBuiltin(Kind k) {
     case Kind::Short:      return "s";
     case Kind::UShort:     return "t";
     case Kind::WChar:      return "w";
+    case Kind::Char16:     return "Ds";
+    case Kind::Char32:     return "Di";
     case Kind::Int:        return "i";
     case Kind::UInt:       return "j";
     case Kind::Long:       return "l";
@@ -68,6 +70,8 @@ const char *microsoftBuiltin(Kind k) {
     case Kind::Short:      return "F";
     case Kind::UShort:     return "G";
     case Kind::WChar:      return "_W";
+    case Kind::Char16:     return "_S";
+    case Kind::Char32:     return "_U";
     case Kind::Int:        return "H";
     case Kind::UInt:       return "I";
     case Kind::Long:       return "J";
@@ -307,7 +311,11 @@ public:
         // **A name with a scope in it is a nested-name**, `_ZN1N1fEi`, and a
         // namespace component is written exactly as a class one is.
         const std::vector<std::string> parts = scopeComponents(name);
-        if (parts.size() > 1) {
+        if (isDirectlyInStd(name)) {
+            // `_ZSt15set_new_handlerPFvvE`: the abbreviation alone, no N...E.
+            out += "St";
+            writtenName(parts.back(), fn->params().size() == 1);
+        } else if (parts.size() > 1) {
             out += "N";
             // Every component but the last is a prefix, and a prefix is a
             // substitution candidate - which is what makes a parameter of type
@@ -599,6 +607,7 @@ class Microsoft : public Mangler {
 public:
     // **The class as a type descriptor spells it**, `?AUBase@@`.
     void classAsTypeName(const Type *t) { returnType(t); }
+    void anyType(const Type *t) { type(t); }   // a descriptor's pointee, `PEAUB@@`
 
     void vtableOffset(int offset) { number(offset); }   // a vcall thunk's vftable offset
 
@@ -1153,14 +1162,7 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
         for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
         return out + "@6B@";
     }
-    std::string out = "_ZTV";
-    if (parts.size() > 1) out += 'N';
-    for (const std::string &part : parts) {
-        out += std::to_string(part.size());
-        out += part;
-    }
-    if (parts.size() > 1) out += 'E';
-    return out;
+    return "_ZTV" + itaniumClassNameString(tag);   // the St abbreviation included
 }
 
 // **A class's type_info and the string beside it, which are one encoding under
@@ -1196,12 +1198,17 @@ std::string vbaseDestructorSymbol(const std::string &tag) {
 std::string itaniumClassNameString(const std::string &tag) {
     const std::vector<std::string> parts = scopeComponents(tag);
     std::string out;
-    if (parts.size() > 1) out += 'N';
-    for (const std::string &part : parts) {
-        out += std::to_string(part.size());
-        out += part;
+    // `std::X` is `St1X` and `std::a::X` is `NSt1a1XE` - the abbreviation
+    // the type encoding already writes, so `_ZTISt9bad_alloc` is the runtime's.
+    const bool inStd = parts.size() > 1 && parts[0] == "std";
+    const bool nested = parts.size() > 2 || (parts.size() > 1 && !inStd);
+    if (nested) out += 'N';
+    for (std::size_t i = 0; i < parts.size(); i++) {
+        if (i == 0 && inStd) { out += "St"; continue; }
+        out += std::to_string(parts[i].size());
+        out += parts[i];
     }
-    if (parts.size() > 1) out += 'E';
+    if (nested) out += 'E';
     return out;
 }
 
@@ -1320,26 +1327,147 @@ bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
     return true;
 }
 
+// The code a type descriptor spells a type by: a builtin's letter, `?AUE@@` for
+// a class, `PEAUE@@` for a pointer - the Microsoft mangler's own spelling.
+static bool microsoftDescriptorCode(const Type *t, std::string *code,
+                                    std::string *problem) {
+    if (const char *letter = microsoftBuiltin(t->kind())) { *code = letter; return true; }
+    Microsoft m;
+    if (t->isStructOrUnion()) m.classAsTypeName(t);
+    else m.anyType(t);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *code = m.out;
+    return true;
+}
+
+// Every non-virtual base at any depth, with its offset in the object - the
+// types the runtime may catch this one as. A virtual base wants pdisp and
+// vdisp, which nothing here writes.
+static bool microsoftCatchableBases(const Type *cls, int at, bool pointer,
+                                    std::vector<MicrosoftThrow::Catchable> *out,
+                                    std::string *problem) {
+    const std::vector<Type::BaseSpec> &bs = cls->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (!bs[i].direct) continue;
+        if (bs[i].isVirtual) {
+            *problem = "'" + cls->describe() + "' has a virtual base, and the "
+                       "catchable-type record for one needs the vbtable "
+                       "displacements, which are not written yet";
+            return false;
+        }
+        const Type *b = bs[i].type->unqualified();
+        std::string code;
+        if (!microsoftDescriptorCode(b, &code, problem)) return false;
+        MicrosoftThrow::Catchable c;
+        c.cls = pointer ? nullptr : b;
+        c.decorated = "." + (pointer ? "PEA" + code.substr(2) : code);
+        c.descriptor = "??_R0" + c.decorated.substr(1) + "@8";
+        c.mdisp = at + bs[i].offset;
+        c.simple = pointer;
+        out->push_back(c);
+        if (!microsoftCatchableBases(b, at + bs[i].offset, pointer, out, problem))
+            return false;
+    }
+    return true;
+}
+
 bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
                          std::string *problem) {
-    const char *letter = microsoftBuiltin(t->kind());
-    if (letter == nullptr) {
-        *problem = "only a fundamental type has a type descriptor this "
-                   "compiler can name; one for '" + t->describe() + "' would "
-                   "have to be emitted here, and that is its own step";
-        return false;
-    }
-    // The type's own letter runs through all four names, which is what makes them
-    // agree without anything having to be passed between them. Measured with cl:
-    // int is ??_R0H@8, _CT??_R0H@84, _CTA1H, _TI1H, and double the same with N.
-    const std::string code = letter;
+    out->catchables.clear();
     out->size = size;
+    out->isConst = false;
+    if (t->isReference()) t = t->referent()->unqualified();
+    if (t->isPointer()) {
+        // **A pointer to const is spelled without it**, and the ThrowInfo says
+        // `C` instead: `_TIC2PEAD` for `const char *`. Measured from clang.
+        const Type *pointee = t->pointee();
+        out->isConst = pointee->isConst();
+        pointee = pointee->unqualified();
+        if (pointee->isPointer() || pointee->isFunction() ||
+            pointee->isMemberPointer() || pointee->isMemberFunctionPointer()) {
+            *problem = "a pointer to a function has no type_info here yet, nor has a "
+                       "pointer to a pointer or a member - a thrown pointer to '" +
+                       pointee->describe() + "' is not supported yet";
+            return false;
+        }
+        std::string code;
+        if (pointee->isVoid()) code = "X";
+        else if (!microsoftDescriptorCode(pointee, &code, problem)) return false;
+        if (pointee->isStructOrUnion()) code = code.substr(2);   // `?AUB@@` to `UB@@`
+        out->decorated = ".PEA" + code;
+        out->descriptor = "??_R0PEA" + code + "@8";
+        MicrosoftThrow::Catchable self;
+        self.decorated = out->decorated;
+        self.descriptor = out->descriptor;
+        self.size = size;
+        self.simple = true;
+        out->catchables.push_back(self);
+        if (pointee->isStructOrUnion() &&
+            !microsoftCatchableBases(pointee, 0, true, &out->catchables, problem))
+            return false;
+        // And `void *`, which every object pointer may be caught as.
+        if (!pointee->isVoid()) {
+            MicrosoftThrow::Catchable any;
+            any.decorated = ".PEAX";
+            any.descriptor = "??_R0PEAX@8";
+            any.size = size;
+            any.simple = true;
+            out->catchables.push_back(any);
+        }
+        for (std::size_t i = 0; i < out->catchables.size(); i++)
+            out->catchables[i].size = size;
+        return true;
+    }
+    std::string code;
+    if (!microsoftDescriptorCode(t, &code, problem)) return false;
     out->decorated = "." + code;
     out->descriptor = "??_R0" + code + "@8";
-    out->catchable = "_CT" + out->descriptor + std::to_string(size);
-    out->array = "_CTA1" + code;
-    out->info = "_TI1" + code;
+    MicrosoftThrow::Catchable self;
+    self.cls = t->isStructOrUnion() ? t : nullptr;
+    self.decorated = out->decorated;
+    self.descriptor = out->descriptor;
+    self.size = size;
+    self.simple = !t->isStructOrUnion();
+    out->catchables.push_back(self);
+    if (t->isStructOrUnion() &&
+        !microsoftCatchableBases(t, 0, false, &out->catchables, problem))
+        return false;
     return true;
+}
+
+bool microsoftTypeidNames(const Type *t, MicrosoftThrow *out, std::string *problem) {
+    out->catchables.clear();
+    out->thrown = false;
+    std::string code;
+    if (t->isStructOrUnion() || microsoftBuiltin(t->kind()) != nullptr) {
+        if (!microsoftDescriptorCode(t, &code, problem)) return false;
+    } else {
+        Microsoft m;
+        m.anyType(t);
+        if (!m.ok) { *problem = m.problem; return false; }
+        code = m.out;
+    }
+    out->decorated = "." + code;
+    out->descriptor = "??_R0" + code + "@8";
+    MicrosoftThrow::Catchable self;
+    self.decorated = out->decorated;
+    self.descriptor = out->descriptor;
+    out->catchables.push_back(self);
+    return true;
+}
+
+// Measured with cl: `_CT??_R0H@84`, `_CTA1H`, `_TI1H` for an int; the copy
+// constructor's name inside a class's catchable, its size, then a base's offset if any.
+void microsoftThrowFinish(MicrosoftThrow *out) {
+    for (std::size_t i = 0; i < out->catchables.size(); i++) {
+        MicrosoftThrow::Catchable &c = out->catchables[i];
+        c.name = "_CT" + c.descriptor + c.copyCtor + std::to_string(c.size);
+        if (c.mdisp != 0) c.name += std::to_string(c.mdisp);
+    }
+    const std::string count = std::to_string(out->catchables.size());
+    const std::string code = out->decorated.substr(1);
+    out->array = "_CTA" + count + code;
+    out->info = std::string("_TI") + (out->isConst ? "C" : "") + count + code;
 }
 
 bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,
@@ -1535,14 +1663,19 @@ bool microsoftConstructorName(const std::string &cls, const Type *clsType,
     return true;
 }
 
+// **A variable in a namespace is a nested-name**, `_ZN1N1vE` - measured.
+// One at file scope keeps the name it was written with, which is what lets
+// C name it, and that is the case this used to be the whole of.
 std::string itaniumDataName(const std::string &name, bool internal) {
-    // **A variable in a namespace is a nested-name**, `_ZN1N1vE` - measured.
-    // One at file scope keeps the name it was written with, which is what lets
-    // C name it, and that is the case this used to be the whole of.
     const std::vector<std::string> parts = scopeComponents(name);
+    // `_ZSt7nothrow` and a static `_ZStL4cout`, the abbreviation alone; deeper, `_ZNSt1a1vE`. Measured.
+    if (parts.size() == 2 && parts[0] == "std")
+        return "_ZSt" + std::string(internal ? "L" : "") +
+               std::to_string(parts[1].size()) + parts[1];
     if (parts.size() > 1) {
         std::string out = "_ZN";
         for (std::size_t i = 0; i + 1 < parts.size(); i++) {
+            if (i == 0 && parts[i] == "std") { out += "St"; continue; }
             out += std::to_string(parts[i].size());
             out += parts[i];
         }
