@@ -1457,11 +1457,12 @@ bool microsoftTypeidNames(const Type *t, MicrosoftThrow *out, std::string *probl
 }
 
 // Measured with cl: `_CT??_R0H@84`, `_CTA1H`, `_TI1H` for an int; the copy
-// constructor's name inside a class's catchable, and its size after it.
+// constructor's name inside a class's catchable, its size, then a base's offset if any.
 void microsoftThrowFinish(MicrosoftThrow *out) {
     for (std::size_t i = 0; i < out->catchables.size(); i++) {
         MicrosoftThrow::Catchable &c = out->catchables[i];
         c.name = "_CT" + c.descriptor + c.copyCtor + std::to_string(c.size);
+        if (c.mdisp != 0) c.name += std::to_string(c.mdisp);
     }
     const std::string count = std::to_string(out->catchables.size());
     const std::string code = out->decorated.substr(1);
