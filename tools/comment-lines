@@ -49,23 +49,26 @@ def groups(path):
     return out
 
 def main():
-    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+    # Directories named on the command line, or this tree's src/ when none are.
+    dirs = [a for a in sys.argv[1:] if not a.startswith('--')]
+    roots = dirs or [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')]
     bad = 0
-    for base, _, names in sorted(os.walk(root)):
-        for name in sorted(names):
-            if not name.endswith(('.cpp', '.h')):
-                continue
-            path = os.path.join(base, name)
-            for line, comment, code in groups(path):
-                cap = 1 if code == 1 else 3
-                if comment <= cap:
+    for root in roots:
+        for base, _, names in sorted(os.walk(root)):
+            for name in sorted(names):
+                if not name.endswith(('.cpp', '.h', '.c', '.cc', '.hpp', '.mm')):
                     continue
-                bad += 1
-                if '--count' not in sys.argv:
-                    rel = os.path.relpath(path, os.path.dirname(root))
-                    print('%s:%d: %d comment lines over %d line%s of code, '
-                          'cap %d' % (rel, line, comment, code,
-                                      '' if code == 1 else 's', cap))
+                path = os.path.join(base, name)
+                for line, comment, code in groups(path):
+                    cap = 1 if code == 1 else 3
+                    if comment <= cap:
+                        continue
+                    bad += 1
+                    if '--count' not in sys.argv:
+                        rel = os.path.relpath(path, os.path.dirname(os.path.abspath(root)))
+                        print('%s:%d: %d comment lines over %d line%s of code, '
+                              'cap %d' % (rel, line, comment, code,
+                                          '' if code == 1 else 's', cap))
     print('comment-lines: %d group(s) over the cap' % bad)
     return 1 if bad else 0
 
