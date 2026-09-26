@@ -128,7 +128,6 @@ private:
 
     void storeUnwindHelp(int slot) override;
     void emitExceptionTables(const Function &fn) override;
-    void emitCleanupTables(const Function &fn);
 
     // A funclet is the text the body appended, lifted back out in order.
     std::string funclets_;

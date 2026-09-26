@@ -85,9 +85,7 @@ protected:
     // is the whole translation between how cxx1 addresses a local and how an
     // FH3 table describes one.
     int establisherOffset(int slot) const { return frameSize_ + outgoing_ - slot; }
-    void emitCoffCleanupTables(const Function &fn);
-    // The same tables for a frame that *catches*.
-    void emitCoffTryTables(const Function &fn);
+    void emitCoffEhTables(const Function &fn);   // the FH3 tables, one state tree
     // The five objects the Microsoft ABI wants per class with a vftable.
     void emitCoffClassRtti(const Program &program);
     // The four objects a Microsoft throw is identified by, in GNU syntax.
@@ -153,15 +151,11 @@ protected:
     virtual void emitExceptionTables(const Function &fn) {
         // Microsoft frames carry FH3 tables, not an LSDA.
         if (target_.microsoftNames()) {
-            // **Cleanups and handlers never share a function**, which the
-            // parser enforces on every target - so the first region decides
-            // which shape of table this frame wants.
-            if (msTries().empty()) {
+            // One table for cleanups and tries alike, nested or not: a state tree.
+            if (msStates().empty()) {
                 out_ += funclets_; funclets_.clear(); funcletIndex_ = 0;
-            } else if (msTries()[0].isCleanup) {
-                emitCoffCleanupTables(fn);
             } else {
-                emitCoffTryTables(fn);
+                emitCoffEhTables(fn);
             }
             return;
         }

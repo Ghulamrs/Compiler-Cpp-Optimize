@@ -70,6 +70,7 @@ void Walker::visit(const Block &n) {
     // destructor that throws while the exception unwinds terminates.
     const bool scope = n.unwindCleanup() && terminateScopes();
     const int id = scope ? nextLabel() : 0;
+    const int msStateAtEntry = msCurState_;
     if (scope) {
         defineLabel(label("cleanup", id));
         openRegion(label("cleanup", id), std::vector<std::string>(), std::vector<int>());
@@ -86,6 +87,14 @@ void Walker::visit(const Block &n) {
             callSites_.push_back(row);
             exceptionRegion(row.begin, row.end, pad);
         }
+    }
+    // A cleanup's state outlives its stretch; the block that built the objects
+    // destroys them at its '}', and the state in force goes back with them.
+    if (msCurState_ != msStateAtEntry) {
+        const std::string l = label("stateend", nextLabel());
+        defineStateLabel(l);
+        msIpRows_.push_back(MsIpRow{ l, msStateAtEntry });
+        msCurState_ = msStateAtEntry;
     }
     closeBlock(n.scope());
 }
@@ -300,47 +309,72 @@ void Walker::visit(const Try &n) {
 // and a table says which to call. This frame contributes three labels.
 void Walker::msTryStatement(const Try &n) {
     const int id = nextLabel();
-    MsTryRegion r;
-    r.begin = label("try", id);
-    r.end = label("tryend", id);
-    r.resume = label("caught", id);
-    r.unwindHelpSlot = n.unwindHelpSlot();
+    const std::string begin = label("try", id);
+    const std::string end = label("tryend", id);
+    const std::string resume = label("caught", id);
+    // The FuncInfo names one scratch word per frame: the first region's, for all of them.
+    if (msUnwindHelpSlot_ == 0) msUnwindHelpSlot_ = n.unwindHelpSlot();
+    storeUnwindHelp(msUnwindHelpSlot_);
 
-    storeUnwindHelp(n.unwindHelpSlot());
-    r.isCleanup = n.cleanup() != nullptr;
-
-    defineStateLabel(r.begin);
+    // This region's state, inside whatever encloses it; the body's own states
+    // follow it in number, which is what tryLow..tryHigh relies on.
+    const int parent = msCurState_;
+    const int state = static_cast<int>(msStates_.size());
+    MsState s;
+    s.toState = parent;
+    msStates_.push_back(s);
+    defineStateLabel(begin);
+    msIpRows_.push_back(MsIpRow{ begin, state });
+    msCurState_ = state;
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
-    defineStateLabel(r.end);
-    defineLabel(r.resume);
-    exceptionRegion(r.begin, r.end, r.resume);
+    defineStateLabel(end);
+    defineLabel(resume);
+    exceptionRegion(begin, end, resume);
     for (std::size_t i = 0; i < n.msExits().size(); i++)
-        exceptionRegion(r.begin, r.end, userLabel(n.msExits()[i]));
+        exceptionRegion(begin, end, userLabel(n.msExits()[i]));
 
-    if (r.isCleanup) {
-        r.cleanupFunclet = beginFunclet();
+    // **A cleanup's objects outlive its range** - the next stretch of the same
+    // block chains to it, and the block's end is what reverts the state.
+    if (n.cleanup() != nullptr) {
+        const std::string funclet = beginFunclet();
         n.cleanup()->accept(*this);
         endCleanupFunclet();
-        msTry(r);
+        msStates_[state].action = funclet;
+        msCurState_ = state;
         return;
     }
+    msCurState_ = parent;
+    msIpRows_.push_back(MsIpRow{ end, parent });
 
     // The funclets come after the range they belong to is closed, so nothing
     // they emit lands between `begin` and `end` - those bound the addresses the
     // runtime matches a thrown object against, and a handler must not be inside.
+    MsTryBlock tb;
+    tb.tryLow = state;
+    tb.tryHigh = static_cast<int>(msStates_.size()) - 1;
     for (std::size_t i = 0; i < n.handlers().size(); i++) {
         const MsHandler &h = n.handlers()[i];
+        // A handler's state sits beside the try's, under the same parent: an
+        // exception out of the handler has left the try.
+        const int hstate = static_cast<int>(msStates_.size());
+        MsState hs;
+        hs.toState = parent;
+        msStates_.push_back(hs);
         MsHandlerRow row;
         row.descriptor = h.descriptor;
         row.objectSlot = h.objectSlot;
         row.byReference = h.byReference;
         row.constPointer = h.constPointer;
         row.funclet = beginFunclet();
+        msCurState_ = hstate;
         h.body->accept(*this);
-        endFunclet(r.resume);
-        r.handlers.push_back(row);
+        msCurState_ = parent;
+        endFunclet(resume);
+        msFuncletRows_.push_back(MsIpRow{ row.funclet, hstate });
+        tb.handlers.push_back(row);
     }
-    msTry(r);
+    tb.catchHigh = static_cast<int>(msStates_.size()) - 1;
+    msTryBlocks_.push_back(tb);
 }
 
 void Walker::visit(const Continue &n) {

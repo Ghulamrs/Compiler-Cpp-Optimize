@@ -958,6 +958,12 @@ int Parser::handlersLeftByContinue() const {
     return left;
 }
 
+// **A fresh slot per region, never one cached here**: an implicit member is synthesized
+// mid-function with frameSize_ zeroed and put back, so a cached slot lands in the wrong frame.
+int Parser::msUnwindHelp() {
+    return allocateFrameSlot(types_.pointerTo(types_.get(Kind::Void)));
+}
+
 std::string Parser::msExitLabel(std::string &label, const char *kind) {
     if (label.empty()) label = std::string("$ms") + kind + std::to_string(refTemps_++);
     return label;
@@ -1079,21 +1085,12 @@ StmtPtr Parser::block() {
     if (!built.empty()) {
         // **A `try` among these statements is split around, not refused.** It
         // is a row of its own and its pad destroys what it found alive.
-        const bool overlapping = target_.microsoftNames()
-                                     ? (functionHasTry_ || inTryBody_)
-                                     : false;
-        if (overlapping)
-            src_.fail(pos, target_.microsoftNames()
-                ? "a local with a destructor and a 'try' in one function is "
-                  "not supported yet for x86_64-windows - a cleanup there is "
-                  "a funclet and a state in the FH3 tables, and only the "
-                  "Itanium targets have been taught to split one around the "
-                  "other"
-                : "a local with a destructor inside a 'catch' handler is not "
-                  "supported yet - a handler is emitted past the 'try''s range, "
-                  "so its cleanup region is inside no row and has no chain to "
-                  "hand the selector to; inside the 'try' body works, and so "
-                  "does beside the 'try' in the same block");
+        // **A cleanup inside a handler would be a funclet inside a funclet.**
+        if (target_.microsoftNames() && inHandlerBody_)
+            src_.fail(pos, "a local with a destructor inside a 'catch' handler is "
+                           "not supported yet for x86_64-windows - a cleanup there "
+                           "is a funclet, and the handler is one already; beside "
+                           "the 'try' and inside its body both work on this target");
         body = target_.microsoftNames()
                    ? wrapMsCleanups(std::move(body), built, regionFrom, pos,
                                     temps)
@@ -1129,15 +1126,14 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // handlers kept whole for the runtime to call.
     const bool microsoft = target_.microsoftNames();
     functionHasTry_ = true;
-    // **A handler's body is inside the same table and was not refused**, which
-    // made this compile and terminate rather than say so.
-    if ((inTryBody_ || inHandlerBody_) && target_.microsoftNames())
-        src_.fail(pos, "a 'try' inside another one is not supported yet for "
-                       "x86_64-windows - a handler there is a funclet named "
-                       "after its function and a counter, and a nested one "
-                       "takes a name already used, which ml64 answers with "
-                       "'A2005: symbol redefinition'. It works on both Itanium "
-                       "targets");
+    // **Inside a handler is inside a funclet**, and a funclet's handlers would
+    // be funclets inside it, which the slicing that lifts one out cannot nest.
+    if (inHandlerBody_ && target_.microsoftNames())
+        src_.fail(pos, "a 'try' inside a 'catch' handler is not supported yet for "
+                       "x86_64-windows - a handler there is a funclet, and a "
+                       "nested try's handlers would be funclets inside it. A "
+                       "'try' inside a 'try' body works on this target, and both "
+                       "shapes on the Itanium targets");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     // **A nested `try` shares the slots of the one it sits in.**
@@ -1156,6 +1152,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     const std::string enclosingChain = tryChainLabel_;
     const std::string wasChain = tryChainLabel_;
     const int wasPtr = tryChainPointerSlot_, wasSel = tryChainSelectorSlot_;
+    const std::size_t wasAliveFrom = tryChainAliveFrom_;
     std::vector<Try *> wasSegments;
     wasSegments.swap(tryBodySegments_);
     // **Inside this body the innermost answer is this `try`'s own chain**, not
@@ -1188,6 +1185,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     tryChainLabel_ = wasChain;
     tryChainPointerSlot_ = wasPtr;
     tryChainSelectorSlot_ = wasSel;
+    tryChainAliveFrom_ = wasAliveFrom;
 
     if (!peek().is("catch"))
         src_.fail(peek().pos, "a 'try' needs at least one 'catch'");
@@ -1496,8 +1494,11 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             if (aliveOutside > bodyCleanupFrom_ && beyond.empty())
                 emitDestructors(padSteps, bodyCleanupFrom_, pos, -1,
                                 aliveOutside);
+            // **Handed to the enclosing `try`'s chain**, past the rows between:
+            // what its body built before this `try` is destroyed here first.
+            if (!beyond.empty() && beyond == wasChain && aliveOutside > wasAliveFrom)
+                emitDestructors(padSteps, wasAliveFrom, pos, -1, aliveOutside);
             if (!beyond.empty()) {
-                // **Handed on rather than resumed.**
                 padSteps.push_back(StmtPtr(new Goto(beyond)));
             } else {
                 padSteps.push_back(resumeUnwinding(padPtr));
@@ -1540,7 +1541,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         // The runtime's scratch word, which the personality routine finds through the
         // FuncInfo's dispUnwindHelp and the parent sets to -2 on entry. A frame slot
         // like any other, so where it lives is decided where every local's is.
-        t->setUnwindHelpSlot(allocateFrameSlot(voidPtr));
+        t->setUnwindHelpSlot(msUnwindHelp());
         if (msExit.ret.empty() && msExit.brk.empty() && msExit.cont.empty())
             return StmtPtr(t);
         std::vector<std::string> exits;
@@ -1580,6 +1581,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                              beyondTry.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
+    // **Handing to the enclosing `try`'s chain skips the rows between**, so
+    // what its body built before this `try` is destroyed here first.
+    if (!beyondTry.empty() && beyondTry == wasChain && aliveOutside > wasAliveFrom)
+        emitDestructors(resume, wasAliveFrom, pos, -1, aliveOutside);
     if (beyondTry.empty()) resume.push_back(resumeUnwinding(pointerSlot));
     else                   resume.push_back(StmtPtr(new Goto(beyondTry)));
     StmtPtr chain = unwindPad(std::move(resume));

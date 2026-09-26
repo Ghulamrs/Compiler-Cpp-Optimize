@@ -159,7 +159,6 @@ Kind X86_64Linux::genKind(const Type *t) const {
     return t->kind();
 }
 
-
 const char *X86_64Linux::acc(const Type *t) const {
     return t->size(target_) == 8 ? "%rax" : "%eax";
 }
@@ -1636,7 +1635,7 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
     // The tables are written below; tell the spelling whether there are any,
     // so its unwind info does not name a FuncInfo that never appears.
-    if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
+    if (target_.microsoftNames()) a_->noteHasEh(!msStates().empty());
     a_->functionEnd(fn.symbol());
     // The tables below measure slots from the frame as the passes left it.
     if (optimizer_) frameSize_ = optimizer_->frameSize();
@@ -2022,10 +2021,11 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
 }
 
 // **The FH3 tables for a frame that only cleans up.**
-void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
+void X86_64Linux::emitCoffEhTables(const Function &fn) {
     (void)fn;
     const std::string m = fnSymbol_;
-    const std::size_t states = msTries().size();
+    const std::vector<MsState> &states = msStates();
+    const std::vector<MsTryBlock> &tries = msTryBlocks();
 
     std::string o;
     o += funclets_;
@@ -2036,33 +2036,68 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
     o += "  .p2align 2\n";
     o += "\"$cppxdata$" + m + "\":\n";
     o += "  .long 0x19930522\n";
-    o += "  .long " + std::to_string(states) + "\n";
+    o += "  .long " + std::to_string(states.size()) + "\n";
     o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
-    o += "  .long 0\n";                     // no try blocks
-    o += "  .long 0\n";                     // and so no try map
-    o += "  .long " + std::to_string(states + 1) + "\n";
+    o += "  .long " + std::to_string(tries.size()) + "\n";
+    if (tries.empty()) o += "  .long 0\n";
+    else o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
+    o += "  .long " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
     o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
-    o += "  .long " +
-         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  .long 0\n";
-    o += "  .long 1\n";
+    o += "  .long " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
+    o += "  .long 0\n";                     // no exception specification
+    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
 
+    // toState, then the action: a cleanup's funclet, or nothing.
     o += "\"$stateUnwindMap$" + m + "\":\n";
-    for (std::size_t k = 0; k < states; k++) {
-        // toState.
-        o += "  .long " + (k == 0 ? std::string("-1") : std::to_string(k - 1)) + "\n";
-        // **A state with no funclet runs nothing, and says so with a zero.**
-        const std::string &act = msTries()[k].cleanupFunclet;
-        if (act.empty()) o += "  .long 0\n";
-        else             o += "  .long " + a_->labelText(act) + "@IMGREL\n";
+    for (std::size_t k = 0; k < states.size(); k++) {
+        o += "  .long " + std::to_string(states[k].toState) + "\n";
+        if (states[k].action.empty()) o += "  .long 0\n";
+        else o += "  .long " + a_->labelText(states[k].action) + "@IMGREL\n";
     }
 
+    if (!tries.empty()) o += "\"$tryMap$" + m + "\":\n";
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += "  .long " + std::to_string(tries[k].tryLow) + "\n";
+        o += "  .long " + std::to_string(tries[k].tryHigh) + "\n";
+        o += "  .long " + std::to_string(tries[k].catchHigh) + "\n";
+        o += "  .long " + std::to_string(tries[k].handlers.size()) + "\n";
+        o += "  .long \"$handlerMap$" + std::to_string(k) + "$" + m + "\"@IMGREL\n";
+    }
+
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += "\"$handlerMap$" + std::to_string(k) + "$" + m + "\":\n";
+        for (std::size_t i = 0; i < tries[k].handlers.size(); i++) {
+            const MsHandlerRow &h = tries[k].handlers[i];
+            // 0x40 is HT_IsCatchAll and names no type; 0x08 is HT_IsReference,
+            // which puts the object's address in the slot rather than a copy.
+            o += "  .long ";
+            o += h.descriptor.empty() ? "0x40\n"
+                                      : std::to_string((h.byReference ? 8 : 0) |
+                                                       (h.constPointer ? 1 : 0)) + "\n";
+            if (h.descriptor.empty()) o += "  .long 0\n";
+            else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(h.objectSlot == 0
+                                  ? 0 : establisherOffset(h.objectSlot)) + "\n";
+            o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
+            // dispFrame: where the funclet saved the parent's frame pointer, from
+            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
+            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            o += "  .long 56\n";
+        }
+    }
+
+    // Where each state begins, in address order: the body's rows as walked,
+    // then the funclets, each wholly inside its own handler state.
     o += "\"$ip2state$" + m + "\":\n";
-    o += "  .long " + a_->labelText(m) + "@IMGREL\n";
+    o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
     o += "  .long -1\n";
-    for (std::size_t k = 0; k < states; k++) {
-        o += "  .long " + a_->labelText(msTries()[k].begin) + "@IMGREL\n";
-        o += "  .long " + std::to_string(k) + "\n";
+    for (std::size_t k = 0; k < msIpRows().size(); k++) {
+        o += "  .long " + a_->labelText(msIpRows()[k].label) + "@IMGREL\n";
+        o += "  .long " + std::to_string(msIpRows()[k].state) + "\n";
+    }
+    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
+        o += "  .long " + a_->labelText(msFuncletRows()[k].label) + "@IMGREL\n";
+        o += "  .long " + std::to_string(msFuncletRows()[k].state) + "\n";
     }
     o += "  .text\n";
     out_ += o;
@@ -2220,102 +2255,6 @@ void X86_64Linux::emitData(const Program &program) {
             emitGlobal(g, b.seg);
         }
     }
-}
-
-// **The FH3 tables for a frame that catches.**
-void X86_64Linux::emitCoffTryTables(const Function &fn) {
-    (void)fn;
-    const std::string m = fnSymbol_;
-    const std::size_t tries = msTries().size();
-
-    std::string o;
-    o += funclets_;
-    funclets_.clear();
-    funcletIndex_ = 0;
-
-    // Two states per try - the body is one and its handlers the next - so try
-    // k owns states 2k and 2k+1, which is what tryLow and tryHigh say.
-    const std::size_t states = 2 * tries;
-    std::size_t ipRows = 0;
-    for (std::size_t k = 0; k < tries; k++)
-        ipRows += 2 + msTries()[k].handlers.size();
-
-    o += "\n  .section .xdata,\"dr\"\n";
-    o += "  .p2align 2\n";
-    o += "\"$cppxdata$" + m + "\":\n";
-    o += "  .long 0x19930522\n";
-    o += "  .long " + std::to_string(states) + "\n";
-    o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
-    o += "  .long " + std::to_string(tries) + "\n";
-    o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
-    o += "  .long " + std::to_string(ipRows + 1) + "\n";
-    o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
-    o += "  .long " +
-         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  .long 0\n";                     // no exception specification
-    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
-
-    // No cleanups in such a frame, so every state unwinds to nothing.
-    o += "\"$stateUnwindMap$" + m + "\":\n";
-    for (std::size_t i = 0; i < states; i++) {
-        o += "  .long -1\n";
-        o += "  .long 0\n";
-    }
-
-    o += "\"$tryMap$" + m + "\":\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  .long " + std::to_string(2 * k) + "\n";          // tryLow
-        o += "  .long " + std::to_string(2 * k) + "\n";          // tryHigh
-        o += "  .long " + std::to_string(2 * k + 1) + "\n";      // catchHigh
-        o += "  .long " + std::to_string(r.handlers.size()) + "\n";
-        o += "  .long \"$handlerMap$" + std::to_string(k) + "$" + m +
-             "\"@IMGREL\n";
-    }
-
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "\"$handlerMap$" + std::to_string(k) + "$" + m + "\":\n";
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            const MsHandlerRow &h = r.handlers[i];
-            // 0x40 is HT_IsCatchAll and names no type; 0x08 is HT_IsReference,
-            // which puts the object's address in the slot rather than a copy.
-            o += "  .long ";
-            o += h.descriptor.empty() ? "0x40\n"
-                                      : std::to_string((h.byReference ? 8 : 0) |
-                                                       (h.constPointer ? 1 : 0)) + "\n";
-            if (h.descriptor.empty()) o += "  .long 0\n";
-            else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
-            o += "  .long " + std::to_string(h.objectSlot == 0
-                                  ? 0 : establisherOffset(h.objectSlot)) + "\n";
-            o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
-            // The frame size itself: what the runtime adds to the establisher
-            // to reach the handler's own frame.
-            o += "  .long " + std::to_string(frameSize_ + outgoing_) + "\n";
-        }
-    }
-
-    // Where each state begins. -1 is "outside any try", and a funclet is
-    // wholly inside its own handler state.
-    o += "\"$ip2state$" + m + "\":\n";
-    o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
-    o += "  .long -1\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  .long " + a_->labelText(r.begin) + "@IMGREL\n";
-        o += "  .long " + std::to_string(2 * k) + "\n";
-        o += "  .long " + a_->labelText(r.end) + "@IMGREL\n";
-        o += "  .long -1\n";
-    }
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            o += "  .long " + a_->labelText(r.handlers[i].funclet) + "@IMGREL\n";
-            o += "  .long " + std::to_string(2 * k + 1) + "\n";
-        }
-    }
-    o += "  .text\n";
-    out_ += o;
 }
 
 // The four objects a Microsoft `throw` hands the runtime, spelled for GNU-as:

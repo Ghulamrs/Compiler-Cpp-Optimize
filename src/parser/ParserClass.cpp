@@ -734,7 +734,7 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
-    const int helpSlot = allocateFrameSlot(voidPtr);
+    const int helpSlot = msUnwindHelp();
     functionHasPads_ = true;
 
     std::vector<StmtPtr> out;

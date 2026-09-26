@@ -1569,6 +1569,7 @@ private:
     // Inside a Microsoft `catch` body, which is compiled as a funclet - a function of its own.
     bool inMsHandler_ = false;
     MsExit *msExit_ = nullptr;
+    int msUnwindHelp();          // a fresh slot; the walker keeps one per function
     std::string msExitLabel(std::string &label, const char *kind);
     // Inside a handler's own block, on any target.
     bool inHandlerBody_ = false;

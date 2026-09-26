@@ -487,7 +487,6 @@ void MasmSpelling::closeDataBlock() {
     dataBlockUsed_ = false;
 }
 
-
 void MasmSpelling::textSection() {
     flushPending();
     closeDataBlock();
@@ -748,52 +747,8 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     if (optimizer_) optimizer_->funcletEnd();
 }
 
-// The four FH3 tables, written after the function they describe. **Every offset is
-// measured from the establisher frame**, so a slot at [rbp-N] is at frameSize-N.
-// **And a cleanup is a state, not a try block**: its action is the funclet.
-void MasmCodeGen::emitCleanupTables(const Function &fn) {
-    (void)fn;
-    const std::string m = masm_.mangledName();
-    const std::size_t states = msTries().size();
-
-    std::string o;
-    o += funclets_;
-    funclets_.clear();
-    funcletIndex_ = 0;
-
-    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
-    o += "$cppxdata$" + m + " DD 019930522H\n";
-    o += "  DD " + std::to_string(states) + "\n";
-    o += "  DD imagerel $stateUnwindMap$" + m + "\n";
-    o += "  DD 00H\n";                      // no try blocks
-    o += "  DD 00H\n";                      // and so no try map
-    o += "  DD " + std::to_string(states + 1) + "\n";
-    o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
-    o += "  DD 00H\n";
-    o += "  DD 01H\n";
-
-    o += "$stateUnwindMap$" + m;
-    for (std::size_t k = 0; k < states; k++) {
-        o += (k == 0 ? " DD " : "  DD ");
-        // toState: the region before this one, and -1 for the first, which is
-        // what says "nothing further in this frame".
-        o += (k == 0 ? std::string("0ffffffffH") : std::to_string(k - 1)) + "\n";
-        o += "  DD imagerel " + msTries()[k].cleanupFunclet + "\n";
-    }
-
-    o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
-    o += "  DD 0ffffffffH\n";
-    for (std::size_t k = 0; k < states; k++) {
-        o += "  DD imagerel " + masm_.labelName(msTries()[k].begin) + "\n";
-        o += "  DD " + std::to_string(k) + "\n";
-    }
-    o += ".xdata ENDS\n\n.CODE\n";
-    out_ += o;
-}
-
 void MasmCodeGen::emitExceptionTables(const Function &fn) {
-    if (msTries().empty()) {
+    if (msStates().empty()) {
         if (!callSites().empty()) emitLsda(fn.symbol(), false);
         out_ += funclets_;
         funclets_.clear();
@@ -802,55 +757,49 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     }
 
     const std::string m = masm_.mangledName();
-
-    // **Cleanups and handlers never share a function**, which the parser enforces on every target.
-    if (msTries()[0].isCleanup) { emitCleanupTables(fn); return; }
-
-    const std::size_t tries = msTries().size();
+    const std::vector<MsState> &states = msStates();
+    const std::vector<MsTryBlock> &tries = msTryBlocks();
     std::string o;
     o += funclets_;
     funclets_.clear();
     funcletIndex_ = 0;
 
-    // **Two states per try**.
-    const std::size_t states = 2 * tries;
-
-    std::size_t ipRows = 0;
-    for (std::size_t k = 0; k < tries; k++)
-        ipRows += 2 + msTries()[k].handlers.size();
-
+    // **Every offset is measured from the establisher frame**, so a slot at
+    // [rbp-N] is at frameSize-N; a cleanup is a state whose action is its funclet.
     o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
     o += "$cppxdata$" + m + " DD 019930522H\n";
-    o += "  DD " + std::to_string(states) + "\n";
+    o += "  DD " + std::to_string(states.size()) + "\n";
     o += "  DD imagerel $stateUnwindMap$" + m + "\n";
-    o += "  DD " + std::to_string(tries) + "\n";
-    o += "  DD imagerel $tryMap$" + m + "\n";
-    o += "  DD " + std::to_string(ipRows + 1) + "\n";
+    o += "  DD " + std::to_string(tries.size()) + "\n";
+    o += tries.empty() ? "  DD 00H\n" : "  DD imagerel $tryMap$" + m + "\n";
+    o += "  DD " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
+    o += "  DD " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
     o += "  DD 00H\n";                      // no exception specification
     o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
 
-    // No cleanups yet, so every state unwinds to nothing and runs nothing.
     o += "$stateUnwindMap$" + m;
-    for (std::size_t i = 0; i < states; i++)
-        o += (i == 0 ? " DD 0ffffffffH\n" : "  DD 0ffffffffH\n") + std::string("  DD 00H\n");
+    for (std::size_t k = 0; k < states.size(); k++) {
+        o += (k == 0 ? " DD " : "  DD ");
+        o += (states[k].toState < 0 ? std::string("0ffffffffH")
+                                    : std::to_string(states[k].toState)) + "\n";
+        o += states[k].action.empty() ? "  DD 00H\n"
+                                      : "  DD imagerel " + states[k].action + "\n";
+    }
 
-    o += "$tryMap$" + m;
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += (k == 0 ? " DD " : "  DD ") + std::to_string(2 * k) + "\n";   // tryLow
-        o += "  DD " + std::to_string(2 * k) + "\n";                       // tryHigh
-        o += "  DD " + std::to_string(2 * k + 1) + "\n";                   // catchHigh
-        o += "  DD " + std::to_string(r.handlers.size()) + "\n";
+    if (!tries.empty()) o += "$tryMap$" + m;
+    for (std::size_t k = 0; k < tries.size(); k++) {
+        o += (k == 0 ? " DD " : "  DD ") + std::to_string(tries[k].tryLow) + "\n";
+        o += "  DD " + std::to_string(tries[k].tryHigh) + "\n";
+        o += "  DD " + std::to_string(tries[k].catchHigh) + "\n";
+        o += "  DD " + std::to_string(tries[k].handlers.size()) + "\n";
         o += "  DD imagerel $handlerMap$" + std::to_string(k) + "$" + m + "\n";
     }
 
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
+    for (std::size_t k = 0; k < tries.size(); k++) {
         o += "$handlerMap$" + std::to_string(k) + "$" + m;
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            const MsHandlerRow &h = r.handlers[i];
+        for (std::size_t i = 0; i < tries[k].handlers.size(); i++) {
+            const MsHandlerRow &h = tries[k].handlers[i];
             // 0x40 is HT_IsCatchAll, and a catch-all names no type; 0x08 is
             // HT_IsReference, which tells the runtime to put the object's
             // address in the slot rather than a copy of it. Measured.
@@ -863,29 +812,25 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
             o += "  DD " + std::to_string(h.objectSlot == 0
                                               ? 0 : establisherOffset(h.objectSlot)) + "\n";
             o += "  DD imagerel " + h.funclet + "\n";
-            // The frame size itself, not an offset into it: what the runtime
-            // adds to the establisher to reach the handler's own frame.
-            o += "  DD " + std::to_string(masm_.frameSize_) + "\n";
+            // dispFrame: where the funclet saved the parent's frame pointer, from
+            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
+            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            o += "  DD 56\n";
         }
     }
 
-    // Where each state begins. -1 is "outside any try", and a funclet is
-    // wholly inside its own handler state.
+    // Where each state begins, in address order; a funclet is wholly inside
+    // its own handler state.
     o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
     o += "  DD 0ffffffffH\n";
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        o += "  DD imagerel " + masm_.labelName(r.begin) + "\n";
-        o += "  DD " + std::to_string(2 * k) + "\n";
-        o += "  DD imagerel " + masm_.labelName(r.end) + "\n";
-        o += "  DD 0ffffffffH\n";
+    for (std::size_t k = 0; k < msIpRows().size(); k++) {
+        o += "  DD imagerel " + masm_.labelName(msIpRows()[k].label) + "\n";
+        o += "  DD " + (msIpRows()[k].state < 0 ? std::string("0ffffffffH")
+                                                  : std::to_string(msIpRows()[k].state)) + "\n";
     }
-    for (std::size_t k = 0; k < tries; k++) {
-        const MsTryRegion &r = msTries()[k];
-        for (std::size_t i = 0; i < r.handlers.size(); i++) {
-            o += "  DD imagerel " + r.handlers[i].funclet + "\n";
-            o += "  DD " + std::to_string(2 * k + 1) + "\n";
-        }
+    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
+        o += "  DD imagerel " + msFuncletRows()[k].label + "\n";
+        o += "  DD " + std::to_string(msFuncletRows()[k].state) + "\n";
     }
     o += ".xdata ENDS\n\n.CODE\n";
     out_ += o;
