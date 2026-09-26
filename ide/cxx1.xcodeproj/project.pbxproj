@@ -38,6 +38,7 @@
 		ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 91CE00C0935BDE384E519CE8 /* Walker.cpp */; };
 		DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */; };
 		AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 80025E52DA32488A2EF7539F /* X86_64Windows.cpp */; };
+		59771F199A742C05AC8E503A /* C6xSched.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 51D80922454E5DF0F9D68FAA /* C6xSched.cpp */; };
 		F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */; };
 		1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 402C6A145E36EDB389E81B69 /* MirAlloc.cpp */; };
 		974A77A814EA5DCC7FF333BC /* MirLocals.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2A060109E1E58D62D4A34285 /* MirLocals.cpp */; };
@@ -95,6 +96,7 @@
 		91CE00C0935BDE384E519CE8 /* Walker.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Walker.cpp; path = "../src/backend/Walker.cpp"; sourceTree = "<group>"; };
 		334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Linux.cpp; path = "../src/backend/X86_64Linux.cpp"; sourceTree = "<group>"; };
 		80025E52DA32488A2EF7539F /* X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Windows.cpp; path = "../src/backend/X86_64Windows.cpp"; sourceTree = "<group>"; };
+		51D80922454E5DF0F9D68FAA /* C6xSched.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = C6xSched.cpp; path = "../src/optimizer/C6xSched.cpp"; sourceTree = "<group>"; };
 		A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Inliner.cpp; path = "../src/optimizer/Inliner.cpp"; sourceTree = "<group>"; };
 		402C6A145E36EDB389E81B69 /* MirAlloc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = MirAlloc.cpp; path = "../src/optimizer/MirAlloc.cpp"; sourceTree = "<group>"; };
 		2A060109E1E58D62D4A34285 /* MirLocals.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = MirLocals.cpp; path = "../src/optimizer/MirLocals.cpp"; sourceTree = "<group>"; };
@@ -233,6 +235,7 @@
 		868F39DBAA20F1B314EED2BA /* src/optimizer */ = {
 			isa = PBXGroup;
 			children = (
+				51D80922454E5DF0F9D68FAA /* C6xSched.cpp */,
 				A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */,
 				3CF254951132485608A65AC4 /* Inliner.h */,
 				00D1AC912B4C6D97F9D444E5 /* Mir.h */,
@@ -376,6 +379,7 @@
 				ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */,
 				DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */,
 				AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */,
+				59771F199A742C05AC8E503A /* C6xSched.cpp in Sources */,
 				F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */,
 				1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */,
 				974A77A814EA5DCC7FF333BC /* MirLocals.cpp in Sources */,
