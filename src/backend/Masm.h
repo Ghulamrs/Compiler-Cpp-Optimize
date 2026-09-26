@@ -119,6 +119,7 @@ private:
     bool usesFunclets() const override { return true; }
     bool localsAboveFrameBase() const override { return true; }
     std::string beginFunclet() override;
+    void funcletLeave(const std::string &label) override;
     void endFunclet(const std::string &resume) override;
     void endCleanupFunclet() override;
     void closeFunclet(const std::string &tail);

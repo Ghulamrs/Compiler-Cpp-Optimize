@@ -55,11 +55,9 @@ bool microsoftVcallThunkName(const Type *cls, int offset, std::string *out,
 bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
                              std::string *problem);
 
-// **The chain a Microsoft throw hands the runtime**: one type descriptor per
-// type the object may be caught as, a catchable-type record for each (its
-// displacement in the object, its size, its copy constructor), the array of
-// those, and the ThrowInfo naming the array and the destructor. A pointer to
-// const loses the const in every name and says so in the ThrowInfo's attributes.
+// **The chain a Microsoft throw hands the runtime**: a type descriptor and a
+// catchable-type record (displacement, size, copy constructor) per type the object
+// may be caught as, the array of those, and the ThrowInfo naming array and destructor.
 struct MicrosoftThrow {
     struct Catchable {
         const Type *cls = nullptr;   // the class, for the parser to find its copy constructor

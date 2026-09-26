@@ -76,6 +76,7 @@ protected:
     bool terminateScopes() const override { return !target_.microsoftNames(); }
     std::string terminatePad(int id) override;
     std::string beginFunclet() override;
+    void funcletLeave(const std::string &label) override;
     void endCleanupFunclet() override;
     void endFunclet(const std::string &resume) override;
     void storeUnwindHelp(int slot) override;

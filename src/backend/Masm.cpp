@@ -679,6 +679,12 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
     closeFunclet("  lea rax, " + masm_.labelName(resume) + "\n");
 }
 
+// An early exit: the continuation in rax, then the funclet's epilogue.
+void MasmCodeGen::funcletLeave(const std::string &label) {
+    a_->ins("lea", rip(label), reg("%rax"));
+    a_->ins("jmp", lbl("$LNleave$" + funcletSymbol_));
+}
+
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
     // The text around the body: the head, then the body as written out,
@@ -700,6 +706,7 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     // allocation, so the handler reaches the parent's locals with no adjustment.
     head += "  mov rbp, rdx\n";
     f += tail;
+    f += "$LNleave$" + sym + ":\n";
     f += "  add rsp, 32\n";
     f += "  pop rbp\n";
     f += "  ret 0\n";

@@ -35,6 +35,7 @@ public:
     void visit(const Conditional &n) override;
     void visit(const Comma &n) override;
     void visit(const Break &n) override;
+    void visit(const FuncletLeave &n) override;
     void visit(const Continue &n) override;
     void visit(const Try &n) override;
 
@@ -160,6 +161,8 @@ protected:
     // in the parent to continue at, which a funclet returns in rax. Between the
     // two the body is walked as if inline, the funclet setting rbp from the parent.
     virtual std::string beginFunclet() { return std::string(); }
+    // Leave the handler funclet early, the runtime continuing at `label`.
+    virtual void funcletLeave(const std::string &label) { (void)label; }
     virtual void endFunclet(const std::string &resume) { (void)resume; }
 
     // One `try` as the Microsoft tables describe it: the range guarded, where

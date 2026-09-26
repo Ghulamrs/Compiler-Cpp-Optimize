@@ -21,6 +21,7 @@ public:
     void visit(const Goto &) override { ++nodes; labels = true; }
     void visit(const Break &) override { ++nodes; }
     void visit(const Continue &) override { ++nodes; }
+    void visit(const FuncletLeave &) override { ++nodes; labels = true; }
     void visit(const Call &n) override {
         ++nodes;
         calls.push_back(std::make_pair(&n, depth_));

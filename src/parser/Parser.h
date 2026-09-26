@@ -1132,6 +1132,14 @@ private:
         bool exceptionStorage = false;
     };
 
+    // **The ways out of a Microsoft handler**, one record per `try`: a funclet
+    // cannot jump into its parent, so each early exit names a label the parent
+    // lays down after the `try` and hands it back as the address to carry on at.
+    struct MsExit {
+        std::string ret, brk, cont;   // the labels, empty until an exit asks
+        int retSlot = 0;              // the returned value, saved for the parent
+        std::string retTemp;
+    };
     // **Everything that belongs to the function currently being parsed.** cxx1
     // re-enters parsing from a saved token index in eight places.
     struct FunctionState {
@@ -1167,6 +1175,7 @@ private:
         std::vector<SwitchCtx> switches;
         std::vector<std::size_t> breakMarks;
         bool inTryBody = false, inMsHandler = false, inHandlerBody = false;
+        MsExit *msExit = nullptr;
         int handlerDepth = 0;
         std::vector<int> handlerLoopDepth, handlerSwitchDepth;
         std::vector<std::size_t> handlerFrom;
@@ -1559,6 +1568,8 @@ private:
     bool inTryBody_ = false;
     // Inside a Microsoft `catch` body, which is compiled as a funclet - a function of its own.
     bool inMsHandler_ = false;
+    MsExit *msExit_ = nullptr;
+    std::string msExitLabel(std::string &label, const char *kind);
     // Inside a handler's own block, on any target.
     bool inHandlerBody_ = false;
     // **How many Itanium handlers the statement being parsed is inside**, and

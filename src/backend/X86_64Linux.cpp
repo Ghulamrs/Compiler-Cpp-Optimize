@@ -1788,6 +1788,7 @@ public:
     void visit(const Goto &) override {}
     void visit(const Break &) override {}
     void visit(const Continue &) override {}
+    void visit(const FuncletLeave &) override {}
     void visit(const Call &n) override {
         calls.push_back(&n);
         if (inCall == 0) outer.push_back(&n);
@@ -1929,6 +1930,13 @@ void X86_64Linux::endFunclet(const std::string &resume) {
     closeFunclet("  lea " + a_->labelText(resume) + "(%rip), %rax\n");
 }
 
+// An early exit: the continuation in rax, then the funclet's own epilogue,
+// which closeFunclet labels. The jump leaves the stream, so nothing is dead.
+void X86_64Linux::funcletLeave(const std::string &label) {
+    a_->ins("lea", rip(label), reg("%rax"));
+    a_->ins("jmp", lbl("$LNleave$" + funcletSymbol_));
+}
+
 // Write -2 into the runtime's scratch word: the personality routine reads it
 // through the FuncInfo's dispUnwindHelp to know how far this frame had got.
 void X86_64Linux::storeUnwindHelp(int slot) {
@@ -1967,6 +1975,7 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     // handler reaches the parent's locals with no adjustment.
     head += "  mov %rdx, %rbp\n";
     f += tail;
+    f += "\"$LNleave$" + funcletSymbol_ + "\":\n";
     f += "  add $32, %rsp\n";
     f += "  pop %rbp\n";
     f += "  ret\n";

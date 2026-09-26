@@ -186,6 +186,7 @@ void Walker::visit(const Case &n) {
 }
 
 void Walker::visit(const Goto &n) { markLine(n); jump(userLabel(n.label())); }
+void Walker::visit(const FuncletLeave &n) { markLine(n); funcletLeave(userLabel(n.label())); }
 
 void Walker::visit(const Label &n) {
     markLine(n);
@@ -313,6 +314,8 @@ void Walker::msTryStatement(const Try &n) {
     defineStateLabel(r.end);
     defineLabel(r.resume);
     exceptionRegion(r.begin, r.end, r.resume);
+    for (std::size_t i = 0; i < n.msExits().size(); i++)
+        exceptionRegion(r.begin, r.end, userLabel(n.msExits()[i]));
 
     if (r.isCleanup) {
         r.cleanupFunclet = beginFunclet();
