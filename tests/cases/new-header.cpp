@@ -14,10 +14,20 @@
 // The absurd size is computed at run time: clang refuses `new char[N]` for
 // a constant N it can see is too large, and the point is the runtime's answer.
 // `e.what()` for a runtime-thrown `bad_alloc` is the runtime's string, and
-// libc++abi and libstdc++ agree on it.
+// libc++abi and libstdc++ agree on it; the Microsoft runtime's two, measured on
+// the box, are translated back so one .expected serves all three targets.
 #include <new>
 #include <cstdio>
 #include <cstddef>
+#include <cstring>
+
+static const char *said(const char *w) {
+#ifdef _WIN32
+    if (std::strcmp(w, "bad allocation") == 0) return "std::bad_alloc";
+    if (std::strcmp(w, "bad array new length") == 0) return "bad_array_new_length";
+#endif
+    return w;
+}
 
 static int handlerCalls = 0;
 static void handler() { handlerCalls++; std::set_new_handler(0); }
@@ -39,7 +49,7 @@ int main(int argc, char **) {
         char *p = new char[big(argc)];
         std::printf("got %p\n", (void *)p);
     } catch (std::bad_alloc &e) {
-        std::printf("bad_alloc: %s\n", e.what());
+        std::printf("bad_alloc: %s\n", said(e.what()));
     }
     std::printf("handler ran %d\n", handlerCalls);
 
@@ -47,7 +57,7 @@ int main(int argc, char **) {
         char *p = new char[big(argc)];
         std::printf("got %p\n", (void *)p);
     } catch (std::exception &e) {
-        std::printf("exception: %s\n", e.what());
+        std::printf("exception: %s\n", said(e.what()));
     }
 
     char *q = new (std::nothrow) char[big(argc)];
@@ -66,8 +76,8 @@ int main(int argc, char **) {
     delete[] z;
 
     try { throw std::bad_alloc(); }
-    catch (std::exception &e) { std::printf("thrown: %s\n", e.what()); }
+    catch (std::exception &e) { std::printf("thrown: %s\n", said(e.what())); }
     try { throw std::bad_array_new_length(); }
-    catch (std::bad_alloc &e) { std::printf("thrown length: %s\n", e.what()); }
+    catch (std::bad_alloc &e) { std::printf("thrown length: %s\n", said(e.what())); }
     return 0;
 }

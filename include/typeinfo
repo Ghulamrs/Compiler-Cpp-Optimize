@@ -21,11 +21,12 @@ struct __std_type_info_data {
     const char _DecoratedName[1];
 };
 struct __type_info_node;
-extern __type_info_node __type_info_root_node;
 int __std_type_info_compare(const __std_type_info_data *, const __std_type_info_data *);
 unsigned long long __std_type_info_hash(const __std_type_info_data *);
 const char *__std_type_info_name(__std_type_info_data *, __type_info_node *);
 }
+// C++ linkage, as vcruntime_typeinfo.h has it: libcmt defines ?__type_info_root_node@@3U__type_info_node@@A.
+extern __type_info_node __type_info_root_node;
 #endif
 
 namespace std {
