@@ -10746,3 +10746,29 @@ undefined-behaviour argument is used; a step other than 1 is not taken.
 
 Linux run.sh 545/0 at -O1 and -O2, Windows cases 531/0 at -O2. Windows matmul
 10 -> 8 ms (cl 3), as priced; Linux, already level with g++ there, 687 -> 685.
+
+## arm64 had no optimizer, and now has three rounds of one, 2026-09-27
+
+**`-O2` and `-O0` emitted byte-identical arm64**: the backend never called an
+optimizer, so the Mac row of the four-box table measured a stack machine
+against clang -O2 - 2,485 ms against 175. `a64Peephole` (src/optimizer/A64Peep)
+rewrites each body's text at -O1 and -O2, as `c6xSchedule` does the C6000's:
+
+- round 1: a push its pop follows in one straight run keeps its value in
+  x12-x15 or d16-d23; a local read through `mov x9,#k; sub; ldr` is one `ldur`
+- round 2: a register model (reads, writes, liveness through the body's labels,
+  calls and returns by the convention) and copy retargeting and forwarding,
+  immediates through copies, direct stores, and `cset; cmp #0; beq` as `b.cc`
+- round 3: a local only ever read and written whole, its address never formed,
+  lives in x19-x28 or d8-d15; the frame keeps 144 bytes for the saves, which
+  go in front of the body with `.cfi_offset` and come back at the return label
+
+**Two bugs the gates caught before any timing.** The backend spells a
+conditional branch `beq` and the model knew only `b.eq`, so liveness never
+followed one to its target - `include-streams` hung, found by bisecting over
+single rewrites. And a copy into a promoted local just before a call looked
+dead on the normal path while the landing pad read it - `temporary-unwind`
+printed garbage; a callee-saved register is live at every call now.
+
+Mac run.sh 545/0 at -O1 and -O2. Total 2,485 -> 1,413 -> 960 -> 688 ms against
+clang's 174; x86 and C6000 output unchanged.

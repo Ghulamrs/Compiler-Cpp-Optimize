@@ -58,6 +58,7 @@ public:
     void visit(const Return &) override;
 
     void landingPad(int pointerSlot, int selectorSlot) override;
+    void setOptimize(int level) override { optimize_ = level; }
     bool terminateScopes() const override { return true; }
     std::string terminatePad(int id) override;
 
@@ -68,6 +69,8 @@ private:
     std::vector<std::string> lsdaTypes_;
 
     std::ostringstream out_;
+    int optimize_ = 0;          // -O1 and -O2 run each body through a64Peephole
+    static constexpr int kCalleeArea = 144;   // x19-x28 and d8-d15, 8 bytes each, when a local is promoted
     std::size_t emittedSize() override {
         return static_cast<std::size_t>(out_.tellp());
     }
