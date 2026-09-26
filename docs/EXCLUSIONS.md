@@ -23,7 +23,7 @@ tools/exclusions --count                  # the two numbers below
 tools/exclusions --check docs/EXCLUSIONS.md
 ```
 
-**Measured after `7657f01`, regenerated on 2026-09-26: 134 refusal sites, 125 distinct messages.** Every site
+**Measured after `556e643`, re-cited on 2026-09-26: 130 refusal sites, 121 distinct messages.** Every site
 is cited below, which is what `--check` verifies — it reports each refusal the
 source raises and this document does not cite, and each citation whose site is
 gone. Run it after adding or removing a refusal; a document that has to be
@@ -346,38 +346,42 @@ declaration order. What is left is the shapes where one object is many:
 
 ## `new` and `delete`
 
-- **more than one value in a new-expression** — `src/parser/ParserExprNew.cpp:1095`
+- **more than one value in a new-expression** — `src/parser/ParserExprNew.cpp:1143`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:1043`
+  `src/parser/ParserExprNew.cpp:1091`
 - **`new T{...}`** with a value inside — list-initialisation; the empty pair
-  value-initialises. `src/parser/ParserExprNew.cpp:1069`
+  value-initialises. `src/parser/ParserExprNew.cpp:1117`
 
 ## Statements, exceptions and control
 
-- **a local with a destructor and a `try` in one function, on x86_64-windows
-  only** — **the Itanium half is gone as of 2026-09-09**, in three steps: a
+- **a local with a destructor and a `try` in one function** — refused now only
+  where the call-site table cannot be split (`ParserStmt.cpp:797`), and on
+  x86_64-windows only inside a `catch` handler, a cleanup there being a funclet
+  inside a funclet. **The Itanium half went on 2026-09-09**, in three steps: a
   `try` in the same block as the local landed 2026-09-06; a local *inside* the
   `try`'s body landed 2026-09-07, its cleanup rows carrying the `try`'s catch
   types and handing the selector to one shared chain; and a local inside a
   **handler** landed with the end-catch region, which gave a handler's block
   the row it had been missing — the same region a `throw` out of a handler
-  needs, and a local's destructor goes in it. What is left is Microsoft's: a
-  cleanup there is a funclet and an FH3 state rather than a row in a list, and
-  `wrapMsCleanups` has been taught none of the three tricks.
-  `src/parser/ParserStmt.cpp:797`, `src/parser/ParserStmt.cpp:1081`
+  needs, and a local's destructor goes in it. **The Microsoft half went on
+  2026-09-26**: beside a `try` and inside its body, through the FH3 state tree
+  (CLAUDE.md, "The FH3 state tree on x86_64-windows").
+  `src/parser/ParserStmt.cpp:797`, `src/parser/ParserStmt.cpp:1090`
 - **a `goto` that leaves a `catch` handler** — [except.handle]/16 ends the
   handling on the way out and the call that ends it is `__cxa_end_catch`, which
   a jump has to make where it is written. A forward label has not been read
   there: `resolveGotos` fills the jump's cleanups afterwards, and by then the
   statement is built. `return`, `break` and `continue` out of a handler all
   work, and so does a `goto` to a label the handler itself declares.
-  `src/parser/ParserStmt.cpp:1966`
+  `src/parser/ParserStmt.cpp:2042`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:738`
-- **a `try` inside another, on x86_64-windows only** — it works on both Itanium
+- **a `try` inside a `catch` handler, on x86_64-windows only** — a `try` inside
+  a `try` body works there since 2026-09-26, and a handler's own `try` would
+  put funclets inside a funclet. Both shapes work on both Itanium
   targets as of 2026-09-07, body and handler alike, which took three things: the
   enclosing region split around the inner one so no two rows overlap, the action
   chain continuing outwards so phase 1 finds an enclosing `catch` on the inner
@@ -386,13 +390,13 @@ declaration order. What is left is the shapes where one object is many:
   handler is a funclet named `<fn>$catch$N` from a per-function counter, so a
   nested one takes a name already used and ml64 answers
   `A2005: symbol redefinition`; all three mechanisms are to the Itanium
-  call-site list, which that ABI does not have. See CLAUDE.md, "A `try` inside a
-  `try`". `src/parser/ParserStmt.cpp:1081`
+  call-site list; the Microsoft ABI has the FH3 state tree instead. See
+  CLAUDE.md, "A `try` inside a `try`". `src/parser/ParserStmt.cpp:1132`
 - **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1618`
+  measured on the box. `src/parser/ParserStmt.cpp:1674`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:87`
 - **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
@@ -429,7 +433,7 @@ declaration order. What is left is the shapes where one object is many:
   class's overload set. `src/parser/ParserType.cpp:553`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1597`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1653`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -527,13 +531,6 @@ guessed wrong twice.
 
 ## Refused for one target only
 
-- **`return`, `break` or `continue` that leaves a `catch` on x86_64-windows** —
-  a handler is a funclet there, so leaving one early is a return of the address
-  to carry on at, in the register a return value would travel in. All three are
-  the one refusal wearing three hats; a `break` or `continue` whose loop is
-  *inside* the handler leaves no funclet and is not refused.
-  `src/parser/ParserStmt.cpp:1649`, `src/parser/ParserStmt.cpp:2000`,
-  `src/parser/ParserStmt.cpp:2016`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
@@ -557,7 +554,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:215` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:597`, `src/Mangle.cpp:1130` — a type with no Itanium or
+- `src/Mangle.cpp:597`, `src/Mangle.cpp:1131` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.
@@ -582,7 +579,7 @@ which is the only oracle this document has.
 
 ### `src/parser/Parser.cpp`
 
-- 'alignas(<...>)' on a local is not supported yet: the stack is kept <...>-aligned on <...>, and a local past that would need the frame realigned. A global or a member may ask for more - `src/parser/Parser.cpp:741`
+- 'alignas(<...>)' on a local is not supported yet: the stack is kept <...>-aligned on <...>, and a local past that would need the frame realigned. A global or a member may ask for more - `src/parser/Parser.cpp:744`
 
 ### `src/parser/ParserClass.cpp`
 
@@ -592,19 +589,15 @@ which is the only oracle this document has.
 
 - '<...>' is virtual but has no slot in '<...>'s own vtable - a function of a base after the first is not supported here yet - `src/parser/ParserExpr.cpp:2162`
 
-### `src/parser/ParserExprNew.cpp`
-
-- 'typeid' is not supported yet for x86_64-windows - the Microsoft ABI answers it with a type descriptor per type and __RTtypeid, which are not built here - `src/parser/ParserExprNew.cpp:1738`
-
 ### `src/parser/ParserInit.cpp`
 
 - an initialiser for an array of '<...>' is not supported yet - each element gets the default constructor - `src/parser/ParserInit.cpp:1116`
 
 ### `src/parser/ParserStmt.cpp`
 
-- a 'try' inside another one is not supported yet for x86_64-windows - a handler there is a funclet named after its function and a counter, and a nested one takes a name already used, which ml64 answers with 'A2005: symbol redefinition'. It works on both Itanium targets - `src/parser/ParserStmt.cpp:1130`
-- catching a pointer by reference - '<...>' - is not supported yet: the runtime hands a handler the pointer itself, so catch it by value - `src/parser/ParserStmt.cpp:1243`
-- a local with a destructor and a 'try' in one function is not supported yet - each is a range in the call-site table and one would have to split the other - `src/parser/ParserStmt.cpp:1879`
+- a 'try' inside a 'catch' handler is not supported yet for x86_64-windows - a handler there is a funclet, and a nested try's handlers would be funclets inside it - `src/parser/ParserStmt.cpp:1132`
+- catching a pointer by reference - '<...>' - is not supported yet: the runtime hands a handler the pointer itself, so catch it by value - `src/parser/ParserStmt.cpp:1247`
+- a local with a destructor and a 'try' in one function is not supported yet - each is a range in the call-site table and one would have to split the other - `src/parser/ParserStmt.cpp:1955`
 
 ### `src/parser/ParserTemplate.cpp`
 
