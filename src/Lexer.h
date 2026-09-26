@@ -25,6 +25,8 @@ struct Token {
     long double dvalue = 0;
 
     bool wide = false;
+    // 'u', 'U' or '8' for a u, U or u8 literal; 0 for a plain or L one.
+    char prefix = 0;
     // A single-character literal: int in C and char in C++, which is the whole
     // of why this flag exists - sizeof('a') is 4 in one and 1 in the other. A
     // multi-character literal ('ab') is int in both and does not set it.

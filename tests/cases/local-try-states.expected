@@ -1,0 +1,10 @@
++1 body -1 +1 caught9 -1 
++2 body -2 +2 -2 caught9 
++3 c -3 +4 d -4 +3 c -3 +4 d -4 main9 
++5 +6 +7 inner -7 after-inner -6 -5 +5 +6 +7 -7 -6 outer9 -5 
++11 +12 inner after -12 -11 +11 +12 h9 -12 outer -11 
++20 -20 +21 -21 +22 -22 3 +20 -20 +21 c1 -21 1 
++30 +31 -31 -30 +30 -30 +30 -30 
++40 -40 +41 t -41 +40 -40 +41 -41 h9 
++50 fell -50 0 +50 r9 -50 9 
+LEDGER built=33 gone=33 live=0 double=0 phantom=0 over=0 lost=0

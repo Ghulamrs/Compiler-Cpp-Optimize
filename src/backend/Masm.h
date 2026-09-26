@@ -119,6 +119,7 @@ private:
     bool usesFunclets() const override { return true; }
     bool localsAboveFrameBase() const override { return true; }
     std::string beginFunclet() override;
+    void funcletLeave(const std::string &label) override;
     void endFunclet(const std::string &resume) override;
     void endCleanupFunclet() override;
     void closeFunclet(const std::string &tail);
@@ -127,7 +128,6 @@ private:
 
     void storeUnwindHelp(int slot) override;
     void emitExceptionTables(const Function &fn) override;
-    void emitCleanupTables(const Function &fn);
 
     // A funclet is the text the body appended, lifted back out in order.
     std::string funclets_;
@@ -144,7 +144,8 @@ private:
     void emitThrowInfo(const Program &program);
     // The five objects the Microsoft ABI wants per class with a vftable, for the same reason and in the same place.
     void emitClassRtti(const Program &program);
-    std::string record(const char *segment, int align, const std::string &name, bool first);
+    std::string record(const char *segment, int align, const std::string &name, bool first,
+                       bool writable = false);
 
     MasmSpelling masm_;
 };

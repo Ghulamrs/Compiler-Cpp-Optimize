@@ -1,20 +1,50 @@
-// <typeinfo> - std::type_info, laid out as the Itanium ABI lays every
-// type_info object: a vtable pointer and the name string. `typeid` here
-// yields a reference to such an object - the library's for a fundamental
-// type, one this compiler emits beside a class's vtable or for a pointer -
-// and what this class does is read it. Names are compared by content, so
-// two weak copies of one class's object answer the same whether or not the
-// linker folded them. The name is the mangled one, as it is under libstdc++
-// and libc++.
+// <typeinfo> - std::type_info, laid out as each ABI lays every type_info
+// object. Itanium: a vtable pointer and the mangled name; `typeid` yields a
+// reference to such an object - the library's for a fundamental type, one this
+// compiler emits beside a class's vtable or for a pointer - and this class
+// reads it. Names are compared by content, so two weak copies of one class's
+// object answer the same whether or not the linker folded them. Microsoft: a
+// vftable pointer and the decorated name behind a spare word the runtime
+// fills with the undecorated one on the first name(); `typeid` names the
+// type descriptor `??_R0...@8`, or asks __RTtypeid for a polymorphic object's,
+// and the vcruntime's own three functions read it, as vcruntime_typeinfo.h has
+// them. Measured from clang -target x86_64-pc-windows-msvc, 2026-09-26.
 #ifndef _CXX1_TYPEINFO
 #define _CXX1_TYPEINFO
 
 #include <string.h>
 
+#ifdef _WIN32
+extern "C" {
+struct __std_type_info_data {
+    const char *_UndecoratedName;
+    const char _DecoratedName[1];
+};
+struct __type_info_node;
+int __std_type_info_compare(const __std_type_info_data *, const __std_type_info_data *);
+unsigned long long __std_type_info_hash(const __std_type_info_data *);
+const char *__std_type_info_name(__std_type_info_data *, __type_info_node *);
+}
+// C++ linkage, as vcruntime_typeinfo.h has it: libcmt defines ?__type_info_root_node@@3U__type_info_node@@A.
+extern __type_info_node __type_info_root_node;
+#endif
+
 namespace std {
 
 class type_info {
 public:
+#ifdef _WIN32
+    const char *name() const { return __std_type_info_name(&_Data, &__type_info_root_node); }
+    const char *raw_name() const { return _Data._DecoratedName; }
+    bool operator==(const type_info &other) const {
+        return __std_type_info_compare(&_Data, &other._Data) == 0;
+    }
+    bool operator!=(const type_info &other) const { return !(*this == other); }
+    bool before(const type_info &other) const {
+        return __std_type_info_compare(&_Data, &other._Data) < 0;
+    }
+    unsigned long long hash_code() const { return __std_type_info_hash(&_Data); }
+#else
     const char *name() const { return __name; }
     bool operator==(const type_info &other) const {
         return __name == other.__name || strcmp(__name, other.__name) == 0;
@@ -28,12 +58,17 @@ public:
         for (const char *p = __name; *p != 0; p++) h = h * 33 + (unsigned char)*p;
         return h;
     }
+#endif
 private:
     type_info();
     type_info(const type_info &);
     type_info &operator=(const type_info &);
     const void *__vptr;
+#ifdef _WIN32
+    mutable __std_type_info_data _Data;
+#else
     const char *__name;
+#endif
 };
 
 }

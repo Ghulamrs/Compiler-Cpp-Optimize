@@ -18,7 +18,6 @@ int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "asm",
-        "char16_t", "char32_t",
         "export",
         "thread_local"
     };
@@ -357,6 +356,7 @@ bool Parser::atUntypedMemberDefinition() const {
 bool Parser::atTypeName() const {
     static const char *const t[] = { "void", "bool", "char", "short", "int",
                                      "long", "signed", "unsigned", "wchar_t",
+                                     "char16_t", "char32_t",
                                      "float", "double",
                                      "struct", "union", "enum",
                                      "const", "volatile",
@@ -391,11 +391,16 @@ std::size_t Parser::qualifiedTypeEnd() const {
     if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return 0;
     std::string q = peek().text;
     std::size_t typeEnd = 0;
+    const Type *cur = findTypedef(q);
     for (std::size_t k = 1; peekAt(k).is("::") &&
                             peekAt(k + 1).kind == TokenKind::Ident;
          k += 2) {
         q += "::" + peekAt(k + 1).text;
-        if (findTypedef(q) != nullptr) typeEnd = k + 2;
+        if (const Type *t = findTypedef(q)) { typeEnd = k + 2; cur = t; }
+        // `std::string::size_type`: a member type of the class a typedef reached.
+        else if (cur != nullptr && cur->isStructOrUnion() &&
+                 (cur = lookupInClass(cur, peekAt(k + 1).text)) != nullptr)
+            typeEnd = k + 2;
         // **`std::vector<int> v;` - the name stops at a class template too.**
         if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
     }
@@ -545,6 +550,7 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.breakMarks = breakMarks_;
     s.inTryBody = inTryBody_;
     s.inMsHandler = inMsHandler_;
+    s.msExit = msExit_;
     s.inHandlerBody = inHandlerBody_;
     s.handlerDepth = handlerDepth_;
     s.handlerLoopDepth = handlerLoopDepth_;
@@ -600,6 +606,7 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     breakMarks_ = s.breakMarks;
     inTryBody_ = s.inTryBody;
     inMsHandler_ = s.inMsHandler;
+    msExit_ = s.msExit;
     inHandlerBody_ = s.inHandlerBody;
     handlerDepth_ = s.handlerDepth;
     handlerLoopDepth_ = s.handlerLoopDepth;
@@ -655,6 +662,7 @@ void Parser::clearFunctionState() {
     breakMarks_.clear();
     inTryBody_ = false;
     inMsHandler_ = false;
+    msExit_ = nullptr;
     inHandlerBody_ = false;
     handlerDepth_ = 0;
     handlerLoopDepth_.clear();

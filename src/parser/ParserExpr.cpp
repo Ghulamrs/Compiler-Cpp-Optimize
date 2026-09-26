@@ -458,6 +458,8 @@ const Type *Parser::simpleTypeKeyword() const {
     for (const auto &k : t)
         if (peek().is(k.word)) return types_.get(k.kind);
     if (peek().is("wchar_t")) return types_.get(Kind::WChar);
+    if (peek().is("char16_t")) return types_.get(Kind::Char16);
+    if (peek().is("char32_t")) return types_.get(Kind::Char32);
     return nullptr;
 }
 
@@ -712,6 +714,8 @@ ExprPtr Parser::primary(Program *program) {
         switch (want->kind()) {
         case Kind::Char: case Kind::SChar: case Kind::UChar:
         case Kind::Short: case Kind::UShort: case Kind::WChar: promotes = "int"; break;
+        case Kind::Char16:                   promotes = "int"; break;
+        case Kind::Char32:                   promotes = "unsigned int"; break;
         case Kind::Float:                    promotes = "double"; break;
         default: break;
         }
@@ -745,28 +749,54 @@ ExprPtr Parser::primary(Program *program) {
         at_++;
 
         bool wide = tokens_[at_ - 1].wide;
+        char prefix = tokens_[at_ - 1].prefix;
         while (peek().kind == TokenKind::Str) {
             text += peek().text;
 
             wide = wide || peek().wide;
+            if (peek().prefix != 0 && prefix != 0 && peek().prefix != prefix)
+                src_.fail(peek().pos, "adjacent string literals with different "
+                                      "encoding prefixes - [lex.string]/13");
+            if (peek().prefix != 0) prefix = peek().prefix;
             at_++;
         }
 
-        const Type *elem = wide ? types_.get(Kind::WChar)
-                                : types_.charType();
+        const Type *elem = prefix == 'u' ? types_.get(Kind::Char16)
+                         : prefix == 'U' ? types_.get(Kind::Char32)
+                         : wide          ? types_.get(Kind::WChar)
+                                         : types_.charType();
         int width = elem->size(target_);
 
-        std::string bytes;
-        for (unsigned char ch : text) {
-            bytes.push_back(static_cast<char>(ch));
-            for (int k = 1; k < width; k++) bytes.push_back('\0');
+        // **A u, U or L literal is UTF-8 in the source and code units in the object**
+        // - [lex.string]/8 and /9; a surrogate pair in u for a point past the BMP.
+        std::vector<unsigned long long> units;
+        if (prefix == 'u' || prefix == 'U' || wide) {
+            for (std::size_t i = 0; i < text.size(); ) {
+                const unsigned char c = static_cast<unsigned char>(text[i]);
+                int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+                unsigned long long cp = extra == 0 ? c : c & (0x3F >> extra);
+                i++;
+                for (int k = 0; k < extra && i < text.size(); k++, i++)
+                    cp = (cp << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+                if (prefix == 'u' && cp >= 0x10000) {
+                    units.push_back(0xD800 + ((cp - 0x10000) >> 10));
+                    units.push_back(0xDC00 + ((cp - 0x10000) & 0x3FF));
+                } else {
+                    units.push_back(cp);
+                }
+            }
+        } else {
+            for (unsigned char ch : text) units.push_back(ch);
         }
+        std::string bytes;
+        for (unsigned long long u : units)
+            for (int k = 0; k < width; k++) bytes.push_back(static_cast<char>((u >> (8 * k)) & 0xFF));
         for (int k = 0; k < width; k++) bytes.push_back('\0');
 
         program->strings.push_back(StringLit{ label, bytes, width });
         ExprPtr n(new StrLit(label, text));
         n->setType(types_.arrayOf(types_.withConst(elem),
-                                  static_cast<long long>(text.size()) + 1));
+                                  static_cast<long long>(units.size()) + 1));
         return n;
     }
 
@@ -822,6 +852,8 @@ ExprPtr Parser::primary(Program *program) {
                                                                ? types_.get(Kind::LongLong)
                                             : types_.get(Kind::ULongLong);
 
+        else if (t.prefix == 'u')        ty = types_.get(Kind::Char16);
+        else if (t.prefix == 'U')        ty = types_.get(Kind::Char32);
         else if (t.wide)                 ty = types_.get(Kind::WChar);
         // [lex.ccon]/2: an ordinary character literal has type char, where C gives it int.
         else if (t.isChar)               ty = types_.get(Kind::Char);
@@ -1631,6 +1663,129 @@ const Type *Parser::qualifiedMemberScope(const Type *obj, std::string &name,
     return cls;
 }
 
+// [class.dtor]/14 and [expr.pseudo]: the object is the pointee for `->` and
+// the operand itself for `.`; the name after `~` must be the object's type,
+// its class, or a base of it - and for a scalar the whole thing is a no-op.
+ExprPtr Parser::explicitDestructorCall(ExprPtr &object, std::size_t pos) {
+    const bool arrow = peek().is("->");
+    std::size_t k = 1;
+    while (peekAt(k).kind == TokenKind::Ident && peekAt(k + 1).is("::")) k += 2;
+    if (!peekAt(k).is("~") || peekAt(k + 1).kind != TokenKind::Ident) return nullptr;
+    if (arrow && object->type()->unqualified()->isStructOrUnion()) return nullptr;
+    at_++;
+    std::string qualifier;
+    while (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
+        if (!qualifier.empty()) qualifier += "::";
+        qualifier += peek().text;
+        at_ += 2;
+    }
+    at_++;
+    const std::string name = peek().text;
+    at_++;
+    expect("(");
+    expect(")");
+
+    ExprPtr n = std::move(object);
+    if (arrow) n = decay(std::move(n));
+    if (arrow && !n->type()->isPointer())
+        src_.fail(pos, "'->' needs a pointer, not '" + n->type()->describe() + "'");
+    const Type *obj = arrow ? n->type()->pointee() : n->type();
+    const Type *plain = obj->unqualified();
+
+    // **Which type the name means.** `~T` alone names T; `B::~B` names B,
+    // which must be the object's class or a base; a typedef reaches either.
+    const Type *named = nullptr;
+    if (!qualifier.empty()) {
+        named = findTypedef(qualifier);
+        if (named == nullptr && plain->isStructOrUnion())
+            named = FindBase::named(plain, qualifier);
+        if (named == nullptr)
+            src_.fail(pos, "'" + qualifier + "' names no type, so '" + qualifier +
+                           "::~" + name + "' names no destructor");
+        const Type *inner = findTypedef(name);
+        if (name != localOf(named->unqualified()->tag()) &&
+            (inner == nullptr || inner->unqualified() != named->unqualified()))
+            src_.fail(pos, "'~" + name + "' is not the destructor of '" +
+                           named->describe() + "'");
+    } else {
+        named = findTypedef(name);
+        if (named == nullptr && plain->isStructOrUnion() &&
+            plain->localName() == name)
+            named = plain;
+        if (named == nullptr)
+            src_.fail(pos, "'~" + name + "' names no type this compiler knows, "
+                           "so it is not a destructor");
+    }
+    named = named->unqualified();
+
+    // **[expr.pseudo]: a scalar has nothing to destroy**, and the only effect
+    // is that the operand is evaluated - the pointer, or the object's address.
+    if (!plain->isStructOrUnion()) {
+        if (named != plain)
+            src_.fail(pos, "the pseudo-destructor '~" + name + "' does not name "
+                           "the type of this object, which is '" +
+                           plain->describe() + "'");
+        ExprPtr done;
+        if (!arrow && clonePure(*n) != nullptr) {
+            done.reset(new Num(0LL));
+            done->setType(types_.intType());
+        } else if (!arrow && isGlvalue(*n)) {
+            done.reset(new Unary('&', std::move(n)));
+            done->setType(types_.pointerTo(obj));
+        } else {
+            done = std::move(n);
+        }
+        ExprPtr c(new Cast(types_.get(Kind::Void), std::move(done)));
+        c->setType(types_.get(Kind::Void));
+        return c;
+    }
+
+    if (named != plain && publicBaseOffset(plain, named) < 0)
+        src_.fail(pos, "'" + named->describe() + "' is not '" + plain->describe() +
+                       "' or a base of it, so '~" + name + "' cannot destroy this");
+    const Type *cls = named;
+    const Signature *dtor = destructorOf(cls);
+    ExprPtr addr;
+    if (arrow) {
+        addr = std::move(n);
+    } else if (clonePure(*n) != nullptr || isGlvalue(*n)) {
+        addr.reset(new Unary('&', std::move(n)));
+        addr->setType(types_.pointerTo(obj));
+    } else {
+        src_.fail(pos, "'.~" + name + "()' needs an object with an address");
+    }
+    // A class with nothing to run is the scalar case in a class's clothes.
+    if (dtor == nullptr) {
+        ExprPtr c(new Cast(types_.get(Kind::Void), std::move(addr)));
+        c->setType(types_.get(Kind::Void));
+        return c;
+    }
+    if (dtor->access != Access::Public && !insideAccessOf(cls, dtor->access) &&
+        !isFriendOf(cls)) {
+        const char *how = dtor->access == Access::Private ? "private" : "protected";
+        src_.fail(pos, "the destructor of '" + cls->describe() + "' is " + how +
+                       ", and this is outside the class");
+    }
+    const Type *thisType = types_.pointerTo(obj->isConst() ? types_.withConst(cls) : cls);
+    if (cls != plain) addr = convert(std::move(addr), thisType);
+    else addr->setType(thisType);
+
+    // **A qualified call is never dispatched** - [expr.call]/1 - and an
+    // unqualified one on a virtual destructor reaches the most derived one.
+    if (!dtor->isVirtual || !qualifier.empty())
+        return destructorCall(std::move(addr), *dtor, pos);
+    const int slot = allocateFrameSlot(thisType);
+    const std::string temp = ".dx" + std::to_string(refTemps_++);
+    ExprPtr keep(Var::local(temp, slot));
+    keep->setType(thisType);
+    ExprPtr save(new Assign(std::move(keep), std::move(addr)));
+    save->setType(thisType);
+    ExprPtr call = virtualDestructorCall(temp, slot, thisType, cls, false, pos);
+    ExprPtr both(new Comma(std::move(save), std::move(call)));
+    both->setType(types_.get(Kind::Void));
+    return both;
+}
+
 ExprPtr Parser::postfix() {
     ExprPtr n = primary(current_);
     for (;;) {
@@ -1710,6 +1865,15 @@ ExprPtr Parser::postfix() {
             deref->setType(elem);
             n = std::move(deref);
             continue;
+        }
+
+        // `p->~T()` and `o.~T()` are read before either member path, which
+        // want a name where the `~` is.
+        if (peek().is("->") || peek().is(".")) {
+            if (ExprPtr done = explicitDestructorCall(n, pos)) {
+                n = std::move(done);
+                continue;
+            }
         }
 
         if (peek().is("->")) {

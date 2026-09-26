@@ -35,6 +35,7 @@ public:
     void visit(const Conditional &n) override;
     void visit(const Comma &n) override;
     void visit(const Break &n) override;
+    void visit(const FuncletLeave &n) override;
     void visit(const Continue &n) override;
     void visit(const Try &n) override;
 
@@ -160,6 +161,8 @@ protected:
     // in the parent to continue at, which a funclet returns in rax. Between the
     // two the body is walked as if inline, the funclet setting rbp from the parent.
     virtual std::string beginFunclet() { return std::string(); }
+    // Leave the handler funclet early, the runtime continuing at `label`.
+    virtual void funcletLeave(const std::string &label) { (void)label; }
     virtual void endFunclet(const std::string &resume) { (void)resume; }
 
     // One `try` as the Microsoft tables describe it: the range guarded, where
@@ -169,22 +172,27 @@ protected:
         std::string descriptor;   // empty for catch (...)
         int objectSlot = 0;
         bool byReference = false;
+        bool constPointer = false;
         std::string funclet;
     };
-    struct MsTryRegion {
-        std::string begin;
-        std::string end;
-        std::string resume;
-        int unwindHelpSlot = 0;
+    // **The FH3 state tree, numbered in walking order as cl numbers it**: a
+    // region's state has its enclosing region's as `toState`, a cleanup's runs
+    // its funclet, and a try block spans the states its body and handlers own.
+    struct MsState { int toState = -1; std::string action; };
+    struct MsTryBlock {
+        int tryLow = 0, tryHigh = 0, catchHigh = 0;
         std::vector<MsHandlerRow> handlers;
-        // A cleanup region instead of a try: no handler, one funclet that
-        // runs destructors while the exception carries on past this frame.
-        bool isCleanup = false;
-        std::string cleanupFunclet;
     };
-    void msTry(const MsTryRegion &r) { msTries_.push_back(r); }
-    const std::vector<MsTryRegion> &msTries() const { return msTries_; }
-    void clearMsTries() { msTries_.clear(); }
+    struct MsIpRow { std::string label; int state; };
+    const std::vector<MsState> &msStates() const { return msStates_; }
+    const std::vector<MsTryBlock> &msTryBlocks() const { return msTryBlocks_; }
+    const std::vector<MsIpRow> &msIpRows() const { return msIpRows_; }
+    const std::vector<MsIpRow> &msFuncletRows() const { return msFuncletRows_; }
+    int msUnwindHelpSlot() const { return msUnwindHelpSlot_; }
+    void clearMsTries() {
+        msStates_.clear(); msTryBlocks_.clear(); msIpRows_.clear();
+        msFuncletRows_.clear(); msCurState_ = -1; msUnwindHelpSlot_ = 0;
+    }
 
     void resetBlocks(const std::vector<int> &parents);
 
@@ -201,7 +209,11 @@ private:
     std::vector<CallSite> callSites_;
     std::vector<OpenRegion> open_;
     int labelOrder_ = 0;
-    std::vector<MsTryRegion> msTries_;
+    std::vector<MsState> msStates_;
+    std::vector<MsTryBlock> msTryBlocks_;
+    std::vector<MsIpRow> msIpRows_, msFuncletRows_;
+    int msCurState_ = -1;
+    int msUnwindHelpSlot_ = 0;
     const Source *lines_ = nullptr;
     std::string compDir_;
     std::vector<DwarfBlock> blocks_;

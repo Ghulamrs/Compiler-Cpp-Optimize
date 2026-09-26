@@ -63,10 +63,12 @@ public:
     void visit(const Return &) override;
     void landingPad(int pointerSlot, int selectorSlot) override;
     bool terminateScopes() const override { return true; }
+    void setOptimize(int level) override { optimize_ = level; }
 
 private:
     std::ostringstream out_;    // the piece being emitted (one function at a time)
     std::string file_;          // the finished pieces, in order
+    int optimize_ = 0;          // -O1 and -O2 run the body through c6xSchedule
     std::ostream &sink_;
     const Target &target_;
     const Abi &abi_;

@@ -594,6 +594,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 pendingBodies_.push_back(PendingBody{
                     tag, itemStart, local, constructorKey(tag),
                     signatureAddedUnder(constructorKey(tag), sigAt) });
+                markInlineBody(pendingBodies_.back().which);
                 skipBracedBlock();
                 continue;
             }
@@ -635,6 +636,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 pendingBodies_.push_back(PendingBody{
                     tag, itemStart, local, destructorKey(tag),
                     signatureAddedUnder(destructorKey(tag), sigAt) });
+                markInlineBody(pendingBodies_.back().which);
                 skipBracedBlock();
                 continue;
             }
@@ -951,7 +953,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // [class.free]/1 and /2: allocation and deallocation
                 // functions are static members whether or not they say so.
                 const bool memberIsStatic = msc == StorageStatic ||
-                    d.name == "operatornew" || d.name == "operatordelete";
+                    d.name == "operatornew" || d.name == "operatordelete" ||
+                    d.name == "operatornew[]" || d.name == "operatordelete[]";
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
@@ -1031,6 +1034,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     pendingBodies_.push_back(PendingBody{
                         tag, itemStart, local, tag + "::" + d.name,
                         signatureAddedUnder(tag + "::" + d.name, sigAt) });
+                    markInlineBody(pendingBodies_.back().which);
                     skipBracedBlock();
                     heldBody = true;
                     break;
@@ -1115,6 +1119,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 }
                 memberInit_[tag + "::" + d.name] = at_;
                 skipMemberInitialiser();
+            } else if (peek().is("{")) {
+                // The other spelling of the same initialiser, named rather than left to "expected ';'".
+                src_.fail(peek().pos, "a braced member initialiser without '=' - "
+                                      "'int x{5};' - is not supported yet; write "
+                                      "'int x = 5;'");
             }
             long long endBits = (at + slot->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
@@ -1595,6 +1604,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
 
     // wchar_t is a type of its own in C++, not the typedef C makes it.
     if (consume("wchar_t")) return types_.get(Kind::WChar);
+    if (consume("char16_t")) return types_.get(Kind::Char16);
+    if (consume("char32_t")) return types_.get(Kind::Char32);
     // **`Point::Point(...)` has no type before the name, and the name is a type.**
     if (atUntypedMemberDefinition()) return types_.get(Kind::Void);
 
@@ -1691,7 +1702,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                                           " in '" +
                                           found->enclosing()->tag() + "'");
                 at_ += consumed;
-                return found;
+                // `std::string::size_type`: what the prefix names may be a typedef for a class.
+                return memberTypeWalk(found);
             }
         }
         if (const Type *t = findTypedef(peek().text)) {
@@ -1913,13 +1925,13 @@ std::string Parser::operatorName() {
 
     const std::string spelling = peek().text;
 
-    // **The array forms are refused by name**: `new T[n]` calls the
-    // platform's `operator new[]` and a class's plain `operator new` is not
-    // consulted for it, so a declared one could not be reached.
-    if ((spelling == "new" || spelling == "delete") && peekAt(1).is("["))
-        src_.fail(pos, "'operator " + spelling + "[]' is not supported yet - "
-                       "the array forms are the platform's; 'operator " +
-                       spelling + "' can be declared, replaced and given to a class");
+    // The array forms: a class's own, which `new T[n]` and `delete[] p` reach
+    // by [class.free]/2, or at namespace scope a replacement or the library's.
+    if ((spelling == "new" || spelling == "delete") && peekAt(1).is("[")) {
+        at_ += 2;
+        expect("]");
+        return "operator" + spelling + "[]";
+    }
     if (spelling == "->*")
         src_.fail(pos, "'operator->*' is not supported yet");
     if (peek().kind == TokenKind::Str)
@@ -1974,12 +1986,13 @@ void Parser::checkOperatorDeclarable(const std::string &name,
     // **An allocation function is an operator in name only** - [basic.stc.dynamic]:
     // `operator new` takes a size_t and `operator delete` a `void *`, member or
     // not, and nothing below applies to them.
-    if (spelling == "new" || spelling == "delete") {
+    if (spelling == "new" || spelling == "delete" ||
+        spelling == "new[]" || spelling == "delete[]") {
         if (!member && internal)
             src_.fail(pos, "'" + name + "' at namespace scope cannot be "
                            "static - [basic.stc.dynamic]/2 makes the "
                            "replacement the one the whole program calls");
-        const bool sized = spelling == "new";
+        const bool sized = spelling == "new" || spelling == "new[]";
         const Type *first = params.empty() ? nullptr : params[0]->unqualified();
         const bool ok = first != nullptr &&
                         (sized ? first == types_.get(target_.sizeType())
@@ -1994,13 +2007,12 @@ void Parser::checkOperatorDeclarable(const std::string &name,
         if (params.size() == 2 && !member) {
             const Type *second = params[1]->unqualified();
             if (second->isPointer() && second->pointee()->unqualified()->isVoid()) return;
+            // And the nothrow pair, `(size_t, const std::nothrow_t &)`, which <new> declares.
+            if (second->isReference() && second->pointee()->unqualified()->isStructOrUnion() &&
+                second->pointee()->unqualified()->tag() == "std::nothrow_t") return;
         }
-        if (params.size() != 1)
-            src_.fail(pos, "'" + name + "' with " + std::to_string(params.size()) +
-                           " parameters is not supported yet - the one-parameter "
-                           "form is what a new-expression and a delete-expression "
-                           "call here, and the library's placement form may be "
-                           "declared");
+        // Any further parameters are placement ones - [expr.new]/14 reaches
+        // them from `new (a, b) T`, and a deallocation's from [expr.new]/20.
         return;
     }
 

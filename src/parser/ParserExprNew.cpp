@@ -778,24 +778,66 @@ ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
 // **The Microsoft ABI throws from the stack, not from the heap**: `T tmp = x;` and
 // then `_CxxThrowException(&tmp, &_TI1<letter>)`, where Itanium asks the runtime
 // for memory. Identity is the ThrowInfo chain, four objects the backend emits.
+void Parser::finishMicrosoftThrow(MicrosoftThrow &names, bool thrown) {
+    names.thrown = thrown;
+    for (std::size_t i = 0; i < names.catchables.size(); i++) {
+        MicrosoftThrow::Catchable &c = names.catchables[i];
+        if (c.cls == nullptr) continue;
+        if (c.size == 0) c.size = c.cls->unqualified()->size(target_);
+        // The runtime copies the caught object with this, so it is a use.
+        if (const Signature *cc = copyConstructorOf(c.cls->unqualified())) {
+            markUsed(cc);
+            c.copyCtor = cc->symbol;
+        }
+    }
+    if (!names.catchables.empty() && names.catchables[0].cls != nullptr)
+        if (const Signature *d = destructorOf(names.catchables[0].cls->unqualified())) {
+            markUsed(d);
+            names.destructor = d->symbol;
+        }
+    microsoftThrowFinish(&names);
+    for (std::size_t i = 0; i < current_->msThrows.size(); i++)
+        if (current_->msThrows[i].info == names.info) {
+            current_->msThrows[i].thrown |= thrown;
+            return;
+        }
+    current_->msThrows.push_back(names);
+}
+
 StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
+    value = decay(std::move(value));
     const Type *thrown = value->type()->unqualified();
     MicrosoftThrow names;
     std::string why;
     if (!microsoftThrowNames(thrown, thrown->size(target_), &names, &why))
         src_.fail(pos, "'throw' cannot name the type of this: " + why);
-
-    bool had = false;
-    for (std::size_t i = 0; i < current_->thrown.size(); i++)
-        if (current_->thrown[i] == thrown) had = true;
-    if (!had) current_->thrown.push_back(thrown);
+    finishMicrosoftThrow(names, true);
 
     const int slot = allocateFrameSlot(thrown);
     const std::string temp = ".ex" + std::to_string(refTemps_++);
     ExprPtr held(Var::local(temp, slot));
     held->setType(thrown);
-    ExprPtr store(new Assign(std::move(held), convert(std::move(value), thrown)));
-    store->setType(thrown);
+    // **[except.throw]/3 copy-initialises the exception object**: the copy
+    // constructor where there is one, the bytes where there is not.
+    ExprPtr store;
+    const Signature *cc = thrown->isStructOrUnion() ? copyConstructorOf(thrown) : nullptr;
+    if (cc != nullptr) {
+        const Type *thrownPtr = types_.pointerTo(thrown);
+        ExprPtr at(new Unary('&', std::move(held)));
+        at->setType(thrownPtr);
+        std::vector<ExprPtr> ctorArgs;
+        ctorArgs.push_back(std::move(at));
+        ctorArgs.push_back(convert(std::move(value), thrown));
+        std::vector<const Type *> ps;
+        ps.push_back(thrownPtr);
+        ps.push_back(cc->params[0]);
+        store = completeCall(thrown->tag(), cc->symbol, nullptr,
+                             types_.get(Kind::Void), ps, false, pos,
+                             std::move(ctorArgs));
+    } else {
+        store.reset(new Assign(std::move(held), convert(std::move(value), thrown)));
+        store->setType(thrown);
+    }
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     std::vector<ExprPtr> args;
@@ -815,9 +857,15 @@ StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
 
     ExprPtr thrower = runtimeCall("_CxxThrowException", types_.get(Kind::Void),
                                   std::move(args));
-    ExprPtr whole(new Comma(std::move(store), std::move(thrower)));
-    whole->setType(types_.get(Kind::Void));
-    return StmtPtr(new ExprStmt(std::move(whole)));
+    // The object is made, the operand's temporaries go, and then the throw -
+    // [except.throw]/3's order, as the Itanium path keeps it.
+    std::vector<StmtPtr> steps;
+    steps.push_back(StmtPtr(new ExprStmt(std::move(store))));
+    flushTemporaries(steps);
+    steps.push_back(StmtPtr(new ExprStmt(std::move(thrower))));
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
 }
 
 // **`throw x;` is three calls and a store, and no new machinery**:
@@ -924,7 +972,9 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     int storageGuard = 0;
     if (copyMayThrow) {
         storageGuard = guardFlag();
-        statementTemps_.push_back(Temporary{ slot, voidPtr, storageGuard, true });
+        Temporary storage{ slot, voidPtr, storageGuard };
+        storage.exceptionStorage = true;
+        statementTemps_.push_back(storage);
     }
     ExprPtr first(new Comma(std::move(save), std::move(store)));
     first->setType(types_.get(Kind::Void));
@@ -957,11 +1007,37 @@ ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,
     return n;
 }
 
+// `operator new(size_t, const std::nothrow_t &)` and its array twin, by the
+// names clang and cl agree on: _ZnwmRKSt9nothrow_t, ??2@YAPEAX_KAEBUnothrow_t@std@@@Z.
+ExprPtr Parser::callNothrowAllocator(bool array, ExprPtr bytes, ExprPtr tag,
+                                     std::size_t pos) {
+    (void)pos;
+    const std::string itanium = std::string(array ? "_Zna" : "_Znw") +
+                                itaniumBuiltinCode(target_.sizeType()) + "RKSt9nothrow_t";
+    const char *microsoft = array ? "??_U@YAPEAX_KAEBUnothrow_t@std@@@Z"
+                                  : "??2@YAPEAX_KAEBUnothrow_t@std@@@Z";
+    const Type *tagType = tag->type();
+    ExprPtr addr(new Unary('&', std::move(tag)));
+    addr->setType(types_.pointerTo(tagType));
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(bytes));
+    args.push_back(std::move(addr));
+    std::vector<int> argSlots(args.size(), 0);
+    const std::string name = target_.microsoftNames() ? microsoft : itanium;
+    Call *call = new Call(name, nullptr, std::move(args), false, 0, 2, std::move(argSlots));
+    call->setSymbol(name);
+    ExprPtr n(call);
+    n->setType(types_.pointerTo(types_.get(Kind::Void)));
+    return n;
+}
+
 ExprPtr Parser::newExpression(std::size_t pos) {
     // **`new (p) T` builds T where p points** - [expr.new]/15 with the
     // library's placement `operator new(size_t, void *)`, which returns its
     // argument, so the address is used as it stands; one pointer argument.
     ExprPtr placement;
+    std::vector<ExprPtr> userPlacement;
+    bool nothrow = false;
     if (peek().is("(")) {
         const std::size_t ppos = peek().pos;
         at_++;
@@ -970,16 +1046,23 @@ ExprPtr Parser::newExpression(std::size_t pos) {
                             "placement here, so write 'new int' rather than "
                             "'new (int)'");
         placement = decay(assign());
-        if (peek().is(","))
-            src_.fail(peek().pos, "placement new with more than one argument "
-                                  "is not supported yet - only 'new (p) T', "
-                                  "which builds T at p");
+        while (consume(",")) userPlacement.push_back(decay(assign()));
         expect(")");
-        if (!placement->type()->unqualified()->isPointer())
-            src_.fail(ppos, "the placement argument of 'new' is '" +
-                            placement->type()->describe() + "', and only a "
-                            "pointer - the address to build at - is supported");
+        // **`new (std::nothrow) T`** - [support.dynamic]: the library's
+        // nothrow allocator, which answers null where the plain one throws.
+        const Type *pt = placement->type()->unqualified();
+        nothrow = userPlacement.empty() && pt->isStructOrUnion() &&
+                  pt->tag() == "std::nothrow_t";
+        // **Anything else reaches a user-declared `operator new`** - [expr.new]/14:
+        // a second argument, or a first that is not a pointer, is a placement
+        // argument the class's or the global allocation functions are asked to take.
+        if (!nothrow && (!userPlacement.empty() || !pt->isPointer())) {
+            userPlacement.insert(userPlacement.begin(), std::move(placement));
+            placement = nullptr;
+        }
+        (void)ppos;
     }
+    const bool userAlloc = !userPlacement.empty();
 
     StorageClass sc = StorageNone;
     const Type *made = specifiers(&sc);
@@ -1066,9 +1149,11 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     const Type *sizeT = types_.get(target_.sizeType());
     ExprPtr bytes(new Num(static_cast<long long>(made->size(target_))));
     bytes->setType(sizeT);
-    // **An array of a class**: the count is wanted by the cookie and by the
-    // constructor loop as well as by the allocator, so it goes into a slot.
-    const int cookie = array && placement == nullptr ? arrayCookie(made) : 0;
+    // **An array of a class**: the count is wanted by the cookie, the
+    // constructor loop and the allocator, so it goes into a slot. [expr.new]/12:
+    // the reserved placement form adds no cookie - measured on both ABIs.
+    const int cookie = array && (placement == nullptr || nothrow)
+                     ? arrayCookie(made) : 0;
     int countSlot = 0;
     std::string countTemp;
     if (array) {
@@ -1111,12 +1196,20 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     const Type *pointer = types_.pointerTo(made);
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     ExprPtr raw;
-    if (placement != nullptr) {
-        if (array)
-            src_.fail(pos, "placement 'new (p) T[n]' is not supported yet");
+    if (nothrow) {
+        raw = callNothrowAllocator(array, std::move(bytes), std::move(placement), pos);
+    } else if (placement != nullptr) {
         raw.reset(new Cast(voidPtr, std::move(placement)));
         raw->setType(voidPtr);
-    } else if (const Signature *own = array ? nullptr : classAllocator(made, "operatornew")) {
+        // The count's slot is written inside `bytes`, which nothing allocates with here.
+        if (array) {
+            ExprPtr counted(new Comma(std::move(bytes), std::move(raw)));
+            counted->setType(voidPtr);
+            raw = std::move(counted);
+        }
+    } else if (userAlloc) {
+        raw = userPlacementAllocation(made, array, std::move(bytes), userPlacement, pos);
+    } else if (const Signature *own = classAllocator(made, array ? "operatornew[]" : "operatornew")) {
         // [class.free]/2: a class's own `operator new` allocates its objects.
         markUsed(own);
         std::vector<ExprPtr> args;
@@ -1155,6 +1248,26 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         countVal->setType(sizeT);
         ExprPtr write(new Assign(std::move(countCell), std::move(countVal)));
         write->setType(sizeT);
+        // The ARM cookie's first word is the element size, in front of the count.
+        if (target_.armArrayCookie()) {
+            ExprPtr asChars3(new Cast(chars, rawVar()));
+            asChars3->setType(chars);
+            ExprPtr sizeAt(new Num(static_cast<long long>(cookie - 2 * sizeT->size(target_))));
+            sizeAt->setType(types_.intType());
+            ExprPtr sizeAddr(new Binary(BinOp::Add, std::move(asChars3), std::move(sizeAt)));
+            sizeAddr->setType(chars);
+            ExprPtr sizePtr(new Cast(types_.pointerTo(sizeT), std::move(sizeAddr)));
+            sizePtr->setType(types_.pointerTo(sizeT));
+            ExprPtr sizeCell(new Unary('*', std::move(sizePtr)));
+            sizeCell->setType(sizeT);
+            ExprPtr elemSize(new Num(static_cast<long long>(made->size(target_))));
+            elemSize->setType(sizeT);
+            ExprPtr writeSize(new Assign(std::move(sizeCell), std::move(elemSize)));
+            writeSize->setType(sizeT);
+            ExprPtr both(new Comma(std::move(writeSize), std::move(write)));
+            both->setType(sizeT);
+            write = std::move(both);
+        }
         ExprPtr asChars2(new Cast(chars, rawVar()));
         asChars2->setType(chars);
         ExprPtr skip(new Num(static_cast<long long>(cookie)));
@@ -1186,6 +1299,21 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         n->setType(sizeT);
         ExprPtr built = callVectorLoop(vectorConstructor(made, pos), made,
                                        std::move(again), std::move(n), pos);
+        // [expr.new]/13: a null from the nothrow allocator initialises nothing.
+        if (nothrow) built = guardAgainstNull(baseTemp, baseSlot, pointer, std::move(built));
+        // [expr.new]/20: an element constructor that throws gives the storage back.
+        if ((placement == nullptr && !userAlloc) || nothrow) {
+            const int g = guardFlag();
+            Temporary t{ baseSlot, made, g };
+            t.newStorage = true; t.newArray = true; t.newNothrow = nothrow; t.newCookie = cookie;
+            statementTemps_.push_back(t);
+            ExprPtr armed(new Comma(std::move(keep), setGuard(g, 1)));
+            armed->setType(types_.intType());
+            keep = std::move(armed);
+            ExprPtr done(new Comma(std::move(built), setGuard(g, 0)));
+            done->setType(types_.intType());
+            built = std::move(done);
+        }
         ExprPtr seq(new Comma(std::move(keep), std::move(built)));
         seq->setType(types_.get(Kind::Void));
         ExprPtr result(Var::local(baseTemp, baseSlot));
@@ -1231,6 +1359,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         fill->setSymbol("memset");
         ExprPtr filled(fill);
         filled->setType(voidPtr);
+        if (nothrow) filled = guardAgainstNull(temp, slot, pointer, std::move(filled));
 
         ExprPtr result(Var::local(temp, slot));
         result->setType(pointer);
@@ -1280,11 +1409,24 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             ExprPtr obj(new Unary('*', std::move(p)));
             obj->setType(made);
             if (ExprPtr chain = zeroChain(*obj, made)) {
-                const Type *ct = chain->type();
-                ExprPtr seq(new Comma(std::move(keep), std::move(chain)));
-                seq->setType(ct);
-                keep = std::move(seq);
+                ExprPtr seq(new Comma(std::move(chain), std::move(build)));
+                seq->setType(types_.get(Kind::Void));
+                build = std::move(seq);
             }
+        }
+        if (nothrow) build = guardAgainstNull(temp, slot, pointer, std::move(build));
+        // [expr.new]/20: a constructor that throws gives the storage back.
+        if (!ctor.isNoexcept && ((placement == nullptr && !userAlloc) || nothrow)) {
+            const int g = guardFlag();
+            Temporary t{ slot, made, g };
+            t.newStorage = true; t.newNothrow = nothrow;
+            statementTemps_.push_back(t);
+            ExprPtr armed(new Comma(std::move(keep), setGuard(g, 1)));
+            armed->setType(types_.intType());
+            keep = std::move(armed);
+            ExprPtr done(new Comma(std::move(build), setGuard(g, 0)));
+            done->setType(types_.intType());
+            build = std::move(done);
         }
         ExprPtr made2(new Comma(std::move(keep), std::move(build)));
         made2->setType(types_.get(Kind::Void));
@@ -1315,6 +1457,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             all->setType(pointer);
             return all;
         }
+        if (nothrow) chain = guardAgainstNull(temp, slot, pointer, std::move(chain));
         const Type *ct = chain->type();
         ExprPtr both(new Comma(std::move(keep), std::move(chain)));
         both->setType(ct);
@@ -1335,12 +1478,14 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
     ExprPtr store(new Assign(std::move(where), std::move(value)));
     store->setType(made);
+    if (nothrow) store = guardAgainstNull(temp, slot, pointer, std::move(store));
+    const Type *storeType = store->type();
 
     ExprPtr result(Var::local(temp, slot));
     result->setType(pointer);
 
     ExprPtr both(new Comma(std::move(keep), std::move(store)));
-    both->setType(made);
+    both->setType(storeType);
     ExprPtr all(new Comma(std::move(both), std::move(result)));
     all->setType(pointer);
     return all;
@@ -1367,62 +1512,13 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // `delete[]` takes the static type - [expr.delete]/3 - and goes below.
     if (dtor != nullptr && dtor->isVirtual && !array) {
         const Type *cls = t->pointee()->unqualified();
-        const std::vector<VSlot> &slots = vtables_[cls->tag()];
-        int index = -1;
-        for (std::size_t i = 0; i < slots.size(); i++) {
-            const bool ms = target_.microsoftNames();
-            if (slots[i].name == (ms ? "~" : "~$deleting")) { index = static_cast<int>(i); break; }
-        }
-        if (index < 0)
-            src_.fail(pos, "'" + cls->describe() + "' has a virtual destructor "
-                           "with no deleting slot");
-
-        const bool ms = target_.microsoftNames();
-        std::vector<const Type *> full;
-        full.push_back(t);
-        const Type *flagType = types_.get(Kind::UInt);
-        if (ms) full.push_back(flagType);
-        const Type *ret = ms ? types_.pointerTo(types_.get(Kind::Void))
-                             : types_.get(Kind::Void);
-
         int slot = allocateFrameSlot(t);
         std::string temp = ".dv" + std::to_string(refTemps_++);
         ExprPtr keep(Var::local(temp, slot));
         keep->setType(t);
         ExprPtr save(new Assign(std::move(keep), std::move(what)));
         save->setType(t);
-
-        const Type *fnType = types_.functionType(ret, full, false);
-        const Type *fnPtr = types_.pointerTo(fnType);
-        const Type *table = types_.pointerTo(fnPtr);
-
-        ExprPtr load(Var::local(temp, slot));
-        load->setType(t);
-        ExprPtr asTable(new Cast(types_.pointerTo(table), std::move(load)));
-        asTable->setType(types_.pointerTo(table));
-        ExprPtr vptr(new Unary('*', std::move(asTable)));
-        vptr->setType(table);
-        if (index != 0) {
-            ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
-            at->setType(types_.intType());
-            ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
-            moved->setType(table);
-            vptr = std::move(moved);
-        }
-        ExprPtr entry(new Unary('*', std::move(vptr)));
-        entry->setType(fnPtr);
-
-        std::vector<ExprPtr> args;
-        ExprPtr self(Var::local(temp, slot));
-        self->setType(t);
-        args.push_back(std::move(self));
-        if (ms) {
-            ExprPtr flag(new Num(1LL));      // 1 = free the memory too
-            flag->setType(flagType);
-            args.push_back(std::move(flag));
-        }
-        ExprPtr call = completeCall("~", std::string(), std::move(entry), ret,
-                                    full, false, pos, std::move(args));
+        ExprPtr call = virtualDestructorCall(temp, slot, t, cls, true, pos);
         ExprPtr both(new Comma(std::move(save),
                                guardAgainstNull(temp, slot, t, std::move(call))));
         both->setType(types_.get(Kind::Void));
@@ -1464,8 +1560,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         const Type *vp = types_.pointerTo(types_.get(Kind::Void));
         ExprPtr freed(new Cast(vp, std::move(start)));
         freed->setType(vp);
-        ExprPtr release = callAllocator("_ZdaPv", "??_V@YAXPEAX@Z",
-                                        types_.get(Kind::Void), std::move(freed), pos);
+        ExprPtr release = deallocateArray(t->pointee(), std::move(freed), pos);
         ExprPtr both(new Comma(std::move(run), std::move(release)));
         both->setType(types_.get(Kind::Void));
         ExprPtr all(new Comma(std::move(save),
@@ -1506,10 +1601,64 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     ExprPtr raw(new Cast(voidPtr, std::move(what)));
     raw->setType(voidPtr);
 
-    if (array)
-        return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
-                             std::move(raw), pos);
+    if (array) return deallocateArray(t->pointee(), std::move(raw), pos);
     return deallocate(t->pointee(), std::move(raw), pos);
+}
+
+// **The deleting slot frees; the complete-object slot does not.** Itanium
+// keeps the two side by side, D1 then D0; Microsoft keeps one `??_G` and a
+// flag whose low bit says whether to free - measured from cl, and 0 is safe.
+ExprPtr Parser::virtualDestructorCall(const std::string &temp, int slot,
+                                      const Type *t, const Type *cls,
+                                      bool deleting, std::size_t pos) {
+    const bool ms = target_.microsoftNames();
+    const std::vector<VSlot> &slots = vtables_[cls->tag()];
+    int index = -1;
+    const char *want = ms || !deleting ? "~" : "~$deleting";
+    for (std::size_t i = 0; i < slots.size(); i++)
+        if (slots[i].name == want) { index = static_cast<int>(i); break; }
+    if (index < 0)
+        src_.fail(pos, "'" + cls->describe() + "' has a virtual destructor "
+                       "with no slot for it");
+
+    std::vector<const Type *> full;
+    full.push_back(t);
+    const Type *flagType = types_.get(Kind::UInt);
+    if (ms) full.push_back(flagType);
+    const Type *ret = ms ? types_.pointerTo(types_.get(Kind::Void))
+                         : types_.get(Kind::Void);
+    const Type *fnType = types_.functionType(ret, full, false);
+    const Type *fnPtr = types_.pointerTo(fnType);
+    const Type *table = types_.pointerTo(fnPtr);
+
+    ExprPtr load(Var::local(temp, slot));
+    load->setType(t);
+    ExprPtr asTable(new Cast(types_.pointerTo(table), std::move(load)));
+    asTable->setType(types_.pointerTo(table));
+    ExprPtr vptr(new Unary('*', std::move(asTable)));
+    vptr->setType(table);
+    if (index != 0) {
+        // Bytes, not entries: a hand-built Add is not scaled by the pointee.
+        ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
+        at->setType(types_.intType());
+        ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
+        moved->setType(table);
+        vptr = std::move(moved);
+    }
+    ExprPtr entry(new Unary('*', std::move(vptr)));
+    entry->setType(fnPtr);
+
+    std::vector<ExprPtr> args;
+    ExprPtr self(Var::local(temp, slot));
+    self->setType(t);
+    args.push_back(std::move(self));
+    if (ms) {
+        ExprPtr flag(new Num(deleting ? 1LL : 0LL));
+        flag->setType(flagType);
+        args.push_back(std::move(flag));
+    }
+    return completeCall("~", std::string(), std::move(entry), ret, full, false,
+                        pos, std::move(args));
 }
 
 // A class's own `operator new` or `operator delete`, else null - looked up
@@ -1538,6 +1687,69 @@ ExprPtr Parser::deallocate(const Type *pointee, ExprPtr raw, std::size_t pos) {
     }
     return callAllocator("_ZdlPv", "??3@YAXPEAX@Z", types_.get(Kind::Void),
                          std::move(raw), pos);
+}
+
+// What `delete[] p` frees with, by the same rule - [class.free]/2 for the array form.
+ExprPtr Parser::deallocateArray(const Type *pointee, ExprPtr raw, std::size_t pos) {
+    if (const Signature *own = classAllocator(pointee, "operatordelete[]")) {
+        markUsed(own);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(raw));
+        return completeCall(own->name, own->symbol, nullptr, own->returns,
+                            own->params, false, pos, std::move(args));
+    }
+    return callAllocator("_ZdaPv", "??_V@YAXPEAX@Z", types_.get(Kind::Void),
+                         std::move(raw), pos);
+}
+
+// **`new (a, b) T` asks for `operator new(size_t, A, B)`** - [expr.new]/14, and
+// [class.free]/2 asks the class first: a class that declares any `operator new`
+// hides the global ones, as clang refuses `new (1, 2.0) S` for such an S.
+ExprPtr Parser::userPlacementAllocation(const Type *made, bool array, ExprPtr bytes,
+                                        std::vector<ExprPtr> &extra, std::size_t pos) {
+    const char *which = array ? "operatornew[]" : "operatornew";
+    std::string key = which;
+    for (const Type *cls = made->unqualified();
+         cls != nullptr && cls->isStructOrUnion() && !cls->tag().empty();
+         cls = cls->bases().empty() ? nullptr : cls->bases()[0].type->unqualified())
+        if (overloadsOf(cls->tag() + "::" + which) != nullptr) { key = cls->tag() + "::" + which; break; }
+    if (overloadsOf(key) == nullptr)
+        src_.fail(pos, "'new' with placement arguments needs an 'operator " +
+                       std::string(array ? "new[]" : "new") + "' declared to "
+                       "take them, and none is declared");
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(bytes));
+    for (std::size_t i = 0; i < extra.size(); i++) args.push_back(std::move(extra[i]));
+    const Signature sig = resolveOverload(key, args, pos);
+    for (std::size_t i = 1; i < args.size() && i < sig.params.size(); i++)
+        if (!sig.params[i]->isReference()) args[i] = convert(std::move(args[i]), sig.params[i]);
+    return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
+                        false, pos, std::move(args));
+}
+
+// `operator delete(void *, const std::nothrow_t &)` and its array twin, for the
+// storage a nothrow allocation made - [expr.new]/20 pairs it with the allocator.
+ExprPtr Parser::callNothrowDeallocator(bool array, ExprPtr raw) {
+    const char *itanium = array ? "_ZdaPvRKSt9nothrow_t" : "_ZdlPvRKSt9nothrow_t";
+    const char *microsoft = array ? "??_V@YAXPEAXAEBUnothrow_t@std@@@Z"
+                                  : "??3@YAXPEAXAEBUnothrow_t@std@@@Z";
+    const char *tag = target_.microsoftNames() ? "?nothrow@std@@3Unothrow_t@1@B" : "_ZSt7nothrow";
+    Var *tv = Var::global(tag);
+    tv->setSymbol(tag);
+    ExprPtr tref(tv);
+    tref->setType(types_.get(Kind::Char));
+    ExprPtr taddr(new Unary('&', std::move(tref)));
+    taddr->setType(types_.pointerTo(types_.get(Kind::Char)));
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(raw));
+    args.push_back(std::move(taddr));
+    std::vector<int> argSlots(args.size(), 0);
+    const std::string name = target_.microsoftNames() ? microsoft : itanium;
+    Call *call = new Call(name, nullptr, std::move(args), false, 0, 2, std::move(argSlots));
+    call->setSymbol(name);
+    ExprPtr n(call);
+    n->setType(types_.get(Kind::Void));
+    return n;
 }
 
 // **[expr.delete]/2: deleting a null pointer has no effect**, and running the
@@ -1570,10 +1782,7 @@ ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
 // for a type-id or a non-polymorphic operand, unevaluated; read through the
 // vptr for a polymorphic glvalue, a word before the vtable's address point.
 ExprPtr Parser::typeidExpression(std::size_t pos) {
-    if (target_.microsoftNames())
-        src_.fail(pos, "'typeid' is not supported yet for x86_64-windows - the "
-                       "Microsoft ABI answers it with a type descriptor per "
-                       "type and __RTtypeid, which are not built here");
+    const bool microsoft = target_.microsoftNames();
     const Type *info = findTypedef("std::type_info");
     if (info == nullptr || !info->isStructOrUnion())
         src_.fail(pos, "'typeid' needs std::type_info, so include <typeinfo>");
@@ -1610,7 +1819,35 @@ ExprPtr Parser::typeidExpression(std::size_t pos) {
         pendingTemps_ = savedTemps;
         alive_ = savedAlive;
     }
-    if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
+    if (glvalue && subject->isStructOrUnion() && subject->polymorphic() && microsoft) {
+        // **The Microsoft runtime reads it**: `__RTtypeid(p)` walks the vftable's
+        // locator to the descriptor, and throws bad_typeid for a null - measured from
+        // clang -target x86_64-pc-windows-msvc, one argument.
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr at(new Unary('&', std::move(operand)));
+        at->setType(types_.pointerTo(subject));
+        std::vector<ExprPtr> args;
+        args.push_back(convert(std::move(at), voidPtr));
+        ExprPtr got = runtimeCall("__RTtypeid", voidPtr, std::move(args));
+        address.reset(new Cast(infoPtr, std::move(got)));
+        address->setType(infoPtr);
+    } else if (microsoft) {
+        // The descriptor, emitted beside the throw records; a class with a
+        // vftable already has one and the emitter writes it once.
+        MicrosoftThrow names;
+        std::string why;
+        if (!microsoftTypeidNames(subject, &names, &why))
+            src_.fail(pos, "'typeid' cannot name the type of this: " + why);
+        finishMicrosoftThrow(names, false);
+        Var *ti = Var::global(names.descriptor);
+        ti->setSymbol(names.descriptor);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(types_.pointerTo(types_.get(Kind::Char)));
+        address.reset(new Cast(infoPtr, std::move(addr)));
+        address->setType(infoPtr);
+    } else if (glvalue && subject->isStructOrUnion() && subject->polymorphic()) {
         // The object's first word is the vptr; the type_info pointer sits
         // one word below the address point it holds.
         const Type *chars = types_.pointerTo(types_.get(Kind::Char));

@@ -1,1 +1,0 @@
-x86_64-windows  answered first by an older refusal: any throw of a type that is not fundamental is refused for this target until the Microsoft ThrowInfo chain reaches classes and pointers (throw-class.notarget, throw-pointer.notarget), so the __function_type_info refusal this case is about is never reached here.

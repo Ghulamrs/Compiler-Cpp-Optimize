@@ -1,1 +1,0 @@
-x86_64-windows  `f` returns from inside a `catch`, which is refused by name for this target: a handler is compiled as a function of its own there, and leaving it means handing back the address to carry on at in the register a return value would travel in. The deduction this case measures is the front end's and the same on every target; the Itanium targets and the C6000 run it.

@@ -958,6 +958,17 @@ int Parser::handlersLeftByContinue() const {
     return left;
 }
 
+// **A fresh slot per region, never one cached here**: an implicit member is synthesized
+// mid-function with frameSize_ zeroed and put back, so a cached slot lands in the wrong frame.
+int Parser::msUnwindHelp() {
+    return allocateFrameSlot(types_.pointerTo(types_.get(Kind::Void)));
+}
+
+std::string Parser::msExitLabel(std::string &label, const char *kind) {
+    if (label.empty()) label = std::string("$ms") + kind + std::to_string(refTemps_++);
+    return label;
+}
+
 StmtPtr Parser::jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos,
                             int endsCatches) {
     std::vector<StmtPtr> steps;
@@ -1074,21 +1085,12 @@ StmtPtr Parser::block() {
     if (!built.empty()) {
         // **A `try` among these statements is split around, not refused.** It
         // is a row of its own and its pad destroys what it found alive.
-        const bool overlapping = target_.microsoftNames()
-                                     ? (functionHasTry_ || inTryBody_)
-                                     : false;
-        if (overlapping)
-            src_.fail(pos, target_.microsoftNames()
-                ? "a local with a destructor and a 'try' in one function is "
-                  "not supported yet for x86_64-windows - a cleanup there is "
-                  "a funclet and a state in the FH3 tables, and only the "
-                  "Itanium targets have been taught to split one around the "
-                  "other"
-                : "a local with a destructor inside a 'catch' handler is not "
-                  "supported yet - a handler is emitted past the 'try''s range, "
-                  "so its cleanup region is inside no row and has no chain to "
-                  "hand the selector to; inside the 'try' body works, and so "
-                  "does beside the 'try' in the same block");
+        // **A cleanup inside a handler would be a funclet inside a funclet.**
+        if (target_.microsoftNames() && inHandlerBody_)
+            src_.fail(pos, "a local with a destructor inside a 'catch' handler is "
+                           "not supported yet for x86_64-windows - a cleanup there "
+                           "is a funclet, and the handler is one already; beside "
+                           "the 'try' and inside its body both work on this target");
         body = target_.microsoftNames()
                    ? wrapMsCleanups(std::move(body), built, regionFrom, pos,
                                     temps)
@@ -1124,15 +1126,14 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // handlers kept whole for the runtime to call.
     const bool microsoft = target_.microsoftNames();
     functionHasTry_ = true;
-    // **A handler's body is inside the same table and was not refused**, which
-    // made this compile and terminate rather than say so.
-    if ((inTryBody_ || inHandlerBody_) && target_.microsoftNames())
-        src_.fail(pos, "a 'try' inside another one is not supported yet for "
-                       "x86_64-windows - a handler there is a funclet named "
-                       "after its function and a counter, and a nested one "
-                       "takes a name already used, which ml64 answers with "
-                       "'A2005: symbol redefinition'. It works on both Itanium "
-                       "targets");
+    // **Inside a handler is inside a funclet**, and a funclet's handlers would
+    // be funclets inside it, which the slicing that lifts one out cannot nest.
+    if (inHandlerBody_ && target_.microsoftNames())
+        src_.fail(pos, "a 'try' inside a 'catch' handler is not supported yet for "
+                       "x86_64-windows - a handler there is a funclet, and a "
+                       "nested try's handlers would be funclets inside it. A "
+                       "'try' inside a 'try' body works on this target, and both "
+                       "shapes on the Itanium targets");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     // **A nested `try` shares the slots of the one it sits in.**
@@ -1151,6 +1152,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     const std::string enclosingChain = tryChainLabel_;
     const std::string wasChain = tryChainLabel_;
     const int wasPtr = tryChainPointerSlot_, wasSel = tryChainSelectorSlot_;
+    const std::size_t wasAliveFrom = tryChainAliveFrom_;
     std::vector<Try *> wasSegments;
     wasSegments.swap(tryBodySegments_);
     // **Inside this body the innermost answer is this `try`'s own chain**, not
@@ -1183,6 +1185,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     tryChainLabel_ = wasChain;
     tryChainPointerSlot_ = wasPtr;
     tryChainSelectorSlot_ = wasSel;
+    tryChainAliveFrom_ = wasAliveFrom;
 
     if (!peek().is("catch"))
         src_.fail(peek().pos, "a 'try' needs at least one 'catch'");
@@ -1196,6 +1199,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     };
     std::vector<Handler> handlers;
     std::vector<MsHandler> msHandlers;
+    MsExit msExit;
     std::vector<int> indices;
     std::vector<std::string> types;
     bool sawCatchAll = false;
@@ -1244,10 +1248,14 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                  d.type->describe() + "' - is not supported "
                                  "yet: the runtime hands a handler the pointer "
                                  "itself, so catch it by value");
+            // The Itanium type_info is emitted by asking for it, so the Microsoft
+            // ABI - which names a type descriptor instead - must not ask.
             std::string why;
-            h.type = typeInfoSymbolFor(caught, cpos, &why);
-            if (h.type.empty())
-                src_.fail(cpos, "'catch' cannot name this type: " + why);
+            if (!microsoft) {
+                h.type = typeInfoSymbolFor(caught, cpos, &why);
+                if (h.type.empty())
+                    src_.fail(cpos, "'catch' cannot name this type: " + why);
+            }
             caughtName = d.name;
         }
         expect(")");
@@ -1270,22 +1278,25 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 if (!microsoftThrowNames(caught, caught->size(target_),
                                          &names, &why))
                     src_.fail(cpos, "'catch' cannot name this type: " + why);
+                // A type only ever caught still needs its descriptor emitted.
+                finishMicrosoftThrow(names, false);
                 mh.descriptor = names.descriptor;
                 mh.objectSize = caught->size(target_);
                 mh.byReference = byRef;
-                // The descriptor is emitted by the same pass that emits a thrown
-                // type's, so a type that is only ever *caught* has to join that list
-                // or the handler map would name a symbol nothing defines.
-                bool had = false;
-                for (std::size_t k = 0; k < current_->thrown.size(); k++)
-                    if (current_->thrown[k] == caught) had = true;
-                if (!had) current_->thrown.push_back(caught);
-                if (!caughtName.empty())
+                mh.constPointer = names.isConst;
+                if (!caughtName.empty()) {
                     mh.objectSlot = declare(caughtName, declaredType, cpos);
+                    // **Caught by value, the runtime built the copy and the handler
+                    // destroys it** on every way out - cl's funclet does before returning.
+                    if (!byRef && destructorOf(caught->unqualified()) != nullptr)
+                        alive_.push_back(Alive{ caughtName, mh.objectSlot, caught->unqualified() });
+                }
             }
             if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
             const bool wasInHandler = inMsHandler_;
             const bool wasBody = inHandlerBody_;
+            MsExit *const wasExit = msExit_;
+            msExit_ = &msExit;
             inMsHandler_ = true;
             inHandlerBody_ = true;
             // **The same bookkeeping, for the opposite purpose.**
@@ -1294,6 +1305,17 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             handlerSwitchDepth_.push_back(switchDepth_);
             handlerFrom_.push_back(peek().pos);
             mh.body = block();
+            // Falling off the end destroys the caught object; a jump out did for itself.
+            if (alive_.size() > aliveBeforeCaught) {
+                std::vector<StmtPtr> both;
+                both.push_back(std::move(mh.body));
+                emitDestructors(both, aliveBeforeCaught, cpos);
+                alive_.resize(aliveBeforeCaught);
+                Block *b = new Block(std::move(both));
+                b->setScope(-1);
+                mh.body = StmtPtr(b);
+            }
+            msExit_ = wasExit;
             handlerFrom_.pop_back();
             handlerSwitchDepth_.pop_back();
             handlerLoopDepth_.pop_back();
@@ -1472,8 +1494,11 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             if (aliveOutside > bodyCleanupFrom_ && beyond.empty())
                 emitDestructors(padSteps, bodyCleanupFrom_, pos, -1,
                                 aliveOutside);
+            // **Handed to the enclosing `try`'s chain**, past the rows between:
+            // what its body built before this `try` is destroyed here first.
+            if (!beyond.empty() && beyond == wasChain && aliveOutside > wasAliveFrom)
+                emitDestructors(padSteps, wasAliveFrom, pos, -1, aliveOutside);
             if (!beyond.empty()) {
-                // **Handed on rather than resumed.**
                 padSteps.push_back(StmtPtr(new Goto(beyond)));
             } else {
                 padSteps.push_back(resumeUnwinding(padPtr));
@@ -1516,8 +1541,35 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         // The runtime's scratch word, which the personality routine finds through the
         // FuncInfo's dispUnwindHelp and the parent sets to -2 on entry. A frame slot
         // like any other, so where it lives is decided where every local's is.
-        t->setUnwindHelpSlot(allocateFrameSlot(voidPtr));
-        return StmtPtr(t);
+        t->setUnwindHelpSlot(msUnwindHelp());
+        if (msExit.ret.empty() && msExit.brk.empty() && msExit.cont.empty())
+            return StmtPtr(t);
+        std::vector<std::string> exits;
+        for (const std::string *e : { &msExit.ret, &msExit.brk, &msExit.cont })
+            if (!e->empty()) exits.push_back(*e);
+        t->setMsExits(std::move(exits));
+        // **Where a handler's early exit carries on**: the funclet handed back one
+        // of these labels, and the parent does here what the handler could not.
+        std::vector<StmtPtr> after;
+        after.push_back(StmtPtr(t));
+        std::string skip;
+        after.push_back(StmtPtr(new Goto(msExitLabel(skip, "skip"))));
+        if (!msExit.ret.empty()) {
+            ExprPtr give;
+            if (msExit.retSlot != 0) {
+                give.reset(Var::local(msExit.retTemp, msExit.retSlot));
+                give->setType(returnType_);
+            }
+            after.push_back(StmtPtr(new Label(msExit.ret, StmtPtr(new Return(std::move(give))))));
+        }
+        if (!msExit.brk.empty())
+            after.push_back(StmtPtr(new Label(msExit.brk, StmtPtr(new Break()))));
+        if (!msExit.cont.empty())
+            after.push_back(StmtPtr(new Label(msExit.cont, StmtPtr(new Continue()))));
+        after.push_back(StmtPtr(new Label(skip, StmtPtr(new Block({})))));
+        Block *b = new Block(std::move(after));
+        b->setScope(-1);
+        return StmtPtr(b);
     }
 
     // **Nothing matched, so this frame unwinds like any other.**
@@ -1529,6 +1581,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                              beyondTry.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
+    // **Handing to the enclosing `try`'s chain skips the rows between**, so
+    // what its body built before this `try` is destroyed here first.
+    if (!beyondTry.empty() && beyondTry == wasChain && aliveOutside > wasAliveFrom)
+        emitDestructors(resume, wasAliveFrom, pos, -1, aliveOutside);
     if (beyondTry.empty()) resume.push_back(resumeUnwinding(pointerSlot));
     else                   resume.push_back(StmtPtr(new Goto(beyondTry)));
     StmtPtr chain = unwindPad(std::move(resume));
@@ -1645,12 +1701,10 @@ StmtPtr Parser::statementBody() {
         return throwStatement(std::move(value), tpos);
     }
 
-    if (peek().is("return") && inMsHandler_)
-        src_.fail(peek().pos, "'return' inside a 'catch' is not supported yet "
-                              "for x86_64-windows - a handler is compiled as a "
-                              "function of its own there, and leaving it means "
-                              "handing back the address to carry on at in the "
-                              "register a return value would travel in");
+    // **A `return` inside a Microsoft handler leaves the funclet**, the value
+    // saved in the parent's frame and the parent returning it at the label.
+    const bool leavesFunclet = inMsHandler_ && msExit_ != nullptr &&
+                               deducingReturn_ == nullptr;
     if (consume("return")) {
         std::size_t pos = peek().pos;
         // **A lambda's body, read to find what it returns**: the operand's
@@ -1676,7 +1730,10 @@ StmtPtr Parser::statementBody() {
                 std::vector<StmtPtr> unwind;
                 emitDestructors(unwind, 0, pos);
                 endCatches(unwind, handlerDepth_);
-                unwind.push_back(StmtPtr(new Return(nullptr)));
+                if (leavesFunclet)
+                    unwind.push_back(StmtPtr(new FuncletLeave(msExitLabel(msExit_->ret, "ret"))));
+                else
+                    unwind.push_back(StmtPtr(new Return(nullptr)));
                 return StmtPtr(new Block(std::move(unwind)));
             }
             return StmtPtr(new Return(nullptr));
@@ -1806,14 +1863,29 @@ StmtPtr Parser::statementBody() {
                 unwind.push_back(StmtPtr(new ExprStmt(std::move(value))));
                 emitDestructors(unwind, 0, pos, elided);
                 endCatches(unwind, handlerDepth_);
-                unwind.push_back(StmtPtr(new Return(nullptr)));
+                if (leavesFunclet)
+                    unwind.push_back(StmtPtr(new FuncletLeave(msExitLabel(msExit_->ret, "ret"))));
+                else
+                    unwind.push_back(StmtPtr(new Return(nullptr)));
                 return StmtPtr(new Block(std::move(unwind)));
             }
             // **The value is computed into a slot before the catch ends**, and
             // that is not only tidiness: `return e.v;` reads the caught object,
             // which `__cxa_end_catch` destroys.
-            int slot = allocateFrameSlot(returnType_);
-            std::string temp = ".ret" + std::to_string(refTemps_++);
+            int slot;
+            std::string temp;
+            if (leavesFunclet) {
+                // One slot per `try`, since one label in the parent reads it.
+                if (msExit_->retSlot == 0) {
+                    msExit_->retSlot = allocateFrameSlot(returnType_);
+                    msExit_->retTemp = ".ret" + std::to_string(refTemps_++);
+                }
+                slot = msExit_->retSlot;
+                temp = msExit_->retTemp;
+            } else {
+                slot = allocateFrameSlot(returnType_);
+                temp = ".ret" + std::to_string(refTemps_++);
+            }
 
             ExprPtr keep(Var::local(temp, slot));
             keep->setType(returnType_);
@@ -1824,6 +1896,10 @@ StmtPtr Parser::statementBody() {
             emitDestructors(unwind, 0, pos, elided);
             endCatches(unwind, handlerDepth_);
 
+            if (leavesFunclet) {
+                unwind.push_back(StmtPtr(new FuncletLeave(msExitLabel(msExit_->ret, "ret"))));
+                return StmtPtr(new Block(std::move(unwind)));
+            }
             ExprPtr give(Var::local(temp, slot));
             give->setType(returnType_);
             unwind.push_back(StmtPtr(new Return(std::move(give))));
@@ -1996,12 +2072,11 @@ StmtPtr Parser::statementBody() {
         if (loopDepth_ == 0 && switchDepth_ == 0)
             src_.fail(pos, "'break' is not inside a loop or a switch");
         expect(";");
-        if (target_.microsoftNames() && handlersLeftByBreak() > 0)
-            src_.fail(pos, "'break' out of a 'catch' block is not supported "
-                           "yet for x86_64-windows - a handler is compiled as "
-                           "a function of its own there, and leaving it early "
-                           "means handing back the address to carry on at, "
-                           "which is what 'return' is refused for here too");
+        // **Out of a Microsoft handler it leaves the funclet**, and the parent
+        // breaks at the label - a `Break` there, inside the loop the try is in.
+        if (target_.microsoftNames() && handlersLeftByBreak() > 0 && msExit_ != nullptr)
+            return jumpLeaving(StmtPtr(new FuncletLeave(msExitLabel(msExit_->brk, "brk"))),
+                               breakMarks_.back(), pos, handlersLeftByBreak());
         return jumpLeaving(StmtPtr(new Break()), breakMarks_.back(), pos,
                            handlersLeftByBreak());
     }
@@ -2012,12 +2087,9 @@ StmtPtr Parser::statementBody() {
         if (loopDepth_ == 0)
             src_.fail(pos, "'continue' is not inside a loop");
         expect(";");
-        if (target_.microsoftNames() && handlersLeftByContinue() > 0)
-            src_.fail(pos, "'continue' out of a 'catch' block is not supported "
-                           "yet for x86_64-windows - a handler is compiled as "
-                           "a function of its own there, and leaving it early "
-                           "means handing back the address to carry on at, "
-                           "which is what 'return' is refused for here too");
+        if (target_.microsoftNames() && handlersLeftByContinue() > 0 && msExit_ != nullptr)
+            return jumpLeaving(StmtPtr(new FuncletLeave(msExitLabel(msExit_->cont, "cont"))),
+                               loopMarks_.back(), pos, handlersLeftByContinue());
         return jumpLeaving(StmtPtr(new Continue()), loopMarks_.back(), pos,
                            handlersLeftByContinue());
     }

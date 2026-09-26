@@ -783,6 +783,10 @@ ExprPtr Parser::conditional() {
         return made;
     } else if (ta == tb) {
         result = ta;
+    } else if (ta->unqualified() == tb->unqualified()) {
+        // [expr.cond]/6: a prvalue of a non-class type carries no cv - `const char
+        // *const` beside `const char *` is `const char *`.
+        result = ta->unqualified();
     } else if (ta->isPointer() && isNullConstant(*b)) {
         result = ta;
         b = convert(std::move(b), result);

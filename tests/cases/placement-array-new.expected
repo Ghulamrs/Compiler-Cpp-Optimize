@@ -1,0 +1,7 @@
+at start 1
+1 2 3 4
+5 9
+zeroed 0 0 1
+plain 0 0 1
+end
+LEDGER built=9 gone=9 live=0 double=0 phantom=0 over=0 lost=0

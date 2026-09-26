@@ -652,7 +652,8 @@ bool Driver::link() {
         for (const std::string &o : objects) command += " " + shellQuote(o);
         for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
 
-        command += " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib"
+        // libcpmt holds std::set_new_handler and get_new_handler, and no other static library does.
+        command += " libcmt.lib libcpmt.lib libucrt.lib libvcruntime.lib kernel32.lib"
                    " legacy_stdio_definitions.lib";
     } else {
         command = shellQuote(hostCompiler());

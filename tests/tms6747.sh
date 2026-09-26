@@ -17,6 +17,7 @@ set -u
 cd "$(dirname "$0")/.."
 CXX1="${CXX1:-./cpp11.exe}"
 VM="${VM:-../Emulator/vm6747.exe}"
+CXX1_FLAGS="${CXX1_FLAGS:-}"   # -O1 or -O2 runs the corpus through the C6000 optimizer
 OUT=tests/out-tms6747
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [ ! -x "$VM" ]; then echo "tms6747.sh: no emulator at $VM"; exit 1; fi
@@ -34,7 +35,7 @@ for src in tests/cases/*.cpp; do
     if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-exceptions.txt; then skipEh=$((skipEh + 1)); continue; fi
     if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-lp64.txt; then skipLp=$((skipLp + 1)); continue; fi
 
-    if ! ( ulimit -t 10; "$CXX1" -S -arch tms6747 -nologo "$src" -o "$OUT/$base.s" < /dev/null ) 2>"$OUT/$base.err"; then
+    if ! ( ulimit -t 10; "$CXX1" -S -arch tms6747 -nologo $CXX1_FLAGS "$src" -o "$OUT/$base.s" < /dev/null ) 2>"$OUT/$base.err"; then
         echo "FAIL $base: cpp11 refused it"
         sed 's/^/      /' "$OUT/$base.err" | head -3
         fail=$((fail + 1))

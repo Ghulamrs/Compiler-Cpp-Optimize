@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,7 @@ protected:
     bool terminateScopes() const override { return !target_.microsoftNames(); }
     std::string terminatePad(int id) override;
     std::string beginFunclet() override;
+    void funcletLeave(const std::string &label) override;
     void endCleanupFunclet() override;
     void endFunclet(const std::string &resume) override;
     void storeUnwindHelp(int slot) override;
@@ -83,16 +85,15 @@ protected:
     // is the whole translation between how cxx1 addresses a local and how an
     // FH3 table describes one.
     int establisherOffset(int slot) const { return frameSize_ + outgoing_ - slot; }
-    void emitCoffCleanupTables(const Function &fn);
-    // The same tables for a frame that *catches*.
-    void emitCoffTryTables(const Function &fn);
+    void emitCoffEhTables(const Function &fn);   // the FH3 tables, one state tree
     // The five objects the Microsoft ABI wants per class with a vftable.
     void emitCoffClassRtti(const Program &program);
     // The four objects a Microsoft throw is identified by, in GNU syntax.
     void emitCoffThrowInfo(const Program &program);
     // Opens one of those records as a COMDAT of its own, public, so that the
     // linker keeps one copy where every unit that names the type wrote one.
-    void coffRecord(const char *section, const std::string &label, int p2align);
+    void coffRecord(const char *section, const std::string &label, int p2align,
+                    const char *flags = "dr");
 
     // A funclet is written by walking the handler into the ordinary output and
     // lifting the text back out - what the body appended, in order, IS the
@@ -101,6 +102,9 @@ protected:
     std::size_t funcletMark_ = 0;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;
+    // The Microsoft type descriptors this file has laid down, so a class both
+    // described for RTTI and thrown gets its `??_R0` once.
+    std::set<std::string> msDescriptors_;
     const char *funcletKind_ = "$catch$";
     // The function being emitted, which the tables and funclets name.
     std::string fnSymbol_;
@@ -147,15 +151,11 @@ protected:
     virtual void emitExceptionTables(const Function &fn) {
         // Microsoft frames carry FH3 tables, not an LSDA.
         if (target_.microsoftNames()) {
-            // **Cleanups and handlers never share a function**, which the
-            // parser enforces on every target - so the first region decides
-            // which shape of table this frame wants.
-            if (msTries().empty()) {
+            // One table for cleanups and tries alike, nested or not: a state tree.
+            if (msStates().empty()) {
                 out_ += funclets_; funclets_.clear(); funcletIndex_ = 0;
-            } else if (msTries()[0].isCleanup) {
-                emitCoffCleanupTables(fn);
             } else {
-                emitCoffTryTables(fn);
+                emitCoffEhTables(fn);
             }
             return;
         }

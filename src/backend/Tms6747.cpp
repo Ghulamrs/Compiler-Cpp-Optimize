@@ -1,4 +1,5 @@
 #include "Tms6747.h"
+#include "../optimizer/C6xSched.h"
 
 #include "../Abi.h"
 #include "../Ast.h"
@@ -23,6 +24,8 @@ int Tms6747Target::sizeOf(Kind k) const {
     case Kind::Char: case Kind::SChar: case Kind::UChar: return 1;
     case Kind::Short: case Kind::UShort:                 return 2;
     case Kind::WChar:                                    return sizeOf(wcharType());
+    case Kind::Char16:                                   return 2;
+    case Kind::Char32:                                   return 4;
     case Kind::Int: case Kind::UInt:                     return 4;
     case Kind::Long: case Kind::ULong:                   return 4;
     case Kind::LongLong: case Kind::ULongLong:           return 8;
@@ -1344,7 +1347,8 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(-(kSaveBytes + frame));
     }
 
-    out_ << params << body;
+    // The prologue and epilogue hold no padding, and the frame is decided after the body.
+    out_ << c6xSchedule(params + body, optimize_);
 
     out_ << returnLabel_ << ":\n";
     if (needFrame) {
