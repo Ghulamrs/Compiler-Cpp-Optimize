@@ -69,6 +69,8 @@ private:
     // different program from ml64 rather than the same one with a flag.
     static const char *hostGnuAssembler();
     static const char *hostLinker();
+    std::string masmAssembler() const;
+    std::string windowsLinker() const;
     // **The tms6747 target is assembled and linked on any host**: by asm6x,
     // the project's own C6000 assembler, and by TI's lnk6x where CCS is.
     bool targetIsTi() const;

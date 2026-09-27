@@ -162,12 +162,14 @@ void Driver::usage(char *file) {
         "         the one beside this program), and linked into a .out by TI's\n"
         "         lnk6x where CCS is (CPP11_TI names its C6000 compiler directory,\n"
         "         CPP11_TILIB one holding rts6740_elf_eh.lib)\n"
-        "       -masm picks the assembly syntax for x86_64-windows: 'gnu' is\n"
-        "         the default and is assembled by clang, and the only one\n"
-        "         that carries a line table; 'masm' is for this project's\n"
-        "         assembler (masm.exe, or CPP11_AS), which needs no clang and\n"
-        "         takes COMDAT; 'ml64' is the same syntax without COMDAT,\n"
-        "         for ml64, which links one translation unit at a time\n"
+        "       -masm picks the assembly syntax for x86_64-windows: 'masm' is\n"
+        "         the default where this project's masm.exe is beside this\n"
+        "         program (RIDE's bin), assembled by it and linked by the\n"
+        "         link.exe beside it (CPP11_AS, CPP11_LD name others), COMDAT\n"
+        "         and all; 'gnu' is assembled by clang, the default elsewhere\n"
+        "         and for -g, being the only one that carries a line table;\n"
+        "         'ml64' is the MASM syntax without COMDAT, for ml64, which\n"
+        "         links one translation unit at a time\n"
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
         "         constants forwarded, pushes paired with their pops, dead\n"
         "         instructions removed. Every spelling; -O0 is the default\n"
@@ -410,6 +412,22 @@ static std::string besideProgram(const std::string &program, const char *leaf) {
     return probe.good() ? path : std::string();
 }
 
+// **The project's own masm and LINK, beside this program** - RIDE lays them beside cpp11.exe - for
+// the MASM spelling, unless CPP11_AS or CPP11_LD names another; else the names, on PATH.
+std::string Driver::masmAssembler() const {
+    const char *env = std::getenv(program::env("AS").c_str());
+    if (env != nullptr && env[0] != '\0') return env;
+    std::string own = syntax_ == Syntax::Masm ? besideProgram(program_, "masm.exe") : std::string();
+    return own.empty() ? std::string(hostAssembler(syntax_)) : own;
+}
+
+std::string Driver::windowsLinker() const {
+    const char *env = std::getenv(program::env("LD").c_str());
+    if (env != nullptr && env[0] != '\0') return env;
+    std::string own = syntax_ == Syntax::Masm ? besideProgram(program_, "link.exe") : std::string();
+    return own.empty() ? std::string(hostLinker()) : own;
+}
+
 // **asm6x, the project's C6000 assembler, which runs on every host.** CPP11_AS
 // names another; else the one beside this program; else the name, on PATH.
 std::string Driver::tiAssembler() const {
@@ -520,7 +538,7 @@ bool Driver::assembleObjects() {
             command += shellQuote(temporaries_[i]);
             command += " -o " + shellQuote(objects_[i]);
         } else if (hostIsWindows()) {
-            command = shellQuote(hostAssembler(syntax_));
+            command = shellQuote(masmAssembler());
             command += " /nologo /c /Fo " + shellQuote(objects_[i]);
             command += " " + shellQuote(temporaries_[i]);
         } else {
@@ -649,7 +667,7 @@ bool Driver::link() {
                 step += " -target x86_64-pc-windows-msvc -c " + shellQuote(t);
                 step += " -o " + shellQuote(obj);
             } else {
-                step = shellQuote(hostAssembler(syntax_));
+                step = shellQuote(masmAssembler());
                 step += " /nologo /c /Fo " + shellQuote(obj) + " " + shellQuote(t);
             }
             steps.push_back(step);
@@ -660,7 +678,7 @@ bool Driver::link() {
         }
         if (!runCommands(steps)) return false;
 
-        command = shellQuote(hostLinker());
+        command = shellQuote(windowsLinker());
         // **An 8 MB stack, which is what the other two targets already give.**
         command += " /nologo /subsystem:console /stack:8388608 /out:"
                  + shellQuote(linkTo_);
@@ -835,15 +853,18 @@ bool Driver::parseArguments(int argc, char **argv) {
 
     if (inputs.empty()) { usage(argv[0]); return false; }
 
-    // **No clang on this Windows machine, and no spelling asked for**: the MASM
-    // spelling and masm.exe beside this program assemble what they can - a
-    // single program, not yet COMDAT or a throw - rather than every compile failing.
+    // **The project's own masm and LINK when they are beside this program, and no spelling asked
+    // for**: they take COMDAT and a throw, so clang is wanted only for -g's line table.
+    if (hostIsWindows() && !syntaxNamed_ && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
+        !besideProgram(program_, "masm.exe").empty() && !(debug_ && hostGnuAssembler()[0] != '\0'))
+        syntax_ = Syntax::Masm;
+
+    // No clang and no masm beside this program: masm by name, on PATH, rather than every compile failing.
     if (hostIsWindows() && syntax_ == Syntax::Gnu && !syntaxNamed_ && !assemblyOnly_ &&
         std::strcmp(backend_->name(), "x86_64-windows") == 0 && hostGnuAssembler()[0] == '\0') {
         syntax_ = Syntax::Masm;
-        std::fprintf(stderr, "%s: no clang found (Visual Studio's \"C++ Clang tools\" provide one) - "
-                             "assembling with masm, which handles one-file programs; a program of "
-                             "several C++ files, or one that throws, needs clang\n", argv[0]);
+        std::fprintf(stderr, "%s: no clang and no masm.exe beside this program - assembling with the "
+                             "masm.exe on PATH; -g, which needs clang, is not available\n", argv[0]);
     }
 
     if (hostIsWindows() && syntax_ == Syntax::Gnu && syntaxNamed_ && !assemblyOnly_ &&
