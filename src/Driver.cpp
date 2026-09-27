@@ -405,8 +405,6 @@ bool Driver::targetIsTi() const {
     return std::strcmp(backend_->name(), "tms6747") == 0;
 }
 
-// A file beside this program - RIDE lays asm6x.exe beside cpp11.exe - or
-// nothing, when argv[0] was a bare name found on PATH.
 // **A file name with `*` or `?` in it, expanded here**, as cl does: cmd hands the pattern through as
 // written, and a POSIX shell only when it was quoted. Sorted; a file already named is not taken twice.
 static bool expandPattern(const std::string &arg, std::vector<std::string> &into) {
@@ -452,6 +450,8 @@ static bool distinctOutputs(const char *program, const std::vector<std::string> 
     return true;
 }
 
+// A file beside this program - RIDE lays asm6x.exe beside cpp11.exe - or
+// nothing, when argv[0] was a bare name found on PATH.
 static std::string besideProgram(const std::string &program, const char *leaf) {
     std::size_t slash = program.find_last_of("/\\");
     if (slash == std::string::npos) return std::string();
