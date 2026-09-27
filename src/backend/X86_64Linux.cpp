@@ -2,6 +2,7 @@
 
 #include "../Mangle.h"
 #include "../Source.h"
+#include "../optimizer/OptDeclines.h"
 
 #include <cmath>
 #include <cstdio>
@@ -1844,13 +1845,20 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 // not itself inside a callee walked in place, nothing on the stack, a frame that fits the room
 // a funclet-cut caller reserved - and the inliner's budgets say it is worth it.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
-    if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
+    if (!inliner_ || current_ == nullptr || n.callee() != nullptr) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end()) return nullptr;
+    if (it == bodies_.end() || !inliner_->allows(n)) return nullptr;
     const Function &callee = *it->second;
+    const std::string site = n.symbol() + " in " + current_->symbol();
+    if (lineSource()) { opt::noteDecline("inline-site-debug-info", site); return nullptr; }
+    if (inPlace_) { opt::noteDecline("inline-site-inside-inlined-body", site); return nullptr; }
+    if (stackSlots != 0) { opt::noteDecline("inline-site-stack-arguments", site); return nullptr; }
     const bool reserved = current_->hasLandingPads() && usesFunclets();
-    if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) return nullptr;
-    return inliner_->allows(n) ? &callee : nullptr;
+    if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) {
+        opt::noteDecline("inline-site-frame-past-funclet-reserve", site);
+        return nullptr;
+    }
+    return &callee;
 }
 
 bool X86_64Linux::inlining() const { return inliner_ && !lineSource(); }

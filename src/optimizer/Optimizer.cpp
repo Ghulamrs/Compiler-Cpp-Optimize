@@ -1,5 +1,6 @@
 #include "Optimizer.h"
 
+#include "OptDeclines.h"
 #include "OptPipeline.h"
 
 #include <algorithm>
@@ -96,6 +97,7 @@ void Optimizer::funcletBegin() {
     funclet_->name = fn_.name;
     funclet_->convention = fn_.convention;
     funclet_->whole = false;
+    opt::noteDecline("funclet-no-frame-passes", fn_.name);
 }
 
 void Optimizer::funcletEnd() {
@@ -192,6 +194,7 @@ void Optimizer::improve(opt::Function &fn) { manager_.run(*pipeline_, fn); }
 // against it.
 void Optimizer::flush() {
     if (fn_.stream.empty()) return;
+    if (fn_.prologueAt < 0) opt::noteDecline("no-prologue-no-frame-passes", fn_.name);
     improve(fn_);
     replay(fn_.stream);
     for (const opt::Stream &f : funclets_) replay(f);

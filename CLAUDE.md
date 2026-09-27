@@ -10787,3 +10787,65 @@ fourth in the rebuild was the first).
 tms6747.sh 335/0 at -O1 and -O2; TI's lnk6x links all 342 at -O2.
 bench-c6x 62,693 -> 53,101 kilocycles; object .text through TI's assembler
 8,960 -> 8,448 (cl6x --opt_level=2: 3,712), through ASM6x 11,488 -> 9,600.
+
+## The four boxes measured again, and where the optimizer holds back, 2026-09-27
+
+**Every leg re-run fresh at 8d9bdc8**, each box building its own cxx1 from one
+tarball, medians of 15 interleaved rounds, checksums equal on every build. It
+repeats the previous run within noise, which is the finding:
+
+| leg | cxx1 -O2 | reference | ratio |
+| --- | --- | --- | --- |
+| x86_64-windows vs cl /O2 | 383 ms | 297 | 1.29x |
+| x86_64-linux vs g++ -O2 | 687 ms | 535 | 1.28x |
+| arm64-darwin vs clang -O2 | 681 ms | 171 | 3.98x |
+| C6000, bench-c6x on the emulator | 53,101 kcycles | - | - |
+| C6000 .text through TI's assembler vs cl6x | 8,448 bytes | 3,712 | 2.28x |
+
+| kernel | Win cxx1 | cl | Linux cxx1 | g++ | arm64 cxx1 | clang |
+| --- | --- | --- | --- | --- | --- | --- |
+| fib | 7 | 7 | 10 | 5 | 7 | 0 |
+| sieve | 54 | 45 | 93 | 80 | 70 | 32 |
+| matmul | 8 | 3 | 15 | 15 | 27 | 2 |
+| isort | 13 | 6 | 24 | 17 | 33 | 6 |
+| hash | 198 | 133 | 326 | 254 | 320 | 58 |
+| virtual | 103 | 102 | 215 | 161 | 221 | 71 |
+| .text | 3,819 | 3,831 | 6,460 | 5,228 | 5,468 | 9,580 |
+
+Correctness at -O2 the same day: run.sh 545/0 on the Mac and the Linux box,
+the Windows cases 525/0 (the 531 of earlier counts is these plus the six
+winlink directions, not re-run here), tms6747.sh 335/0, lnk6x 342 linked.
+
+**Why those counts differ, and no case is refused for being optimized.**
+546 cases: 348 run, 198 refused by the front end before any optimizer sees
+them. Every exclusion is a `.notarget` or tests/tms6747-lp64.txt, and neither
+reads the -O level. The hosts lose one (`noexcept-local-terminates`); Windows
+21 (9 funclet exception shapes, 6 a polymorphic base not first, 4 a
+polymorphic virtual base, `typeid`, `volatile-object`); the C6000 run 13 (3
+static_asserts of an 8-byte pointer, 2 `<new>` pieces the emulator's runtime
+lacks, `pragma-pack`, and 7 that assume a 64-bit long) and its link 6.
+
+**`CPP11_DECLINES` names every function or call site a transformation
+declines**, one stderr line each, `decline <reason> <symbol>`; unset it prints
+nothing and the emit golden read 0 of 1,363 changed with it built in.
+`tools/declines [-O1|-O2] [out.csv]` runs it over every case for every target
+its .notarget allows. At -O2, `docs/DECLINES-2026-09-27.md` per case, worst
+first, and `docs/declines-2026-09-27.csv` per reason:
+
+| | cases with a decline | too large | nested in an inlined body | unit budget | callee landing pad | funclet | other |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| x86_64-linux | 213 of 347 | 795 | 408 | 352 | 249 | - | 9 |
+| x86_64-windows | 210 of 327 | 767 | 1,287 | 472 | 225 | 260 | 8 |
+| arm64-darwin | 1 of 347 | - | - | - | - | - | 1 |
+| tms6747 | 0 of 342 | - | - | - | - | - | - |
+
+"Other" is a callee with a goto label or a switch (7 on each x86 target) and a
+call with stack arguments (2 and 1); arm64's one is `stack-probe`, a 256 KB
+frame past the promotion limit. arm64 and the C6000 barely decline because
+their optimizers rewrite finished text and have no inliner to refuse.
+
+**The declines do not explain the speed gap.** In bench-kernels they are main
+not taking the four large kernels - each called once - `virt` refused for its
+landing pad, and on Windows its two funclets without the frame passes; none is
+in a hot loop. The 1.29x is the code inside hash, matmul and isort, and that
+is where the next round goes.

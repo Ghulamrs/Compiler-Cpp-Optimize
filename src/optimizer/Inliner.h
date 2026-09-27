@@ -32,6 +32,7 @@ private:
     struct Measure {
         int size = 0;
         bool eligible = false;
+        const char *why = "";     // what makes it ineligible, for CPP11_DECLINES
         int taken = 0;
     };
     // One call of a function this unit defines: the loops it sits in, and
@@ -56,6 +57,6 @@ private:
     // Sites in the order they are worth taking: the least growth for the deepest loop first, ties in program order.
     static void sortByBadness(std::vector<Site> &sites);
     // Whether the site's growth is within what a site this deep in loops may take, and the caller and the unit have the room.
-    bool withinBudgets(const Site &site) const;
+    bool withinBudgets(const Site &site, const char **why = nullptr) const;
     void charge(const Site &site);
 };

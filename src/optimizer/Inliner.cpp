@@ -1,4 +1,5 @@
 #include "Inliner.h"
+#include "OptDeclines.h"
 
 #include <algorithm>
 
@@ -94,9 +95,13 @@ void Inliner::summarize(const Program &program) {
     std::vector<Site> sites = sitesOf(program);
     sortByBadness(sites);
     for (const Site &site : sites) {
-        const bool yes = withinBudgets(site);
+        const char *why = "";
+        const bool yes = withinBudgets(site, &why);
         decided_[site.call] = yes;
-        if (!yes) continue;
+        if (!yes) {
+            opt::noteDecline(why, site.callee->symbol() + " in " + site.caller->symbol());
+            continue;
+        }
         charge(site);
         largestFrame_ = std::max(largestFrame_, roundedFrame(*site.callee));
     }
@@ -113,7 +118,10 @@ std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
         fn.body().accept(m);
         Measure &measure = measures_[&fn];
         measure.size = m.nodes;
-        measure.eligible = !fn.hasLandingPads() && !fn.isVariadic() && fn.regSaveSlot() == 0 && !m.cleanups && !m.labels;
+        measure.why = fn.hasLandingPads() ? "inline-callee-landing-pad" : fn.isVariadic() ? "inline-callee-variadic"
+                    : fn.regSaveSlot() != 0 ? "inline-callee-register-save-area" : m.cleanups ? "inline-callee-cleanup"
+                    : m.labels ? "inline-callee-label-or-switch" : "";
+        measure.eligible = *measure.why == '\0';
         unitSize_ += m.nodes;
         bySymbol[fn.symbol()] = &fn;
     }
@@ -121,7 +129,11 @@ std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
     for (const auto &fm : measured)
         for (const auto &call : fm.second.calls) {
             const auto callee = bySymbol.find(call.first->symbol());
-            if (callee == bySymbol.end() || !eligible(*callee->second)) continue;
+            if (callee == bySymbol.end()) continue;
+            if (!eligible(*callee->second)) {
+                opt::noteDecline(measures_[callee->second].why, call.first->symbol() + " in " + fm.first->symbol());
+                continue;
+            }
             const int growth = measures_[callee->second].size - callCost(*call.first);
             sites.push_back(Site{call.first, fm.first, callee->second, call.second, growth});
         }
@@ -150,14 +162,18 @@ void Inliner::sortByBadness(std::vector<Site> &sites) {
 // **Three budgets, all of which must hold**: the site's growth against what a site this deep
 // in loops may take; the caller's growth so far, with this one, against its own size; the
 // unit's likewise. A budget of zero percent still admits a site that grows nothing.
-bool Inliner::withinBudgets(const Site &site) const {
+bool Inliner::withinBudgets(const Site &site, const char **why) const {
+    const char *unused = "";
+    const char *&reason = why != nullptr ? *why : unused;
     const int growth = site.growth;
-    if (growth > costs_.inlineGrowth(site.loopDepth)) return false;
+    if (growth > costs_.inlineGrowth(site.loopDepth)) { reason = "inline-site-too-large"; return false; }
     if (growth <= 0) return true;
     const Measure &c = measures_.at(site.caller);
     const long callerRoom = static_cast<long>(std::max(c.size, costs_.largeFunction())) * costs_.callerGrowthPercent() / 100;
     const long unitRoom = static_cast<long>(unitSize_) * costs_.unitGrowthPercent() / 100;
-    return c.taken + growth <= callerRoom && unitTaken_ + growth <= unitRoom;
+    if (c.taken + growth > callerRoom) { reason = "inline-caller-budget-spent"; return false; }
+    if (unitTaken_ + growth > unitRoom) { reason = "inline-unit-budget-spent"; return false; }
+    return true;
 }
 
 void Inliner::charge(const Site &site) {

@@ -1,6 +1,7 @@
 #include "Arm64Darwin.h"
 
 #include "../optimizer/A64Peep.h"
+#include "../optimizer/OptDeclines.h"
 
 #include "../Source.h"
 
@@ -1090,6 +1091,7 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     // An optimized frame keeps room below its locals for the callee-saved registers a promoted local takes.
     const int locals = alignTo(fn.frameSize(), 16);
     const bool promote = optimize_ > 0 && locals + kCalleeArea <= 65535;
+    if (optimize_ > 0 && !promote) opt::noteDecline("arm64-frame-too-large-no-promotion", fn.symbol());
     int frame = locals + (promote ? kCalleeArea : 0);
     if (frame > 0) {
         movImm("x9", frame);

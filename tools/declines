@@ -1,0 +1,49 @@
+#!/bin/sh
+# **Where the optimizer holds back, case by case.** Every tests/cases program that runs
+# is compiled at the given level for each target its .notarget allows, with
+# CPP11_DECLINES set, and each function or call site a transformation declined is
+# counted: per case and target, then in total. Nothing is assembled or run.
+#
+#   tools/declines [-O1|-O2] [out.csv]      default -O2, CSV to stdout's summary only
+set -u
+cd "$(dirname "$0")/.."
+CXX1="${CXX1:-./cpp11.exe}"
+LEVEL="${1:--O2}"
+CSV="${2:-}"
+TARGETS="x86_64-linux x86_64-windows arm64-darwin tms6747"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+
+for t in $TARGETS; do
+    for e in tests/cases/*.expected; do
+        n=$(basename "$e" .expected)
+        nt="tests/cases/$n.notarget"
+        if [ -f "$nt" ] && grep -q "^$t" "$nt"; then echo "$t $n -" >> "$TMP/skipped"; continue; fi
+        CPP11_DECLINES=1 "$CXX1" -S "$LEVEL" -nologo -arch "$t" "tests/cases/$n.cpp" -o /dev/null 2>&1 < /dev/null \
+            | grep '^decline ' | sort -u | sed "s/^decline /$t $n /" >> "$TMP/lines"
+        echo "$t $n" >> "$TMP/compiled"
+    done
+done
+touch "$TMP/lines" "$TMP/skipped"
+
+# The per-case table: one row per case and target, one column per reason.
+reasons=$(awk '{print $3}' "$TMP/lines" | sort -u)
+{
+    printf 'case,target,total'; for r in $reasons; do printf ',%s' "$r"; done; echo
+    while read -r t n; do
+        printf '%s,%s,%s' "$n" "$t" "$(awk -v t="$t" -v n="$n" '$1==t && $2==n' "$TMP/lines" | wc -l | tr -d ' ')"
+        for r in $reasons; do
+            printf ',%s' "$(awk -v t="$t" -v n="$n" -v r="$r" '$1==t && $2==n && $3==r' "$TMP/lines" | wc -l | tr -d ' ')"
+        done
+        echo
+    done < "$TMP/compiled"
+    while read -r t n _; do echo "$n,$t,not for this target"; done < "$TMP/skipped"
+} > "$TMP/table.csv"
+[ -n "$CSV" ] && cp "$TMP/table.csv" "$CSV"
+cp "$TMP/lines" "${CSV:+${CSV%.csv}.lines}" 2>/dev/null || true
+
+echo "declines at $LEVEL"
+for t in $TARGETS; do
+    c=$(grep -c "^$t " "$TMP/compiled"); w=$(awk -v t="$t" '$1==t{print $2}' "$TMP/lines" | sort -u | wc -l | tr -d ' ')
+    printf '  %-15s %3s cases compiled, %3s with a decline, %3s with none\n' "$t" "$c" "$w" "$((c - w))"
+done
+awk '{print $1, $3}' "$TMP/lines" | sort | uniq -c | sort -k2,2 -k1,1nr | sed 's/^/  /'
