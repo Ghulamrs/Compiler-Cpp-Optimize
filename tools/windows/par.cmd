@@ -6,8 +6,15 @@ setlocal
 set N=%~1
 set SCRIPT=%~f2
 set ARGS=%3 %4 %5 %6 %7 %8 %9
-set TAG=%TEMP%\par-%RANDOM%%RANDOM%
-mkdir "%TAG%" || exit /b 2
+rem  %RANDOM% is seeded from the clock, so two par.cmd started together draw the same number:
+rem  the name takes the time too, and a name already taken is drawn again.
+:tag
+set STAMP=%TIME: =0%
+set STAMP=%STAMP::=%
+set STAMP=%STAMP:.=%
+set STAMP=%STAMP:,=%
+set TAG=%TEMP%\par-%RANDOM%%RANDOM%-%STAMP%
+mkdir "%TAG%" 2>nul || goto tag
 for /l %%k in (1,1,%N%) do start "" /b cmd /c ""%SCRIPT%" :shard %%k %N% %ARGS% > "%TAG%\%%k.log" 2>&1 & echo.> "%TAG%\%%k.done""
 :wait
 for /l %%k in (1,1,%N%) do if not exist "%TAG%\%%k.done" (ping -n 2 127.0.0.1 >nul & goto wait)

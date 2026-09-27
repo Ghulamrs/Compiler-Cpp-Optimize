@@ -9,6 +9,7 @@ rem  CXX1_TI_FLAGS, if set, goes on every compile - -O1 or -O2 links the optimiz
 rem  asm6x.exe is ASM6x's own cl build (tests/windows.sh leaves it at
 rem  C:\asm6x-tests\build) or the one in RIDE's bin; the TI tools are CCS 7.4's.
 setlocal enabledelayedexpansion
+if "%~1"==":shard" goto :shard
 if "%~1"=="" (echo ti-link.cmd: needs the tree root & exit /b 2)
 set ROOT=%~1
 set CPP11_TI=C:\ti\ccsv7\tools\compiler\ti-cgt-c6000_8.2.2
@@ -21,24 +22,32 @@ if not exist %CPP11_TILIB%\rts6740_elf_eh.lib (echo ti-link.cmd: no rts6740_elf_
 if not exist %ROOT%\cxx1-msvc.exe (echo ti-link.cmd: no cxx1-msvc.exe - run-cases.cmd builds it & exit /b 1)
 if not exist %ROOT%\winout\ti mkdir %ROOT%\winout\ti
 del /q %ROOT%\winout\ti\* 2>nul
-set linked=0
-set failed=0
-set skipped=0
-for %%f in (%ROOT%\tests\cases\*.expected) do (
-    set NAME=%%~nf
-    set SKIP=
-    if exist %ROOT%\tests\cases\!NAME!.notarget (
-        findstr /C:"tms6747" %ROOT%\tests\cases\!NAME!.notarget >nul 2>&1 && set SKIP=1
-    )
-    if defined SKIP (
-        set /a skipped+=1
-    ) else (
-        %ROOT%\cxx1-msvc.exe -arch tms6747 -nologo %CXX1_TI_FLAGS% %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winout\ti\!NAME!.out > %ROOT%\winout\ti\!NAME!.log 2>&1
-        if errorlevel 1 (set /a failed+=1 & echo TI-FAILED !NAME! & type %ROOT%\winout\ti\!NAME!.log | findstr /v "^$" | more +0) else (
-            if exist %ROOT%\winout\ti\!NAME!.out (set /a linked+=1) else (set /a failed+=1 & echo TI-NO-OUT !NAME!)
-        )
-    )
-)
+rem  Six shards at once with par.cmd; each prints a marker line per case, and the counts are
+rem  read off the markers once all six are done.
+rem  Visual Studio's environment once, here: a compiler that finds it set runs its tools
+rem  directly, where without it every asm6x and lnk6x call went through vcvars64.bat again.
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
+call "%~dp0par.cmd" 6 "%~f0" > %ROOT%\winout\ti\shards.log
+findstr /v /b /c:"=" %ROOT%\winout\ti\shards.log
+for /f %%n in ('findstr /b /c:"=LINKED " %ROOT%\winout\ti\shards.log ^| find /c /v ""') do set linked=%%n
+for /f %%n in ('findstr /b /c:"=FAILED " %ROOT%\winout\ti\shards.log ^| find /c /v ""') do set failed=%%n
+for /f %%n in ('findstr /b /c:"=SKIPPED " %ROOT%\winout\ti\shards.log ^| find /c /v ""') do set skipped=%%n
 echo ti-link.cmd: %linked% programs linked by lnk6x, %failed% failed, %skipped% not for this target
 if not %failed%==0 exit /b 1
 endlocal
+exit /b 0
+
+:shard
+set /a I=0
+for %%f in (%ROOT%\tests\cases\*.expected) do (
+    set /a I+=1, M=I %% %~3 + 1
+    if !M!==%~2 call :one %%~nf
+)
+exit /b 0
+
+:one
+if exist %ROOT%\tests\cases\%1.notarget findstr /C:"tms6747" %ROOT%\tests\cases\%1.notarget >nul 2>&1 && (echo =SKIPPED %1& exit /b 0)
+%ROOT%\cxx1-msvc.exe -arch tms6747 -nologo %CXX1_TI_FLAGS% %ROOT%\tests\cases\%1.cpp -o %ROOT%\winout\ti\%1.out > %ROOT%\winout\ti\%1.log 2>&1
+if errorlevel 1 (echo =FAILED %1& echo TI-FAILED %1& type %ROOT%\winout\ti\%1.log | findstr /v "^$"& exit /b 0)
+if exist %ROOT%\winout\ti\%1.out (echo =LINKED %1) else (echo =FAILED %1& echo TI-NO-OUT %1)
+exit /b 0
