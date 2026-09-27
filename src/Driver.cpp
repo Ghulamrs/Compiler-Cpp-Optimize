@@ -14,6 +14,7 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -24,11 +25,13 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
 #ifndef _WIN32
 #include <cerrno>
+#include <glob.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #endif
@@ -404,6 +407,51 @@ bool Driver::targetIsTi() const {
 
 // A file beside this program - RIDE lays asm6x.exe beside cpp11.exe - or
 // nothing, when argv[0] was a bare name found on PATH.
+// **A file name with `*` or `?` in it, expanded here**, as cl does: cmd hands the pattern through as
+// written, and a POSIX shell only when it was quoted. Sorted; a file already named is not taken twice.
+static bool expandPattern(const std::string &arg, std::vector<std::string> &into) {
+    if (arg.find_first_of("*?") == std::string::npos || std::ifstream(arg.c_str()).good()) {
+        if (std::find(into.begin(), into.end(), arg) == into.end()) into.push_back(arg);
+        return true;
+    }
+    std::vector<std::string> found;
+#ifdef _WIN32
+    const std::size_t slash = arg.find_last_of("/\\");
+    const std::string dir = slash == std::string::npos ? std::string() : arg.substr(0, slash + 1);
+    WIN32_FIND_DATAA entry;
+    HANDLE h = FindFirstFileA(arg.c_str(), &entry);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) found.push_back(dir + entry.cFileName);
+        } while (FindNextFileA(h, &entry));
+        FindClose(h);
+    }
+    std::sort(found.begin(), found.end());
+#else
+    glob_t g;
+    if (glob(arg.c_str(), 0, nullptr, &g) == 0)
+        for (std::size_t k = 0; k < g.gl_pathc; k++) found.push_back(g.gl_pathv[k]);
+    globfree(&g);
+#endif
+    for (const std::string &name : found)
+        if (std::find(into.begin(), into.end(), name) == into.end()) into.push_back(name);
+    return !found.empty();
+}
+
+// **Two jobs never write one file**: -j runs them at once, and dir1/*.cpp and dir2/*.cpp may each
+// hold an x.cpp whose object is x.o. Refused by name before any job starts.
+static bool distinctOutputs(const char *program, const std::vector<std::string> &inputs,
+                            const std::vector<std::string> &outputs) {
+    for (std::size_t i = 0; i < outputs.size(); i++)
+        for (std::size_t k = 0; k < i; k++)
+            if (!outputs[i].empty() && outputs[i] == outputs[k]) {
+                std::fprintf(stderr, "%s: %s and %s would both be written to %s\n", program,
+                             inputs[k].c_str(), inputs[i].c_str(), outputs[i].c_str());
+                return false;
+            }
+    return true;
+}
+
 static std::string besideProgram(const std::string &program, const char *leaf) {
     std::size_t slash = program.find_last_of("/\\");
     if (slash == std::string::npos) return std::string();
@@ -718,7 +766,7 @@ std::string Driver::assemblyNameFor(const std::string &source) {
 }
 
 std::string Driver::objectNameFor(const std::string &source) const {
-    std::size_t slash = source.find_last_of('/');
+    std::size_t slash = source.find_last_of(hostIsWindows() ? "/\\" : "/");
     std::string base = slash == std::string::npos ? source
                                                   : source.substr(slash + 1);
     std::size_t dot = base.rfind('.');
@@ -843,8 +891,9 @@ bool Driver::parseArguments(int argc, char **argv) {
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             std::fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[i]);
             return false;
-        } else {
-            inputs.push_back(argv[i]);
+        } else if (!expandPattern(argv[i], inputs)) {
+            std::fprintf(stderr, "%s: no file matches %s\n", argv[0], argv[i]);
+            return false;
         }
     }
 
@@ -941,12 +990,14 @@ bool Driver::parseArguments(int argc, char **argv) {
                 argv[0], inputs.size());
             return false;
         }
+        std::vector<std::string> outs;
         for (const std::string &in : inputs) {
             if (!output.empty()) jobs_.push_back(Job{ in, output });
             else if (toStdout_)  jobs_.push_back(Job{ in, "" });
             else                 jobs_.push_back(Job{ in, assemblyNameFor(in) });
+            outs.push_back(jobs_.back().output);
         }
-        return true;
+        return distinctOutputs(argv[0], inputs, outs);
     }
 
     if (backend_ != &defaultBackend() && !targetIsTi()) {
@@ -976,7 +1027,7 @@ bool Driver::parseArguments(int argc, char **argv) {
         if (objectOnly_) objects_.push_back(output.empty()
                                             ? objectNameFor(inputs[i]) : output);
     }
-    return true;
+    return !objectOnly_ || distinctOutputs(argv[0], inputs, objects_);
 }
 
 bool Driver::compile(const Job &job) {
