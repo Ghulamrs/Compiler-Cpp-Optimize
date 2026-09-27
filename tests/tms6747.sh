@@ -19,37 +19,50 @@ CXX1="${CXX1:-./cpp11.exe}"
 VM="${VM:-../Emulator/vm6747.exe}"
 CXX1_FLAGS="${CXX1_FLAGS:-}"   # -O1 or -O2 runs the corpus through the C6000 optimizer
 OUT=tests/out-tms6747
-rm -rf "$OUT"; mkdir -p "$OUT"
-if [ ! -x "$VM" ]; then echo "tms6747.sh: no emulator at $VM"; exit 1; fi
-
-pass=0; fail=0; skipEh=0; skipLp=0; skipNt=0
-only="${1:-}"
-for src in tests/cases/*.cpp; do
-    base=$(basename "$src" .cpp)
-    [ -n "$only" ] && [ "$base" != "$only" ] && continue
-    [ -f "tests/cases/$base.error" ] && continue
+# One case by name, or all of them; a worker is handed the name it was asked for after --one.
+if [ "${1:-}" = --one ]; then only=$2; else only="${1:-}"; fi
+# One case - compiled for the C6000 and run on vm6747 - its report and verdict written beside its
+# output, so that the cases run at once: JOBS of them, the machine's processors by default.
+one() {
+    base=$1; src=tests/cases/$base.cpp
     if [ -f "tests/cases/$base.notarget" ] && grep -q "^tms6747[[:space:]]" "tests/cases/$base.notarget"; then
         echo "  skip $base for tms6747: $(grep "^tms6747[[:space:]]" "tests/cases/$base.notarget" | sed 's/^tms6747[[:space:]]*//')"
-        skipNt=$((skipNt + 1)); continue
+        echo notarget > "$OUT/$base.verdict"; return
     fi
-    if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-exceptions.txt; then skipEh=$((skipEh + 1)); continue; fi
-    if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-lp64.txt; then skipLp=$((skipLp + 1)); continue; fi
+    if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-exceptions.txt; then echo eh > "$OUT/$base.verdict"; return; fi
+    if [ -z "$only" ] && grep -q "^$base[[:space:]]" tests/tms6747-lp64.txt; then echo lp64 > "$OUT/$base.verdict"; return; fi
 
     if ! ( ulimit -t 10; "$CXX1" -S -arch tms6747 -nologo $CXX1_FLAGS "$src" -o "$OUT/$base.s" < /dev/null ) 2>"$OUT/$base.err"; then
         echo "FAIL $base: cpp11 refused it"
         sed 's/^/      /' "$OUT/$base.err" | head -3
-        fail=$((fail + 1))
-        continue
+        echo fail > "$OUT/$base.verdict"
+        return
     fi
     { "$VM" "$OUT/$base.s" > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
     if diff -q "tests/cases/$base.expected" "$OUT/$base.out" >/dev/null; then
-        pass=$((pass + 1))
+        echo pass > "$OUT/$base.verdict"
     else
         echo "FAIL $base:"
         diff "tests/cases/$base.expected" "$OUT/$base.out" | sed 's/^/      /' | head -8
-        fail=$((fail + 1))
+        echo fail > "$OUT/$base.verdict"
     fi
-done
+}
+if [ "${1:-}" = --one ]; then one "$3" > "$OUT/$3.report" 2>&1; exit 0; fi
+rm -rf "$OUT"; mkdir -p "$OUT"
+if [ ! -x "$VM" ]; then echo "tms6747.sh: no emulator at $VM"; exit 1; fi
+cases() {
+    for src in tests/cases/*.cpp; do
+        base=$(basename "$src" .cpp)
+        [ -n "$only" ] && [ "$base" != "$only" ] && continue
+        [ -f "tests/cases/$base.error" ] && continue
+        echo "$base"
+    done
+}
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+cases | xargs -P "$JOBS" -I{} sh "$0" --one "$only" {}
+for base in $(cases); do cat "$OUT/$base.report"; done
+count() { cat "$OUT"/*.verdict 2>/dev/null | grep -cx "$1" || true; }
+pass=$(count pass); fail=$(count fail); skipEh=$(count eh); skipLp=$(count lp64); skipNt=$(count notarget)
 
 echo "tms6747.sh: $pass passed, $fail failed, $skipEh skipped for exceptions, $skipLp skipped for a 64-bit long, $skipNt not for this target"
 [ "$fail" -eq 0 ]

@@ -13,25 +13,28 @@ if ! command -v clang++ > /dev/null 2>&1; then
     exit 0
 fi
 
-pass=0; fail=0
-for src in tests/cases/*.cpp; do
-    # The `name 2.cpp` copies macOS leaves in this directory are not cases:
-    # each is a duplicate whose markers are duplicated too, so it is compared
-    # against an oracle for a file of another name and reported as a
-    # difference. tools/verify-three excludes them at both ends and emit.sh
-    # ignores them in the golden; this suite enumerated them.
-    case "$(basename "$src")" in *" "[0-9]*) continue;; esac
-    base=$(basename "$src" .cpp)
-    [ -f "tests/cases/$base.error" ] && continue
-
-    if out=$(tools/mangled-names "$src" 2>&1); then
-        pass=$((pass + 1))
-    else
-        echo "FAIL $base:"
-        echo "$out" | sed 's/^/      /'
-        fail=$((fail + 1))
-    fi
-done
+# Every case at once, JOBS of them (the machine's processors by default), each through
+# tools/mangled-names into a report of its own, read back in case order.
+OUT=tests/out-names
+if [ "${1:-}" = --one ]; then
+    if out=$(tools/mangled-names "tests/cases/$2.cpp" 2>&1); then echo pass > "$OUT/$2.verdict"
+    else { echo "FAIL $2:"; echo "$out" | sed 's/^/      /'; } > "$OUT/$2.report"; echo fail > "$OUT/$2.verdict"; fi
+    exit 0
+fi
+rm -rf "$OUT"; mkdir -p "$OUT"
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+cases() {
+    for src in tests/cases/*.cpp; do
+        case "$(basename "$src")" in *" "[0-9]*) continue;; esac
+        base=$(basename "$src" .cpp)
+        [ -f "tests/cases/$base.error" ] && continue
+        echo "$base"
+    done
+}
+cases | xargs -P "$JOBS" -n 1 sh "$0" --one
+for base in $(cases); do [ -f "$OUT/$base.report" ] && cat "$OUT/$base.report"; done
+pass=$(cat "$OUT"/*.verdict 2>/dev/null | grep -c pass || true)
+fail=$(cat "$OUT"/*.verdict 2>/dev/null | grep -c fail || true)
 
 echo "names.sh: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

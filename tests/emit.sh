@@ -24,6 +24,25 @@ GOLD=tests/out-emit.golden
 
 # Refused by name, like everything else here: a mistyped flag that ran the
 # ordinary suite would look like a recording that quietly did not happen.
+# One case for one target. A case may name a target it does not compile for yet, one per line in
+# <case>.notarget. **It has to say why in the file**, because a silent exclusion is how a suite
+# stops testing something without anybody noticing. The line is printed on every run for the same reason.
+emit_one() {
+    base=$1; target=$2; src=tests/cases/$base.cpp
+    if [ -f "tests/cases/$base.notarget" ] && grep -q "^$target\b" "tests/cases/$base.notarget"; then
+        echo "  skip $base for $target: $(grep "^$target\b" "tests/cases/$base.notarget" | sed "s/^$target[[:space:]]*//")"
+        return
+    fi
+    if cxx1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" 2>"$OUT/$base.$target.err"; then
+        echo pass > "$OUT/$base.$target.verdict"
+    else
+        echo "FAIL $base for $target:"
+        sed 's/^/      /' "$OUT/$base.$target.err"
+        echo fail > "$OUT/$base.$target.verdict"
+    fi
+}
+if [ "${1:-}" = --one ]; then emit_one "$2" "$3" > "$OUT/$2.$3.report" 2>&1; exit 0; fi
+
 record=0
 case ${1:-} in
     "")        ;;
@@ -33,30 +52,21 @@ esac
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-pass=0; fail=0
-for src in tests/cases/*.cpp; do
-    base=$(basename "$src" .cpp)
-    [ -f "tests/cases/$base.error" ] && continue
-    for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do
-        # A case may name a target it does not compile for yet, one per line in
-        # <case>.notarget. **It has to say why in the file**, because a silent
-        # exclusion is how a suite stops testing something without anybody
-        # noticing. The line is printed on every run for the same reason.
-        if [ -f "tests/cases/$base.notarget" ] &&
-           grep -q "^$target\b" "tests/cases/$base.notarget"; then
-            echo "  skip $base for $target: $(grep "^$target\b" "tests/cases/$base.notarget" | sed "s/^$target[[:space:]]*//")"
-            continue
-        fi
-        if cxx1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" \
-                 2>"$OUT/$base.$target.err"; then
-            pass=$((pass + 1))
-        else
-            echo "FAIL $base for $target:"
-            sed 's/^/      /' "$OUT/$base.$target.err"
-            fail=$((fail + 1))
-        fi
+# Every case for every target at once, JOBS of them (the machine's processors by default); each
+# pair's report and verdict land beside its output, and are read back in the order of the loop.
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+pairs() {
+    for src in tests/cases/*.cpp; do
+        base=$(basename "$src" .cpp)
+        [ -f "tests/cases/$base.error" ] && continue
+        for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do echo "$base $target"; done
     done
-done
+}
+pairs | xargs -P "$JOBS" -n 2 sh "$0" --one
+pass=0; fail=0
+pairs | while read -r base target; do cat "$OUT/$base.$target.report"; done
+pass=$(cat "$OUT"/*.verdict 2>/dev/null | grep -c pass || true)
+fail=$(cat "$OUT"/*.verdict 2>/dev/null | grep -c fail || true)
 
 echo "emit.sh: $pass passed, $fail failed"
 

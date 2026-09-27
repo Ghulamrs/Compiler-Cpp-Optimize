@@ -36,30 +36,33 @@ if ! command -v "$CLANG" > /dev/null 2>&1; then
 fi
 
 OUT=tests/out-overload
-rm -rf "$OUT"; mkdir -p "$OUT"
+# One file: clang and cxx1 side by side - the reference and the compiler under test at once - then
+# the verdicts compared. The files run at once too, JOBS of them; each report is read back in order.
+one() {
+    base=$1; src=tests/overload/$base.cpp
+    (
+        if "$CLANG" -x c++ -std=c++11 -w "$src" -o "$OUT/$base.clang" \
+                    2> "$OUT/$base.clang.err"; then
+            echo accept > "$OUT/$base.clang.verdict"
+            "$OUT/$base.clang" > "$OUT/$base.clang.out" 2>&1 || true
+        else
+            echo refuse > "$OUT/$base.clang.verdict"
+        fi
 
-pass=0; fail=0
-for src in tests/overload/*.cpp; do
-    base=$(basename "$src" .cpp)
+    ) &
+    (
+        if ( ulimit -t 10; $CXX1 "$src" -o "$OUT/$base.cxx1" < /dev/null ) \
+               2> "$OUT/$base.cxx1.err"; then
+            echo accept > "$OUT/$base.cxx1.verdict"
+            "$OUT/$base.cxx1" > "$OUT/$base.cxx1.out" 2>&1 || true
+        else
+            echo refuse > "$OUT/$base.cxx1.verdict"
+        fi
 
-    # The oracle first, so that what cxx1 did is always reported against
-    # something rather than on its own.
-    if "$CLANG" -x c++ -std=c++11 -w "$src" -o "$OUT/$base.clang" \
-                2> "$OUT/$base.clang.err"; then
-        clangVerdict=accept
-        "$OUT/$base.clang" > "$OUT/$base.clang.out" 2>&1 || true
-    else
-        clangVerdict=refuse
-    fi
-
-    if ( ulimit -t 10; $CXX1 "$src" -o "$OUT/$base.cxx1" < /dev/null ) \
-           2> "$OUT/$base.cxx1.err"; then
-        cxx1Verdict=accept
-        "$OUT/$base.cxx1" > "$OUT/$base.cxx1.out" 2>&1 || true
-    else
-        cxx1Verdict=refuse
-    fi
-
+    ) &
+    wait
+    clangVerdict=$(cat "$OUT/$base.clang.verdict")
+    cxx1Verdict=$(cat "$OUT/$base.cxx1.verdict")
     if [ "$clangVerdict" != "$cxx1Verdict" ]; then
         echo "FAIL $base: clang ${clangVerdict}s it and cxx1 ${cxx1Verdict}s it"
         if [ "$cxx1Verdict" = refuse ]; then
@@ -67,27 +70,34 @@ for src in tests/overload/*.cpp; do
         else
             sed 's/^/      /' "$OUT/$base.clang.err" | head -4
         fi
-        fail=$((fail + 1))
-        continue
+        echo fail > "$OUT/$base.result"
+        return
     fi
 
     # Both refused. That they refused for the same *reason* is not asked here
     # - a wording diff is not a resolution bug - and the cases that pin a
     # particular message live in tests/cases with a `.error` beside them.
     if [ "$clangVerdict" = refuse ]; then
-        pass=$((pass + 1))
-        continue
+        echo pass > "$OUT/$base.result"
+        return
     fi
 
     if diff -q "$OUT/$base.clang.out" "$OUT/$base.cxx1.out" > /dev/null; then
-        pass=$((pass + 1))
+        echo pass > "$OUT/$base.result"
     else
         echo "FAIL $base: both compiled and they chose differently"
         echo "      clang: $(cat "$OUT/$base.clang.out")"
         echo "      cxx1 : $(cat "$OUT/$base.cxx1.out")"
-        fail=$((fail + 1))
+        echo fail > "$OUT/$base.result"
     fi
-done
+}
+if [ "${1:-}" = --one ]; then one "$2" > "$OUT/$2.report" 2>&1; exit 0; fi
+rm -rf "$OUT"; mkdir -p "$OUT"
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+for src in tests/overload/*.cpp; do basename "$src" .cpp; done | xargs -P "$JOBS" -n 1 sh "$0" --one
+for src in tests/overload/*.cpp; do cat "$OUT/$(basename "$src" .cpp).report"; done
+pass=$(cat "$OUT"/*.result 2>/dev/null | grep -c pass || true)
+fail=$(cat "$OUT"/*.result 2>/dev/null | grep -c fail || true)
 
 echo "overload.sh: $pass agreed with clang, $fail differed"
 [ "$fail" -eq 0 ]
