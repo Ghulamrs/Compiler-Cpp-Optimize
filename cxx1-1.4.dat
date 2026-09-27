@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 162 files, seal 18AE80B2
+CRC32  size  file - 162 files, seal 0E309AD9
 ------------------------------------------------------------------
 AE20CC05      9923  Makefile
 2DF96A05      2820  examples/Makefile
@@ -24,7 +24,7 @@ D1864FE6       122  include/cfloat
 25DF26AA      1584  include/cmath
 21B38D61       799  include/cstddef
 77C2EE9C       353  include/cstdint
-FAEBE88C      1454  include/cstdio
+76EDF3B6      1566  include/cstdio
 5B948597       840  include/cstdlib
 873774AC       938  include/cstring
 60ED3F29      3502  include/exception
@@ -62,7 +62,7 @@ CAFE9E5B      3766  lib/math.h
 909595E2      3322  lib/stdarg.h
 3B8B75BC      2473  lib/stddef.h
 92687B87      2514  lib/stdint.h
-FC1AAB90      7130  lib/stdio.h
+09257F7B      7235  lib/stdio.h
 686250E2      2360  lib/stdlib.h
 412080F6      2457  lib/string.h
 E20D4640      3250  lib/time.h
@@ -78,7 +78,7 @@ E7A9457A     72965  src/Mangle.cpp
 36FF0529       493  src/Name.h
 B35E3402      3248  src/Operator.cpp
 5E9A1F82      1033  src/Operator.h
-B606368C     50056  src/Preprocessor.cpp
+6E163DBE     50510  src/Preprocessor.cpp
 235DA1A0      3801  src/Preprocessor.h
 81483DDC      4191  src/Source.cpp
 951C68D5      1990  src/Source.h
@@ -149,8 +149,8 @@ D5A5640B      3328  src/optimizer/OptTable.h
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 1C14F096     36229  src/parser/Parser.cpp
-BFE5134F    117247  src/parser/Parser.h
-6FF0F59C    190700  src/parser/ParserClass.cpp
+9154BB49    117395  src/parser/Parser.h
+9BBF50AC    199014  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
 34A216F2    110754  src/parser/ParserExpr.cpp
 45675B47     32329  src/parser/ParserExprCall.cpp
@@ -160,9 +160,9 @@ A480EFCD     68251  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
 A0821712     39559  src/parser/ParserOperator.cpp
 1A336256     52944  src/parser/ParserOverload.cpp
-4D93408D     99952  src/parser/ParserStmt.cpp
+013A1E8F    100645  src/parser/ParserStmt.cpp
 B60497CC     97366  src/parser/ParserTemplate.cpp
-05914745     78723  src/parser/ParserTopLevel.cpp
+94D8A01E     78995  src/parser/ParserTopLevel.cpp
 A98E0DE5    119608  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
