@@ -1,0 +1,2 @@
+x86_64-windows  Microsoft's UCRT has had no gets since VS2015, so <cstdio> does not declare it for this target
+arm64-darwin  macOS's libc writes "this program uses gets(), which is unsafe" to stderr at run time, which the merged output cannot hold for one target alone; x86_64-linux runs this case, and tms6747.sh runs it on vm6747

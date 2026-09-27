@@ -834,11 +834,18 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
     std::string rest = trim(line.substr(i));
 
     if (what == "ifdef" || what == "ifndef") {
-        if (rest.empty() || !identStart(rest[0]))
+        // One name, a comment being whitespace by now: `#ifndef _WIN32 /* why */` asks about _WIN32.
+        std::string name = trim(stripComments(rest));
+        if (name.empty() || !identStart(name[0]))
             fail(fileIndex, lineNo, line, nameStart, "'#" + what + "' needs a name");
+        std::size_t e = 0;
+        while (e < name.size() && identCont(name[e])) e++;
+        if (!trim(name.substr(e)).empty())
+            fail(fileIndex, lineNo, line, nameStart, "'#" + what + "' takes one name, and '" + trim(name.substr(e)) + "' follows it");
+        name = name.substr(0, e);
         // **`#ifdef __has_builtin` is a directive and not `defined()`**, and
         // libstdc++ guards its whole builtin layer with exactly that.
-        bool defined = macros_.count(rest) != 0 || isHasPredicate(rest);
+        bool defined = macros_.count(name) != 0 || isHasPredicate(name);
         bool want = (what == "ifdef") ? defined : !defined;
         bool on = emitting() && want;
         conds_.push_back(Cond{ on, on, false });

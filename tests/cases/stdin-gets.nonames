@@ -1,0 +1,1 @@
+x86_64-linux  the case includes <cstdio>, which clang compiles against its own library headers and refuses on the cross targets outright; it names nothing of its own but main.

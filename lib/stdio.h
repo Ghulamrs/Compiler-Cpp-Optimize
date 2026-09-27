@@ -122,6 +122,9 @@ int getchar(void);
 int putchar(int);
 int ungetc(int, FILE *);
 char *fgets(char *, int, FILE *);
+#ifndef _WIN32 /* C90's gets: Microsoft's UCRT has not had it since VS2015 */
+char *gets(char *);
+#endif
 int fputs(const char *, FILE *);
 int puts(const char *);
 

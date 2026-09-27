@@ -31,6 +31,9 @@ using ::fopen;
 using ::freopen;
 using ::fgetc;
 using ::fgets;
+#ifndef _WIN32 // C++11 keeps gets, C++14 removed it; the UCRT has not had it since VS2015
+using ::gets;
+#endif
 using ::fprintf;
 using ::fputc;
 using ::fputs;

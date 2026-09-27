@@ -1,0 +1,2 @@
+#ifdef KNOWN with a line comment
+#if KNOWN

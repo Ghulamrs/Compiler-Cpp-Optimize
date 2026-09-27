@@ -64,7 +64,7 @@ for src in tests/cases/*.cpp; do
     # The case's own stdout and stderr are captured inside the group either way;
     # only the shell's commentary is dropped. A subshell does not do it: the
     # report comes from the shell that waited, not the one that ran.
-    { "$OUT/$base" > "$OUT/$base.out" 2>&1; } 2>/dev/null || true
+    { "$OUT/$base" > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
     if diff -q "tests/cases/$base.expected" "$OUT/$base.out" >/dev/null; then
         pass=$((pass + 1))
     else

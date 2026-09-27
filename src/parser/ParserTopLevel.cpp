@@ -116,17 +116,21 @@ void Parser::topLevel(Program &program) {
                                "elsewhere, so it takes a qualified name: "
                                "'using N::f;', or 'using ::f;' for one at "
                                "global scope");
+            // A name another using-declaration put there stands for what that one named:
+            // `using std::scanf;` when <cstdio> has `using ::scanf;` in std.
+            const std::string written = target;
+            target = followUsingDeclaration(target);
             // **Refused by name if it names nothing**, rather than recorded and
             // found missing at the use - the position of the declaration is the
             // one that says which name was meant.
             if (!hasTypeNamed(target) && !hasFunctionNamed(target) &&
                 !hasGlobalNamed(target) &&
                 namespaces_.find(target) == namespaces_.end())
-                src_.fail(pos, "'" + target + "' is not declared, so there is "
+                src_.fail(pos, "'" + written + "' is not declared, so there is "
                                "nothing here for this using-declaration to "
                                "name");
             const std::string shortName =
-                cut == std::string::npos ? target : target.substr(cut + 2);
+                cut == std::string::npos ? written : written.substr(cut + 2);
             const std::string declared = namespacePrefix() + shortName;
             if (declared != target) usingDeclarations_[declared] = target;
             return;
