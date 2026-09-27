@@ -1,0 +1,1 @@
+Microsoft's <stdio.h> defines printf inline, over _vfprintf_l and __local_stdio_printf_options with its static ?_OptionsStorage@..., so cl's object carries those four names; this tree's <cstdio> declares printf and leaves it to the library, so cxx1's calls printf and defines none of them. Nothing the case itself declares differs - it is about the preprocessor and names only main.
