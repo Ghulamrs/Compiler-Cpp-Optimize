@@ -155,14 +155,24 @@ StmtPtr Parser::declarationBody() {
                     staticLocalWithConstructor(d, inits);
                     continue;
                 }
-                if (peek().is("(") || peek().is("="))
-                    src_.fail(d.pos, "an initialiser for an array of '" +
-                                     plain->describe() + "' is not supported "
-                                     "yet - each element gets the default "
-                                     "constructor");
+                // [dcl.init]/17: an array takes a braced list, `= { ... }` or `{ ... }`.
+                if (peek().is("("))
+                    src_.fail(d.pos, "an array is initialised from a braced list - "
+                                     "write '" + d.name + "[...] = { ... }'");
+                const bool listed = peek().is("{") || (peek().is("=") && peekAt(1).is("{"));
+                if (peek().is("=") && !listed)
+                    src_.fail(d.pos, "an array of '" + plain->describe() + "' is "
+                                     "initialised from a braced list, '= { ... }'");
+                if (listed && !arrayCtor)
+                    src_.fail(d.pos, "a braced list for an array of '" + plain->describe() +
+                                     "', a class with a destructor and no constructor, is "
+                                     "not supported yet");
                 int off = declare(d.name, d.type, d.pos, quals.alignAs);
                 locals_.back().guardsJump = true;
-                if (arrayCtor) {
+                if (listed) {
+                    consume("=");
+                    inits.push_back(constructLocalArrayFromList(d, off));
+                } else if (arrayCtor) {
                     int indexSlot = allocateFrameSlot(types_.intType());
                     inits.push_back(constructLocalArray(d, off, indexSlot));
                 }

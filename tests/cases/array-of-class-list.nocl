@@ -1,0 +1,1 @@
+Microsoft's <stdio.h> defines printf inline, over _vfprintf_l and __local_stdio_printf_options with its static ?_OptionsStorage@..., so cl's object carries those four names where this tree's <cstdio> leaves printf to the library - the difference ifdef-comment.nocl records. Every name the case declares agrees.

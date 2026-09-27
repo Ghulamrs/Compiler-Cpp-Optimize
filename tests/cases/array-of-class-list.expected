@@ -1,0 +1,6 @@
+a: 1 23 -1 4 107 -1
+b: 5 -1 -1 -1
+g: 1 2 -1 / 4 5 6
+h: 1 2 / 3 -1
+c: 8 9
+LEDGER built=23 gone=23 live=0 double=0 phantom=0 over=0 lost=0

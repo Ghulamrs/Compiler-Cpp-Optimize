@@ -292,8 +292,11 @@ SFINAE and variadic packs. What is left:
 - **a braced default argument** — `src/parser/ParserClass.cpp:4019`,
   `src/parser/ParserTopLevel.cpp:705`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:1124`
-- **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:159`, `src/parser/ParserTopLevel.cpp:998`
+- **an initialiser for an array of a class with static storage duration** - a
+  local one takes a braced list since 2026-09-27; at file scope, as a `static`
+  local or a static member it is still refused. `src/parser/ParserInit.cpp:1116`
+- **a braced list for an array of a class with a destructor and no
+  constructor** - `src/parser/ParserStmt.cpp`
 - **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:645`
 - **`S{...}` as an expression** — list-initialisation one syntax over from the
   declaration form. `S(...)` calls a constructor, and a plain struct is built

@@ -1354,10 +1354,11 @@ private:
                              const Type *fn, Access access, bool constThis,
                              std::size_t pos, bool isVirtual = false,
                              bool isStatic = false);
-    // `S a[4];` - the default constructor once per element. Separate from
-    // constructLocal because that one builds a single object and names the
-    // class through d.type, which for an array is the array.
+    // `S a[4];` - the default constructor once per element, and `S a[3] = { ... };` - each element
+    // from its initialiser, the rest value-initialised. Apart from constructLocal, which builds a
+    // single object and names the class through d.type, which for an array is the array.
     StmtPtr constructLocalArray(const Declared &d, int offset, int indexSlot);
+    StmtPtr constructLocalArrayFromList(const Declared &d, int offset);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
     // `forceOwner` names the class a *qualified* call reached - `b.Base::f()`

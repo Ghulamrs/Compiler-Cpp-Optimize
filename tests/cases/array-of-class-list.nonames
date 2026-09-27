@@ -1,0 +1,3 @@
+x86_64-linux  the case includes <cstdio> through lifetime.h, which clang compiles against its own library headers and refuses on the cross targets outright.
+x86_64-windows  the same.
+arm64-darwin  `__cxx1_vec_del_1S` is cxx1's own file-local loop destroying an array, once per class, where clang unrolls each destruction in place - the difference array-of-class-destructor.nonames records. Every name the program declares agrees.

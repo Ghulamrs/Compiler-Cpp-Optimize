@@ -523,6 +523,17 @@ namespace resolves, which wants a round of its own rather than a line in a
 change about something else.
 
 
+## An array of a class is not partly destroyed when one of its constructors throws
+
+`S a[3] = { S(1), S(2), S(3) };` - and `S a[3];` with the default constructor
+before it - is one declaration, so one statement, and a cleanup region covers a
+statement as a whole. If the third element's constructor throws, the two built
+before it are not destroyed: they leak. Nothing is destroyed twice and nothing
+unbuilt is destroyed, since the array's entry is registered only once every
+element exists. [except.ctor]/2 wants the two destroyed, last first; clang's
+array-destroy loop over the elements built so far is what doing so takes here, a
+run-time count in the region's destructor call. Recorded 2026-09-27.
+
 ## A static local's guard is not released if its constructor throws
 
 [stmt.dcl]/4: if the initialisation of a static local exits by throwing, it is

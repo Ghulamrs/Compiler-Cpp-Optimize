@@ -1,6 +1,7 @@
 // The parser: what a class needs written for it. Constructors and destructors,
 // vtables and thunks, the implicit special members and the code that defines them
 // when something calls one, and the static data members. Rungs 3 and 4.
+#include <functional>
 #include <cstdio>
 #include "Parser.h"
 #include "ParserInternal.h"
@@ -2022,6 +2023,166 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
                                           types_.get(Kind::Void), ps, false,
                                           d.pos, std::move(args))));
     return eachElement(indexSlot, count, std::move(one));
+}
+
+// `S a[3] = { S(1), {2, 3}, x };` - [dcl.init.aggr]/2: each element copy-initialised from its
+// initialiser, in order, nested braces for each dimension or elided; the rest value-initialised,
+// as from `{}`. What each one becomes is what `S s = ...;` would make of it.
+StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
+    long long total = 1;
+    const Type *elem = d.type;
+    while (elem->isArray()) { total *= elem->length(); elem = elem->pointee(); }
+    const Type *plain = elem->unqualified();
+    const int size = plain->size(target_);
+
+    // One initialiser per element, read from the list: `given` says whether it had one.
+    struct Init { std::vector<ExprPtr> args; std::vector<Temporary> temps; bool braced = false; bool direct = false; bool given = false; };
+    std::vector<Init> inits(static_cast<std::size_t>(total));
+    // `S(args)` is the whole initialiser when a ',' or '}' follows its closing parenthesis.
+    auto closesElement = [&]() {
+        std::size_t k = 1;
+        int depth = 0;
+        for (;; k++) {
+            const Token &t = peekAt(k);
+            if (t.kind == TokenKind::End) return false;
+            if (t.is("(")) depth++;
+            if (t.is(")") && --depth == 0) break;
+        }
+        return peekAt(k + 1).is(",") || peekAt(k + 1).is("}");
+    };
+    std::function<void(const Type *, long long)> readList = [&](const Type *t, long long base) {
+        long long flat = 1;
+        const Type *e = t;
+        while (e->isArray()) { flat *= e->length(); e = e->pointee(); }
+        const Type *sub = t->pointee();
+        long long subFlat = 1;
+        for (const Type *u = sub; u->isArray(); u = u->pointee()) subFlat *= u->length();
+        const std::size_t open = peek().pos;
+        expect("{");
+        long long at = 0;
+        while (!peek().is("}")) {
+            if (at >= flat)
+                src_.fail(peek().pos, "too many initialisers for '" + t->describe() +
+                                      "' - it holds " + std::to_string(flat));
+            if (sub->isArray() && peek().is("{")) {
+                // a nested list starts the next row; one already begun is left to its defaults
+                at = (at + subFlat - 1) / subFlat * subFlat;
+                if (at >= flat)
+                    src_.fail(peek().pos, "too many initialisers for '" + t->describe() + "'");
+                readList(sub, base + at);
+                at += subFlat;
+            } else {
+                Init &one = inits[static_cast<std::size_t>(base + at)];
+                one.given = true;
+                std::vector<Temporary> before;
+                before.swap(pendingTemps_);
+                if (consume("{")) {
+                    one.braced = true;
+                    while (!peek().is("}")) {
+                        one.args.push_back(assign());
+                        if (!consume(",")) break;
+                    }
+                    expect("}");
+                } else if (peek().kind == TokenKind::Ident && peekAt(1).is("(") &&
+                           (peek().text == plain->localName() || peek().text == plain->tag()) &&
+                           closesElement()) {
+                    // `S(args)` builds the element itself, as clang does: direct-init, no copy.
+                    one.direct = true;
+                    at_ += 2;
+                    while (!peek().is(")")) {
+                        one.args.push_back(assign());
+                        if (!consume(",")) break;
+                    }
+                    expect(")");
+                } else {
+                    one.args.push_back(assign());
+                }
+                // **Each element's initialiser is a full-expression of its own**: its
+                // temporaries go with it and die before the next element is built.
+                one.temps.swap(pendingTemps_);
+                pendingTemps_.swap(before);
+                at++;
+            }
+            if (!consume(",")) break;
+        }
+        (void)open;
+        expect("}");
+    };
+    readList(d.type, 0);
+
+    // Each element in turn, as the object `S e = init;` - its temporaries gone before the next.
+    Declared one = d;
+    one.type = plain;
+    std::vector<StmtPtr> all;
+    long long firstDefault = total;
+    for (long long i = total; i > 0 && !inits[static_cast<std::size_t>(i - 1)].given; i--)
+        firstDefault = i - 1;
+    for (long long i = 0; i < firstDefault; i++) {
+        Init &e = inits[static_cast<std::size_t>(i)];
+        const int at = offset - static_cast<int>(i * size);
+        const bool empty = e.args.empty();
+        pendingTemps_.insert(pendingTemps_.end(), e.temps.begin(), e.temps.end());
+        // **A trivially copyable class is copied, not constructed** - there is no copy
+        // constructor to resolve to, as `S s = t;` finds for one object.
+        if (e.args.size() == 1 && !e.braced && !e.direct && copyConstructorOf(plain) == nullptr &&
+            moveConstructorOf(plain) == nullptr && e.args[0]->type() != nullptr &&
+            e.args[0]->type()->unqualified() == plain) {
+            ExprPtr dst(Var::local(d.name, at));
+            dst->setType(plain);
+            ExprPtr store(new Assign(std::move(dst), std::move(e.args[0])));
+            store->setType(plain);
+            all.push_back(StmtPtr(new ExprStmt(std::move(store))));
+        } else {
+            const bool copyInit = !e.direct && (!e.braced || !empty);
+            if (copyInit) {
+                const Signature chosen = resolveOverload(constructorKey(plain->tag()), e.args, d.pos);
+                if (chosen.isExplicit)
+                    src_.fail(d.pos, "element " + std::to_string(i) + " of '" + d.name + "' is "
+                                     "copy-initialised from its initialiser, and the constructor of '" +
+                                     plain->describe() + "' taking it is 'explicit' - write '" +
+                                     plain->localName() + "(...)' in the list, which asks for it by name");
+            }
+            all.push_back(constructObject(one, std::string(), at, std::move(e.args), copyInit, empty));
+        }
+        flushTemporaries(all);
+    }
+    if (firstDefault < total) {
+        const Signature *ctor = defaultConstructorOf(plain);
+        if (ctor == nullptr)
+            src_.fail(d.pos, "'" + d.name + "' has " + std::to_string(firstDefault) +
+                             " initialisers for " + std::to_string(total) + " elements, and '" +
+                             plain->describe() + "' has no constructor taking nothing to build "
+                             "the rest");
+        if (ctor->implicit) {
+            // value-initialisation zeroes first where nobody wrote the constructor: one by one
+            for (long long i = firstDefault; i < total; i++)
+                all.push_back(constructObject(one, std::string(), offset - static_cast<int>(i * size),
+                                              std::vector<ExprPtr>(), true, true));
+        } else {
+            markUsed(ctor);
+            const Signature chosen = *ctor;
+            std::vector<ExprPtr> defaults;
+            applyDefaults(chosen, defaults, d.pos);
+            const int indexSlot = allocateFrameSlot(types_.intType());
+            ExprPtr first(Var::local(d.name, offset - static_cast<int>(firstDefault * size)));
+            first->setType(plain);
+            ExprPtr start(new Unary('&', std::move(first)));
+            start->setType(types_.pointerTo(plain));
+            std::vector<ExprPtr> args;
+            args.push_back(indexBytes(types_, std::move(start), plain, indexSlot, target_));
+            std::vector<const Type *> ps;
+            ps.push_back(types_.pointerTo(plain));
+            for (std::size_t k = 0; k < defaults.size(); k++) {
+                args.push_back(std::move(defaults[k]));
+                ps.push_back(chosen.params[k]);
+            }
+            StmtPtr call(new ExprStmt(completeCall(plain->tag(), chosen.symbol, nullptr,
+                                                   types_.get(Kind::Void), ps, false, d.pos,
+                                                   std::move(args))));
+            all.push_back(eachElement(indexSlot, total - firstDefault, std::move(call)));
+        }
+    }
+    return StmtPtr(new Block(std::move(all)));
 }
 
 // The loop functions: the first element's address and a count, a frame of
