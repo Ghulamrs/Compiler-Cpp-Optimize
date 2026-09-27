@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
-Release seal, version 1.4, sealed 26-09-2026
+Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 159 files, seal 736814C5
+CRC32  size  file - 162 files, seal E771C86E
 ------------------------------------------------------------------
 AE20CC05      9923  Makefile
 2DF96A05      2820  examples/Makefile
@@ -84,30 +84,32 @@ B606368C     50056  src/Preprocessor.cpp
 951C68D5      1990  src/Source.h
 52741BC7     20117  src/Type.cpp
 9A61B671     23997  src/Type.h
-FC996AC3       334  src/Version.h
-34E0591B     43456  src/backend/Arm64Darwin.cpp
-B883B45B      5445  src/backend/Arm64Darwin.h
+667FB5F8       334  src/Version.h
+AFBAF949     45010  src/backend/Arm64Darwin.cpp
+98997445      5698  src/backend/Arm64Darwin.h
 0F851578      3863  src/backend/Backend.cpp
 07337349      1718  src/backend/Backend.h
 E0AFFCF2     15315  src/backend/Dwarf.cpp
 8F7CD499      1047  src/backend/Dwarf.h
 960CA398     44574  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
-0D2C66F1     15566  src/backend/Spelling.cpp
-410DDA98     10975  src/backend/Spelling.h
+FDB7487B     15645  src/backend/Spelling.cpp
+D7404BF3     11389  src/backend/Spelling.h
 B28DE3DF     64347  src/backend/Tms6747.cpp
 4DAA0B86      7919  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
-E3A964A4     95674  src/backend/X86_64Linux.cpp
-8B0AB59D     13242  src/backend/X86_64Linux.h
+BF4C34E3     96607  src/backend/X86_64Linux.cpp
+7AB385B5     13384  src/backend/X86_64Linux.h
 68BFFF6C      3268  src/backend/X86_64Windows.cpp
 095D1DBC      1172  src/backend/X86_64Windows.h
 3F12405D       111  src/main.cpp
-DEE1632A     13168  src/optimizer/C6xSched.cpp
+F61AC3DE     32331  src/optimizer/A64Peep.cpp
+B9884ADD       727  src/optimizer/A64Peep.h
+5C9C564D     18388  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
-9C53D04F      7874  src/optimizer/Inliner.cpp
-49C3451A      2896  src/optimizer/Inliner.h
+E2C66E0F      8731  src/optimizer/Inliner.cpp
+962CD3D9      3006  src/optimizer/Inliner.h
 9968D309      4307  src/optimizer/Mir.h
 81E0B17C     20599  src/optimizer/MirAlloc.cpp
 2AD08ACD      4465  src/optimizer/MirAlloc.h
@@ -120,36 +122,37 @@ A2C9ACF7     16025  src/optimizer/OptCore.h
 DC022063      2131  src/optimizer/OptDataflow.cpp
 471D07A0      1262  src/optimizer/OptDataflow.h
 A11161B1      7459  src/optimizer/OptDead.cpp
+4EDBCA26       652  src/optimizer/OptDeclines.h
 CE3D0324      5091  src/optimizer/OptDivide.cpp
 A389FF43      7092  src/optimizer/OptEffects.cpp
 AA30D7E0      1002  src/optimizer/OptEffects.h
 8C1B958F       504  src/optimizer/OptFlow.cpp
 8D15C4A0       467  src/optimizer/OptFlow.h
-ED9533A1      7407  src/optimizer/OptFrame.cpp
+A315A8E9      7422  src/optimizer/OptFrame.cpp
 4EBB515B      3491  src/optimizer/OptFunction.h
-0D072F38     19913  src/optimizer/OptHoist.cpp
+B7AC8C6D     30064  src/optimizer/OptHoist.cpp
 7AB16CBB      4211  src/optimizer/OptIr.cpp
 738CD61C      2547  src/optimizer/OptIr.h
-F1E6FFF2      7308  src/optimizer/OptJumps.cpp
+BAB56337     10003  src/optimizer/OptJumps.cpp
 5BA4B196      1121  src/optimizer/OptLoops.cpp
 19744E79      1074  src/optimizer/OptLoops.h
 F9EA609E     10839  src/optimizer/OptMemory.cpp
 E6AF9AD9      5712  src/optimizer/OptPass.cpp
 C908A573      3700  src/optimizer/OptPass.h
-4CBB2988      4301  src/optimizer/OptPasses.h
-D0416A8B     10340  src/optimizer/OptPipeline.cpp
+C3F2667C      4468  src/optimizer/OptPasses.h
+3330DC54     11278  src/optimizer/OptPipeline.cpp
 10274C29       273  src/optimizer/OptPipeline.h
 51AFCC21      3651  src/optimizer/OptShrink.cpp
 733C47CF      6503  src/optimizer/OptTable.cpp
 D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
-F8EBC052     10538  src/optimizer/Optimizer.cpp
+9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 1C14F096     36229  src/parser/Parser.cpp
-BAB9AF7B    117216  src/parser/Parser.h
+BFE5134F    117247  src/parser/Parser.h
 6FF0F59C    190700  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
-3E53C1D7    110393  src/parser/ParserExpr.cpp
+34A216F2    110754  src/parser/ParserExpr.cpp
 45675B47     32329  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 C7F1CA7B     86117  src/parser/ParserExprNew.cpp
@@ -163,4 +166,4 @@ B60497CC     97366  src/parser/ParserTemplate.cpp
 A98E0DE5    119608  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
-Sealed on 26-09-2026
+Sealed on 27-09-2026
