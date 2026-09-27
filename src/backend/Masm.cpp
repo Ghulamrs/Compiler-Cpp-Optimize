@@ -874,13 +874,14 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
             contained++;
 
-        // **The descriptor is writable** - its spare word caches the undecorated
-        // name - so `.data`; the four records below it are `.rdata$r`.
-        o += record(".data", 16, n.descriptor, true, true);
+        // **The descriptor is writable** - its spare word caches the undecorated name - so
+        // `.data$r`, which the linker folds into .data: a segment named `.data` is MASM's
+        // .DATA directive and stops the file. The four records below it are `.rdata$r`.
+        o += record(".data$r", 16, n.descriptor, true, true);
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
-        o += ".data ENDS\n";
+        o += ".data$r ENDS\n";
         msDescriptors_.insert(n.descriptor);
 
         // Where this class sits inside itself: at the top, never virtual. Those
@@ -935,11 +936,11 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
             // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
             // has no such keyword, so the listing records what cl means.
             if (msDescriptors_.insert(c.descriptor).second) {
-                o += record(".data", 16, c.descriptor, true, true);
+                o += record(".data$r", 16, c.descriptor, true, true);
                 o += c.descriptor + " DQ ??_7type_info@@6B@\n";
                 o += "  DQ 0\n";
                 o += "  DB '" + c.decorated + "', 00H\n";
-                o += ".data ENDS\n";
+                o += ".data$r ENDS\n";
             }
             if (!n.thrown || !catchables.insert(c.name).second) continue;
             o += record(".xdata$x", 8, c.name, true);
