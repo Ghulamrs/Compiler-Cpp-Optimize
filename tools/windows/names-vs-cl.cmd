@@ -26,6 +26,7 @@ rem  belongs to. /GR- and /EHsc- keep RTTI and exception tables out, the same
 rem  flags measure.cmd uses and the same reason tools/mangled-names asks clang
 rem  for -fno-rtti -fno-exceptions: this is a question about names.
 setlocal enabledelayedexpansion
+if "%~1"==":shard" goto :shard
 if "%~1"=="" (echo names-vs-cl.cmd: needs the tree root & exit /b 2)
 set ROOT=%~1
 
@@ -35,38 +36,66 @@ if errorlevel 1 (echo names-vs-cl.cmd: no vcvars & exit /b 1)
 if not exist %ROOT%\winnames mkdir %ROOT%\winnames
 del /q %ROOT%\winnames\* 2>nul
 
-for %%f in (%ROOT%\tests\cases\*.expected) do (
-    set NAME=%%~nf
-    set SKIP=
-    rem  The same two exclusion files the other runners read. `.notarget` says
-    rem  this case is not compiled for this target at all; `.nocl` says cl and
-    rem  cxx1 differ here for a reason somebody wrote down - the counterpart of
-    rem  `.nonames`, which records a difference against clang.
-    if exist %ROOT%\tests\cases\!NAME!.notarget (
-        findstr /C:"x86_64-windows" %ROOT%\tests\cases\!NAME!.notarget >nul 2>&1 && set SKIP=1
-    )
-    if exist %ROOT%\tests\cases\!NAME!.nocl set SKIP=1
-
-    if defined SKIP (
-        echo skipped > %ROOT%\winnames\!NAME!.skip
-    ) else (
-        %ROOT%\cxx1-msvc.exe -c %ROOT%\tests\cases\!NAME!.cpp -o %ROOT%\winnames\!NAME!.obj >nul 2>&1
-        if errorlevel 1 (
-            echo cxx1-refused > %ROOT%\winnames\!NAME!.skip
-        ) else (
-            cl /nologo /c /std:c++14 /GR- /EHsc- /Fo:%ROOT%\winnames\!NAME!.cl.obj %ROOT%\tests\cases\!NAME!.cpp >nul 2>&1
-            if errorlevel 1 (
-                rem  cl refusing is not a cxx1 failure: this corpus is C++11 and
-                rem  cl has no C++11 mode. Recorded so the count says how much
-                rem  was really compared.
-                echo cl-refused > %ROOT%\winnames\!NAME!.skip
-            ) else (
-                dumpbin /nologo /symbols %ROOT%\winnames\!NAME!.obj > %ROOT%\winnames\!NAME!.mine.txt 2>&1
-                dumpbin /nologo /symbols %ROOT%\winnames\!NAME!.cl.obj > %ROOT%\winnames\!NAME!.cl.txt 2>&1
-            )
-        )
-    )
-)
+rem  cxx1 and cl side by side - three shards each, the compiler under test and the reference at
+rem  once - and then dumpbin over six. See par.cmd.
+call "%~dp0par.cmd" 6 "%~f0" %ROOT% compile
+call "%~dp0par.cmd" 6 "%~f0" %ROOT% dump
 
 echo names-vs-cl.cmd: done
 endlocal
+exit /b 0
+
+rem  One shard. compile: shards 1-3 run cxx1 and 4-6 cl, each on every third case. dump: every sixth.
+:shard
+set K=%~2
+set N=%~3
+set ROOT=%~4
+set MODE=%~5
+set W=%N%
+set PART=%K%
+set TOOL=
+if "%MODE%"=="compile" (
+    set /a W=N / 2
+    set TOOL=cxx1
+    if %K% GTR !W! (set TOOL=cl& set /a PART=K - W)
+)
+set /a I=0
+for %%f in (%ROOT%\tests\cases\*.expected) do (
+    set /a I+=1
+    set /a M=I %% W + 1
+    if !M!==!PART! call :%MODE% %%~nf
+)
+exit /b 0
+
+rem  The two exclusion files the other runners read: .notarget, not compiled for this target at
+rem  all; .nocl, cl and cxx1 differ here for a reason somebody wrote down, as .nonames does for clang.
+:compile
+set NAME=%~1
+set SKIP=
+if exist %ROOT%\tests\cases\%NAME%.notarget (
+    findstr /C:"x86_64-windows" %ROOT%\tests\cases\%NAME%.notarget >nul 2>&1 && set SKIP=1
+)
+if exist %ROOT%\tests\cases\%NAME%.nocl set SKIP=1
+if defined SKIP (
+    if "%TOOL%"=="cxx1" echo skipped > %ROOT%\winnames\%NAME%.skip
+    exit /b 0
+)
+if "%TOOL%"=="cxx1" (
+    %ROOT%\cxx1-msvc.exe -c %ROOT%\tests\cases\%NAME%.cpp -o %ROOT%\winnames\%NAME%.obj >nul 2>&1
+    if errorlevel 1 echo cxx1-refused > %ROOT%\winnames\%NAME%.skip
+    exit /b 0
+)
+rem  cl refusing is not a cxx1 failure: this corpus is C++11 and cl has no C++11 mode. Recorded so
+rem  the count says how much was really compared.
+cl /nologo /c /std:c++14 /GR- /EHsc- /Fo:%ROOT%\winnames\%NAME%.cl.obj %ROOT%\tests\cases\%NAME%.cpp >nul 2>&1
+if errorlevel 1 echo cl-refused > %ROOT%\winnames\%NAME%.clskip
+exit /b 0
+
+rem  cxx1's refusal is the one reported when both said no, as when cl was only asked after cxx1.
+:dump
+set NAME=%~1
+if exist %ROOT%\winnames\%NAME%.skip (del /q %ROOT%\winnames\%NAME%.clskip 2>nul& exit /b 0)
+if exist %ROOT%\winnames\%NAME%.clskip (move /y %ROOT%\winnames\%NAME%.clskip %ROOT%\winnames\%NAME%.skip >nul& exit /b 0)
+dumpbin /nologo /symbols %ROOT%\winnames\%NAME%.obj > %ROOT%\winnames\%NAME%.mine.txt 2>&1
+dumpbin /nologo /symbols %ROOT%\winnames\%NAME%.cl.obj > %ROOT%\winnames\%NAME%.cl.txt 2>&1
+exit /b 0
