@@ -66,6 +66,20 @@ struct HoistInvariants : Pass {
     bool execute(Function &fn) override { return hoistInvariants(fn); }
 };
 
+// **A double the loop reads from an unwritten frame slot, held in a free xmm register**; a speed level's alone.
+struct HoistXmmSlots : Pass {
+    HoistXmmSlots() : Pass(PassInfo{"hoist-xmm-slots", kFlow | kPropPhysical, 0, 0, kTodoBuildFlow}) {}
+    bool gate(const Function &fn) const override { return fn.whole && !fn.costs().forSize(); }
+    bool execute(Function &fn) override { return hoistXmmSlots(fn); }
+};
+
+// **A loop counter that never goes negative read as its own 64-bit register**, its `movslq` then dead.
+struct WidenCounters : Pass {
+    WidenCounters() : Pass(PassInfo{"widen-counters", kFlow | kPropPhysical, 0, 0, kTodoBuildFlow}) {}
+    bool gate(const Function &fn) const override { return fn.whole && !fn.costs().forSize(); }
+    bool execute(Function &fn) override { return widenCounters(fn); }
+};
+
 // **Scaled-index addressing**, after allocation so that webs and the
 // allocator never meet an indexed operand; `imul $8` is still a multiply here.
 struct FoldIndex : Pass {
@@ -220,6 +234,8 @@ std::unique_ptr<Pass> pipelineFor() {
 
     top->add(std::unique_ptr<Pass>(new FoldIndex()));
     top->add(std::unique_ptr<Pass>(new HoistInvariants()));
+    top->add(std::unique_ptr<Pass>(new HoistXmmSlots()));
+    top->add(std::unique_ptr<Pass>(new WidenCounters()));
     top->add(std::unique_ptr<Pass>(new FinishFrame()));
 
     std::unique_ptr<Group> shrinkLoop(new Group(PassInfo{"shrink-loop", 0, 0, 0, kTodoBuildFlow}, 3, Group::WhenFirstUnchanged));

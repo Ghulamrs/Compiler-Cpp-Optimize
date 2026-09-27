@@ -2,6 +2,7 @@
 
 #include "../Mangle.h"
 #include "../Source.h"
+#include "../optimizer/OptDeclines.h"
 
 #include <cmath>
 #include <cstdio>
@@ -301,7 +302,13 @@ void X86_64Linux::canonicalise(const Type *t) {
 void X86_64Linux::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) a_->ins("lea", local(v->offset()), reg("%rax"));
-        else              a_->ins("lea", rip(v->symbol()), reg("%rax"));
+        else if (target_.microsoftNames() || definedHere_.count(v->symbol()) != 0)
+            a_->ins("lea", rip(v->symbol()), reg("%rax"));
+        else {
+            // A symbol from another object may be in a shared library, and a PIE cannot reach it by PC32.
+            const std::string got = v->symbol() + "@GOTPCREL";
+            a_->ins("mov", rip(got), reg("%rax"));
+        }
         return;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
@@ -1756,8 +1763,8 @@ void X86_64Linux::receiveParameters(const Function &fn) {
 std::vector<opt::Local> X86_64Linux::scalarsOf(const Function &fn) const {
     std::vector<opt::Local> scalars;
     for (const Local &l : fn.locals())
-        if (l.staticName.empty() && (l.type->isInteger() || l.type->isPointer()))
-            scalars.push_back(opt::Local{-static_cast<long long>(l.offset), l.type->size(target_)});
+        if (l.staticName.empty() && (l.type->isInteger() || l.type->isPointer() || l.type->isFloating()))
+            scalars.push_back(opt::Local{-static_cast<long long>(l.offset), l.type->size(target_), l.type->isFloating()});
     return scalars;
 }
 
@@ -1838,13 +1845,20 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 // not itself inside a callee walked in place, nothing on the stack, a frame that fits the room
 // a funclet-cut caller reserved - and the inliner's budgets say it is worth it.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
-    if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
+    if (!inliner_ || current_ == nullptr || n.callee() != nullptr) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end()) return nullptr;
+    if (it == bodies_.end() || !inliner_->allows(n)) return nullptr;
     const Function &callee = *it->second;
+    const std::string site = n.symbol() + " in " + current_->symbol();
+    if (lineSource()) { opt::noteDecline("inline-site-debug-info", site); return nullptr; }
+    if (inPlace_) { opt::noteDecline("inline-site-inside-inlined-body", site); return nullptr; }
+    if (stackSlots != 0) { opt::noteDecline("inline-site-stack-arguments", site); return nullptr; }
     const bool reserved = current_->hasLandingPads() && usesFunclets();
-    if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) return nullptr;
-    return inliner_->allows(n) ? &callee : nullptr;
+    if (reserved && ((callee.frameSize() + 15) & ~15) > inlineReserve_) {
+        opt::noteDecline("inline-site-frame-past-funclet-reserve", site);
+        return nullptr;
+    }
+    return &callee;
 }
 
 bool X86_64Linux::inlining() const { return inliner_ && !lineSource(); }
@@ -2225,7 +2239,7 @@ void X86_64Linux::emitData(const Program &program) {
     const Bucket order[] = {
         { Segment::Const, rodataOpen },
 
-        { Segment::ConstRelocated, rodataOpen },
+        { Segment::ConstRelocated, rodataOpen && !a_->hasRelro() },
         { Segment::Data,  false },
         { Segment::Bss,   false },
     };
@@ -2234,8 +2248,8 @@ void X86_64Linux::emitData(const Program &program) {
         for (const Global &g : program.globals) {
             if (segmentFor(g) != b.seg) continue;
             if (!opened) {
-                if (b.seg == Segment::Const ||
-                    b.seg == Segment::ConstRelocated) a_->rodataSection();
+                if (b.seg == Segment::Const) a_->rodataSection();
+                else if (b.seg == Segment::ConstRelocated) a_->relroSection();
                 else if (b.seg == Segment::Data) a_->dataSection();
                 else                             a_->bssSection();
                 opened = true;
@@ -2314,6 +2328,8 @@ void X86_64Linux::run(const Program &program) {
     for (const Global &g : program.globals) defined.push_back(g.symbol);
     for (const StringLit &s : program.strings) defined.push_back(s.label);
     a_->predefine(defined);
+    definedHere_.clear();
+    definedHere_.insert(defined.begin(), defined.end());
 
     if (const Source *src = lineSource()) {
         const std::vector<std::string> &names = src->files();

@@ -2,6 +2,7 @@
 #include "OptPasses.h"
 
 #include <algorithm>
+#include <climits>
 #include <map>
 #include <set>
 #include <string>
@@ -404,6 +405,216 @@ private:
     }
 };
 
+}
+
+namespace {
+
+// **A double read from the frame in a loop that never writes it**, loaded once before the loop into an xmm
+// register the loop leaves alone and the convention lets any function overwrite, each read a register copy.
+bool hoistXmmSlotsIn(Function &fn, const Loops::Loop &loop) {
+    Stream &s = fn.stream;
+    Flow &f = fn.flow;
+    std::vector<bool> inLoop(f.blocks.size(), false);
+    for (int b : loop.blocks) inLoop[b] = true;
+    int entries = 0;
+    for (int e : f.blocks[loop.head].preds) {
+        const Edge &edge = f.edges[e];
+        if (inLoop[edge.from]) continue;
+        if (edge.kind != Edge::Fallthrough || edge.from != loop.head - 1) return false;
+        ++entries;
+    }
+    if (entries != 1) return false;
+    for (int b : loop.blocks)
+        for (int e : f.blocks[b].preds)
+            if (b != loop.head && !inLoop[f.edges[e].from]) return false;
+    RegSet touched = 0;
+    std::map<long long, std::vector<int>> reads;     // each slot's loads in the loop
+    std::set<long long> written;
+    for (int b : loop.blocks) {
+        const Block &blk = f.blocks[b];
+        if (blk.leaves) return false;
+        for (int k = blk.begin; k < blk.end; ++k) {
+            if (s[k].kind == Entry::Event) return false;
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            const Effects &e = f.effects[k];
+            if (e.opaque || (e.control && s[k].ins.m == "call")) return false;
+            touched |= e.reads | e.writes | e.partial;
+            const Instr &i = s[k].ins;
+            if (i.operands == 2 && i.m == "movsd" && i.a.isMem() && i.a.reg.id == RBP && i.a.scale == 0 &&
+                i.b.kind == Operand::Register && i.b.reg.id >= kXmm0)
+                reads[i.a.disp].push_back(k);
+            else if (e.memoryWritten)
+                for (const Operand *o : {&i.a, &i.b})
+                    if (o->isMem() && o->reg.id == RBP) written.insert(o->disp);
+        }
+    }
+    if (reads.empty()) return false;
+    // An address taken at L reaches that scalar local alone, or anything above L where L is no scalar's; one
+    // whose register is dead at once is taken nowhere. `taken` holds the ranges an address may reach.
+    std::vector<std::pair<long long, long long>> taken;
+    for (int b = 0; b < static_cast<int>(f.blocks.size()); ++b) {
+        Live live = f.blocks[b].out;
+        for (int k = f.blocks[b].end - 1; k >= f.blocks[b].begin; --k) {
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            f.joinPads(b, k, live);
+            const Instr &i = s[k].ins;
+            if (i.m == "lea" && i.a.isMem() && i.a.reg.id == RBP && i.a.scale == 0 &&
+                !(i.b.kind == Operand::Register && i.b.reg.id >= 0 && !(live.regs & bit(i.b.reg.id)))) {
+                long long upTo = LLONG_MAX;
+                for (const Local &l : fn.locals) if (l.disp == i.a.disp) upTo = l.disp + l.size;
+                taken.push_back({i.a.disp, upTo});
+            } else if (i.m == "lea" && i.a.isMem() && i.a.reg.id == RBP) {
+                taken.push_back({LLONG_MIN, LLONG_MAX});
+            }
+            live.step(f.effects[k]);
+        }
+    }
+    const RegSet headIn = f.blocks[loop.head].in.regs;
+    std::vector<int> free;
+    for (int r = kXmm0; r < kRegs; ++r)
+        if ((fn.convention.clobbered & bit(r)) && !(touched & bit(r)) && !(headIn & bit(r))) free.push_back(r);
+    std::vector<std::pair<long long, int>> plan;     // a slot and the register it is held in
+    for (const auto &r : reads) {
+        if (plan.size() == free.size()) break;
+        const long long d = r.first;
+        bool local = false;
+        for (const Local &l : fn.locals) if (l.disp == d && l.size == 8 && l.floating) local = true;
+        if (!local || fn.shared.overlaps(d, 8)) continue;
+        bool reached = false;
+        for (const auto &t : taken) if (t.first < d + 8 && d < t.second) reached = true;
+        if (reached) continue;
+        bool clash = false;
+        for (long long w : written) if (w < d + 8 && d < w + 16) clash = true;
+        if (clash) continue;
+        plan.push_back({d, free[plan.size()]});
+    }
+    if (plan.empty()) return false;
+    for (const auto &p : plan)
+        for (int k : reads[p.first]) {
+            Instr &i = s[k].ins;
+            i.m = "movapd";
+            i.a = Operand::ofReg(p.second, 16);
+        }
+    const int at = f.blocks[loop.head].begin;
+    for (const auto &p : plan) {
+        Entry e;
+        e.ins = Instr{"movsd", Operand::ofMem(RBP, p.first), Operand::ofReg(p.second, 16), 2};
+        s.insert(s.begin() + at, e);
+    }
+    return true;
+}
+
+}
+
+// The live instructions of a block, in order.
+std::vector<int> liveIns(const Stream &s, const Block &blk) {
+    std::vector<int> out;
+    for (int k = blk.begin; k < blk.end; ++k)
+        if (s[k].kind == Entry::Ins && !s[k].dead) out.push_back(k);
+    return out;
+}
+
+// **A counter that only counts up from a non-negative start, one at a time, while below a signed bound**:
+// `add $1, %esi; cmp X, %esi; jl head` the latch's last three, and nothing else in the loop writing esi. Its
+// value never passes INT_MAX, and every write is 32-bit, so %rsi already is its sign extension.
+bool widenCounterIn(Function &fn, const Loops::Loop &loop) {
+    Stream &s = fn.stream;
+    Flow &f = fn.flow;
+    const std::vector<int> latch = liveIns(s, f.blocks[loop.back]);
+    if (latch.size() < 3) return false;
+    const Instr &add = s[latch[latch.size() - 3]].ins, &cmp = s[latch[latch.size() - 2]].ins,
+                &jl = s[latch.back()].ins;
+    if (add.m != "add" || add.a.kind != Operand::Immediate || !add.a.numeric || add.a.value != 1) return false;
+    if (add.b.kind != Operand::Register || add.b.reg.width != 4 || add.b.reg.id >= kGprs) return false;
+    const int r = add.b.reg.id;
+    if (frameReg(r) || cmp.m != "cmp" || !cmp.b.isReg(r) || cmp.b.reg.width != 4 || jl.m != "jl") return false;
+    if (cmp.a.kind == Operand::Register && cmp.a.reg.width != 4) return false;
+    std::vector<bool> inLoop(f.blocks.size(), false);
+    for (int b : loop.blocks) inLoop[b] = true;
+    for (int b : loop.blocks)
+        for (int k : liveIns(s, f.blocks[b]))
+            if (((f.effects[k].writes | f.effects[k].partial) & bit(r)) && k != latch[latch.size() - 3]) return false;
+    // The value on entry: the last write of r on the one way in, through blocks with a single predecessor.
+    int from = -1;
+    for (int e : f.blocks[loop.head].preds)
+        if (!inLoop[f.edges[e].from]) { if (from >= 0) return false; from = f.edges[e].from; }
+    for (int hops = 0; from >= 0 && hops < 4; ++hops) {
+        const std::vector<int> ins = liveIns(s, f.blocks[from]);
+        for (auto it = ins.rbegin(); it != ins.rend(); ++it) {
+            const Effects &e = f.effects[*it];
+            if (!((e.writes | e.partial) & bit(r))) continue;
+            const Instr &w = s[*it].ins;
+            const bool zero = w.m == "xor" && w.a.isReg(r) && w.b.isReg(r) && w.b.reg.width == 4;
+            const bool constant = (w.m == "mov" || w.m == "movl") && w.b.isReg(r) && w.b.reg.width == 4 &&
+                                  w.a.kind == Operand::Immediate && w.a.numeric && w.a.value >= 0 && w.a.value < 0x7fffffff;
+            if (!zero && !constant) return false;
+            from = -2;
+            break;
+        }
+        if (from == -2) break;
+        if (f.blocks[from].preds.size() != 1) return false;
+        from = f.edges[f.blocks[from].preds[0]].from;
+    }
+    if (from != -2) return false;
+    // Each `movslq %r32, %rD` in the loop: its readers before r or D is written again read %r instead.
+    bool changed = false;
+    for (int b : loop.blocks) {
+        const std::vector<int> ins = liveIns(s, f.blocks[b]);
+        for (std::size_t n = 0; n < ins.size(); ++n) {
+            const Instr &x = s[ins[n]].ins;
+            if (x.m != "movslq" || !x.a.isReg(r) || x.a.reg.width != 4 || x.b.kind != Operand::Register ||
+                x.b.reg.width != 8 || x.b.reg.id == r || x.b.reg.id >= kGprs || frameReg(x.b.reg.id))
+                continue;
+            const int d = x.b.reg.id;
+            for (std::size_t m = n + 1; m < ins.size(); ++m) {
+                Instr &u = s[ins[m]].ins;
+                const Effects &e = f.effects[ins[m]];
+                if (!((e.reads | e.writes | e.partial) & (bit(d) | bit(r)))) continue;
+                if (!explicitOnly(u)) break;
+                const bool writesD = ((e.writes | e.partial) & bit(d)) != 0;
+                const Roles roles = rolesOf(u);
+                bool renamed = false;
+                for (Operand *o : {&u.a, &u.b}) {
+                    const unsigned role = o == &u.a ? roles.a : roles.b;
+                    if (o->kind == Operand::Register && o->reg.id == d && !(role & kWrite)) { o->reg.id = r; renamed = true; }
+                    if (o->isMem() && o->reg.id == d) { o->reg.id = r; renamed = true; }
+                    if (o->indexed() && o->index.id == d) { o->index.id = r; renamed = true; }
+                }
+                if (renamed) changed = true;
+                if (writesD || ((e.writes | e.partial) & bit(r))) break;
+            }
+        }
+    }
+    return changed;
+}
+
+bool widenCounters(Function &fn) {
+    bool changed = false;
+    for (const Loops::Loop &l : fn.loops().all()) changed |= widenCounterIn(fn, l);
+    if (changed) fn.buildFlow();
+    return changed;
+}
+
+bool hoistXmmSlots(Function &fn) {
+    bool changed = false;
+    std::set<std::string> done;
+    for (;;) {
+        Flow &f = fn.flow;
+        const Loops &loops = fn.loops();
+        const Loops::Loop *pick = nullptr;
+        for (const Loops::Loop &l : loops.all()) {
+            const Entry &head = fn.stream[f.blocks[l.head].begin];
+            if (head.kind != Entry::Label || done.count(head.label)) continue;
+            if (pick == nullptr || l.blocks.size() < pick->blocks.size()) pick = &l;
+        }
+        if (pick == nullptr) break;
+        done.insert(fn.stream[f.blocks[pick->head].begin].label);
+        f.live(fn.stream);
+        if (!hoistXmmSlotsIn(fn, *pick)) continue;
+        changed = true;
+        fn.buildFlow();
+    }
+    return changed;
 }
 
 // **Loop-invariant code motion, after allocation**: a computation of what the

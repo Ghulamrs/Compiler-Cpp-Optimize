@@ -1,5 +1,8 @@
 #include "Arm64Darwin.h"
 
+#include "../optimizer/A64Peep.h"
+#include "../optimizer/OptDeclines.h"
+
 #include "../Source.h"
 
 #include <cstdio>
@@ -1085,11 +1088,18 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     out_ << "  .cfi_offset w30, -8\n";
     out_ << "  .cfi_offset w29, -16\n";
 
-    int frame = alignTo(fn.frameSize(), 16);
+    // An optimized frame keeps room below its locals for the callee-saved registers a promoted local takes.
+    const int locals = alignTo(fn.frameSize(), 16);
+    const bool promote = optimize_ > 0 && locals + kCalleeArea <= 65535;
+    if (optimize_ > 0 && !promote) opt::noteDecline("arm64-frame-too-large-no-promotion", fn.symbol());
+    int frame = locals + (promote ? kCalleeArea : 0);
     if (frame > 0) {
         movImm("x9", frame);
         out_ << "  sub sp, sp, x9\n";
     }
+    // The sret store, the parameters' and the body are rewritten together, so a promoted local starts right.
+    const std::string head = out_.str();
+    out_.str(std::string());
 
     sretSlot_ = fn.sretSlot();
     if (sretSlot_ != 0) {
@@ -1162,9 +1172,24 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     namedStackBytes_ = alignTo(plan.stackBytes, 8);
 
     fn.body().accept(*this);
+    std::vector<std::string> saved;
+    const Type *ret = fn.returns();
+    const bool resultInX = ret != nullptr && !ret->isVoid() && !ret->isFloating();
+    const std::string body = a64Peephole(out_.str(), optimize_, promote ? &saved : nullptr, resultInX);
+    out_.str(std::string());
+    out_ << head;
+    // Each register a promoted local took is saved below the locals, where the unwinder is told to find it.
+    for (std::size_t i = 0; i < saved.size(); i++) {
+        const int at = locals + 8 * static_cast<int>(i + 1);
+        out_ << "  mov x9, #" << at << "\n  sub x9, x29, x9\n  str " << saved[i] << ", [x9]\n";
+        out_ << "  .cfi_offset " << (saved[i][0] == 'x' ? "w" : "b") << saved[i].substr(1) << ", -" << (16 + at) << "\n";
+    }
+    out_ << body;
 
     out_ << "  mov x0, #0\n";
     out_ << returnLabel_ << ":\n";
+    for (std::size_t i = 0; i < saved.size(); i++)
+        out_ << "  mov x9, #" << (locals + 8 * static_cast<int>(i + 1)) << "\n  sub x9, x29, x9\n  ldr " << saved[i] << ", [x9]\n";
     out_ << "  mov sp, x29\n";
     out_ << "  ldp x29, x30, [sp], #16\n";
     out_ << "  ret\n";

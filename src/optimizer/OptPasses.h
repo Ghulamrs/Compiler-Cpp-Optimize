@@ -34,6 +34,8 @@ bool divideByConstant(Stream &s, Flow &f);
 struct Function;
 // **A loop-invariant computation moves in front of the loop**, into a register dead there - see OptHoist.cpp.
 bool hoistInvariants(Function &fn);
+bool hoistXmmSlots(Function &fn);
+bool widenCounters(Function &fn);
 
 // **A loop that fits one line is padded in front so that it does not cross one** - see OptAlign.cpp.
 bool alignLoops(Function &fn);
@@ -45,6 +47,7 @@ bool threadJumps(Function &fn);
 struct Local {
     long long disp;
     int size;
+    bool floating = false;      // a float or double: never promoted, only held by hoist-xmm-slots
 };
 
 // **Frame slots something outside the stream reads or writes** - a funclet of the function, or the runtime - as if their address had escaped: no register takes one, and a store to one is never dead.

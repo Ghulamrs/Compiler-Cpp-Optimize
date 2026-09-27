@@ -138,6 +138,9 @@ public:
     virtual void weakDefinition(const std::string &name) { (void)name; }
     virtual void textSection() = 0;
     virtual void rodataSection() = 0;
+    // A constant holding addresses, which the loader writes before making it read-only; gcc's .data.rel.ro on ELF.
+    virtual void relroSection() { rodataSection(); }
+    virtual bool hasRelro() const { return false; }
     virtual void dataSection() = 0;
     virtual void bssSection() = 0;
     virtual void objectType(const std::string &name) = 0;
@@ -189,6 +192,8 @@ public:
     void weakDefinition(const std::string &name) override;
     void textSection() override;
     void rodataSection() override;
+    void relroSection() override;
+    bool hasRelro() const override { return true; }
     void dataSection() override;
     void bssSection() override;
     void objectType(const std::string &name) override;
@@ -224,6 +229,8 @@ public:
                        bool mergeable) override;
     void weakDefinition(const std::string &name) override;
     void rodataSection() override;
+    void relroSection() override { rodataSection(); }
+    bool hasRelro() const override { return false; }
     void dataSection() override;
     void bssSection() override;
     void align(int n) override;

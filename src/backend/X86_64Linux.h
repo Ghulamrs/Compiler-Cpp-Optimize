@@ -106,6 +106,8 @@ protected:
     // described for RTTI and thrown gets its `??_R0` once.
     std::set<std::string> msDescriptors_;
     const char *funcletKind_ = "$catch$";
+    // What this file defines; any other symbol's address comes from the GOT on ELF, as PIE requires.
+    std::set<std::string> definedHere_;
     // The function being emitted, which the tables and funclets name.
     std::string fnSymbol_;
     // Whether the function being emitted went into a COMDAT, which its funclets and their unwind data have to join - see closeFunclet.

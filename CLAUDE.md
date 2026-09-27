@@ -10660,3 +10660,192 @@ syntax for (`A2034 must be in segment block`, `A1010 unmatched block
 nesting`), so `-masm=masm` assembles no program that throws; this round also
 opened `??_R0` in `.data`, a MASM directive name, where tms-opt wrote
 `.rdata$r`. The GNU spelling is the default and is unaffected.
+
+## A runtime symbol reached from a PIE, 2026-09-27
+
+**`new-header.cpp` failed to link on x86_64-linux** with `relocation
+R_X86_64_PC32 against symbol _ZNSt9bad_allocD1Ev@@GLIBCXX_3.4 can not be used
+when making a PIE object`. `genAddr` wrote `lea sym(%rip)` for every global,
+which is right for a symbol this file defines and wrong for one in a shared
+library: a PIE reaches that through the GOT. It was latent until the `<new>`
+round stopped emitting cxx1's own `std::exception` and `bad_alloc` and left
+their destructors and vtables to libstdc++. It showed only where `c++` links
+PIE by default; the Linux box's g++ 11.5 does not, which is why its `run.sh`
+stayed green. Its `-pie` reproduced the error from the old assembly exactly.
+
+**Two changes, both gcc's own shape.** An address whose symbol is not defined
+in the file is `mov sym@GOTPCREL(%rip)`, on ELF only; a defined one keeps its
+`lea`, and a call stays `call sym`, which the assembler already relocates as
+PLT32. And a constant holding addresses - every vtable and type_info -
+goes to `.data.rel.ro,"aw"` rather than `.rodata`, where a PIE would need a
+text relocation; `Spelling::relroSection`, which COFF answers with `.rdata`
+as before and arm64-darwin already had as `__DATA,__const`.
+
+Measured: emit golden 105 of 1363 files changed, every one x86_64-linux, every
+changed line a `lea` becoming a GOT load (187) or the new section line (78);
+Windows and the other targets byte-identical. `run.sh` on the Linux box 545/0
+with the default link and 545/0 with `CPP11_CC` a `c++ -pie` wrapper;
+`new-header` links as a PIE executable and prints its `.expected`. Mac run
+545/0, names 348/0, overload 30/0.
+
+## S13 brought across, and not wider than a pointer, 2026-09-27
+
+**`18d2236` lived only on `origin/claude/fable-5-1-background-work-kguwml`**, so
+the tree measured against cl was missing it: matmul's inner loop on
+x86_64-windows still scaled every index in 32 bits and extended it twice. Its
+two code files were applied here; the handover beside it was not.
+
+**It was written before the C6000 joined this tree, and it would have made
+every C6000 index 64-bit arithmetic.** `ptrdiffType()` chose `long` where
+`long` is 8 bytes and `long long` otherwise - on the C6000 both a pointer and a
+`long` are 4, so the second branch fired: 136 tms6747 emissions changed. It now
+takes whichever of `long` and `long long` is exactly `sizeOf(Kind::Pointer)`,
+and the C6000's emission is byte-identical to before.
+
+Windows cases 531/0; matmul 16 -> 10 ms, isort 17 -> 12, total 381 -> 368 against
+cl /O2's 275 (15 interleaved rounds, checksums equal).
+
+## A loop's back edge takes its test with it, 2026-09-27
+
+`jmp head`, where the head block is only `cmp; jcc exit` and the exit is what
+follows the jump, becomes `cmp; j!cc body` - one branch a turn instead of two
+(`threadJumps`, OptJumps.cpp). It takes every compare spelling, `cmpl` and
+`testq` included; an SSE `cmpsd` writes a register and is excluded by name.
+
+**The labels it makes are named past every label the function has.** The
+first version counted from zero on each run of the pass, rounds run it again,
+and `.L._Z5sievei.rot.0` was defined twice - the assembler said so on the Linux
+box and on no other, the Mac's own target being arm64. Both label kinds the
+pass makes share one `fresh()` now.
+
+## A double the loop only reads, held in a free xmm register, 2026-09-27
+
+`hoist-xmm-slots`, after allocation: a `movsd slot, %xmmK` in a loop with no
+call, one fallthrough entry and no write to the slot is loaded once in front of
+the loop into a caller-saved xmm register the loop leaves alone (xmm0-5 on
+Windows, any on SysV), and each read becomes a register copy.
+
+**The slot has to be a local and nobody's address.** The walker listed only
+integer and pointer locals; floating ones are listed now, marked `floating`,
+and promotion skips them exactly as it did. An address taken of a scalar local
+reaches that local alone; one taken of anything else reaches every slot above
+it; an `lea` whose register is dead at once takes nothing - matmul's return
+slot was exactly that.
+
+Priced by hand first: rotated + 64-bit counter + x in a register took matmul
+from 10 ms to 6 on Windows, and x alone was worth nothing, as S12 had found.
+
+## A counter that cannot go negative is its own 64-bit index, 2026-09-27
+
+`widen-counters`: the latch ends `add $1, %r32; cmp X, %r32; jl head`, nothing
+else in the loop writes r, and r enters as `xor` or a constant in
+[0, INT_MAX). Then r never passes INT_MAX - the `jl` lets a turn continue only
+below a signed bound - and every write is 32-bit, so %r64 already is sext(r):
+the readers of `movslq %r32, %rD` read %r64 and the extension goes. No
+undefined-behaviour argument is used; a step other than 1 is not taken.
+
+Linux run.sh 545/0 at -O1 and -O2, Windows cases 531/0 at -O2. Windows matmul
+10 -> 8 ms (cl 3), as priced; Linux, already level with g++ there, 687 -> 685.
+
+## arm64 had no optimizer, and now has three rounds of one, 2026-09-27
+
+**`-O2` and `-O0` emitted byte-identical arm64**: the backend never called an
+optimizer, so the Mac row of the four-box table measured a stack machine
+against clang -O2 - 2,485 ms against 175. `a64Peephole` (src/optimizer/A64Peep)
+rewrites each body's text at -O1 and -O2, as `c6xSchedule` does the C6000's:
+
+- round 1: a push its pop follows in one straight run keeps its value in
+  x12-x15 or d16-d23; a local read through `mov x9,#k; sub; ldr` is one `ldur`
+- round 2: a register model (reads, writes, liveness through the body's labels,
+  calls and returns by the convention) and copy retargeting and forwarding,
+  immediates through copies, direct stores, and `cset; cmp #0; beq` as `b.cc`
+- round 3: a local only ever read and written whole, its address never formed,
+  lives in x19-x28 or d8-d15; the frame keeps 144 bytes for the saves, which
+  go in front of the body with `.cfi_offset` and come back at the return label
+
+**Two bugs the gates caught before any timing.** The backend spells a
+conditional branch `beq` and the model knew only `b.eq`, so liveness never
+followed one to its target - `include-streams` hung, found by bisecting over
+single rewrites. And a copy into a promoted local just before a call looked
+dead on the normal path while the landing pad read it - `temporary-unwind`
+printed garbage; a callee-saved register is live at every call now.
+
+Mac run.sh 545/0 at -O1 and -O2. Total 2,485 -> 1,413 -> 960 -> 688 ms against
+clang's 174; x86 and C6000 output unchanged.
+
+## The C6000 against cl6x, round two of its optimizer, 2026-09-27
+
+Two of HANDOVER-T1's T2 items. A frame past 124 bytes is addressed
+`MVK k/size, A0; LDW *-A15[A0], D` - the scaled register offset - instead of
+`MVK k, A0; SUB A15, A0, R; LDW *R, D`. And a copy's one reader takes the
+source itself, a result only copied on is written straight into the copy, and
+a copy nobody reads goes - all on the straight path, same register file only,
+predicated lines and register pairs left alone (`A5:A4` half-renamed was the
+second of two faults the emulator caught; a four-operand `EXT` losing its
+fourth in the rebuild was the first).
+
+tms6747.sh 335/0 at -O1 and -O2; TI's lnk6x links all 342 at -O2.
+bench-c6x 62,693 -> 53,101 kilocycles; object .text through TI's assembler
+8,960 -> 8,448 (cl6x --opt_level=2: 3,712), through ASM6x 11,488 -> 9,600.
+
+## The four boxes measured again, and where the optimizer holds back, 2026-09-27
+
+**Every leg re-run fresh at 8d9bdc8**, each box building its own cxx1 from one
+tarball, medians of 15 interleaved rounds, checksums equal on every build. It
+repeats the previous run within noise, which is the finding:
+
+| leg | cxx1 -O2 | reference | ratio |
+| --- | --- | --- | --- |
+| x86_64-windows vs cl /O2 | 383 ms | 297 | 1.29x |
+| x86_64-linux vs g++ -O2 | 687 ms | 535 | 1.28x |
+| arm64-darwin vs clang -O2 | 681 ms | 171 | 3.98x |
+| C6000, bench-c6x on the emulator | 53,101 kcycles | - | - |
+| C6000 .text through TI's assembler vs cl6x | 8,448 bytes | 3,712 | 2.28x |
+
+| kernel | Win cxx1 | cl | Linux cxx1 | g++ | arm64 cxx1 | clang |
+| --- | --- | --- | --- | --- | --- | --- |
+| fib | 7 | 7 | 10 | 5 | 7 | 0 |
+| sieve | 54 | 45 | 93 | 80 | 70 | 32 |
+| matmul | 8 | 3 | 15 | 15 | 27 | 2 |
+| isort | 13 | 6 | 24 | 17 | 33 | 6 |
+| hash | 198 | 133 | 326 | 254 | 320 | 58 |
+| virtual | 103 | 102 | 215 | 161 | 221 | 71 |
+| .text | 3,819 | 3,831 | 6,460 | 5,228 | 5,468 | 9,580 |
+
+Correctness at -O2 the same day: run.sh 545/0 on the Mac and the Linux box,
+the Windows cases 525/0 (the 531 of earlier counts is these plus the six
+winlink directions, not re-run here), tms6747.sh 335/0, lnk6x 342 linked.
+
+**Why those counts differ, and no case is refused for being optimized.**
+546 cases: 348 run, 198 refused by the front end before any optimizer sees
+them. Every exclusion is a `.notarget` or tests/tms6747-lp64.txt, and neither
+reads the -O level. The hosts lose one (`noexcept-local-terminates`); Windows
+21 (9 funclet exception shapes, 6 a polymorphic base not first, 4 a
+polymorphic virtual base, `typeid`, `volatile-object`); the C6000 run 13 (3
+static_asserts of an 8-byte pointer, 2 `<new>` pieces the emulator's runtime
+lacks, `pragma-pack`, and 7 that assume a 64-bit long) and its link 6.
+
+**`CPP11_DECLINES` names every function or call site a transformation
+declines**, one stderr line each, `decline <reason> <symbol>`; unset it prints
+nothing and the emit golden read 0 of 1,363 changed with it built in.
+`tools/declines [-O1|-O2] [out.csv]` runs it over every case for every target
+its .notarget allows. At -O2, `docs/DECLINES-2026-09-27.md` per case, worst
+first, and `docs/declines-2026-09-27.csv` per reason:
+
+| | cases with a decline | too large | nested in an inlined body | unit budget | callee landing pad | funclet | other |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| x86_64-linux | 213 of 347 | 795 | 408 | 352 | 249 | - | 9 |
+| x86_64-windows | 210 of 327 | 767 | 1,287 | 472 | 225 | 260 | 8 |
+| arm64-darwin | 1 of 347 | - | - | - | - | - | 1 |
+| tms6747 | 0 of 342 | - | - | - | - | - | - |
+
+"Other" is a callee with a goto label or a switch (7 on each x86 target) and a
+call with stack arguments (2 and 1); arm64's one is `stack-probe`, a 256 KB
+frame past the promotion limit. arm64 and the C6000 barely decline because
+their optimizers rewrite finished text and have no inliner to refuse.
+
+**The declines do not explain the speed gap.** In bench-kernels they are main
+not taking the four large kernels - each called once - `virt` refused for its
+landing pad, and on Windows its two funclets without the frame passes; none is
+in a hot loop. The 1.29x is the code inside hash, matmul and isort, and that
+is where the next round goes.

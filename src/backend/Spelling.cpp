@@ -135,6 +135,7 @@ void GnuSpelling::initialiserEntry(const std::string &fn, bool dsoHandle) {
 
 void GnuSpelling::textSection()   { o_ += textSection_; }
 void GnuSpelling::rodataSection() { o_ += "  .section .rodata\n"; }
+void GnuSpelling::relroSection() { o_ += "  .section .data.rel.ro,\"aw\"\n"; }
 void GnuSpelling::dataSection()   { o_ += "  .data\n"; }
 void GnuSpelling::bssSection()    { o_ += "  .bss\n"; }
 

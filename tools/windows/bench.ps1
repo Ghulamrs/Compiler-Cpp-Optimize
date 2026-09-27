@@ -28,7 +28,8 @@ function TextBytes([string]$obj) {
     $total = 0; $name = ''
     foreach ($line in (dumpbin /nologo /headers $obj)) {
         if ($line -match '^SECTION HEADER #') { $name = '' }
-        elseif ($name -eq '' -and $line -match '^\s+(\S+)\s+name$') { $name = $Matches[1] }
+        # An 8-character name such as .text$mn fills dumpbin's field and has no leading space.
+        elseif ($name -eq '' -and $line -match '^\s*(\S+)\s+name$') { $name = $Matches[1] }
         elseif ($name -like '.text*' -and $line -match '^\s+([0-9A-Fa-f]+)\s+size of raw data$') {
             $total += [Convert]::ToInt64($Matches[1], 16)
         }
