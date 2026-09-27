@@ -765,7 +765,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 
     // **Every offset is measured from the establisher frame**, so a slot at
     // [rbp-N] is at frameSize-N; a cleanup is a state whose action is its funclet.
-    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    // Associative with an inline function, or a copy the linker discards would leave these naming its labels.
+    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'" + masm_.associative() + "\n";
     o += "$cppxdata$" + m + " DD 019930522H\n";
     o += "  DD " + std::to_string(states.size()) + "\n";
     o += "  DD imagerel $stateUnwindMap$" + m + "\n";
