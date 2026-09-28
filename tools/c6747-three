@@ -1,0 +1,107 @@
+#!/bin/sh
+# Run C programs on the three TMS320C6747 boxes at once, from the Mac, and compare.
+#
+#   tools/c6747-three                    every program in tools/c6747/programs
+#   tools/c6747-three prog.c ...         these programs
+#
+# The three boxes, two machines:
+#   windows-ccs74-vm   the Windows box, CCS 7.4's cl6x 8.2.2 to assembly, run on VM6747.
+#                      CCS 7.4 ships no simulator; the emulator is this box's target.
+#   windows-ccs55      the Windows box, CCS 5.5's cl6x 7.4.4, the C6747 cycle-accurate simulator
+#   linux-ccs55        the Linux box, the same CCS 5.5 compiler and simulator, 32-bit
+#                      under the i686 runtime in /opt/i386
+# A program passes when every box prints what <prog>.expected says, VM6747 exits with
+# <prog>.rc (0 when there is none), and each simulator stopped at C$$EXIT. The
+# simulators report no status: TI's startup calls exit(1) whatever main returns. With no
+# .expected the three boxes are compared with each other instead. The two
+# simulators run the same compiler on the same model, so their cycle counts must
+# agree too, and a difference is a failure.
+#
+# C6747_AFTER=<pid> holds the Linux box back until that process has gone: the box
+# has 419 MB, and verify-three's Linux build must not share it with a DSS run.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KEY=${CXX1_LINUX_KEY:-$HOME/Documents/Claude/myMorningWalk.pem}
+LINUX=${CXX1_LINUX:-ec2-user@52.202.164.123}
+WINDOWS=${CXX1_WINDOWS:-windows}
+WREMOTE='C:\cxx1\c6747-run'
+LREMOTE='c6747-run'
+BOXES="windows-ccs74-vm windows-ccs55 linux-ccs55"
+T0=$(date +%s)
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/c6747/programs"
+cp "$ROOT"/tools/c6747/*.* "$WORK/c6747/"
+if [ $# -eq 0 ]; then set -- "$ROOT"/tools/c6747/programs/*.c; fi
+for p in "$@"; do
+    case "$(basename "$p")" in *" "[0-9]*) continue;; esac   # iCloud's copies
+    d=$(dirname "$p"); n=$(basename "$p" .c)
+    cp "$p" "$WORK/c6747/programs/"
+    for x in expected rc; do [ -f "$d/$n.$x" ] && cp "$d/$n.$x" "$WORK/c6747/programs/"; done
+done
+NAMES=$(for f in "$WORK"/c6747/programs/*.c; do basename "$f" .c; done)
+COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/c6747.tgz" c6747
+WPROGS=$(for n in $NAMES; do printf '%s\\programs\\%s.c ' "$WREMOTE\\c6747" "$n"; done)
+LPROGS=$(for n in $NAMES; do printf '%s/c6747/programs/%s.c ' "$LREMOTE" "$n"; done)
+
+# The Windows machine: one unpack, then its two boxes at once.
+(
+    scp -q -o BatchMode=yes "$WORK/c6747.tgz" "$WINDOWS:C:/cxx1/c6747.tgz" &&
+    ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $WREMOTE 2>nul & mkdir $WREMOTE && tar -C $WREMOTE -xzf C:\\cxx1\\c6747.tgz" >/dev/null
+) > "$WORK/wship.log" 2>&1 || { echo "c6747-three: cannot ship to $WINDOWS"; cat "$WORK/wship.log"; exit 1; }
+ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\c6747\\vm-ccs74.cmd $WPROGS" > "$WORK/windows-ccs74-vm.log" 2>&1 &
+P1=$!
+ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\c6747\\sim-ccs55.cmd $WPROGS" > "$WORK/windows-ccs55.log" 2>&1 &
+P2=$!
+
+# The Linux box, after anything it has been told to wait for.
+(
+    if [ -n "${C6747_AFTER:-}" ]; then
+        while kill -0 "$C6747_AFTER" 2>/dev/null; do sleep 5; done
+    fi
+    scp -q -i "$KEY" -o BatchMode=yes "$WORK/c6747.tgz" "$LINUX:c6747.tgz" &&
+    ssh -i "$KEY" -o BatchMode=yes "$LINUX" "rm -rf $LREMOTE && mkdir -p $LREMOTE && tar -C $LREMOTE -xzf c6747.tgz && rm c6747.tgz && sh $LREMOTE/c6747/sim-ccs55.sh $LPROGS"
+) > "$WORK/linux-ccs55.log" 2>&1 &
+P3=$!
+wait $P1; wait $P2; wait $P3
+
+# Everything back: each box's stdout and result for each program.
+mkdir -p "$WORK/back"
+scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/c6747-run/c6747/out/*.stdout" "$WINDOWS:C:/cxx1/c6747-run/c6747/out/*.result" "$WORK/back/" 2>/dev/null
+scp -q -i "$KEY" -o BatchMode=yes "$LINUX:$LREMOTE/c6747/out/*.stdout" "$LINUX:$LREMOTE/c6747/out/*.result" "$WORK/back/" 2>/dev/null
+
+field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
+pass=0; fail=0
+printf '%-10s %-18s %-8s %-4s %-10s %s\n' program box build rc cycles output
+for n in $NAMES; do
+    want=$WORK/c6747/programs/$n.expected
+    wantrc=$(cat "$WORK/c6747/programs/$n.rc" 2>/dev/null || echo 0)
+    ok=1; ref=""; cyc=""
+    for b in $BOXES; do
+        r=$WORK/back/$n.$b.result; o=$WORK/back/$n.$b.stdout
+        build=$(field "$r" build); rc=$(field "$r" rc); count=$(field "$r" count)
+        pc=$(field "$r" pc); ex=$(field "$r" exit)
+        tr -d '\r' < "$o" > "$o.lf" 2>/dev/null
+        verdict=same
+        if [ "$build" != ok ]; then verdict="no build"; ok=0
+        elif [ "$rc" != n/a ] && [ "$rc" != "$wantrc" ]; then verdict="exit $rc, wanted $wantrc"; ok=0
+        elif [ -n "$pc" ] && [ "$pc" != "$ex" ]; then verdict="stopped at $pc, not C\$\$EXIT"; ok=0
+        elif [ -f "$want" ]; then
+            cmp -s "$o.lf" "$want" && verdict=expected || { verdict=DIFFERS; ok=0; }
+        elif [ -z "$ref" ]; then ref=$o.lf; verdict=reference
+        else cmp -s "$o.lf" "$ref" && verdict=agrees || { verdict=DIFFERS; ok=0; }
+        fi
+        case "$b" in *ccs55) [ -z "$cyc" ] && cyc=$count || { [ "$cyc" = "$count" ] || { verdict="$verdict, cycles differ"; ok=0; }; };; esac
+        printf '%-10s %-18s %-8s %-4s %-10s %s\n' "$n" "$b" "${build:-none}" "${rc:--}" "${count:--}" "$verdict"
+        if [ "$verdict" = DIFFERS ]; then
+            if [ -f "$want" ]; then diff "$want" "$o.lf"; else diff "$ref" "$o.lf"; fi | head -6 | sed 's/^/      /'
+        fi
+    done
+    [ $ok -eq 1 ] && pass=$((pass + 1)) || fail=$((fail + 1))
+done
+if [ "$fail" -gt 0 ]; then
+    for b in $BOXES; do echo "--- $b"; tr -d '\r' < "$WORK/$b.log" | grep -v '^BOX ' | tail -5; done
+fi
+echo "c6747 boxes: $pass passed, $fail failed, in $(( $(date +%s) - T0 ))s"
+[ "$fail" -eq 0 ]

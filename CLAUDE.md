@@ -10849,3 +10849,55 @@ not taking the four large kernels - each called once - `virt` refused for its
 landing pad, and on Windows its two funclets without the frame passes; none is
 in a hot loop. The 1.29x is the code inside hash, matmul and isort, and that
 is where the next round goes.
+
+## TI's own C6747 toolchains as three boxes, 2026-09-28
+
+**The tms6747 target now has oracles that are TI's, not ours.** `tools/c6747-three`
+runs C programs on three boxes at once and compares them; `tools/verify-three
+c6747` is that leg alone, and the default run includes it.
+
+| box | compiler | runs on | reports |
+| --- | --- | --- | --- |
+| windows-ccs74-vm | CCS 7.4, `cl6x` 8.2.2, to assembly (`-n`) | VM6747 | output, exit status |
+| windows-ccs55 | CCS 5.5, `cl6x` 7.4.4, linked with `C6747.cmd` | C6747 cycle-accurate simulator, DSS | output, `cycle.Total` |
+| linux-ccs55 | the same, on the Linux box | the same simulator | the same |
+
+A program passes when every box prints its `.expected` (clang's, on the Mac), VM6747
+exits with its `.rc`, each simulator stops at `C$$EXIT`, and the two simulators'
+cycle counts agree. Measured at the first run: hello 26,186, arith 233,812, floats
+955,332, structs 3,192,411 on both - the Linux box is a faithful copy of the Windows one.
+
+**CCS 7.4 has no simulator at all** - no `tisim_*` configuration, no `simulation`
+directory: TI dropped the C6000 simulators after the CCS 5 series. That is why its
+box is VM6747, and why CCS 5.5 is installed beside it.
+
+**The same TI compiler is byte-identical across hosts where it matters.** `arith.c`
+built by 7.4.4 on Linux and on Windows, at `-O0` and `-O2` with `--symdebug:none`:
+all 30 code and data sections of the `.out` identical; only `.symtab`, `.strtab`
+and `.debug_info` differ, by a per-build tag in one generated name (`05007GXVM7C`
+against `1230810`), which shifts every byte after it - so `cmp` on the whole file
+says 48,648 bytes differ and is the wrong question. Compare sections by name.
+Two TI versions differ by design, and cpp11 + ASM6x + LNK6x will never be
+byte-identical to any `cl6x`: the oracle for this target is output, cycles on TI's
+simulator, and `.text` bytes - not bytes.
+
+**No exit status from the simulator.** TI's startup calls `exit(1)` whatever `main`
+returns, and `abort` has reused A4 by `C$$EXIT`. Breakpoints set from DSS
+(`session.breakpoint.add`, by symbol or by address) did not stop this simulator, so
+main's return could not be read either; `runca.js` says `rc=n/a`. **DSS clocks
+default to `cycle.CPU`**, which counts no memory stall: the first measurements here
+were CPU-only and matched between the functional and cycle-accurate simulators for
+that reason. `runca.js` sets `cycle.Total` (event 0) and runs one event per session,
+because a counter does not reset between runs of one session.
+
+**CCS 5.5 on Amazon Linux 2023 took four things, each found by failing.** CCS 5.5
+for Linux is 32-bit throughout and AL2023 ships no i686 packages, so Rocky 9's -
+glibc 2.34 as AL2023's - are unpacked in `/opt/i386`, signatures checked against
+Rocky's key in a throwaway rpm database, with `/lib/ld-linux.so.2` linked and
+`/etc/ld.so.conf.d/opt-i386.conf` naming `/opt/i386/usr/lib` **and `/opt/i386/lib`**
+(libgcc lands in the second). The bundled JRE 1.6 needs `libnsl.so.1` ("error trying
+to initialize the HPI library"). The installer needs 16 GB of disk, not 8. And
+**`/tmp` on AL2023 is a 210 MB tmpfs**: the installer's p2 step died "No space left
+on device" with 12 GB free. `_JAVA_OPTIONS` to move Java's temp directory made TI's
+p2 application exit 1 - it reads the "Picked up _JAVA_OPTIONS" line as a failure -
+so the install ran with a disk directory bind-mounted over `/tmp`, removed after.
