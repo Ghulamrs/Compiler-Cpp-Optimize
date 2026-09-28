@@ -23,7 +23,8 @@ start "ccs74" /b cmd /c ""%CG74%\bin\cl6x" -mv6740 --abi=eabi -O2 --rtti --symde
 :wait
 if not exist ccs74.built (ping -n 6 127.0.0.1 >nul & goto wait)
 set /a LAST=%FILES%-1
-for %%b in (ccs55 ccs74 cpp11) do for /l %%k in (0,1,%LAST%) do start "%%b.%%k" /b cmd /c ""%W%\run-one.cmd" %%b %%k"
+rem Three seconds apart: every simulator session starts its own Eclipse.
+for %%b in (ccs55 ccs74 cpp11) do for /l %%k in (0,1,%LAST%) do (start "%%b.%%k" /b cmd /c ""%W%\run-one.cmd" %%b %%k" & ping -n 4 127.0.0.1 >nul)
 rem Held open until every run has answered, or the session's children could go with it.
 set /a WANT=3*%FILES%
 :gather
