@@ -7,7 +7,12 @@
 #include "Backend.h"
 #include "Walker.h"
 
+#include "../optimizer/Inliner.h"
+#include "../optimizer/OptCosts.h"
+
 #include <iosfwd>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -63,7 +68,7 @@ public:
     void visit(const Return &) override;
     void landingPad(int pointerSlot, int selectorSlot) override;
     bool terminateScopes() const override { return true; }
-    void setOptimize(int level) override { optimize_ = level; }
+    void setOptimize(int level) override;
 
 private:
     std::ostringstream out_;    // the piece being emitted (one function at a time)
@@ -91,6 +96,19 @@ private:
     std::size_t sretShift_ = 0;               // 1 when that pointer is A4 and the parameters start at B4
     std::size_t firstStack_ = 0;              // the first parameter passed on the stack
     int vaStart_ = 0;                         // the unnamed arguments, above the caller's B15
+
+    // Inlining at -O2: the inliner's decisions, the unit's bodies by symbol, and where a callee
+    // walked in place keeps its locals - past the caller's own frame, which grows to hold them.
+    std::unique_ptr<opt::Costs> costs_;
+    std::unique_ptr<Inliner> inliner_;
+    std::map<std::string, const Function *> bodies_;
+    int inlineDepth_ = 0;                     // callees walked in place around this point
+    int localBase_ = 0;                       // added to every frame offset: 0, or the callee's place
+    int inlineTop_ = 0;                       // past the innermost callee's locals: where the next one nests
+    int inlineBase_ = 0;                      // the caller's own frame, where an inlined callee starts
+    const Function *functionOf_ = nullptr;    // the function being emitted, for the declines
+    const Function *inlineTarget(const Call &n) const;
+    void walkInPlace(const Function &fn);
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;

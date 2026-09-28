@@ -23,6 +23,9 @@ public:
     // Whether this call is walked in place.
     bool allows(const Call &site) const;
 
+    // The callee's body in AST nodes, for a target that takes only the smallest.
+    int size(const Function &fn) const { const auto it = measures_.find(&fn); return it != measures_.end() ? it->second.size : 0; }
+
     // The largest frame any site of the unit brings in, for a caller whose frame must be fixed before its body is walked.
     int largestFrame() const { return largestFrame_; }
 

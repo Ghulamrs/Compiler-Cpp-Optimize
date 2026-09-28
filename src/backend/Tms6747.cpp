@@ -1,5 +1,6 @@
 #include "Tms6747.h"
 #include "../optimizer/C6xSched.h"
+#include "../optimizer/OptDeclines.h"
 
 #include "../Abi.h"
 #include "../Ast.h"
@@ -207,7 +208,7 @@ static const int kSaveBytes = 40;   // under A15 whatever is saved, so a local's
 // dst = A15 - kSaveBytes - off, past the saved registers; the stack
 // parameters lie at A15 + 4 on. dst is an A-file register.
 void Tms6747::localAddr(int off, const char *dst) {
-    off += kSaveBytes;
+    off += kSaveBytes + localBase_;
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
     } else {
@@ -949,7 +950,9 @@ void Tms6747::visit(const Call &n) {
     int end = 4;
     for (int k = 0; k < onStack; k++) at[k] = stackArg(args[inRegs + k]->type(), end);
     int area = align8(end);
-    spAdjust(-area);
+    // A callee walked in place needs no area: nothing is on the stack and nothing is called.
+    const Function *inPlace = onStack == 0 && !pair && !sret ? inlineTarget(n) : nullptr;
+    if (inPlace == nullptr) spAdjust(-area);
     for (int k = 0; k < onStack; k++) {
         genArg(n, inRegs + k);
         regAdd("B15", at[k], "B0");
@@ -975,6 +978,7 @@ void Tms6747::visit(const Call &n) {
     for (std::size_t i = 6; i < inRegs + shift; i++)   // and so are the partners a 64-bit argument writes
         if (isWide(args[i - shift]->type()) || inPairWide(args[i - shift]->type())) usesSavedPairRegs_ = true;
     if (n.callee() != nullptr) pop("B1");
+    if (inPlace != nullptr) { walkInPlace(*inPlace); return; }
     if (sret) localAddr(n.resultSlot(), shift != 0 ? "A4" : "A3");    // where the result goes
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
@@ -1021,6 +1025,73 @@ void Tms6747::genArg(const Call &n, std::size_t i) {
     if (inPair(t)) { localAddr(n.argSlot(i), "A4"); loadPair(t->size(target_), t->align(target_)); }
     else if (t->isStructOrUnion()) localAddr(n.argSlot(i), "A4");
     else n.args()[i]->accept(*this);
+}
+
+void Tms6747::setOptimize(int level) {
+    optimize_ = level;
+    if (level <= 0 || costs_) return;
+    costs_ = opt::Costs::forLevel(level);
+    if (costs_->inlines()) inliner_.reset(new Inliner(*costs_));
+}
+
+// A node here is several instructions of a stack machine, so only a member this small is taken,
+// and a small member's own small members with it, to this depth.
+static const int kSmallMember = 12;
+static const int kInlineDepth = 3;
+
+// **A direct call to a small function of this unit, walked in its place**: every argument
+// in a register, no struct in or out, and not nested past kInlineDepth callees walked in place. A
+// noexcept callee keeps its call - its terminate is in its own exception-table entry.
+const Function *Tms6747::inlineTarget(const Call &n) const {
+    if (!inliner_ || inlineDepth_ >= kInlineDepth || n.callee() != nullptr || n.isVariadic()) return nullptr;
+    const auto it = bodies_.find(n.symbol());
+    if (it == bodies_.end() || !inliner_->allows(n)) return nullptr;
+    const Function &fn = *it->second;
+    const std::string site = n.symbol() + " in " + (functionOf_ ? functionOf_->symbol() : std::string());
+    if (fn.isNoexcept()) { opt::noteDecline("inline-callee-noexcept", site); return nullptr; }
+    if (inliner_->size(fn) > kSmallMember) { opt::noteDecline("inline-callee-not-small", site); return nullptr; }
+    if (fn.params().size() > static_cast<std::size_t>(abi_.intCount)) {
+        opt::noteDecline("inline-site-stack-arguments", site); return nullptr;
+    }
+    for (const Param &p : fn.params())
+        if (p.type->isStructOrUnion()) { opt::noteDecline("inline-callee-struct-parameter", site); return nullptr; }
+    if (fn.returns()->isStructOrUnion()) { opt::noteDecline("inline-callee-struct-result", site); return nullptr; }
+    return &fn;
+}
+
+// The arguments are in their registers, as for a call; the callee's parameters take them into
+// its own slots past the caller's frame, its body runs here, and every return jumps to the end.
+void Tms6747::walkInPlace(const Function &fn) {
+    const std::string ret = returnLabel_;
+    const int sret = sretSlot_, base = localBase_, va = vaStart_, top = inlineTop_;
+    const std::size_t shift = sretShift_, first = firstStack_;
+    localBase_ = inlineDepth_ == 0 ? inlineBase_ : inlineTop_;
+    inlineTop_ = localBase_ + align8(fn.frameSize());
+    inlineDepth_++;
+    sretSlot_ = 0;
+    sretShift_ = 0;
+    firstStack_ = static_cast<std::size_t>(abi_.intCount);
+    returnLabel_ = label("inline", nextLabel());
+    emitParams(fn);
+    fn.body().accept(*this);
+    // A return as the body's last statement branches to the next line: dropped.
+    const std::string tail = "\tB\t" + returnLabel_ + "\n\tNOP\t5\n";
+    std::string text = out_.str();
+    if (text.size() >= tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0) {
+        text.erase(text.size() - tail.size());
+        out_.str(text);
+        out_.seekp(0, std::ios::end);
+    }
+    defineLabel(returnLabel_);
+    if (inlineTop_ > frame_) frame_ = inlineTop_;
+    inlineDepth_--;
+    inlineTop_ = top;
+    returnLabel_ = ret;
+    sretSlot_ = sret;
+    sretShift_ = shift;
+    firstStack_ = first;
+    vaStart_ = va;
+    localBase_ = base;
 }
 
 // The call itself: the return address into B3, the branch - to a symbol or
@@ -1284,6 +1355,11 @@ void Tms6747::emitFunction(const Function &fn) {
     usesSavedArgRegs_ = false;
     usesSavedPairRegs_ = false;
     frame_ = align8(fn.frameSize());
+    inlineBase_ = frame_;
+    functionOf_ = &fn;
+    // A landing pad sets SP from the frame as it stands, so a function with one reserves
+    // room for any callee it may walk in place before its first pad is emitted.
+    if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
 
     sretSlot_ = fn.sretSlot();
     sretShift_ = sretSlot_ != 0 && hiddenInA4(fn.returns()) ? 1 : 0;
@@ -1372,6 +1448,8 @@ void Tms6747::emitFunction(const Function &fn) {
 }
 
 void Tms6747::run(const Program &program) {
+    for (const Function &fn : program.functions) bodies_[fn.symbol()] = &fn;
+    if (inliner_) inliner_->summarize(program);
     emitData(program);
     file_ += out_.str();
     out_.str(std::string());
