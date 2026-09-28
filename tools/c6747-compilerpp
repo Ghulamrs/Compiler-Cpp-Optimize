@@ -1,0 +1,103 @@
+#!/bin/sh
+# Compiler++ as the C6747 benchmark: built by cpp11 and by TI's own compilers, timed by
+# TI's cycle-accurate simulator, and its compiled output checked against a clang build.
+#
+#   tools/c6747-compilerpp [rounds]          rounds of the workload, 1 if not given
+#
+# The workload is tools/c6747/compilerpp/workload: ten programs in Compiler++'s language,
+# each compiled <rounds> times in one run of the harness make-harness.py writes - Compiler++
+# compiling is what is timed, nothing it compiles is run. Five builds of the same harness:
+#   windows-ccs55   CCS 5.5's cl6x 7.4.4 -O2, on the Windows box
+#   windows-ccs74   CCS 7.4's cl6x 8.2.2 -O2, on the Windows box, run on CCS 5.5's simulator
+#   linux-ccs55     CCS 5.5's cl6x 7.4.4 -O2, on the Linux box
+#   windows-cpp11   cpp11 -O2 and asm6x on the Mac, linked by 7.4.4 on the Windows box
+#   linux-cpp11     the same object, linked and run on the Linux box
+# A build passes when every file's fingerprint is clang's. Printed: cycles, and the
+# harness's own code bytes - the .text its object contributes, read from the link map.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROUNDS=${1:-1}
+KEY=${CXX1_LINUX_KEY:-$HOME/Documents/Claude/myMorningWalk.pem}
+LINUX=${CXX1_LINUX:-ec2-user@52.202.164.123}
+WINDOWS=${CXX1_WINDOWS:-windows}
+COMPILERPP=${COMPILERPP:-$ROOT/../Compiler++}
+CPP11=${CPP11:-$ROOT/cpp11.exe}
+ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+T0=$(date +%s)
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+H=$WORK/cpph
+python3 "$ROOT/tools/c6747/compilerpp/make-harness.py" "$COMPILERPP" "$H" \
+    --workload "${WORKLOAD:-$ROOT/tools/c6747/compilerpp/workload}" --rounds "$ROUNDS" > /dev/null || exit 1
+
+# The reference: the same harness built by clang, here.
+clang++ -std=c++98 -O2 -w -o "$WORK/ref" "$H/harness.cpp" && "$WORK/ref" > "$WORK/ref.txt" || exit 1
+# cpp11's object, here.
+"$CPP11" -arch tms6747 -nologo -O2 -S "$H/harness.cpp" -o "$WORK/h.s" &&
+    "$ASM6X" "$WORK/h.s" -o "$H/h.cpp11.obj" 2> "$WORK/asm6x.log" ||
+    { echo "c6747-compilerpp: cpp11 did not build the harness"; tail -5 "$WORK/asm6x.log"; exit 1; }
+cp "$ROOT"/tools/c6747/C6747-ddr.cmd "$ROOT"/tools/c6747/runca.js "$ROOT"/tools/c6747/prof.js "$ROOT"/tools/c6747/*.ccxml \
+   "$ROOT"/tools/c6747/compilerpp/run-windows.cmd "$ROOT"/tools/c6747/compilerpp/run-linux.sh "$H/"
+( cd "$WORK" && COPYFILE_DISABLE=1 tar --no-xattrs -czf cpph.tgz cpph )
+
+(
+    scp -q -o BatchMode=yes "$WORK/cpph.tgz" "$WINDOWS:C:/cxx1/cpph.tgz" &&
+    ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q C:\\cxx1\\cpph-run 2>nul & mkdir C:\\cxx1\\cpph-run && tar -C C:\\cxx1\\cpph-run -xzf C:\\cxx1\\cpph.tgz" > /dev/null &&
+    ssh -o BatchMode=yes -o ServerAliveInterval=30 "$WINDOWS" "C:\\cxx1\\cpph-run\\cpph\\run-windows.cmd" &&
+    mkdir -p "$WORK/win" &&
+    scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/cpph-run/cpph/*.result" "$WINDOWS:C:/cxx1/cpph-run/cpph/*.cio" \
+        "$WINDOWS:C:/cxx1/cpph-run/cpph/*.map" "$WINDOWS:C:/cxx1/cpph-run/cpph/*.prof" \
+        "$WINDOWS:C:/cxx1/cpph-run/cpph/*.out" "$WORK/win/"
+) > "$WORK/windows.log" 2>&1 &
+PW=$!
+(
+    scp -q -i "$KEY" -o BatchMode=yes "$WORK/cpph.tgz" "$LINUX:cpph.tgz" &&
+    ssh -i "$KEY" -o BatchMode=yes -o ServerAliveInterval=30 "$LINUX" \
+        "rm -rf cpph-run && mkdir cpph-run && tar -C cpph-run -xzf cpph.tgz && rm cpph.tgz && sh cpph-run/cpph/run-linux.sh" &&
+    mkdir -p "$WORK/lin" &&
+    scp -q -i "$KEY" -o BatchMode=yes "$LINUX:cpph-run/cpph/*.result" "$LINUX:cpph-run/cpph/*.cio" \
+        "$LINUX:cpph-run/cpph/*.map" \
+        "$LINUX:cpph-run/cpph/*.out" "$WORK/lin/"
+) > "$WORK/linux.log" 2>&1 &
+PL=$!
+wait $PW; wait $PL
+
+field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
+# The harness's own code: every .text piece its object contributes, from the link map.
+codebytes() {
+    [ -f "$1" ] || { echo -; return; }
+    tr -d '\r' < "$1" | grep " $2 (\.text" | awk '{ print $2 }' |
+        while read -r x; do printf '%d\n' "0x$x"; done | awk '{ s += $1 } END { print s + 0 }'
+}
+printf 'rounds %s, reference: clang on the Mac\n' "$ROUNDS"
+printf '%-15s %-8s %14s %10s %-26s %s\n' build built cycles code split fingerprints
+pass=0; fail=0; base=""
+for spec in win/ccs55:windows-ccs55:harness.obj win/ccs74:windows-ccs74:harness.obj lin/ccs55:linux-ccs55:harness.obj \
+            win/cpp11:windows-cpp11:h.cpp11.obj lin/cpp11:linux-cpp11:h.cpp11.obj; do
+    f=${spec%%:*}; rest=${spec#*:}; name=${rest%%:*}; obj=${rest#*:}
+    built=$(field "$WORK/$f.result" build); cycles=$(field "$WORK/$f.result" count)
+    tr -d '\r' < "$WORK/$f.cio" 2>/dev/null > "$WORK/$f.cio.lf"
+    verdict=agree
+    if [ "${built:-}" != ok ]; then verdict="no build"
+    elif ! cmp -s "$WORK/$f.cio.lf" "$WORK/ref.txt"; then verdict=DIFFER
+    fi
+    [ "$verdict" = agree ] && pass=$((pass + 1)) || fail=$((fail + 1))
+    [ "$name" = windows-ccs55 ] && base=$cycles
+    ratio=""
+    case "${base:-x}:${cycles:-x}" in *[!0-9:]*) ;; *) ratio=" x$(echo "scale=2; $cycles / $base" | bc)";; esac
+    split=$(python3 "$ROOT/tools/c6747/prof-map.py" "$WORK/$f.out" "$WORK/$f.prof" 0 --map "$WORK/$f.map" 2>/dev/null |
+            sed -n 's/^SPLIT program=\([0-9.]*\) library=\([0-9.]*\).*/program \1% library \2%/p')
+    printf '%-15s %-8s %14s %10s %-26s %s%s\n' "$name" "${built:-none}" "${cycles:--}" "$(codebytes "$WORK/$f.map" "$obj")" "${split:--}" "$verdict" "$ratio"
+    [ "$verdict" = DIFFER ] && diff "$WORK/ref.txt" "$WORK/$f.cio.lf" | head -6 | sed 's/^/      /'
+done
+# Where each build's cycles went: its top functions, from the samples.
+for f in win/ccs55 win/cpp11; do
+    [ -f "$WORK/$f.prof" ] || continue
+    echo "--- top functions, $f"
+    python3 "$ROOT/tools/c6747/prof-map.py" "$WORK/$f.out" "$WORK/$f.prof" 8 2>/dev/null | sed -n '2,9p'
+done
+if [ "$fail" -gt 0 ]; then
+    echo "--- windows"; tail -5 "$WORK/windows.log"; echo "--- linux"; tail -5 "$WORK/linux.log"
+fi
+echo "c6747-compilerpp: $pass agreed, $fail did not, in $(( $(date +%s) - T0 ))s"
+[ "$fail" -eq 0 ]

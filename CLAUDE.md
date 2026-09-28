@@ -10967,3 +10967,29 @@ addressing modes, then software pipelining - what cl6x -O2 does.
 **The run fails on the VM6747 box, and that is recorded rather than hidden**: cl6x's
 `isort`, `matmul` and `sieve` print wrong output there (VM6747's KNOWN-GAPS.md);
 both TI simulators run all six right, for both compilers.
+
+## Compiler++ on TI's simulator, and the first two things it found, 2026-09-29
+
+**The measure that matters for the C6000 is real C++, not the kernels.**
+`tools/c6747/compilerpp/make-harness.py` builds Compiler++ as one translation
+unit with a workload compiled into it as strings - the simulator has no files and
+no argv - and a fingerprint per file that every build must share with clang's.
+cl6x 7.4.4 -O2, cl6x 8.2.2 -O2 and cpp11 -O2 each build it, and TI's
+cycle-accurate simulator times Compiler++ compiling. One file, adventure.cpp:
+cl6x 7.4.4 514,664,822 cycles, cl6x 8.2.2 533,364,738, and cpp11 1,297,826,752 -
+2.52x - on Windows and on Linux to the cycle.
+
+**The profile said the library, not the code generator: 52% in rts6740's `free`**,
+which walks its free list, because every `std::string` owned a heap buffer.
+`include/string` keeps fifteen units inside the object now, as TI's Dinkumware
+does, chosen per access through a heap pointer that is null while they are inline
+- never a pointer into the object, since cxx1 hands a returned local to its caller
+as bytes. 677,202,444 cycles, 1.32x. Then the C6000 backend's first inliner:
+callees of at most 12 AST nodes, nested three deep, at -O2 - 650,296,989, 1.26x.
+The x86 budgets alone grew .text 35% for 5.4%, a node on this stack machine being
+several instructions.
+
+**A simulator run is capped at 30 minutes of box time**, the user's rule from
+2026-09-29: the ten-file workload runs one file per run, all at once on the
+Windows PC, through `tools/c6747/compilerpp/run-split.cmd`. The state of the
+round and what comes next are in `docs/HANDOVER-C6747-2026-09-29.md`.
