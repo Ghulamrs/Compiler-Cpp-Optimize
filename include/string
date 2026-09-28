@@ -7,9 +7,9 @@
 //
 // What is here is what a program actually calls, and no more: the tree this
 // library was written for uses seventeen members of this class, and each is
-// below. There is no small-string optimisation - every string owns a heap
-// buffer, even an empty one does not - and no allocator parameter, because
-// there is nowhere to put one that anything would read.
+// below. Up to fifteen units are held inside the object, as TI's library does, and
+// only a longer string owns a heap buffer; there is no allocator parameter,
+// because there is nowhere to put one that anything would read.
 //
 // **`basic_string<C>` since 2026-09-26**, so that `wstring` is the same class
 // over `wchar_t` rather than a second copy of it; there is no `char_traits`,
@@ -64,21 +64,21 @@ public:
     basic_string() { init(0, 0); }
     basic_string(const C *s) { init(s, __cxx1_length(s)); }
     basic_string(const C *s, size_type n) { init(s, n); }
-    basic_string(const basic_string &o) { init(o.buf_, o.len_); }
+    basic_string(const basic_string &o) { init(o.p(), o.len_); }
     basic_string(size_type n, C c) {
-        // Before the first reserve the members hold the frame, and reserve reads them.
-        buf_ = 0; len_ = 0; cap_ = 0;
-        reserveExactly(n);
-        for (size_type i = 0; i < n; i++) buf_[i] = c;
+        empty0();
+        reserve(n);
+        C *d = p();
+        for (size_type i = 0; i < n; i++) d[i] = c;
         len_ = n;
-        buf_[len_] = 0;
+        d[len_] = 0;
     }
-    ~basic_string() { std::free(buf_); }
+    ~basic_string() { if (heap_ != 0) std::free(heap_); }
 
     basic_string &operator=(const basic_string &o) {
         // Self-assignment first, because the next line frees what it would
         // then copy from.
-        if (this != &o) assignFrom(o.buf_, o.len_);
+        if (this != &o) assignFrom(o.p(), o.len_);
         return *this;
     }
     basic_string &operator=(const C *s) {
@@ -87,45 +87,45 @@ public:
     }
     basic_string &operator=(C c) { assignFrom(&c, 1); return *this; }
 
-    basic_string &operator+=(const basic_string &o) { return appendUnits(o.buf_, o.len_); }
+    basic_string &operator+=(const basic_string &o) { return appendUnits(o.p(), o.len_); }
     basic_string &operator+=(const C *s) {
         return appendUnits(s, __cxx1_length(s));
     }
     basic_string &operator+=(C c) { return appendUnits(&c, 1); }
 
-    C &operator[](size_type i) { return buf_[i]; }
-    const C &operator[](size_type i) const { return buf_[i]; }
+    C &operator[](size_type i) { return p()[i]; }
+    const C &operator[](size_type i) const { return p()[i]; }
     // [string.access]: the checked form of the same.
     C &at(size_type i) {
         if (i >= len_) std::__throw_out_of_range("string::at");
-        return buf_[i];
+        return p()[i];
     }
     const C &at(size_type i) const {
         if (i >= len_) std::__throw_out_of_range("string::at");
-        return buf_[i];
+        return p()[i];
     }
 
     size_type size() const { return len_; }
     size_type length() const { return len_; }
     bool empty() const { return len_ == 0; }
-    const C *c_str() const { return buf_; }
-    const C *data() const { return buf_; }
+    const C *c_str() const { return p(); }
+    const C *data() const { return p(); }
 
-    void clear() { len_ = 0; buf_[0] = 0; }
+    void clear() { len_ = 0; p()[0] = 0; }
     void push_back(C c) { appendUnits(&c, 1); }
-    void pop_back() { if (len_ != 0) { len_--; buf_[len_] = 0; } }
+    void pop_back() { if (len_ != 0) { len_--; p()[len_] = 0; } }
 
-    C &back() { return buf_[len_ - 1]; }
-    const C &back() const { return buf_[len_ - 1]; }
-    C &front() { return buf_[0]; }
-    const C &front() const { return buf_[0]; }
+    C &back() { return p()[len_ - 1]; }
+    const C &back() const { return p()[len_ - 1]; }
+    C &front() { return p()[0]; }
+    const C &front() const { return p()[0]; }
 
-    C *begin() { return buf_; }
-    C *end() { return buf_ + len_; }
-    const C *begin() const { return buf_; }
-    const C *end() const { return buf_ + len_; }
+    C *begin() { return p(); }
+    C *end() { return p() + len_; }
+    const C *begin() const { return p(); }
+    const C *end() const { return p() + len_; }
 
-    basic_string &append(const basic_string &o) { return appendUnits(o.buf_, o.len_); }
+    basic_string &append(const basic_string &o) { return appendUnits(o.p(), o.len_); }
     basic_string &append(const C *s) {
         return appendUnits(s, __cxx1_length(s));
     }
@@ -135,36 +135,31 @@ public:
         return *this;
     }
 
-    // **`buf_ == 0` is a real state here, and not only before construction.**
-    // This library's `vector` assigns into raw `calloc`'d storage - placement
-    // new is refused by this compiler, so there is no way to construct an
-    // element in place - and a zeroed slot is a `string` with a null buffer,
-    // zero length and zero capacity. Without the second test, `reserve(0)` on
-    // one did nothing and the `buf_[len_] = 0` that follows every write went to
-    // a null pointer: `std::vector<std::string> s(2);` crashed.
-    void reserve(size_type n) { if (n > cap_ || buf_ == 0) reserveExactly(n); }
+    // An all-zero object is an empty string: `vector` assigns into `calloc`'d slots.
+    void reserve(size_type n) { if (n > capacity()) grow(n, 0, 0); }
+    size_type capacity() const { return heap_ != 0 ? cap_ : (size_type)small; }
 
     void resize(size_type n, C c) {
         if (n > len_) {
             reserve(n);
-            for (size_type i = len_; i < n; i++) buf_[i] = c;
+            for (size_type i = len_; i < n; i++) p()[i] = c;
         }
         len_ = n;
-        buf_[len_] = 0;
+        p()[len_] = 0;
     }
     void resize(size_type n) { resize(n, 0); }
 
     basic_string substr(size_type pos, size_type n) const {
         if (pos > len_) pos = len_;
         size_type have = len_ - pos;
-        return basic_string(buf_ + pos, n > have ? have : n);
+        return basic_string(p() + pos, n > have ? have : n);
     }
     basic_string substr(size_type pos) const { return substr(pos, npos); }
     basic_string substr() const { return substr(0, npos); }
 
     size_type find(C c, size_type from) const {
         for (size_type i = from; i < len_; i++)
-            if (buf_[i] == c) return i;
+            if (p()[i] == c) return i;
         return npos;
     }
     size_type find(C c) const { return find(c, 0); }
@@ -173,18 +168,18 @@ public:
         size_type n = __cxx1_length(s);
         if (n > len_) return npos;
         for (size_type i = from; i + n <= len_; i++)
-            if (std::memcmp(buf_ + i, s, n * sizeof(C)) == 0) return i;
+            if (std::memcmp(p() + i, s, n * sizeof(C)) == 0) return i;
         return npos;
     }
     size_type find(const C *s) const { return find(s, 0); }
     size_type find(const basic_string &s, size_type from) const {
-        return find(s.buf_, from);
+        return find(s.p(), from);
     }
-    size_type find(const basic_string &s) const { return find(s.buf_, 0); }
+    size_type find(const basic_string &s) const { return find(s.p(), 0); }
 
     size_type rfind(C c) const {
         for (size_type i = len_; i-- > 0; )
-            if (buf_[i] == c) return i;
+            if (p()[i] == c) return i;
         return npos;
     }
 
@@ -194,12 +189,12 @@ public:
     // has no business using a library name for a parameter either way.
     size_type find_first_of(const C *wanted) const {
         for (size_type i = 0; i < len_; i++)
-            if (__cxx1_holds(wanted, buf_[i])) return i;
+            if (__cxx1_holds(wanted, p()[i])) return i;
         return npos;
     }
     size_type find_last_of(const C *wanted) const {
         for (size_type i = len_; i-- > 0; )
-            if (__cxx1_holds(wanted, buf_[i])) return i;
+            if (__cxx1_holds(wanted, p()[i])) return i;
         return npos;
     }
     // **The one-character forms**, which is how a path is usually split -
@@ -214,10 +209,10 @@ public:
         reserve(len_ + n);
         // Backwards, so that a move within one buffer cannot overwrite what it
         // has not read yet.
-        for (size_type i = len_; i-- > pos; ) buf_[i + n] = buf_[i];
-        for (size_type i = 0; i < n; i++) buf_[pos + i] = s[i];
+        for (size_type i = len_; i-- > pos; ) p()[i + n] = p()[i];
+        for (size_type i = 0; i < n; i++) p()[pos + i] = s[i];
         len_ += n;
-        buf_[len_] = 0;
+        p()[len_] = 0;
         return *this;
     }
     basic_string &insert(size_type pos, const basic_string &s) {
@@ -228,64 +223,74 @@ public:
         if (pos > len_) return *this;
         size_type have = len_ - pos;
         if (n > have) n = have;
-        for (size_type i = pos; i + n < len_; i++) buf_[i] = buf_[i + n];
+        for (size_type i = pos; i + n < len_; i++) p()[i] = p()[i + n];
         len_ -= n;
-        buf_[len_] = 0;
+        p()[len_] = 0;
         return *this;
     }
     basic_string &erase(size_type pos) { return erase(pos, npos); }
 
-    int compare(const basic_string &o) const { return __cxx1_compare(buf_, o.buf_); }
-    int compare(const C *s) const { return __cxx1_compare(buf_, s); }
+    int compare(const basic_string &o) const {
+        const C *a = p(), *b = o.p();
+        size_type n = len_ < o.len_ ? len_ : o.len_;
+        for (size_type i = 0; i < n; i++)
+            if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+        return len_ < o.len_ ? -1 : len_ == o.len_ ? 0 : 1;
+    }
+    int compare(const C *s) const { return __cxx1_compare(p(), s); }
 
 private:
-    // **The buffer is never null and always terminated**, so `c_str()` needs no
-    // special case and neither does an empty string.
+    // **Up to fifteen units live inside the object** - TI's and Dinkumware's layout,
+    // chosen per access rather than by a pointer into the object, because cxx1 hands
+    // a returned local to its caller as bytes and a self-pointer would dangle.
+    enum { small = 15 };
+    C *p() { return heap_ != 0 ? heap_ : small_; }
+    const C *p() const { if (heap_ != 0) return heap_; return small_; }
+    void empty0() { heap_ = 0; len_ = 0; cap_ = 0; small_[0] = 0; }
     void init(const C *s, size_type n) {
-        cap_ = 0;
-        buf_ = 0;
-        reserveExactly(n);
-        if (n != 0) std::memcpy(buf_, s, n * sizeof(C));
+        empty0();
+        reserve(n);
+        C *d = p();
+        if (n != 0) std::memcpy(d, s, n * sizeof(C));
         len_ = n;
-        buf_[len_] = 0;
+        d[len_] = 0;
     }
-    void reserveExactly(size_type want) {
-        size_type room = want < 15 ? 15 : want;
-        C *fresh = (C *)std::malloc((room + 1) * sizeof(C));
-        if (buf_ != 0) {
-            std::memcpy(fresh, buf_, len_ * sizeof(C));
-            std::free(buf_);
-        } else {
-            len_ = 0;
-        }
+    // Room for `want` units plus the terminator, keeping the text; `s`/`n` are
+    // appended before the old buffer is freed, so an append of this string survives.
+    void grow(size_type want, const C *s, size_type n) {
+        C *fresh = (C *)std::malloc((want + 1) * sizeof(C));
+        C *old = p();
+        std::memcpy(fresh, old, len_ * sizeof(C));
+        if (n != 0) std::memcpy(fresh + len_, s, n * sizeof(C));
+        len_ += n;
         fresh[len_] = 0;
-        buf_ = fresh;
-        cap_ = room;
+        if (heap_ != 0) std::free(heap_);
+        heap_ = fresh;
+        cap_ = want;
     }
     void assignFrom(const C *s, size_type n) {
-        reserve(n);
-        if (n != 0) std::memcpy(buf_, s, n * sizeof(C));
+        if (n > capacity()) { len_ = 0; grow(n, s, n); return; }
+        C *d = p();
+        if (n != 0) std::memmove(d, s, n * sizeof(C));
         len_ = n;
-        buf_[len_] = 0;
+        d[len_] = 0;
     }
     basic_string &appendUnits(const C *s, size_type n) {
-        if (n != 0) {
-            // Grown by doubling and not by exactly what is wanted, so that
-            // building a string one character at a time is not quadratic.
-            if (len_ + n > cap_) {
-                size_type want = cap_ * 2;
-                reserveExactly(len_ + n > want ? len_ + n : want);
-            }
-            std::memcpy(buf_ + len_, s, n * sizeof(C));
-            len_ += n;
-            buf_[len_] = 0;
-        }
+        if (n == 0) return *this;
+        size_type have = capacity();
+        // Grown by doubling, so that building a string one character at a time is not quadratic.
+        if (len_ + n > have) { grow(len_ + n > have * 2 ? len_ + n : have * 2, s, n); return *this; }
+        C *d = p();
+        std::memcpy(d + len_, s, n * sizeof(C));
+        len_ += n;
+        d[len_] = 0;
         return *this;
     }
 
-    C *buf_;
+    C *heap_;
     size_type len_;
     size_type cap_;
+    C small_[small + 1];
 };
 
 typedef basic_string<char> string;
