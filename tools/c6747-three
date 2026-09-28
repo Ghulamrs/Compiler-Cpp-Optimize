@@ -17,6 +17,11 @@
 # simulators run the same compiler on the same model, so their cycle counts must
 # agree too, and a difference is a failure.
 #
+# And cpp11 as a fourth and fifth column: cpp11 -O2 and asm6x here, to a TI object,
+# linked on both simulator boxes exactly as cl6x's -O2 build is - the same linker,
+# C6747.cmd, heap, stack and rts6740_elf_eh.lib - so TI's simulator times both.
+# The ratio printed is cpp11's cycles over cl6x's: the gap -O2 has to close.
+#
 # C6747_AFTER=<pid> holds the Linux box back until that process has gone: the box
 # has 419 MB, and verify-three's Linux build must not share it with a DSS run.
 set -u
@@ -26,7 +31,7 @@ LINUX=${CXX1_LINUX:-ec2-user@52.202.164.123}
 WINDOWS=${CXX1_WINDOWS:-windows}
 WREMOTE='C:\cxx1\c6747-run'
 LREMOTE='c6747-run'
-BOXES="windows-ccs74-vm windows-ccs55 linux-ccs55"
+BOXES="windows-ccs74-vm windows-ccs55 linux-ccs55 windows-ccs55-cpp11 linux-ccs55-cpp11"
 T0=$(date +%s)
 
 WORK=$(mktemp -d)
@@ -41,6 +46,23 @@ for p in "$@"; do
     for x in expected rc; do [ -f "$d/$n.$x" ] && cp "$d/$n.$x" "$WORK/c6747/programs/"; done
 done
 NAMES=$(for f in "$WORK"/c6747/programs/*.c; do basename "$f" .c; done)
+
+# cpp11's own build, here on the Mac: cpp11 -O2 to assembly, asm6x to a TI object,
+# shipped as programs/<prog>.cpp11.obj for both simulator boxes to link and run.
+# cpp11 compiles C++, so each program goes in under a .cpp name.
+CPP11=${CPP11:-$ROOT/cpp11.exe}
+ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+CPP11_FLAGS=${CPP11_FLAGS:--O2}
+mkdir -p "$WORK/cpp11"
+for n in $NAMES; do
+    cp "$WORK/c6747/programs/$n.c" "$WORK/cpp11/$n.cpp"
+    if "$CPP11" -arch tms6747 -nologo $CPP11_FLAGS -S "$WORK/cpp11/$n.cpp" -o "$WORK/cpp11/$n.s" \
+           > "$WORK/cpp11/$n.log" 2>&1 &&
+       "$ASM6X" "$WORK/cpp11/$n.s" -o "$WORK/c6747/programs/$n.cpp11.obj" >> "$WORK/cpp11/$n.log" 2>&1; then :
+    else
+        echo "c6747-three: cpp11 did not build $n:"; sed 's/^/      /' "$WORK/cpp11/$n.log" | head -4
+    fi
+done
 COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/c6747.tgz" c6747
 WPROGS=$(for n in $NAMES; do printf '%s\\programs\\%s.c ' "$WREMOTE\\c6747" "$n"; done)
 LPROGS=$(for n in $NAMES; do printf '%s/c6747/programs/%s.c ' "$LREMOTE" "$n"; done)
@@ -77,12 +99,12 @@ printf '%-10s %-18s %-8s %-4s %-10s %s\n' program box build rc cycles output
 for n in $NAMES; do
     want=$WORK/c6747/programs/$n.expected
     wantrc=$(cat "$WORK/c6747/programs/$n.rc" 2>/dev/null || echo 0)
-    ok=1; ref=""; cyc=""
+    ok=1; ref=""; cyc_ti=""; cyc_cpp=""
     for b in $BOXES; do
         r=$WORK/back/$n.$b.result; o=$WORK/back/$n.$b.stdout
         build=$(field "$r" build); rc=$(field "$r" rc); count=$(field "$r" count)
         pc=$(field "$r" pc); ex=$(field "$r" exit)
-        tr -d '\r' < "$o" > "$o.lf" 2>/dev/null
+        if [ -f "$o" ]; then tr -d '\r' < "$o" > "$o.lf"; else : > "$o.lf"; fi
         verdict=same
         if [ "$build" != ok ]; then verdict="no build"; ok=0
         elif [ "$rc" != n/a ] && [ "$rc" != "$wantrc" ]; then verdict="exit $rc, wanted $wantrc"; ok=0
@@ -92,16 +114,23 @@ for n in $NAMES; do
         elif [ -z "$ref" ]; then ref=$o.lf; verdict=reference
         else cmp -s "$o.lf" "$ref" && verdict=agrees || { verdict=DIFFERS; ok=0; }
         fi
-        case "$b" in *ccs55) [ -z "$cyc" ] && cyc=$count || { [ "$cyc" = "$count" ] || { verdict="$verdict, cycles differ"; ok=0; }; };; esac
+        case "$b" in
+        *ccs55) [ -z "$cyc_ti" ] && cyc_ti=$count || { [ "$cyc_ti" = "$count" ] || { verdict="$verdict, cycles differ"; ok=0; }; };;
+        *ccs55-cpp11) [ -z "$cyc_cpp" ] && cyc_cpp=$count || { [ "$cyc_cpp" = "$count" ] || { verdict="$verdict, cycles differ"; ok=0; }; };;
+        esac
         printf '%-10s %-18s %-8s %-4s %-10s %s\n' "$n" "$b" "${build:-none}" "${rc:--}" "${count:--}" "$verdict"
         if [ "$verdict" = DIFFERS ]; then
             if [ -f "$want" ]; then diff "$want" "$o.lf"; else diff "$ref" "$o.lf"; fi | head -6 | sed 's/^/      /'
         fi
     done
+    case "$cyc_ti$cyc_cpp" in *[!0-9]*|"") ;; *)
+        [ -n "$cyc_ti" ] && [ -n "$cyc_cpp" ] &&
+            printf '%-10s cpp11/cl6x cycles %s\n' "$n" "$(echo "scale=2; $cyc_cpp / $cyc_ti" | bc)";;
+    esac
     [ $ok -eq 1 ] && pass=$((pass + 1)) || fail=$((fail + 1))
 done
 if [ "$fail" -gt 0 ]; then
-    for b in $BOXES; do echo "--- $b"; tr -d '\r' < "$WORK/$b.log" | grep -v '^BOX ' | tail -5; done
+    for b in windows-ccs74-vm windows-ccs55 linux-ccs55; do echo "--- $b"; tr -d '\r' < "$WORK/$b.log" | grep -v '^BOX ' | tail -5; done
 fi
 echo "c6747 boxes: $pass passed, $fail failed, in $(( $(date +%s) - T0 ))s"
 [ "$fail" -eq 0 ]

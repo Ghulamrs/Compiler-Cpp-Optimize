@@ -10901,3 +10901,43 @@ to initialize the HPI library"). The installer needs 16 GB of disk, not 8. And
 on device" with 12 GB free. `_JAVA_OPTIONS` to move Java's temp directory made TI's
 p2 application exit 1 - it reads the "Picked up _JAVA_OPTIONS" line as a failure -
 so the install ran with a disk directory bind-mounted over `/tmp`, removed after.
+
+### cpp11 on TI's simulator: the gap, measured
+
+**cpp11's tms6747 code now runs on TI's cycle-accurate simulator**, which is what makes
+TI the oracle for speed and not only for output. `tools/c6747-three` compiles each
+program on the Mac - `cpp11 -arch tms6747 -O2 -S`, then ASM6x - and both simulator
+boxes link the object exactly as they link `cl6x -O2`'s: 7.4.4's linker, `C6747.cmd`,
+the same heap and stack, **`rts6740_elf_eh.lib`** on both sides. First measurement:
+
+| program | cl6x 7.4.4 -O2 | cpp11 -O2 | ratio |
+| --- | --- | --- | --- |
+| hello | 26,202 | 26,122 | 0.99 |
+| arith | 197,064 | 285,469 | 1.44 |
+| floats | 1,196,720 | 1,711,668 | 1.43 |
+| structs | 2,291,316 | 6,046,175 | 2.63 |
+
+**Why the exception-handling library, on both sides.** cpp11 emits unwind data for
+every function, so its object needs `__c6xabi_unwind_cpp_pr3`, which only the `_eh`
+build has - and CCS ships only the other. Linking cl6x against the plain library would
+time different run-time code. 7.4.4's `_eh` build is made once per box with
+`mklib --pattern=rts6740_elf_eh.lib --index=libc.a` from 7.4.4's `lib` directory, into
+`~/c6747-lib` on Linux (`--parallel=1`: 419 MB) and `C:\cxx1\c6747-lib` on Windows,
+49 seconds there; the scripts name it with `C6747_EHLIB`. And the library is named
+outright: `-llibc.a` picks one by the object's build attributes and could not match
+ASM6x's.
+
+**LNK6x cannot link this yet**, measured against TI's lnk6x on the same object, command
+file and library: it rejects TI's own `C6747.cmd` (`DSPL2ROM o = ...`, no colon,
+which lnk6x takes), has no `--heap_size`/`--stack_size`, and its image has no
+`.stack`, no `.c6xabi.exidx`/`.extab`, no `.switch`, and 24,832 bytes of `.text`
+against 36,448 - it runs 62 cycles and stops at 0x118. That is LNK6x's work, in its
+own tree; this tree links with TI's.
+
+**VM6747 and cl6x -O2**: at -O2 cl6x ends `main` with `RET B3` and sets A4 in the
+branch's delay slots (`MVK 7,A4` two packets after the RET); TI's simulator prints the
+right output, VM6747 reports exit 1 for `return 0` and for `return 7`. The emulator's,
+to mend in VM6747; until then `vm-ccs74.cmd` compiles at cl6x's default.
+
+**And an over-acceptance found on the way**: cpp11 compiles `structs.c`'s
+`const struct point *p = a;` where `a` is `const void *` - C, and ill-formed C++.
