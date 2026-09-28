@@ -10941,3 +10941,29 @@ to mend in VM6747; until then `vm-ccs74.cmd` compiles at cl6x's default.
 
 **And an over-acceptance found on the way**: cpp11 compiles `structs.c`'s
 `const struct point *p = a;` where `a` is `const void *` - C, and ill-formed C++.
+
+### The kernels: the -O2 gap is 2.8x to 15x, and cpp11 has no C6000 -O2
+
+`tools/c6747-three tools/c6747/bench` runs `tools/bench-c6x.cpp`'s six kernels, one
+program each, and prints a cycle and code-size table. Code bytes are the executable
+sections of the program's own object: cl6x `-O2 -ms3` against cpp11 `-O1`.
+
+| kernel | cl6x -O2 | cpp11 -O2 | ratio | cl6x -ms3 bytes | cpp11 -O1 bytes |
+| --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 15,387,798 | 2.76 | 128 | 416 |
+| hash | 6,009,087 | 92,297,743 | 15.35 | 256 | 992 |
+| isort | 5,312,299 | 32,785,549 | 6.17 | 352 | 1,536 |
+| matmul | 1,294,024 | 8,684,282 | 6.71 | 416 | 2,240 |
+| sieve | 2,999,335 | 39,160,159 | 13.05 | 352 | 1,280 |
+| virt | 3,269,953 | 14,912,748 | 4.56 | 640 | 2,752 |
+
+The four small programs looked close (1.4x) only because printf, TI's code on both
+sides, is most of their time. **cpp11's -O1 and -O2 emit byte-identical C6000 code**,
+and it reads as a stack machine: every local loaded (`LDW` then `NOP 4`) and stored at
+each use, every branch followed by `NOP 5`, not one `||` in the file. That is the
+order of the work: locals in registers, then delay slots and execute packets, then
+addressing modes, then software pipelining - what cl6x -O2 does.
+
+**The run fails on the VM6747 box, and that is recorded rather than hidden**: cl6x's
+`isort`, `matmul` and `sieve` print wrong output there (VM6747's KNOWN-GAPS.md);
+both TI simulators run all six right, for both compilers.

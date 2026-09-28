@@ -2,7 +2,9 @@
 # Run C programs on the three TMS320C6747 boxes at once, from the Mac, and compare.
 #
 #   tools/c6747-three                    every program in tools/c6747/programs
-#   tools/c6747-three prog.c ...         these programs
+#   tools/c6747-three prog.c ...         these programs, .c or .cpp
+#   tools/c6747-three tools/c6747/bench  every program in a directory - the kernels
+#                                        timed against cl6x -O2
 #
 # The three boxes, two machines:
 #   windows-ccs74-vm   the Windows box, CCS 7.4's cl6x 8.2.2 to assembly, run on VM6747.
@@ -38,14 +40,20 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/c6747/programs"
 cp "$ROOT"/tools/c6747/*.* "$WORK/c6747/"
-if [ $# -eq 0 ]; then set -- "$ROOT"/tools/c6747/programs/*.c; fi
-for p in "$@"; do
-    case "$(basename "$p")" in *" "[0-9]*) continue;; esac   # iCloud's copies
-    d=$(dirname "$p"); n=$(basename "$p" .c)
-    cp "$p" "$WORK/c6747/programs/"
-    for x in expected rc; do [ -f "$d/$n.$x" ] && cp "$d/$n.$x" "$WORK/c6747/programs/"; done
+if [ $# -eq 0 ]; then set -- "$ROOT"/tools/c6747/programs; fi
+FILES=""
+for a in "$@"; do
+    if [ -d "$a" ]; then set -- "$a"/*.c "$a"/*.cpp; else set -- "$a"; fi
+    for p in "$@"; do
+        [ -f "$p" ] || continue
+        case "$(basename "$p")" in *" "[0-9]*) continue;; esac   # iCloud's copies
+        d=$(dirname "$p"); f=$(basename "$p"); n=${f%.*}
+        cp "$p" "$WORK/c6747/programs/"
+        for x in expected rc; do [ -f "$d/$n.$x" ] && cp "$d/$n.$x" "$WORK/c6747/programs/"; done
+        FILES="$FILES $f"
+    done
 done
-NAMES=$(for f in "$WORK"/c6747/programs/*.c; do basename "$f" .c; done)
+NAMES=$(for f in $FILES; do echo "${f%.*}"; done)
 
 # cpp11's own build, here on the Mac: cpp11 -O2 to assembly, asm6x to a TI object,
 # shipped as programs/<prog>.cpp11.obj for both simulator boxes to link and run.
@@ -54,18 +62,22 @@ CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
 CPP11_FLAGS=${CPP11_FLAGS:--O2}
 mkdir -p "$WORK/cpp11"
-for n in $NAMES; do
-    cp "$WORK/c6747/programs/$n.c" "$WORK/cpp11/$n.cpp"
+for f in $FILES; do
+    n=${f%.*}
+    cp "$WORK/c6747/programs/$f" "$WORK/cpp11/$n.cpp"
     if "$CPP11" -arch tms6747 -nologo $CPP11_FLAGS -S "$WORK/cpp11/$n.cpp" -o "$WORK/cpp11/$n.s" \
            > "$WORK/cpp11/$n.log" 2>&1 &&
        "$ASM6X" "$WORK/cpp11/$n.s" -o "$WORK/c6747/programs/$n.cpp11.obj" >> "$WORK/cpp11/$n.log" 2>&1; then :
     else
         echo "c6747-three: cpp11 did not build $n:"; sed 's/^/      /' "$WORK/cpp11/$n.log" | head -4
     fi
+    # For the size table: cpp11 -O1, the level that optimises for size. Not shipped.
+    "$CPP11" -arch tms6747 -nologo -O1 -S "$WORK/cpp11/$n.cpp" -o "$WORK/cpp11/$n.O1.s" > /dev/null 2>&1 &&
+        "$ASM6X" "$WORK/cpp11/$n.O1.s" -o "$WORK/cpp11/$n.O1.obj" > /dev/null 2>&1
 done
 COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/c6747.tgz" c6747
-WPROGS=$(for n in $NAMES; do printf '%s\\programs\\%s.c ' "$WREMOTE\\c6747" "$n"; done)
-LPROGS=$(for n in $NAMES; do printf '%s/c6747/programs/%s.c ' "$LREMOTE" "$n"; done)
+WPROGS=$(for f in $FILES; do printf '%s\\programs\\%s ' "$WREMOTE\\c6747" "$f"; done)
+LPROGS=$(for f in $FILES; do printf '%s/c6747/programs/%s ' "$LREMOTE" "$f"; done)
 
 # The Windows machine: one unpack, then its two boxes at once.
 (
@@ -92,6 +104,10 @@ wait $P1; wait $P2; wait $P3
 mkdir -p "$WORK/back"
 scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/c6747-run/c6747/out/*.stdout" "$WINDOWS:C:/cxx1/c6747-run/c6747/out/*.result" "$WORK/back/" 2>/dev/null
 scp -q -i "$KEY" -o BatchMode=yes "$LINUX:$LREMOTE/c6747/out/*.stdout" "$LINUX:$LREMOTE/c6747/out/*.result" "$WORK/back/" 2>/dev/null
+# And cl6x's objects, for the size table: -O2 as linked, and -O2 -ms3.
+mkdir -p "$WORK/back/o2" "$WORK/back/ms3"
+scp -q -i "$KEY" -o BatchMode=yes "$LINUX:$LREMOTE/c6747/out/*.obj" "$WORK/back/o2/" 2>/dev/null
+scp -q -i "$KEY" -o BatchMode=yes "$LINUX:$LREMOTE/c6747/out/ms3/*.obj" "$WORK/back/ms3/" 2>/dev/null
 
 field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
 pass=0; fail=0
@@ -129,6 +145,35 @@ for n in $NAMES; do
     esac
     [ $ok -eq 1 ] && pass=$((pass + 1)) || fail=$((fail + 1))
 done
+# Code bytes: the executable sections of each program's own object, library excluded.
+codebytes() {
+    [ -f "$1" ] || { echo -; return; }
+    python3 - "$1" <<'PY'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+shoff, = struct.unpack_from('<I', d, 0x20)
+shentsize, shnum = struct.unpack_from('<HH', d, 0x2e)
+total = 0
+for i in range(shnum):
+    h = struct.unpack_from('<IIIIIIIIII', d, shoff + i * shentsize)
+    if h[1] == 1 and h[2] & 4: total += h[5]      # SHT_PROGBITS, SHF_EXECINSTR
+print(total)
+PY
+}
+echo
+printf '%-10s %12s %12s %8s %10s %10s %10s %10s %8s\n' program "cl6x -O2" "cpp11 -O2" ratio \
+    "text O2" "text ms3" "cpp11 O2" "cpp11 O1" "O1/ms3"
+for n in $NAMES; do
+    ti=$(field "$WORK/back/$n.linux-ccs55.result" count)
+    cp11=$(field "$WORK/back/$n.linux-ccs55-cpp11.result" count)
+    r=-; case "$ti$cp11" in ""|*[!0-9]*) ;; *) r=$(echo "scale=2; $cp11 / $ti" | bc);; esac
+    a=$(codebytes "$WORK/back/o2/$n.obj"); b=$(codebytes "$WORK/back/ms3/$n.obj")
+    c=$(codebytes "$WORK/c6747/programs/$n.cpp11.obj"); e=$(codebytes "$WORK/cpp11/$n.O1.obj")
+    q=-; case "$b$e" in ""|*[!0-9]*) ;; *) q=$(echo "scale=2; $e / $b" | bc);; esac
+    printf '%-10s %12s %12s %8s %10s %10s %10s %10s %8s\n' "$n" "${ti:--}" "${cp11:--}" "$r" "$a" "$b" "$c" "$e" "$q"
+done
+echo
+
 if [ "$fail" -gt 0 ]; then
     for b in windows-ccs74-vm windows-ccs55 linux-ccs55; do echo "--- $b"; tr -d '\r' < "$WORK/$b.log" | grep -v '^BOX ' | tail -5; done
 fi

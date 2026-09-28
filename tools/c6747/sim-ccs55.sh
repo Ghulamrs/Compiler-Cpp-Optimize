@@ -23,7 +23,11 @@ run() {   # run <prog> <box> <.out> : the simulator, and the result line
     [ -n "$r" ] || status=1
 }
 for src in "$@"; do
-    n=$(basename "$src" .c); o=$W/out/$n.$BOX
+    n=$(basename "$src"); n=${n%.*}; o=$W/out/$n.$BOX
+    # For the size table only: cl6x -O2 optimising for space (-ms3), to an object.
+    mkdir -p "$W/out/ms3"
+    "$CG/bin/cl6x" -mv6740 --abi=eabi -O2 -ms3 --symdebug:none -I"$CG/include" -c \
+        --obj_directory="$W/out/ms3" "$src" > "$W/out/ms3/$n.log" 2>&1
     rm -f "$W/out/$n.$BOX".*
     if "$CG/bin/cl6x" -mv6740 --abi=eabi -O2 --symdebug:none -I"$CG/include" --obj_directory="$W/out" "$src" \
          $LINK -m "$o.map" -o "$o.out" > "$o.build.log" 2>&1; then
