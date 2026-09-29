@@ -505,6 +505,7 @@ void Tms6747::isZero(const Type *t) {
 }
 void Tms6747::genTruth(const Expr &e) {
     e.accept(*this);
+    if (e.type()->kind() == Kind::Bool) return;   // a bool is already 0 or 1
     isZero(e.type());
     out_ << "\tXOR\t1, A4, A4\n";  // A4 = (value != 0) ? 1 : 0
 }
@@ -722,6 +723,19 @@ void Tms6747::visit(const Binary &n) {
     }
 
     const Type *ot = n.lhs().type();        // the operands' common type
+    // A multiply by 1 or a power of two - the parser's index scaling - is nothing or a shift.
+    if (n.op() == BinOp::Mul && !ot->isFloating() && !isWide(ot)) {
+        const Num *k = dynamic_cast<const Num *>(&n.rhs());
+        long long v = k ? k->value() : 0;
+        if (k && v > 0 && (v & (v - 1)) == 0) {
+            n.lhs().accept(*this);
+            int sh = 0;
+            while ((1LL << sh) < v) sh++;
+            if (sh) out_ << "\tSHL\tA4, " << sh << ", A4\n";
+            narrowInt(n.type());
+            return;
+        }
+    }
     n.lhs().accept(*this);          // A4 = lhs
     pushValue(ot);
     n.rhs().accept(*this);          // A4 = rhs
