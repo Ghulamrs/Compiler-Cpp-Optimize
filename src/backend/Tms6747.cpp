@@ -210,7 +210,7 @@ static const int kSaveBytes = 40;   // under A15 whatever is saved, so a local's
 // dst is an A-file register. This is the one place a local's address is formed: on the first
 // walk, forming one costs the local its register.
 void Tms6747::localAddr(int off, const char *dst) {
-    if (planning_ && inlineDepth_ == 0 && !plainAccess_) slots_[off].addressed = true;
+    if (planning_ && !plainAccess_) slots_[localBase_ + off].addressed = true;
     off += kSaveBytes + localBase_;
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
@@ -525,7 +525,7 @@ void Tms6747::visit(const Var &n) {
 
 // ---- locals in registers ---------------------------------------------------
 bool Tms6747::regCandidate(const Var &v) const {
-    if (!v.isLocal() || inlineDepth_ != 0 || optimize_ <= 0) return false;
+    if (!v.isLocal() || optimize_ <= 0) return false;
     const Type *t = v.type();   // a target the parser typed through the Assign alone stays in memory
     if (t == nullptr || t->isStructOrUnion() || t->isArray() || t->isFunction() || t->isVoid()) return false;
     const int size = t->size(target_);
@@ -534,13 +534,13 @@ bool Tms6747::regCandidate(const Var &v) const {
 // A use is counted on the first walk; the register is answered on the second.
 const std::string *Tms6747::regFor(const Var &v) {
     if (!regCandidate(v)) return nullptr;
-    if (planning_) { noteUse(v); return nullptr; }
-    std::map<int, std::string>::const_iterator it = regOf_.find(v.offset());
+    if (planning_) { noteUse(localBase_ + v.offset(), v.type()); return nullptr; }
+    std::map<int, std::string>::const_iterator it = regOf_.find(localBase_ + v.offset());
     return it == regOf_.end() ? nullptr : &it->second;
 }
-void Tms6747::noteUse(const Var &v) {
-    Slot &s = slots_[v.offset()];
-    const int size = v.type()->size(target_);
+void Tms6747::noteUse(int key, const Type *t) {
+    Slot &s = slots_[key];
+    const int size = t->size(target_);
     if (s.size != 0 && s.size != size) s.addressed = true;   // two types on one slot: left in memory
     s.size = size;
     s.wide = size == 8;
@@ -556,8 +556,9 @@ void Tms6747::regWrite(const std::string &r, bool wide) {
     if (wide) out_ << "\tMV\tA5, " << pairHigh(r) << "\n";
 }
 
-// The most used locals take the callee-saved registers the function's calls leave alone - the
-// A file first, since a copy to the accumulator folds there - a 64-bit one an even:odd pair.
+// The most used locals take the callee-saved registers the function's calls leave alone - the A
+// file first, since a copy to the accumulator folds there - a 64-bit one an even:odd pair. B16-B23
+// for a leaf measured neutral: cross-file copies do not fold, and the epilogue's load hides the restore.
 void Tms6747::planRegisters(const Function &fn) {
     regOf_.clear();
     promoted_.clear();
@@ -1411,9 +1412,13 @@ void Tms6747::emitParams(const Function &fn) {
             copyBlock(t->size(target_), "A4", "A1", t->align(target_));
             continue;
         }
-        // A parameter in a register: the value as the walk found it, counted as one use.
-        if (inlineDepth_ == 0 && regOf_.count(ps[i].offset)) { narrowInt(t); regWrite(regOf_[ps[i].offset], isWide(t)); continue; }
+        // A parameter in a register: the value as the walk found it, its arrival counted as a use.
+        const int key = localBase_ + ps[i].offset;
+        if (planning_) noteUse(key, t);
+        if (regOf_.count(key)) { narrowInt(t); regWrite(regOf_[key], isWide(t)); continue; }
+        plainAccess_ = true;
         localAddr(ps[i].offset, "A0");
+        plainAccess_ = false;
         store(t, "A0");
     }
 }
@@ -1462,7 +1467,6 @@ void Tms6747::walkBody(const Function &fn) {
     inlineBase_ = frame_;
     // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked in place.
     if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
-    for (const Param &p : fn.params()) if (planning_) slots_[p.offset].uses++;   // its arrival
     fn.body().accept(*this);
     // Falling off the end returns 0 - main's C99 meaning, and what the other
     // backends do for every function - or the result pointer for a struct.

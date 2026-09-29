@@ -117,7 +117,7 @@ private:
     // scalar locals never have their address formed and how often each is used, the second with
     // the most used of those in A10-A13 and B10-B13, a 64-bit one in an even:odd pair.
     struct Slot { int uses = 0; bool addressed = false; bool wide = false; int size = 0; };
-    std::map<int, Slot> slots_;                // by frame offset, the function's own locals only
+    std::map<int, Slot> slots_;                // by frame offset, an inlined callee's locals included
     std::map<int, std::string> regOf_;         // offset -> the register (the low one of a pair)
     std::vector<std::string> promoted_;        // those registers, to be saved and restored
     bool planning_ = false;                    // the first walk: counting, and deciding nothing
@@ -125,7 +125,7 @@ private:
     int loopDepth_ = 0;                        // a use inside a loop weighs more
     bool regCandidate(const Var &v) const;     // a whole scalar local of this function, up to 8 bytes
     const std::string *regFor(const Var &v);   // its register on the second walk, or null
-    void noteUse(const Var &v);
+    void noteUse(int key, const Type *t);      // key: the frame offset, an inlined callee's past its caller's
     void planRegisters(const Function &fn);
     void regRead(const std::string &r, bool wide);    // A4 (A5:A4) = the register
     void regWrite(const std::string &r, bool wide);   // the register = A4 (A5:A4)
