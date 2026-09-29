@@ -647,7 +647,12 @@ unsigned unitsFor(const Line &l) {
     }
     if (m == "SUB") {
         if (pair) return UL;
-        if (at < 0) return UL | US | UD;
+        if (at < 0) {               // a crossed first source has the .S form and .L's crossed-first one, never .D's
+            std::vector<std::string> first, dst;
+            registersIn(l.ops[0], first); registersIn(l.ops[2], dst);
+            bool firstCrosses = !first.empty() && !dst.empty() && sideOf(first[0]) != sideOf(dst[0]);
+            return firstCrosses ? UL | US : UL | US | UD;
+        }
         if (at == 0 && small) return UL | US;
         if (at == 1 && ucst && crossings(l) == 0) return UD;
         return 0;
