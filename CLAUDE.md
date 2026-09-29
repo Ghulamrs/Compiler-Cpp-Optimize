@@ -11078,6 +11078,16 @@ TI's linker linked on every row; LNK6x is not in the loop yet** - it rejects
 `C6747.cmd` and links no image that reaches `main` (see "cpp11 on TI's simulator"),
 so every cycle count here goes through TI's own linker, clearly labelled.
 
+**Compiler++ re-timed with the registers, the ten-file workload one file per run
+on the Windows box** (`C:\cxx1\split\cpph2`, cpp11's build alone, every
+fingerprint the same as the run of 09:16 that matched clang's): adventure
+520,715,757, bank 870,236,643, containers 940,164,256, geometry 1,526,659,017,
+matrix 793,405,929, parser 634,265,498, shapes 929,028,242, simulation
+699,395,255, sorting 888,679,359, strings 1,010,348,262 - **8,812,898,218 against
+cl6x 7.4.4's 9,355,361,348 (0.94x) and cl6x 8.2.2's 9,097,357,333 (0.97x)**, where
+the morning's build stood at 1.16x and 1.19x. Six of the ten files run faster than
+cl6x 7.4.4 -O2 now; matrix, parser, sorting and adventure are still 4 to 6% behind.
+
 **The emulator's unwinder popped no saved registers, and TI's simulator settled
 it.** With locals in A10-A13 and B10-B13, seven suite cases failed on VM6747 and six
 of them threw: `Runtime::land` sets A15, B15, B3 and A4 and nothing else, so a
