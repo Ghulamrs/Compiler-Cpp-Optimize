@@ -11098,11 +11098,8 @@ it installs at the pad. `temporary-unwind`, `string-at`, `handler-exit-ms` and
 on the cycle-accurate simulator on both boxes, cycle-identical (564,824 / 375,333 /
 111,919 / 436,725). The suite was run through an emulator patched to pop them
 (`Runtime::popSaved`, called as `unwindTo` leaves each frame, from the unwind
-word's mask in TI's order); that patch is for VM6747 and sits in this round's
-scratchpad as `vm6747-popsaved.patch`, since VM6747's tree carried another
-session's uncommitted change. Until it lands, `tests/tms6747.sh` at -O1 or -O2
-needs `VM=` pointing at a patched emulator; at -O0 nothing is promoted and the
-shipped emulator answers as before.
+word's mask in TI's order). **It landed in VM6747 as `52b5fd5` the same day**, and
+`tests/tms6747.sh` passes 339 / 0 at -O0, -O1 and -O2 on the ordinary emulator.
 
 **Measured at the close**: tms6747.sh 339 / 0 at -O1 and at -O2 (7 skipped for a
 64-bit long, 6 not for this target); run.sh 553 / 0, names.sh 352 / 0, overload.sh
