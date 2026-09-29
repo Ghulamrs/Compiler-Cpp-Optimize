@@ -15,6 +15,8 @@
 
 namespace {
 
+enum { UL = 1, US = 2, UD = 4, UM = 8 };   // the units, as a bitmask
+
 struct Line {
     std::string raw;
     bool instr = false;
@@ -339,9 +341,23 @@ std::string renamed(const std::string &op, const std::string &from, const std::s
     return out;
 }
 
+// Whether operand o of this instruction may come over the cross path: TI's src2 -
+// the second source of the arithmetic, either of a commutative one or a compare
+// (asm6x turns them about), the value of a shift or EXT (written first) - and
+// never a count, a field instruction's source (EXTU, CLR), or a conversion's.
+bool mayCross(const std::string &m, std::size_t o) {
+    if (m == "ADD" || m == "AND" || m == "OR" || m == "XOR" || m == "SUB" || startsWith(m, "CMP")) return true;
+    if (m == "MV" || m == "NEG" || m == "NOT" || m == "SPDP" || m == "INTSP" || m == "INTDP" || m == "SPTRUNC") return true;
+    if (m == "SHL" || m == "SHR" || m == "SHRU") return o == 0;
+    if (startsWith(m, "MPY") || m == "ADDSP" || m == "SUBSP" || m == "ADDDP" || m == "SUBDP") return o == 1;
+    return false;
+}
+
+unsigned unitsFor(const Line &l);
+
 // How many of an instruction's source registers sit on the other side from
-// its destination - at most one may, over the cross path; a store's data and
-// a load's destination travel a data path instead and are not counted.
+// its destination - at most one may, over the cross path, and only in a
+// position that has a crossed form; 2 answers for anything illegal.
 int crossings(const Line &l) {
     if (l.ops.empty() || isStore(l.mnem) || isLoad(l.mnem) || l.mnem == "B") return 0;
     std::vector<std::string> dst;
@@ -353,7 +369,7 @@ int crossings(const Line &l) {
         registersIn(l.ops[o], regs);
         bool crossed = false;
         for (std::size_t k = 0; k < regs.size(); k++) if (sideOf(regs[k]) != sideOf(dst[0])) crossed = true;
-        if (crossed && regs.size() > 1) return 2;     // a pair never crosses
+        if (crossed && (regs.size() > 1 || !mayCross(l.mnem, o))) return 2;     // a pair never crosses
         if (crossed) n++;
     }
     return n;
@@ -387,7 +403,7 @@ bool forwardMoves(std::vector<Line> &v) {
                 Line p = v[i - 1];
                 p.ops.back() = D;
                 Line r = rebuilt(p.mnem, p.ops);
-                if (crossings(r) <= 1) {
+                if (crossings(r) <= 1 && unitsFor(r) != 0) {
                     v[i - 1] = r;
                     v.erase(v.begin() + static_cast<long>(i));
                     i--;
@@ -415,7 +431,7 @@ bool forwardMoves(std::vector<Line> &v) {
                 bool memSide = false;
                 for (std::size_t o = 0; o < r.ops.size(); o++)
                     if (r.ops[o][0] == '*') { std::vector<std::string> m; registersIn(r.ops[o], m); if (m.size() > 1 && sideOf(m[0]) != sideOf(m[1])) memSide = true; }
-                if (memSide || crossings(r) > 1 || (r.mnem == "B" && sideOf(r.ops[0]) == 'A')) break;
+                if (memSide || crossings(r) > 1 || unitsFor(r) == 0 || (r.mnem == "B" && sideOf(r.ops[0]) == 'A')) break;
                 v[j] = r;
                 v.erase(v.begin() + static_cast<long>(i));
                 i--;
@@ -591,7 +607,6 @@ void foldPushPop(std::vector<Line> &v) {
 
 // ----- the list scheduler -----
 
-enum { UL = 1, US = 2, UD = 4, UM = 8 };
 
 // One instruction as the scheduler sees it: what it reads and writes, its
 // latency, the units it has a form on, its side and cross path, its memory
@@ -638,7 +653,8 @@ unsigned unitsFor(const Line &l) {
         return 0;
     }
     if (m == "NOT") return UL | US | UD;
-    if (m == "NEG" || m == "MV") return pair ? UL : UL | US | UD;
+    if (m == "NEG") return UL | US;
+    if (m == "MV") return pair ? UL : UL | US | UD;
     if (m == "ZERO") return UL;
     if (m == "CLR" || m == "EXT" || m == "EXTU" || m == "SHL" || m == "SHR" || m == "SHRU") return US;
     if (m == "MVK") return isNumber(l.ops[0]) && std::atol(l.ops[0].c_str()) >= -16 && std::atol(l.ops[0].c_str()) <= 15 ? UL | US : US;
