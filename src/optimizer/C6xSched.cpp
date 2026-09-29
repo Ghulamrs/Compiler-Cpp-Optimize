@@ -383,7 +383,7 @@ bool forwardMoves(std::vector<Line> &v) {
             !v[i - 1].ops.empty() && v[i - 1].ops.back() == S && deadAfter(v, i, S)) {
             std::vector<std::string> reads, writes;
             readsAndWrites(v[i - 1], reads, writes);
-            if (writes.size() == 1 && delaySlots(v[i - 1].mnem) == 0) {
+            if (writes.size() == 1) {
                 Line p = v[i - 1];
                 p.ops.back() = D;
                 Line r = rebuilt(p.mnem, p.ops);
@@ -499,6 +499,41 @@ bool flipPredicates(std::vector<Line> &v) {
         changed = true;
     }
     return changed;
+}
+
+// **A loop's back edge takes the test with it**: `B L` where L's block is a test
+// ending in `[P] B M` and M is the label after the jump becomes a copy of the
+// test ending in `[!P] B L$rot`, a label placed after the head's own branch -
+// one branch a turn instead of two, and the test overlapping the step.
+void rotateLoops(std::vector<Line> &v) {
+    std::map<std::string, std::size_t> at;
+    for (std::size_t i = 0; i < v.size(); i++) if (isLabel(v[i])) at[labelName(v[i])] = i;
+    std::vector<Line> out;
+    std::set<std::string> rotated;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        const Line &b = v[i];
+        bool taken = false;
+        if (b.instr && b.mnem == "B" && b.pred.empty() && at.count(b.ops[0]) && i + 1 < v.size() && isLabel(v[i + 1])) {
+            std::size_t h = at[b.ops[0]], e = h + 1;
+            while (e < v.size() && v[e].instr && v[e].mnem != "B") e++;
+            if (e < v.size() && e - h <= 17 && v[e].instr && v[e].mnem == "B" && !v[e].pred.empty() &&
+                v[e].ops[0] == labelName(v[i + 1]) && (i < h || i > e)) {
+                for (std::size_t k = h + 1; k < e; k++) out.push_back(v[k]);
+                const std::string &p = v[e].pred;
+                out.push_back(rebuilt("B", std::vector<std::string>(1, b.ops[0] + "$rot"), p[0] == '!' ? p.substr(1) : "!" + p));
+                rotated.insert(b.ops[0]);
+                taken = true;
+            }
+        }
+        if (!taken) out.push_back(b);
+    }
+    v.swap(out);
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (!isLabel(v[i]) || !rotated.count(labelName(v[i]))) continue;
+        std::size_t e = i + 1;
+        while (v[e].mnem != "B") e++;
+        v.insert(v.begin() + static_cast<long>(e) + 1, parse(labelName(v[i]) + "$rot:"));
+    }
 }
 
 bool isPush(const std::vector<Line> &v, std::size_t i) {
@@ -809,14 +844,34 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
     while (nops > 0) { out << "\tNOP\t" << std::min(nops, 9) << "\n"; nops -= std::min(nops, 9); }
 }
 
+// A label of the backend's own flow - the kinds only a branch of this text
+// names - that no instruction names is no block boundary: the instructions
+// on either side are scheduled together and the label is kept in front.
+bool passThrough(const Line &l, const std::set<std::string> &named) {
+    static const char *const kinds[] = { ".begin", ".step", ".end", ".else", ".shortcut", ".wide", ".widend", ".noresult", ".case", ".default", ".inline" };
+    const std::string name = labelName(l);   // spelled with dots here; the TI spelling makes them $ later
+    if (named.count(name)) return false;
+    std::size_t d = name.find_last_not_of("0123456789");
+    if (d == std::string::npos || d + 1 >= name.size()) return false;
+    std::size_t k = name.rfind('.', d);
+    if (k == std::string::npos) return false;
+    const std::string kind = name.substr(k, d + 1 - k);
+    for (std::size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) if (kind == kinds[i]) return true;
+    return false;
+}
+
 // The whole text: each block scheduled on its own, every label and directive kept where it is.
 std::string schedule(const std::vector<Line> &v) {
-    std::set<std::string> labels;
-    for (std::size_t i = 0; i < v.size(); i++) if (isLabel(v[i])) labels.insert(labelName(v[i]));
+    std::set<std::string> labels, named;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i])) labels.insert(labelName(v[i]));
+        for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
+    }
     std::ostringstream out;
     std::vector<Node> block;
     auto flush = [&]() { if (!block.empty()) scheduleBlock(block, out); block.clear(); };
     for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i]) && passThrough(v[i], named)) { out << v[i].raw << "\n"; continue; }
         if (!v[i].instr) { flush(); out << v[i].raw << "\n"; continue; }
         block.push_back(makeNode(v[i], labels));
         if (v[i].mnem == "B") flush();
@@ -849,5 +904,6 @@ std::string c6xSchedule(const std::string &text, int level) {
         changed = flipPredicates(lines) || changed;
         if (!changed) break;
     }
+    rotateLoops(lines);
     return schedule(lines);
 }
