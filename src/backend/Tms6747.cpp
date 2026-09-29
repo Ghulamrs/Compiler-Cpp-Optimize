@@ -1037,6 +1037,8 @@ void Tms6747::setOptimize(int level) {
 // A node here is several instructions of a stack machine, so only a member this small is taken,
 // and a small member's own small members with it, to this depth.
 static const int kSmallMember = 12;
+// A leaf - no call, no loop - is straight-line code shorter than the call it replaces: to 24.
+static const int kLeafMember = 24;
 static const int kInlineDepth = 3;
 
 // **A direct call to a small function of this unit, walked in its place**: every argument
@@ -1049,7 +1051,7 @@ const Function *Tms6747::inlineTarget(const Call &n) const {
     const Function &fn = *it->second;
     const std::string site = n.symbol() + " in " + (functionOf_ ? functionOf_->symbol() : std::string());
     if (fn.isNoexcept()) { opt::noteDecline("inline-callee-noexcept", site); return nullptr; }
-    if (inliner_->size(fn) > kSmallMember) { opt::noteDecline("inline-callee-not-small", site); return nullptr; }
+    if (inliner_->size(fn) > (inliner_->leaf(fn) ? kLeafMember : kSmallMember)) { opt::noteDecline("inline-callee-not-small", site); return nullptr; }
     if (fn.params().size() > static_cast<std::size_t>(abi_.intCount)) {
         opt::noteDecline("inline-site-stack-arguments", site); return nullptr;
     }

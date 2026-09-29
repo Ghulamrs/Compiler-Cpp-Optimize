@@ -25,6 +25,8 @@ public:
 
     // The callee's body in AST nodes, for a target that takes only the smallest.
     int size(const Function &fn) const { const auto it = measures_.find(&fn); return it != measures_.end() ? it->second.size : 0; }
+    // No call and no loop in it: straight-line code, which walked in place is shorter than a call.
+    bool leaf(const Function &fn) const { const auto it = measures_.find(&fn); return it != measures_.end() && it->second.leaf; }
 
     // The largest frame any site of the unit brings in, for a caller whose frame must be fixed before its body is walked.
     int largestFrame() const { return largestFrame_; }
@@ -35,6 +37,7 @@ private:
     struct Measure {
         int size = 0;
         bool eligible = false;
+        bool leaf = false;
         const char *why = "";     // what makes it ineligible, for CPP11_DECLINES
         int taken = 0;
     };

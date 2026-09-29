@@ -14,6 +14,7 @@ public:
     bool cleanups = false;                          // a block that runs destructors on unwind
     bool labels = false;                            // a goto's label or a case's: the parser names them once per function
     std::vector<std::pair<const Call *, int>> calls; // each call, and its loop depth
+    bool loops = false;                             // a while, do or for anywhere in it
 
     void visit(const Num &) override { ++nodes; }
     void visit(const Var &) override { ++nodes; }
@@ -76,7 +77,7 @@ public:
 
 private:
     int depth_ = 0;
-    void inLoop(const Node &body) { ++depth_; body.accept(*this); --depth_; }
+    void inLoop(const Node &body) { loops = true; ++depth_; body.accept(*this); --depth_; }
 };
 
 // What a call sequence costs, in the same measure: the call itself and the moves that place its arguments.
@@ -122,6 +123,7 @@ std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
                     : fn.regSaveSlot() != 0 ? "inline-callee-register-save-area" : m.cleanups ? "inline-callee-cleanup"
                     : m.labels ? "inline-callee-label-or-switch" : "";
         measure.eligible = *measure.why == '\0';
+        measure.leaf = m.calls.empty() && !m.loops;
         unitSize_ += m.nodes;
         bySymbol[fn.symbol()] = &fn;
     }

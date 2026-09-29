@@ -902,6 +902,9 @@ Parser::instantiate(const TemplateDecl &decl,
     const std::size_t at = functions_.size();
     functionIndex_[key].push_back(at);
     functionIndex_[decl.name].push_back(at);
+    // And under the template's namespace, where that namespace's ordinary functions of the name
+    // are: a template and a non-template there compete as one set, and the non-template wins a tie.
+    if (!decl.ns.empty()) functionIndex_[decl.ns + decl.name].push_back(at);
     functions_.push_back(Signature{ display, symbol, fn->returns(), fn->params(),
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
@@ -1777,7 +1780,13 @@ ExprPtr Parser::templateCall(Program *program) {
             src_.fail(pos, "'" + name + "' is a function template and " + why);
         }
 
-        const Signature sig = resolveOverload(name, callArgs, pos);
+        // **In the template's own namespace**, whose ordinary functions of this name are candidates
+        // beside its specializations - [over.match.best]: an exact non-template beats a template.
+        // Resolved under the bare name, a qualified call or a class template's member body saw only
+        // the specializations.
+        const std::string key = !decl.ns.empty() && overloadsOf(decl.ns + name) != nullptr
+                              ? decl.ns + name : name;
+        const Signature sig = resolveOverload(key, callArgs, pos);
         // **A specialization's defaults, as every ordinary call reads them.**
         applyDefaults(sig, callArgs, pos);
         return completeCall(sig.name, sig.symbol, nullptr, sig.returns,

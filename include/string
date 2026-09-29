@@ -35,16 +35,24 @@ namespace std {
 // a library, as the operators below are.
 inline void __throw_out_of_range(const char *what);
 
-// The traits a basic_string needs, as three functions: length, order, membership.
+// The traits a basic_string needs, as three functions: length, order, membership. For char the
+// first two are strlen and memcmp - char_traits<char> compares as unsigned char - which the
+// platform's library has fast; wchar_t takes the loops.
 template <class C> inline std::size_t __cxx1_length(const C *s) {
     std::size_t n = 0;
     if (s != 0) while (s[n] != 0) n++;
     return n;
 }
-template <class C> inline int __cxx1_compare(const C *a, const C *b) {
-    std::size_t i = 0;
-    while (a[i] != 0 && a[i] == b[i]) i++;
-    return a[i] < b[i] ? -1 : a[i] == b[i] ? 0 : 1;
+inline std::size_t __cxx1_length(const char *s) { return s != 0 ? std::strlen(s) : 0; }
+template <class C> inline int __cxx1_compare_n(const C *a, const C *b, std::size_t n) {
+    for (std::size_t i = 0; i < n; i++)
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+inline int __cxx1_compare_n(const char *a, const char *b, std::size_t n) {
+    if (n == 0) return 0;
+    int r = std::memcmp(a, b, n);
+    return r < 0 ? -1 : r > 0 ? 1 : 0;
 }
 template <class C> inline bool __cxx1_holds(const C *wanted, C c) {
     for (std::size_t i = 0; wanted[i] != 0; i++)
@@ -230,14 +238,12 @@ public:
     }
     basic_string &erase(size_type pos) { return erase(pos, npos); }
 
+    // The common length first, then which is longer.
     int compare(const basic_string &o) const {
-        const C *a = p(), *b = o.p();
-        size_type n = len_ < o.len_ ? len_ : o.len_;
-        for (size_type i = 0; i < n; i++)
-            if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
-        return len_ < o.len_ ? -1 : len_ == o.len_ ? 0 : 1;
+        int r = __cxx1_compare_n(p(), o.p(), len_ < o.len_ ? len_ : o.len_);
+        return r != 0 ? r : len_ < o.len_ ? -1 : len_ == o.len_ ? 0 : 1;
     }
-    int compare(const C *s) const { return __cxx1_compare(p(), s); }
+    int compare(const C *s) const { return compareUnits(s, __cxx1_length(s)); }
 
 private:
     // **Up to fifteen units live inside the object** - TI's and Dinkumware's layout,
@@ -245,7 +251,11 @@ private:
     // a returned local to its caller as bytes and a self-pointer would dangle.
     enum { small = 15 };
     C *p() { return heap_ != 0 ? heap_ : small_; }
-    const C *p() const { if (heap_ != 0) return heap_; return small_; }
+    const C *p() const { return heap_ != 0 ? static_cast<const C *>(heap_) : small_; }
+    int compareUnits(const C *s, size_type n) const {
+        int r = __cxx1_compare_n(p(), s, len_ < n ? len_ : n);
+        return r != 0 ? r : len_ < n ? -1 : len_ == n ? 0 : 1;
+    }
     void empty0() { heap_ = 0; len_ = 0; cap_ = 0; small_[0] = 0; }
     void init(const C *s, size_type n) {
         empty0();
@@ -306,12 +316,23 @@ typedef basic_string<wchar_t> wstring;
 // Now it does on every target: `.weak` on the two GNU targets and the C6000,
 // `.weak_def_can_be_hidden` on Mach-O, a COMDAT section on Windows in both
 // spellings (the project's own MASM assembler took COMDAT on 2026-09-18).
-template <class C> inline bool operator==(const basic_string<C> &a, const basic_string<C> &b) { return a.compare(b) == 0; }
-template <class C> inline bool operator==(const basic_string<C> &a, const C *b) { return a.compare(b) == 0; }
-template <class C> inline bool operator==(const C *a, const basic_string<C> &b) { return b.compare(a) == 0; }
-template <class C> inline bool operator!=(const basic_string<C> &a, const basic_string<C> &b) { return a.compare(b) != 0; }
-template <class C> inline bool operator!=(const basic_string<C> &a, const C *b) { return a.compare(b) != 0; }
-template <class C> inline bool operator!=(const C *a, const basic_string<C> &b) { return b.compare(a) != 0; }
+// Equality with another string asks the lengths before a unit is compared; with a C string it
+// walks both and stops at the first difference - usually the first unit - never measuring it.
+template <class C> inline bool __cxx1_equal(const basic_string<C> &a, const C *b) {
+    const C *d = a.data();
+    const std::size_t n = a.size();
+    for (std::size_t i = 0; i < n; i++)
+        if (d[i] != b[i]) return false;
+    return b[n] == 0;
+}
+template <class C> inline bool operator==(const basic_string<C> &a, const basic_string<C> &b) {
+    return a.size() == b.size() && __cxx1_compare_n(a.data(), b.data(), a.size()) == 0;
+}
+template <class C> inline bool operator==(const basic_string<C> &a, const C *b) { return __cxx1_equal(a, b); }
+template <class C> inline bool operator==(const C *a, const basic_string<C> &b) { return __cxx1_equal(b, a); }
+template <class C> inline bool operator!=(const basic_string<C> &a, const basic_string<C> &b) { return !(a == b); }
+template <class C> inline bool operator!=(const basic_string<C> &a, const C *b) { return !(a == b); }
+template <class C> inline bool operator!=(const C *a, const basic_string<C> &b) { return !(b == a); }
 template <class C> inline bool operator<(const basic_string<C> &a, const basic_string<C> &b) { return a.compare(b) < 0; }
 template <class C> inline bool operator>(const basic_string<C> &a, const basic_string<C> &b) { return a.compare(b) > 0; }
 template <class C> inline bool operator<=(const basic_string<C> &a, const basic_string<C> &b) { return a.compare(b) <= 0; }
