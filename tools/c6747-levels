@@ -7,16 +7,22 @@
 # Eight builds of each program run at once there (tools/c6747/bench-levels.cmd, each run
 # capped at 30 minutes): cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4) at -O1, -O2 and
 # -O2 -ms3, each with its own linker and rts6740_elf_eh.lib; and cpp11 -O1 and -O2, compiled
-# here, assembled by ASM6x and linked by 7.4.4. The table is cycle.Total per build, cpp11's
-# ratio to each TI compiler at the same level, and the code bytes of each program's own object
-# (its executable sections, the library excluded). A program passes a build when its stdout is
-# its .expected. Everything lands in C:\cxx1\bench-levels\<stamp>, a folder of its own.
+# here, assembled by ASM6x and linked by 7.4.4 - and, where LNK6x is built beside this tree and
+# the box's 7.4.4 library is in $TILIB, the same objects linked by LNK6x here, `cpp11-O1-lnk6x`
+# and `cpp11-O2-lnk6x`, so cpp11 + ASM6x + LNK6x is timed as one toolchain). The table is
+# cycle.Total per build, cpp11's ratio to each TI compiler at the same level, the code bytes of
+# each program's own object (its executable sections, the library excluded) and each image's
+# bytes. A program passes a build when its stdout is its .expected. Everything lands in
+# C:\cxx1\bench-levels\<stamp>, a folder of its own; KEEP=<dir> keeps the images and maps.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WINDOWS=${CXX1_WINDOWS:-windows}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
 [ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe   # from a worktree under .claude/
+LNK6X=${LNK6X:-$ROOT/../LNK6x/build/lnk6x.exe}
+[ -x "$LNK6X" ] || LNK6X=$HOME/Developer/Claude/LNK6x/build/lnk6x.exe
+TILIB=${TILIB:-$HOME/c6747-lib}   # a copy of the box's C:\cxx1\c6747-lib: rts6740_elf_eh.lib from 7.4.4's mklib
 STAMP=${STAMP:-$(date +%m%d-%H%M%S)}
 WREMOTE="C:\\cxx1\\bench-levels\\$STAMP"
 DIR=${1:-$ROOT/tools/c6747/bench}
@@ -38,7 +44,13 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
     for L in O1 O2; do
         if "$CPP11" -arch tms6747 -nologo -$L -S "$WORK/$n.cpp" -o "$WORK/$n.$L.s" > "$WORK/$n.$L.log" 2>&1 &&
            "$ASM6X" "$WORK/$n.$L.s" -o "$WORK/bl/$n.cpp11-$L.obj" >> "$WORK/$n.$L.log" 2>&1; then :
-        else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; fi
+        else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; continue; fi
+        # LNK6x's image of the same object, made here from the command file and library TI's linker gets.
+        [ -x "$LNK6X" ] && [ -f "$TILIB/rts6740_elf_eh.lib" ] || continue
+        if "$LNK6X" -mv6740 --abi=eabi "$WORK/bl/$n.cpp11-$L.obj" --heap_size=0x800 --stack_size=0x800 -i"$TILIB" \
+              --rom_model "$ROOT/tools/c6747/C6747.cmd" -lrts6740_elf_eh.lib -m "$WORK/bl/$n.cpp11-$L-lnk6x.map" \
+              -o "$WORK/bl/$n.cpp11-$L-lnk6x.out" > "$WORK/$n.$L.lnk6x.log" 2>&1; then :
+        else echo "c6747-levels: LNK6x did not link $n -$L:"; sed 's/^/      /' "$WORK/$n.$L.lnk6x.log" | head -4; fi
     done
 done
 COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/bl.tgz" bl
@@ -49,6 +61,9 @@ ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\bench-levels.cmd" > "$WORK/windows.lo
 mkdir -p "$WORK/back"
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.result" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.stdout" "$WORK/back/" 2>/dev/null
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/obj" "$WORK/back/" 2>/dev/null
+mkdir -p "$WORK/back/img"
+scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.out" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.map" "$WORK/back/img/" 2>/dev/null
+[ -n "${KEEP:-}" ] && mkdir -p "$KEEP" && cp -R "$WORK/back" "$WORK/bl" "$KEEP/"
 
 field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
 codebytes() {
@@ -66,6 +81,7 @@ print(total)
 PY
 }
 BUILDS="744-O1 744-O2 744-ms 822-O1 822-O2 822-ms cpp11-O1 cpp11-O2"
+[ -f "$WORK/bl/$(echo $NAMES | awk '{print $1}').cpp11-O2-lnk6x.out" ] && BUILDS="$BUILDS cpp11-O1-lnk6x cpp11-O2-lnk6x"
 pass=0; fail=0
 echo
 echo "cycles (cycle.Total, TI's C6747 cycle-accurate simulator, Windows box):"
@@ -102,9 +118,17 @@ printf '%-8s' program; for b in $BUILDS; do printf '%10s' "$b"; done; printf '\n
 for n in $NAMES; do
     printf '%-8s' "$n"
     for b in $BUILDS; do
-        case "$b" in cpp11-*) f=$WORK/bl/$n.$b.obj;; *) f=$WORK/back/obj/$b/$n.obj;; esac
+        case "$b" in *-lnk6x) f=$WORK/bl/$n.${b%-lnk6x}.obj;; cpp11-*) f=$WORK/bl/$n.$b.obj;; *) f=$WORK/back/obj/$b/$n.obj;; esac
         printf '%10s' "$(codebytes "$f")"
     done
+    printf '\n'
+done
+echo
+echo "image bytes (the linked .out):"
+printf '%-8s' program; for b in $BUILDS; do printf '%10s' "$b"; done; printf '\n'
+for n in $NAMES; do
+    printf '%-8s' "$n"
+    for b in $BUILDS; do f=$WORK/back/img/$n.$b.out; if [ -f "$f" ]; then printf '%10s' "$(stat -f %z "$f")"; else printf '%10s' -; fi; done
     printf '\n'
 done
 echo

@@ -3,8 +3,9 @@ rem bench-levels.cmd - the kernels on the Windows box against both CCS toolchain
 rem every run at once on the C6747 cycle-accurate simulator, each stopped at 30 minutes.
 rem For each <prog>.c or .cpp here: cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4) at -O1, -O2 and
 rem -O2 -ms3, each linked by its own linker against its own rts6740_elf_eh.lib; and cpp11's
-rem <prog>.cpp11-O1.obj and <prog>.cpp11-O2.obj, linked by 7.4.4. The objects stay in obj\ for
-rem the size table. Writes <prog>.<build>.result and .stdout; MAXRUNS caps the sessions at once.
+rem <prog>.cpp11-O1.obj and <prog>.cpp11-O2.obj, linked by 7.4.4; and any image shipped here
+rem already, <prog>.cpp11-<level>-lnk6x.out - the same object linked by LNK6x on the Mac. The
+rem objects stay in obj\ for the size table. Writes <prog>.<build>.result and .stdout; MAXRUNS caps the sessions at once.
 setlocal enabledelayedexpansion
 set W=%~dp0
 set W=%W:~0,-1%
@@ -17,9 +18,10 @@ set CG55=%CCS55%\tools\compiler\c6000_7.4.4
 set LINK55=-z --heap_size=0x800 --stack_size=0x800 -i"%C6747_EHLIB%" --rom_model "%W%\C6747.cmd" -lrts6740_elf_eh.lib
 set LINK74=-z --heap_size=0x800 --stack_size=0x800 -i"%C6747_EHLIB74%" --rom_model "%W%\C6747.cmd" -lrts6740_elf_eh.lib
 cd /d "%W%"
-del /q *.result *.stdout *.out *.log *.map 2>nul
+del /q *.result *.stdout *.log 2>nul
 if not exist obj mkdir obj
 set WANT=0
+for %%o in (*.out) do set /a WANT+=1
 for %%f in (*.c *.cpp) do (
   set N=%%~nf
   call :ti 55 744-O1 -O1 "%%f"

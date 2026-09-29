@@ -10927,12 +10927,12 @@ time different run-time code. 7.4.4's `_eh` build is made once per box with
 outright: `-llibc.a` picks one by the object's build attributes and could not match
 ASM6x's.
 
-**LNK6x cannot link this yet**, measured against TI's lnk6x on the same object, command
-file and library: it rejects TI's own `C6747.cmd` (`DSPL2ROM o = ...`, no colon,
-which lnk6x takes), has no `--heap_size`/`--stack_size`, and its image has no
-`.stack`, no `.c6xabi.exidx`/`.extab`, no `.switch`, and 24,832 bytes of `.text`
-against 36,448 - it runs 62 cycles and stops at 0x118. That is LNK6x's work, in its
-own tree; this tree links with TI's.
+**LNK6x could not link this when it was first tried** - it rejected TI's `C6747.cmd`
+(`DSPL2ROM o = ...`, no colon), had no `--heap_size`/`--stack_size`, and its image had
+no `.stack`, `.c6xabi.exidx`/`.extab` or `.switch` and ran 62 cycles to 0x118. All of
+that is LNK6x `a6d9462`'s and `4051857`'s now (branch kernels-link): it links the six
+kernels from the same object, command file and library, and TI's simulator runs its
+images within 24 cycles of lnk6x's - see "LNK6x links the kernels" below.
 
 **VM6747 and cl6x -O2**: at -O2 cl6x ends `main` with `RET B3` and sets A4 in the
 branch's delay slots (`MVK 7,A4` two packets after the RET); TI's simulator prints the
@@ -11074,9 +11074,8 @@ count on both simulators for all six kernels, to the cycle - cpp11 9,713,672 /
 are not this round's: VM6747 prints wrong output for cl6x 8.2.2's isort, matmul and
 sieve (its KNOWN-GAPS.md), and one Windows result line for cl6x's hash came back
 without its fields while the Linux one read 6,009,087. **ASM6x's objects are what
-TI's linker linked on every row; LNK6x is not in the loop yet** - it rejects
-`C6747.cmd` and links no image that reaches `main` (see "cpp11 on TI's simulator"),
-so every cycle count here goes through TI's own linker, clearly labelled.
+TI's linker linked on every row of this table**; LNK6x's own rows, `cpp11-O1-lnk6x`
+and `cpp11-O2-lnk6x`, came later the same day and are the section below.
 
 **Compiler++ re-timed with the registers, the ten-file workload one file per run
 on the Windows box** (`C:\cxx1\split\cpph2`, cpp11's build alone, every
@@ -11112,3 +11111,49 @@ leaves - `MV A12, A16; MVK 1, A6; ADD A16, A6, A4; MV A4, A12` for `i + 1` is on
 cross-file copy in `C6xSched`; delay slots filled and `||` packets, so the `NOP 5`
 after every branch and the `NOP 4` after every load stop being empty; then
 addressing modes and software pipelining, which is where cl6x's remaining 3x is.
+
+## LNK6x links the kernels, and TI's simulator runs them, 2026-09-29
+
+**cpp11 + ASM6x + LNK6x is one toolchain on the C6747 now.** `tools/c6747-levels`
+links each kernel's cpp11 object a second time here, with LNK6x (`../LNK6x/build/
+lnk6x.exe`, branch `kernels-link` at `4051857`) from exactly what lnk6x 7.4.4 gets on
+the box - TI's `C6747.cmd`, `--heap_size=0x800 --stack_size=0x800`, and the 7.4.4
+`rts6740_elf_eh.lib` copied to `~/c6747-lib` - ships the images with the objects, and
+the box runs them beside the TI-linked builds. All 60 runs print their `.expected`
+and stop at `C$$EXIT`; cycle.Total on the Windows box, run `0929-195017`:
+
+| kernel | 7.4.4 links -O1 | LNK6x -O1 | 7.4.4 links -O2 | LNK6x -O2 | image, 7.4.4 | image, LNK6x |
+| --- | --- | --- | --- | --- | --- | --- |
+| fib | 9,713,672 | 9,713,660 | 9,713,672 | 9,713,660 | 355,788 | 81,680 |
+| hash | 37,199,790 | 37,199,784 | 37,199,790 | 37,199,784 | 357,156 | 82,536 |
+| isort | 12,698,213 | 12,698,189 | 12,684,989 | 12,685,013 | 357,884 / 357,952 | 83,304 / 83,372 |
+| matmul | 2,874,950 | 2,874,962 | 2,874,950 | 2,874,962 | 358,492 | 83,876 |
+| sieve | 8,898,561 | 8,898,561 | 8,898,561 | 8,898,561 | 356,724 | 82,592 |
+| virt | 7,912,704 | 7,912,698 | 7,912,396 | 7,912,396 | 361,240 / 361,672 | 86,556 / 86,988 |
+
+**Within 24 cycles of TI's linker on every kernel, sieve to the cycle, and the code
+bytes of each program's own object are the same column** (384 / 704 / 1,120-1,184 /
+1,472 / 928 / 2,368-2,464). What the two images share and where they differ was read
+off `tests/elfdiff.py` and the two maps, kernel by kernel, and every output section of
+every LNK6x image has lnk6x's address and size but isort's `.cinit` (last bullet). What is left:
+
+  * `.cinit`'s rle24 coding of one run differs by a byte - `04 00 01 9b` against
+    `04 ff 00 04 9c` in fib - and `__TI_decompress_rle24` walks it at startup, which
+    is where a dozen cycles either way come from; the code is otherwise identical.
+  * The unwind index: lnk6x writes EXIDX_CANTUNWIND entries for code with none of its
+    own (0x1D0 against 0x170 bytes in fib) and two words of `.text` load its end.
+    Nothing here throws through such code.
+  * The image bytes: lnk6x 7.4.4 carries the runtime's DWARF into the executable -
+    250,972 bytes of `.debug_*` in fib, plus a larger symbol table - and LNK6x writes
+    none of it. Nothing loaded differs in size.
+  * 7.4.4 aligns `.cinit` at 4 and writes an empty `.bss` with flags 1; LNK6x follows
+    8.2.2, its oracle, at 8 and 3 (isort's `.cinit` and index sit 8 bytes higher).
+
+**Four rules of lnk6x were found by these twelve links and are LNK6x's now**, each
+read off the maps rather than guessed (LNK6x docs/known.md has the measurements):
+`.TI.symbol.alias` is honoured, so `remove` is `unlink` and no `.text:remove` is
+laid; a size tie between contributions goes to the name after the colon, a bare
+`.text` keyed by its object's name; `.bss` is laid by size like the rest, not first;
+and `.stack` is written WA and 8-aligned. The earlier statement in this file that
+LNK6x could not link a program against `C6747.cmd` was true on 2026-09-28 and is
+corrected above.
