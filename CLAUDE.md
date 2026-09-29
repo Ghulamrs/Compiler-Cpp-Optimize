@@ -11157,3 +11157,113 @@ laid; a size tie between contributions goes to the name after the colon, a bare
 and `.stack` is written WA and 8-aligned. The earlier statement in this file that
 LNK6x could not link a program against `C6747.cmd` was true on 2026-09-28 and is
 corrected above.
+
+## Delay slots filled and execute packets formed on the C6000, 2026-09-29
+
+**The tms6747 text was serial until this round**: every `B` followed by
+`NOP 5`, every load by `NOP 4`, one instruction a cycle. `src/optimizer/C6xSched.cpp`
+now list-schedules each block of a function's text into execute packets, fills
+the delay slots of its branch, and pads only the hazards that remain - a text
+pass, so the -O0 emission and every other target are untouched (emit golden:
+184 of 1377 changed at the backend step, all tms6747; 0 after). What it does,
+and the rule behind each part:
+
+  - **The edges are the machine's orders.** A read waits for its writer's
+    landing (the delay slots plus one); a writer follows the readers of the old
+    value in the same cycle or later (a packet reads all its operands first),
+    a cycle later where the reader is a store; two writers land in program
+    order and never in one packet; a store keeps its place against every
+    memory access but a frame slot (`*-A15(k)`) it cannot touch; loads pass
+    each other. Each cycle takes the ready instructions of greatest height
+    whose units, cross paths, data paths and written registers fit one packet;
+    a branch goes as early as leaves every other instruction of the block
+    issued in its window (`issue <= b + 5`) and landed when the target runs
+    (`issue + latency <= b + 6`), so a target sees nothing in flight and the
+    blocks stay independent.
+  - **The unit rows are asm6x's**, read off ASM6x's `forms.h`: arithmetic and
+    logic on .L .S .D with a register, on .L and .S with -16..15, on .D alone
+    with 16..31; compares .L; shifts, `EXT`, `CLR`, `MVKL/H` .S; multiplies .M;
+    the conversions and `ZERO` .L; `NEG` .L or .S. A side is the destination's
+    file (a load's or store's the address register's), one instruction per
+    unit per side, one 1X and one 2X crossing, one load or store per data
+    path, one branch, eight at most. A mnemonic the table does not know goes
+    alone in its cycle.
+  - **Which operand may cross was measured on cl6x 8.2.2, not read**: TI's
+    src2 - the second source of arithmetic, either of a commutative one or a
+    compare (asm6x turns them about), the value of a shift - and never a
+    count, `EXT`'s or `EXTU`'s source with constant fields (`E0800 dst and
+    src2 must be on same side`), a .D-only constant's partner (`ADD A4, 20,
+    B4` has no form), a `SUB`'s crossed first source on .D. ASM6x accepted
+    all three, so the box's assembler is the oracle for this table: 345 of
+    345 files of the -O2 corpus assemble there now, where 25 did not.
+  - **Under it, a liveness of the blocks** - a call reads the argument
+    registers and clobbers the caller-saved ones, a return leaves the exit set,
+    a branch to a label outside the text leaves everything live - so
+    `deadAfter` answers at a block's end and `forwardMoves` takes a copy
+    across a branch and across the files where one crossing source is left.
+    A small constant goes into its one reader (`ADD 1, A11, A11`); a negated
+    truth read only by a branch flips the branch; a multi-cycle result is
+    retargeted (`MPY32 ..., A12`); `rotateLoops` copies a loop's test after
+    its back edge so a turn has one branch and the test overlaps the step; and
+    a label of the backend's own flow that no instruction names ends no block.
+  - **Two backend lines before any of it**: a bool condition needs no
+    `CMPEQ 0; XOR 1` after it, and a multiply by 1 or a power of two - the
+    parser's index scaling - is nothing or a `SHL`, where it had been `MPY32`
+    and `NOP 3` per array access.
+
+**Measured, both simulators, before and after** (`tools/c6747-levels`, the
+box's cycle.Total, run `0929-205330` at `4135b6d`; ASM6x's objects, TI 7.4.4's
+linker and LNK6x within 12 cycles of each other on every kernel):
+
+| kernel | 744-O2 | 822-O2 | cpp11 -O2 before | after | /744 | /822 | vm6747 -c before | after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 5,568,115 | 9,713,672 | 9,656,532 | 1.73 | 1.73 | 3,496,133 | 2,894,342 |
+| hash | 6,009,087 | 6,014,015 | 37,199,790 | 30,691,756 | 5.10 | 5.10 | 13,248,109 | 6,114,090 |
+| isort | 5,312,299 | 5,309,586 | 12,684,989 | 9,652,827 | 1.81 | 1.81 | 6,655,303 | 3,617,161 |
+| matmul | 1,294,024 | 982,933 | 2,874,950 | 1,961,046 | 1.51 | 1.99 | 1,707,700 | 777,135 |
+| sieve | 2,999,335 | 2,577,500 | 8,898,561 | 4,452,349 | 1.48 | 1.72 | 7,742,655 | 3,296,485 |
+| virt | 3,269,953 | 3,268,908 | 7,912,396 | 7,252,261 | 2.21 | 2.21 | 2,420,439 | 1,620,356 |
+| total | 24,453,162 | 23,721,057 | 79,284,358 | 63,666,771 | **2.60** | **2.68** | 35,270,339 | 18,319,569 |
+
+The -O1 column is the -O2 column to within isort's and virt's inlining (63,675,525
+in all; 1.36x cl6x 7.4.4 -O1's 31,258,616 on the *whole*, from 1.73 to 3.23
+per kernel). **The emulator halves and TI's simulator takes a fifth**, and the
+difference is memory: TI's counts every fetch and every load from the
+C6747.cmd map with no cache, so a shorter schedule buys less there than a
+shorter instruction count. Code bytes, the program's own object: cpp11 -O1
+352 / 576 / 832 / 1,056 / 704 / 2,272 = 5,792 (was 6,976), -O2 5,920 - **2.70x
+cl6x 7.4.4 `-O2 -ms3`'s 2,144 and 2.62x 8.2.2's 2,208** (was 3.25x), 1.85x
+7.4.4 -O2's 3,200 and 1.59x 8.2.2 -O2's 3,712.
+
+**ASM6x needed one thing and one thing is left to it.** `MVK 32, B0 || B
+label` was refused - the MVK has only the .S form, the B defaults to .S2, and
+`retarget` never tried the same letter on the other side, stopping at the
+fixup every branch carries; fixed on ASM6x branch `sched-branch-side`
+(`3a9b62f`), with asm6x's E0801 for two label branches in one packet, which
+the move would otherwise have taken; its suite 10/10 and the edge recheck 0
+disagree. What is left: **cl6x 8.2.2 lets no execute packet cross a 32-byte
+fetch packet**, padding an earlier packet of the fetch packet with parallel
+NOPs (`STW A15, *B15 || NOP || NOP` at a function's first word), where ASM6x
+writes the packet across; 298 of 346 corpus objects differ from TI's
+(`--no_compress --symdebug:none`) by that and by the branch displacements it
+moves, the other 48 identical. Both run - the C674x allows the crossing and
+TI's simulator ran every kernel from ASM6x's objects - and the emulator
+`vm6747` reads the `.s` directly. Matching it means buffering a fetch packet
+in ASM6x's writer, and is its own change.
+
+**The house rules met again.** The suite never assembled its own output:
+`tests/tms6747.sh` hands the `.s` to the emulator, so ASM6x's refusal of a
+packet shape was found by building Compiler++'s harness, and TI's by shipping
+the whole corpus to the box (`scratchpad/tisweep.cmd`, one `cl6x -c` per
+file). Both sweeps are what proved the unit table, and a run of the corpus
+through ASM6x belongs in the suite.
+
+**Still refused or not done**: cross-block scheduling (a block's end lands
+everything, so a load feeding the next block still costs its four slots);
+predicated instructions other than branches are scheduled but never made; no
+cross-path stall is priced (C64x+ stalls a cycle when a cross path reads a
+register written the cycle before); no software pipelining and no
+addressing-mode folding - `MVKL/MVKH` of a global inside a loop, the
+`LDB *A11` read twice in hash's loop - which is where the 5.1x on hash and the
+remaining 2.6x sit. `tests/tms6747.sh` 339/0 at -O0, -O1 and -O2; run.sh
+553/0, names.sh 352/0, overload.sh 30/0.
