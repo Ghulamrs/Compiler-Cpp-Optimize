@@ -11235,6 +11235,16 @@ shorter instruction count. Code bytes, the program's own object: cpp11 -O1
 cl6x 7.4.4 `-O2 -ms3`'s 2,144 and 2.62x 8.2.2's 2,208** (was 3.25x), 1.85x
 7.4.4 -O2's 3,200 and 1.59x 8.2.2 -O2's 3,712.
 
+**Compiler++, the ten-file workload one file per run on the Windows box**
+(`C:\cxx1\split\cpph3`, cpp11's build alone, every fingerprint clang's, 10 of
+10): adventure 503,517,056, bank 845,433,105, containers 912,902,285, geometry
+1,486,633,992, matrix 767,465,648, parser 612,706,814, shapes 904,002,139,
+simulation 675,409,500, sorting 858,255,924, strings 980,439,715 -
+**8,546,766,178 against cl6x 7.4.4 -O2's 9,355,361,348 (0.91x) and 8.2.2's
+9,097,357,333 (0.94x)**, from 0.94x and 0.97x with the registers alone; every
+file now runs faster than cl6x 7.4.4 -O2 but geometry, matrix and sorting, at
+1.02x, 1.02x and 1.01x.
+
 **ASM6x needed one thing and one thing is left to it.** `MVK 32, B0 || B
 label` was refused - the MVK has only the .S form, the B defaults to .S2, and
 `retarget` never tried the same letter on the other side, stopping at the
