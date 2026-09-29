@@ -190,7 +190,10 @@ void foldFrame(std::vector<Line> &v) {
         if (!load && !store) continue;
         int size = accessSize(use.mnem);
         if (k < 0 || k % size != 0) continue;
-        if (!deadAfter(v, i + 1, reg)) continue;
+        // A load into its own address register consumes the address itself: `LDW *A4, A4`.
+        std::vector<std::string> into;
+        if (load) registersIn(use.ops[1], into);
+        if (!has(into, reg) && !deadAfter(v, i + 1, reg)) continue;
         // Past ucst5, the scaled register offset: MVK k/size, A0; LDW *-A15[A0], D - A0 was dead after anyway.
         const bool far = k / size > 31;
         if (far && (first == i || k / size > 32767)) continue;
