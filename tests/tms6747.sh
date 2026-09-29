@@ -16,7 +16,14 @@ set -u
 
 cd "$(dirname "$0")/.."
 CXX1="${CXX1:-./cpp11.exe}"
-VM="${VM:-../Emulator/vm6747.exe}"
+# The emulator where the VM6747 checkout keeps it, or beside this tree as it was.
+if [ -z "${VM:-}" ]; then
+    for v in ../VM6747/Emulator/vm6747.exe ../Emulator/vm6747.exe; do [ -x "$v" ] && { VM=$v; break; }; done
+    VM=${VM:-../VM6747/Emulator/vm6747.exe}
+fi
+# CYCLES=1: each case's cycles from main, as TI's simulator counts cycle.CPU (vm6747 -c), taken
+# out of its output before the comparison and kept in <case>.cycles; the total is printed.
+CYCLES="${CYCLES:-}"
 CXX1_FLAGS="${CXX1_FLAGS:-}"   # -O1 or -O2 runs the corpus through the C6000 optimizer
 OUT=tests/out-tms6747
 # One case by name, or all of them; a worker is handed the name it was asked for after --one.
@@ -38,7 +45,14 @@ one() {
         echo fail > "$OUT/$base.verdict"
         return
     fi
-    { "$VM" "$OUT/$base.s" > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
+    if [ -n "$CYCLES" ]; then
+        { "$VM" -c "$OUT/$base.s" > "$OUT/$base.raw" 2>&1 < /dev/null; } 2>/dev/null || true
+        # The program's last line may have no newline, so the count is cut out exactly as written.
+        grep -o 'CYCLES count=[0-9]* packets=[0-9]* natives=[0-9]*' "$OUT/$base.raw" | sed 's/^CYCLES //' > "$OUT/$base.cycles"
+        perl -0pe 's/CYCLES count=\d+ packets=\d+ natives=\d+\n//' "$OUT/$base.raw" > "$OUT/$base.out"
+    else
+        { "$VM" "$OUT/$base.s" > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
+    fi
     if diff -q "tests/cases/$base.expected" "$OUT/$base.out" >/dev/null; then
         echo pass > "$OUT/$base.verdict"
     else
@@ -65,4 +79,8 @@ count() { cat "$OUT"/*.verdict 2>/dev/null | grep -cx "$1" || true; }
 pass=$(count pass); fail=$(count fail); skipEh=$(count eh); skipLp=$(count lp64); skipNt=$(count notarget)
 
 echo "tms6747.sh: $pass passed, $fail failed, $skipEh skipped for exceptions, $skipLp skipped for a 64-bit long, $skipNt not for this target"
+if [ -n "$CYCLES" ]; then
+    for base in $(cases); do [ -s "$OUT/$base.cycles" ] && echo "$base $(cat "$OUT/$base.cycles")"; done > "$OUT/cycles.txt"
+    awk '{ sub("count=", "", $2); s += $2 } END { printf "tms6747.sh: %d cycles (cycle.CPU) over %d cases, in %s\n", s, NR, FILENAME }' "$OUT/cycles.txt"
+fi
 [ "$fail" -eq 0 ]
