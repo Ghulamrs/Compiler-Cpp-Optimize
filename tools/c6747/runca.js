@@ -4,7 +4,9 @@
 // Any later argument NAME=VALUE writes VALUE into the global word NAME before the run.
 // One program on the C6747 simulator: fresh connection, one clock event. Counters do not
 // reset between runs of one session, so every run is a session of its own.
-// Prints one line: RESULT event=<name> count=<n> pc=<hex> exit=<hex> rc=n/a.
+// Prints one line: RESULT event=<name> count=<n> pc=<hex> exit=<hex> rc=n/a wall_ms=<ms>; the
+// wall time is the run's own, so a slot running slower than its box's rate shows at once. The
+// count is 32 bits and wraps at 4,294,967,296 - a run is sized to stay under it.
 // rc is n/a because TI's startup ignores what main returns and calls exit(1), and
 // breakpoints set from DSS did not stop this simulator (2026-09-28), so it is not read.
 importPackage(Packages.com.ti.debug.engine.scripting);
@@ -31,6 +33,7 @@ for (var k = 6; k < arguments.length; k++) {
                                          parseInt(arguments[k].substring(eq + 1)));
 }
 session.clock.reset();
+var t0 = System.currentTimeMillis();
 session.target.run();
 var count = session.clock.read();
 session.endCIOLogging();
@@ -38,7 +41,8 @@ var pc = session.expression.evaluate("PC");
 var exitAt = -1;
 try { exitAt = session.symbol.getAddress("C$$EXIT"); } catch (e) { }
 print("RESULT event=" + session.clock.getEventName(ev) + " count=" + count
-      + " pc=0x" + Long.toHexString(pc) + " exit=0x" + Long.toHexString(exitAt) + " rc=n/a");
+      + " pc=0x" + Long.toHexString(pc) + " exit=0x" + Long.toHexString(exitAt) + " rc=n/a"
+      + " wall_ms=" + (System.currentTimeMillis() - t0));
 session.target.disconnect();
 session.terminate();
 server.stop();
