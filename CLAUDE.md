@@ -11054,8 +11054,8 @@ object. Every one of the 48 printed its `.expected`:
 | isort | 8,107,925 | 5,312,299 | 8,604,834 | 5,309,586 | 12,698,213 | 12,684,989 | 2.38 | 2.38 |
 | matmul | 1,568,800 | 1,294,024 | 1,538,071 | 982,933 | 2,874,950 | 2,874,950 | 2.22 | 2.92 |
 | sieve | 3,256,189 | 2,999,335 | 3,433,340 | 2,577,500 | 8,898,561 | 8,898,561 | 2.96 | 3.45 |
-| virt | 3,269,959 | 3,269,953 | 3,429,306 | 3,268,908 | 7,912,512 | 7,912,406 | 2.41 | 2.42 |
-| total | 31,258,616 | 24,453,162 | 32,969,191 | 23,721,057 | 79,297,698 | 79,284,368 | 3.24 | 3.34 |
+| virt | 3,269,959 | 3,269,953 | 3,429,306 | 3,268,908 | 7,912,704 | 7,912,396 | 2.41 | 2.42 |
+| total | 31,258,616 | 24,453,162 | 32,969,191 | 23,721,057 | 79,297,890 | 79,284,358 | 3.24 | 3.34 |
 
 The total against cl6x 7.4.4 -O2 was 8.31x on 2026-09-29 morning and is 3.24x now.
 cpp11's -O1 and -O2 differ only by the inliner, which the kernels barely reach, so the
@@ -11063,9 +11063,20 @@ cpp11's -O1 and -O2 differ only by the inliner, which the kernels barely reach, 
 it stands at 1.56x (isort) to 3.92x (hash). Code bytes, the program's own object:
 cl6x 7.4.4 `-O2 -ms3` 128 / 256 / 352 / 416 / 352 / 640 (2,144), cl6x 8.2.2 the same
 flags 128 / 288 / 384 / 448 / 320 / 640 (2,208), cpp11 -O1 384 / 704 / 1,120 / 1,472 /
-928 / 2,304 (6,912, down from 9,216) - 3.2x cl6x's size build. `-ms3` is what the
+928 / 2,368 (6,976, down from 9,216) - 3.2x cl6x's size build. `-ms3` is what the
 size setting costs cl6x in cycles: fib, hash and virt take three to ten times
 longer under it than at plain -O2.
+
+**The Linux box confirms the Windows counts** (`tools/c6747-three tools/c6747/bench`,
+one DSS session at a time there): cl6x 7.4.4 -O2 and cpp11 -O2 give the same cycle
+count on both simulators for all six kernels, to the cycle - cpp11 9,713,672 /
+37,199,790 / 12,684,989 / 2,874,950 / 8,898,561 / 7,912,396. The run's four "failures"
+are not this round's: VM6747 prints wrong output for cl6x 8.2.2's isort, matmul and
+sieve (its KNOWN-GAPS.md), and one Windows result line for cl6x's hash came back
+without its fields while the Linux one read 6,009,087. **ASM6x's objects are what
+TI's linker linked on every row; LNK6x is not in the loop yet** - it rejects
+`C6747.cmd` and links no image that reaches `main` (see "cpp11 on TI's simulator"),
+so every cycle count here goes through TI's own linker, clearly labelled.
 
 **The emulator's unwinder popped no saved registers, and TI's simulator settled
 it.** With locals in A10-A13 and B10-B13, seven suite cases failed on VM6747 and six
