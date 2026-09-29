@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <ostream>
 #include <set>
@@ -205,9 +206,11 @@ void Tms6747::spAdjust(int delta) {
 
 static const int kSaveBytes = 40;   // under A15 whatever is saved, so a local's address does not wait on the body
 
-// dst = A15 - kSaveBytes - off, past the saved registers; the stack
-// parameters lie at A15 + 4 on. dst is an A-file register.
+// dst = A15 - kSaveBytes - off, past the saved registers; the stack parameters lie at A15 + 4 on.
+// dst is an A-file register. This is the one place a local's address is formed: on the first
+// walk, forming one costs the local its register.
 void Tms6747::localAddr(int off, const char *dst) {
+    if (planning_ && inlineDepth_ == 0 && !plainAccess_) slots_[off].addressed = true;
     off += kSaveBytes + localBase_;
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
@@ -512,7 +515,81 @@ void Tms6747::visit(const Num &n) {
     movImm("A4", n.value());
     if (isWide(n.type())) movImm("A5", n.value() >> 32);
 }
-void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
+void Tms6747::visit(const Var &n) {
+    if (const std::string *r = regFor(n)) { regRead(*r, isWide(n.type())); return; }
+    plainAccess_ = regCandidate(n);
+    genAddr(n);
+    plainAccess_ = false;
+    load(n.type());
+}
+
+// ---- locals in registers ---------------------------------------------------
+bool Tms6747::regCandidate(const Var &v) const {
+    if (!v.isLocal() || inlineDepth_ != 0 || optimize_ <= 0) return false;
+    const Type *t = v.type();   // a target the parser typed through the Assign alone stays in memory
+    if (t == nullptr || t->isStructOrUnion() || t->isArray() || t->isFunction() || t->isVoid()) return false;
+    const int size = t->size(target_);
+    return size == 4 || size == 8 || size == 2 || size == 1;
+}
+// A use is counted on the first walk; the register is answered on the second.
+const std::string *Tms6747::regFor(const Var &v) {
+    if (!regCandidate(v)) return nullptr;
+    if (planning_) { noteUse(v); return nullptr; }
+    std::map<int, std::string>::const_iterator it = regOf_.find(v.offset());
+    return it == regOf_.end() ? nullptr : &it->second;
+}
+void Tms6747::noteUse(const Var &v) {
+    Slot &s = slots_[v.offset()];
+    const int size = v.type()->size(target_);
+    if (s.size != 0 && s.size != size) s.addressed = true;   // two types on one slot: left in memory
+    s.size = size;
+    s.wide = size == 8;
+    s.uses += 1 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);
+}
+std::string Tms6747::pairHigh(const std::string &r) { return r.substr(0, 1) + std::to_string(std::atoi(r.c_str() + 1) + 1); }
+void Tms6747::regRead(const std::string &r, bool wide) {
+    out_ << "\tMV\t" << r << ", A4\n";
+    if (wide) out_ << "\tMV\t" << pairHigh(r) << ", A5\n";
+}
+void Tms6747::regWrite(const std::string &r, bool wide) {
+    out_ << "\tMV\tA4, " << r << "\n";
+    if (wide) out_ << "\tMV\tA5, " << pairHigh(r) << "\n";
+}
+
+// The most used locals take the callee-saved registers the function's calls leave alone - the
+// A file first, since a copy to the accumulator folds there - a 64-bit one an even:odd pair.
+void Tms6747::planRegisters(const Function &fn) {
+    regOf_.clear();
+    promoted_.clear();
+    if (fn.params().size() + sretShift_ > 6) usesSavedArgRegs_ = usesSavedPairRegs_ = true;
+    static const char *const kRegs[] = { "A10", "A11", "A12", "A13", "B10", "B11", "B12", "B13" };
+    std::map<std::string, bool> free;
+    for (const char *r : kRegs) {
+        const bool even = (r[2] - '0') % 2 == 0;
+        free[r] = even ? !usesSavedArgRegs_ : !usesSavedPairRegs_;
+    }
+    std::vector<std::pair<int, int> > order;                 // (-uses, offset)
+    for (std::map<int, Slot>::const_iterator it = slots_.begin(); it != slots_.end(); ++it)
+        if (!it->second.addressed && it->second.uses >= 2) order.push_back(std::make_pair(-it->second.uses, it->first));
+    std::sort(order.begin(), order.end());
+    for (std::size_t k = 0; k < order.size(); k++) {
+        const Slot &s = slots_[order[k].second];
+        for (const char *r : kRegs) {
+            if (!free[r]) continue;
+            const std::string hi = pairHigh(r);
+            if (s.wide && ((r[2] - '0') % 2 != 0 || !free[hi])) continue;
+            free[r] = false;
+            promoted_.push_back(r);
+            if (s.wide) { free[hi] = false; promoted_.push_back(hi); }
+            regOf_[order[k].second] = r;
+            break;
+        }
+    }
+}
+
+void Tms6747::visit(const While &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
+void Tms6747::visit(const For &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
+void Tms6747::visit(const DoWhile &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
 
 // ---- bit-fields ----------------------------------------------------------
 // A bit-field is width bits from bitOffset up in the unit at the member's
@@ -568,6 +645,19 @@ void Tms6747::visit(const Assign &n) {
     if (bf != nullptr && !bf->isBitField()) bf = nullptr;
 
     n.value().accept(*this);        // A4 = value (a struct's is its address)
+    // A local in a register takes the value as a sub-word store and load would leave it: extended.
+    const Var *target = bf == nullptr ? dynamic_cast<const Var *>(&n.target()) : nullptr;
+    if (target != nullptr && regCandidate(*target)) {
+        if (const std::string *r = regFor(*target)) { narrowInt(n.type()); regWrite(*r, isWide(n.type())); return; }
+        push();
+        plainAccess_ = true;
+        genAddr(n.target());
+        plainAccess_ = false;
+        out_ << "\tMV\tA4, A6\n";
+        pop("A4");
+        store(n.type(), "A6");
+        return;
+    }
     push();                         // save the value
     if (bf) bitFieldUnitAddr(*bf);  // A4 = the unit's address
     else    genAddr(n.target());    // A4 = address
@@ -799,26 +889,43 @@ void Tms6747::wideBinary(const Binary &n) {
 
 void Tms6747::visit(const Postfix &n) {
     const Type *t = n.type();
+    // The old value in A4 (A5:A4) to the new one in the same place, by the step.
+    auto stepValue = [&]() {
+        int step = n.step();
+        if (t->isFloating()) {
+            bool dp = isDouble(t);
+            fpConst(t, static_cast<double>(step), "A6");   // the step, as a number
+            out_ << (n.increment() ? "\tADD" : "\tSUB") << (dp ? "DP\tA5:A4, A7:A6, A5:A4" : "SP\tA4, A6, A4")
+                 << "\n\tNOP\t" << (dp ? 6 : 3) << "\n";
+        } else if (isWide(t)) {
+            if (step != 1) unsupported("a 64-bit step other than 1");
+            if (n.increment()) out_ << "\tADD\tA4, 1, A4\n\tCMPEQ\t0, A4, A0\n\tADD\tA5, A0, A5\n";
+            else               out_ << "\tCMPEQ\t0, A4, A0\n\tSUB\tA4, 1, A4\n\tSUB\tA5, A0, A5\n";
+        } else {
+            if (step >= 0 && step <= 31)
+                out_ << (n.increment() ? "\tADD\tA4, " : "\tSUB\tA4, ") << step << ", A4\n";
+            else { movImm("A0", step); out_ << (n.increment() ? "\tADD\tA4, A0, A4\n" : "\tSUB\tA4, A0, A4\n"); }
+            narrowInt(t);               // A4 = new value
+        }
+    };
+    const Var *target = dynamic_cast<const Var *>(&n.target());
+    if (target != nullptr && regCandidate(*target)) {
+        if (const std::string *r = regFor(*target)) {
+            regRead(*r, isWide(t));     // A4 = old value
+            pushValue(t);
+            stepValue();
+            regWrite(*r, isWide(t));
+            popValue(t, "A4");          // the expression's value is the old value
+            return;
+        }
+        plainAccess_ = true;
+    }
     genAddr(n.target());            // A4 = address
+    plainAccess_ = false;
     push();                         // save address
     load(t);                        // A4 = old value
     pushValue(t);                   // save old value  (stack: top=old, next=addr)
-    int step = n.step();
-    if (t->isFloating()) {
-        bool dp = isDouble(t);
-        fpConst(t, static_cast<double>(step), "A6");   // the step, as a number
-        out_ << (n.increment() ? "\tADD" : "\tSUB") << (dp ? "DP\tA5:A4, A7:A6, A5:A4" : "SP\tA4, A6, A4")
-             << "\n\tNOP\t" << (dp ? 6 : 3) << "\n";
-    } else if (isWide(t)) {
-        if (step != 1) unsupported("a 64-bit step other than 1");
-        if (n.increment()) out_ << "\tADD\tA4, 1, A4\n\tCMPEQ\t0, A4, A0\n\tADD\tA5, A0, A5\n";
-        else               out_ << "\tCMPEQ\t0, A4, A0\n\tSUB\tA4, 1, A4\n\tSUB\tA5, A0, A5\n";
-    } else {
-        if (step >= 0 && step <= 31)
-            out_ << (n.increment() ? "\tADD\tA4, " : "\tSUB\tA4, ") << step << ", A4\n";
-        else { movImm("A0", step); out_ << (n.increment() ? "\tADD\tA4, A0, A4\n" : "\tSUB\tA4, A0, A4\n"); }
-        narrowInt(t);               // A4 = new value
-    }
+    stepValue();
     popValue(t, "A6");              // A6 = old value
     pop("A3");                      // A3 = address
     store(t, "A3");                 // *A3 = new value (A4)
@@ -1049,14 +1156,13 @@ const Function *Tms6747::inlineTarget(const Call &n) const {
     if (it == bodies_.end() || !inliner_->allows(n)) return nullptr;
     const Function &fn = *it->second;
     const std::string site = n.symbol() + " in " + (functionOf_ ? functionOf_->symbol() : std::string());
-    if (fn.isNoexcept()) { opt::noteDecline("inline-callee-noexcept", site); return nullptr; }
-    if (inliner_->size(fn) > (inliner_->leaf(fn) ? kLeafMember : kSmallMember)) { opt::noteDecline("inline-callee-not-small", site); return nullptr; }
-    if (fn.params().size() > static_cast<std::size_t>(abi_.intCount)) {
-        opt::noteDecline("inline-site-stack-arguments", site); return nullptr;
-    }
+    auto decline = [&](const char *why) { if (!planning_) opt::noteDecline(why, site); return static_cast<const Function *>(nullptr); };
+    if (fn.isNoexcept()) return decline("inline-callee-noexcept");
+    if (inliner_->size(fn) > (inliner_->leaf(fn) ? kLeafMember : kSmallMember)) return decline("inline-callee-not-small");
+    if (fn.params().size() > static_cast<std::size_t>(abi_.intCount)) return decline("inline-site-stack-arguments");
     for (const Param &p : fn.params())
-        if (p.type->isStructOrUnion()) { opt::noteDecline("inline-callee-struct-parameter", site); return nullptr; }
-    if (fn.returns()->isStructOrUnion()) { opt::noteDecline("inline-callee-struct-result", site); return nullptr; }
+        if (p.type->isStructOrUnion()) return decline("inline-callee-struct-parameter");
+    if (fn.returns()->isStructOrUnion()) return decline("inline-callee-struct-result");
     return &fn;
 }
 
@@ -1305,6 +1411,8 @@ void Tms6747::emitParams(const Function &fn) {
             copyBlock(t->size(target_), "A4", "A1", t->align(target_));
             continue;
         }
+        // A parameter in a register: the value as the walk found it, counted as one use.
+        if (inlineDepth_ == 0 && regOf_.count(ps[i].offset)) { narrowInt(t); regWrite(regOf_[ps[i].offset], isWide(t)); continue; }
         localAddr(ps[i].offset, "A0");
         store(t, "A0");
     }
@@ -1316,17 +1424,15 @@ void Tms6747::emitParams(const Function &fn) {
 
 // In TI's pop order; the position in the list is the word below A15.
 std::vector<std::string> Tms6747::savedRegs() const {
+    static const char *const kOrder[] = { "B13", "B12", "B11", "B10", "B3", "A13", "A12", "A11", "A10" };
     std::vector<std::string> r;
     r.push_back("A15");
-    if (usesSavedPairRegs_) r.push_back("B13");
-    if (usesSavedArgRegs_) r.push_back("B12");
-    if (usesSavedPairRegs_) r.push_back("B11");
-    if (usesSavedArgRegs_) r.push_back("B10");
-    if (hasCall_) r.push_back("B3");
-    if (usesSavedPairRegs_) r.push_back("A13");
-    if (usesSavedArgRegs_) r.push_back("A12");
-    if (usesSavedPairRegs_) r.push_back("A11");
-    if (usesSavedArgRegs_) r.push_back("A10");
+    for (const char *reg : kOrder) {
+        const bool odd = (reg[2] - '0') % 2 != 0;
+        bool want = std::string(reg) == "B3" ? hasCall_ : odd ? usesSavedPairRegs_ : usesSavedArgRegs_;
+        for (std::size_t k = 0; k < promoted_.size(); k++) if (promoted_[k] == reg) want = true;
+        if (want) r.push_back(reg);
+    }
     return r;
 }
 // The frame as the second word of TI's exception index entry (tdeh_pr_c6000):
@@ -1344,6 +1450,27 @@ unsigned Tms6747::unwindWord(bool needFrame) const {
     return 0x83000000u | (needFrame ? 0x7fu << 17 : 0u) | (mask << 4) | 7u;
 }
 
+// One walk of the body: the per-function state reset, the statements, and the fall off the end.
+void Tms6747::walkBody(const Function &fn) {
+    resetLabels();
+    clearCallSites();
+    hasCall_ = false;
+    usesSavedArgRegs_ = false;
+    usesSavedPairRegs_ = false;
+    loopDepth_ = 0;
+    frame_ = align8(fn.frameSize());
+    inlineBase_ = frame_;
+    // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked in place.
+    if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
+    for (const Param &p : fn.params()) if (planning_) slots_[p.offset].uses++;   // its arrival
+    fn.body().accept(*this);
+    // Falling off the end returns 0 - main's C99 meaning, and what the other
+    // backends do for every function - or the result pointer for a struct.
+    if (sretSlot_ != 0) { localAddr(sretSlot_, "A4"); out_ << "\tLDW\t*A4, A4\n\tNOP\t4\n"; }
+    else if (isWide(fn.returns())) out_ << "\tZERO\tA5:A4\n";
+    else out_ << "\tZERO\tA4\n";
+}
+
 void Tms6747::emitFunction(const Function &fn) {
     resetLabels();
     // The symbol, not the name: with C++ linkage that is the mangled name, and
@@ -1351,15 +1478,7 @@ void Tms6747::emitFunction(const Function &fn) {
     functionName_ = fn.symbol();
     labelPrefix_ = "L." + fn.symbol() + ".";
     returnLabel_ = "L.return." + fn.symbol();
-    hasCall_ = false;
-    clearCallSites();
-    usesSavedArgRegs_ = false;
-    usesSavedPairRegs_ = false;
-    frame_ = align8(fn.frameSize());
-    inlineBase_ = frame_;
     functionOf_ = &fn;
-    // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked in place.
-    if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
 
     sretSlot_ = fn.sretSlot();
     sretShift_ = sretSlot_ != 0 && hiddenInA4(fn.returns()) ? 1 : 0;
@@ -1377,13 +1496,19 @@ void Tms6747::emitFunction(const Function &fn) {
         vaStart_ = (stackParamOffset(fn.params(), named) + 3) / 4 * 4;   // a word past a packed char
     }
 
-    // The body first, into its own text: what it does decides the prologue.
-    fn.body().accept(*this);
-    // Falling off the end returns 0 - main's C99 meaning, and what the other
-    // backends do for every function - or the result pointer for a struct.
-    if (sretSlot_ != 0) { localAddr(sretSlot_, "A4"); out_ << "\tLDW\t*A4, A4\n\tNOP\t4\n"; }
-    else if (isWide(fn.returns())) out_ << "\tZERO\tA5:A4\n";
-    else out_ << "\tZERO\tA4\n";
+    // The body first, into its own text: what it does decides the prologue. At -O1 and -O2 it is
+    // walked once to learn the locals, the text dropped, and again with the chosen ones in registers.
+    slots_.clear();
+    regOf_.clear();
+    promoted_.clear();
+    if (optimize_ > 0) {
+        planning_ = true;
+        walkBody(fn);
+        planning_ = false;
+        out_.str(std::string());
+        planRegisters(fn);
+    }
+    walkBody(fn);
     std::string body = out_.str();
     out_.str(std::string());
     if (sretSlot_ != 0) {
@@ -1413,8 +1538,8 @@ void Tms6747::emitFunction(const Function &fn) {
     }
 
     int frame = frame_;
-    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0;
     std::vector<std::string> saved = savedRegs();
+    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0 || saved.size() > 1;
     if (needFrame) {
         out_ << "\tSTW\tA15, *B15\n";               // in the caller's word
         out_ << "\tMV\tB15, A15\n";

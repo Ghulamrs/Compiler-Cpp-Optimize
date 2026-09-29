@@ -65,6 +65,9 @@ public:
     void visit(const VaArg &) override;
     void visit(const MemberAccess &) override;
     void visit(const Switch &) override;
+    void visit(const While &) override;
+    void visit(const For &) override;
+    void visit(const DoWhile &) override;
     void visit(const Return &) override;
     void landingPad(int pointerSlot, int selectorSlot) override;
     bool terminateScopes() const override { return true; }
@@ -109,6 +112,25 @@ private:
     const Function *functionOf_ = nullptr;    // the function being emitted, for the declines
     const Function *inlineTarget(const Call &n) const;
     void walkInPlace(const Function &fn);
+
+    // Locals in registers at -O1 and -O2: the body is walked twice, the first time to learn which
+    // scalar locals never have their address formed and how often each is used, the second with
+    // the most used of those in A10-A13 and B10-B13, a 64-bit one in an even:odd pair.
+    struct Slot { int uses = 0; bool addressed = false; bool wide = false; int size = 0; };
+    std::map<int, Slot> slots_;                // by frame offset, the function's own locals only
+    std::map<int, std::string> regOf_;         // offset -> the register (the low one of a pair)
+    std::vector<std::string> promoted_;        // those registers, to be saved and restored
+    bool planning_ = false;                    // the first walk: counting, and deciding nothing
+    bool plainAccess_ = false;                 // a read or write of a whole local, not an address
+    int loopDepth_ = 0;                        // a use inside a loop weighs more
+    bool regCandidate(const Var &v) const;     // a whole scalar local of this function, up to 8 bytes
+    const std::string *regFor(const Var &v);   // its register on the second walk, or null
+    void noteUse(const Var &v);
+    void planRegisters(const Function &fn);
+    void regRead(const std::string &r, bool wide);    // A4 (A5:A4) = the register
+    void regWrite(const std::string &r, bool wide);   // the register = A4 (A5:A4)
+    static std::string pairHigh(const std::string &r);
+    void walkBody(const Function &fn);
 
     std::size_t emittedSize() override { return static_cast<std::size_t>(out_.tellp()); }
     void defineLabel(const std::string &l) override;
