@@ -1034,8 +1034,7 @@ void Tms6747::setOptimize(int level) {
     if (costs_->inlines()) inliner_.reset(new Inliner(*costs_));
 }
 
-// A node here is several instructions of a stack machine, so only a member this small is taken,
-// and a small member's own small members with it, to this depth.
+// A node is several instructions of a stack machine: only a member this small is taken, and its own small members to kInlineDepth.
 static const int kSmallMember = 12;
 // A leaf - no call, no loop - is straight-line code shorter than the call it replaces: to 24.
 static const int kLeafMember = 24;
@@ -1359,8 +1358,7 @@ void Tms6747::emitFunction(const Function &fn) {
     frame_ = align8(fn.frameSize());
     inlineBase_ = frame_;
     functionOf_ = &fn;
-    // A landing pad sets SP from the frame as it stands, so a function with one reserves
-    // room for any callee it may walk in place before its first pad is emitted.
+    // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked in place.
     if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
 
     sretSlot_ = fn.sretSlot();

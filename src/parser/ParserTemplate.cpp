@@ -1782,8 +1782,7 @@ ExprPtr Parser::templateCall(Program *program) {
 
         // **In the template's own namespace**, whose ordinary functions of this name are candidates
         // beside its specializations - [over.match.best]: an exact non-template beats a template.
-        // Resolved under the bare name, a qualified call or a class template's member body saw only
-        // the specializations.
+        // Under the bare name a qualified call or a class template's member body saw only the specializations.
         const std::string key = !decl.ns.empty() && overloadsOf(decl.ns + name) != nullptr
                               ? decl.ns + name : name;
         const Signature sig = resolveOverload(key, callArgs, pos);
