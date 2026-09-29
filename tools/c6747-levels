@@ -1,0 +1,113 @@
+#!/bin/sh
+# The kernels against both CCS toolchains at both levels, on the Windows box's C6747
+# cycle-accurate simulator, from the Mac:
+#
+#   tools/c6747-levels [dir]        every .c and .cpp in dir (default tools/c6747/bench)
+#
+# Eight builds of each program run at once there (tools/c6747/bench-levels.cmd, each run
+# capped at 30 minutes): cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4) at -O1, -O2 and
+# -O2 -ms3, each with its own linker and rts6740_elf_eh.lib; and cpp11 -O1 and -O2, compiled
+# here, assembled by ASM6x and linked by 7.4.4. The table is cycle.Total per build, cpp11's
+# ratio to each TI compiler at the same level, and the code bytes of each program's own object
+# (its executable sections, the library excluded). A program passes a build when its stdout is
+# its .expected. Everything lands in C:\cxx1\bench-levels\<stamp>, a folder of its own.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WINDOWS=${CXX1_WINDOWS:-windows}
+CPP11=${CPP11:-$ROOT/cpp11.exe}
+ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+[ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe   # from a worktree under .claude/
+STAMP=${STAMP:-$(date +%m%d-%H%M%S)}
+WREMOTE="C:\\cxx1\\bench-levels\\$STAMP"
+DIR=${1:-$ROOT/tools/c6747/bench}
+T0=$(date +%s)
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/bl"
+for f in C6747.cmd runca.js c6747ca-windows.ccxml par-one.cmd bench-levels.cmd; do cp "$ROOT/tools/c6747/$f" "$WORK/bl/"; done
+NAMES=""
+for p in "$DIR"/*.c "$DIR"/*.cpp; do
+    [ -f "$p" ] || continue
+    case "$(basename "$p")" in *" "[0-9]*) continue;; esac
+    n=$(basename "$p"); n=${n%.*}
+    cp "$p" "$WORK/bl/"
+    [ -f "$DIR/$n.expected" ] && cp "$DIR/$n.expected" "$WORK/bl/"
+    NAMES="$NAMES $n"
+    cp "$p" "$WORK/$n.cpp"
+    for L in O1 O2; do
+        if "$CPP11" -arch tms6747 -nologo -$L -S "$WORK/$n.cpp" -o "$WORK/$n.$L.s" > "$WORK/$n.$L.log" 2>&1 &&
+           "$ASM6X" "$WORK/$n.$L.s" -o "$WORK/bl/$n.cpp11-$L.obj" >> "$WORK/$n.$L.log" 2>&1; then :
+        else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; fi
+    done
+done
+COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/bl.tgz" bl
+scp -q -o BatchMode=yes "$WORK/bl.tgz" "$WINDOWS:C:/cxx1/bl-$STAMP.tgz" || { echo "c6747-levels: cannot ship to $WINDOWS"; exit 1; }
+ssh -o BatchMode=yes "$WINDOWS" "mkdir C:\\cxx1\\bench-levels 2>nul & mkdir $WREMOTE && tar -C $WREMOTE --strip-components=1 -xzf C:\\cxx1\\bl-$STAMP.tgz && del C:\\cxx1\\bl-$STAMP.tgz" > /dev/null 2>&1
+printf 'c6747-levels: running in %s\n' "$WREMOTE"
+ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\bench-levels.cmd" > "$WORK/windows.log" 2>&1
+mkdir -p "$WORK/back"
+scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.result" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.stdout" "$WORK/back/" 2>/dev/null
+scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/obj" "$WORK/back/" 2>/dev/null
+
+field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
+codebytes() {
+    [ -f "$1" ] || { echo -; return; }
+    python3 - "$1" <<'PY'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+shoff, = struct.unpack_from('<I', d, 0x20)
+shentsize, shnum = struct.unpack_from('<HH', d, 0x2e)
+total = 0
+for i in range(shnum):
+    h = struct.unpack_from('<IIIIIIIIII', d, shoff + i * shentsize)
+    if h[1] == 1 and h[2] & 4: total += h[5]      # SHT_PROGBITS, SHF_EXECINSTR
+print(total)
+PY
+}
+BUILDS="744-O1 744-O2 744-ms 822-O1 822-O2 822-ms cpp11-O1 cpp11-O2"
+pass=0; fail=0
+echo
+echo "cycles (cycle.Total, TI's C6747 cycle-accurate simulator, Windows box):"
+printf '%-8s' program; for b in $BUILDS; do printf '%12s' "$b"; done; printf '   verdict\n'
+for n in $NAMES; do
+    printf '%-8s' "$n"; v=""
+    for b in $BUILDS; do
+        r=$WORK/back/$n.$b.result; o=$WORK/back/$n.$b.stdout
+        count=$(field "$r" count); pc=$(field "$r" pc); ex=$(field "$r" exit)
+        printf '%12s' "${count:--}"
+        if [ ! -f "$r" ]; then v="$v $b:missing"; fail=$((fail + 1)); continue; fi
+        [ -n "$pc" ] && [ "$pc" != "$ex" ] && { v="$v $b:stopped-at-$pc"; fail=$((fail + 1)); continue; }
+        if [ -f "$DIR/$n.expected" ]; then
+            tr -d '\r' < "$o" > "$o.lf" 2>/dev/null
+            cmp -s "$o.lf" "$DIR/$n.expected" && pass=$((pass + 1)) || { v="$v $b:DIFFERS"; fail=$((fail + 1)); }
+        else pass=$((pass + 1)); fi
+    done
+    printf '   %s\n' "${v:-all expected}"
+done
+echo
+echo "cpp11 over cl6x, cycles at the same level (and cpp11 -O2 over each -O2):"
+printf '%-8s %10s %10s %10s %10s\n' program "O1/744-O1" "O1/822-O1" "O2/744-O2" "O2/822-O2"
+ratio() { case "$1$2" in ""|*[!0-9]*) echo -;; *) echo "scale=2; $1 / $2" | bc;; esac; }
+for n in $NAMES; do
+    a=$(field "$WORK/back/$n.cpp11-O1.result" count); b=$(field "$WORK/back/$n.cpp11-O2.result" count)
+    printf '%-8s %10s %10s %10s %10s\n' "$n" "$(ratio "$a" "$(field "$WORK/back/$n.744-O1.result" count)")" \
+        "$(ratio "$a" "$(field "$WORK/back/$n.822-O1.result" count)")" \
+        "$(ratio "$b" "$(field "$WORK/back/$n.744-O2.result" count)")" \
+        "$(ratio "$b" "$(field "$WORK/back/$n.822-O2.result" count)")"
+done
+echo
+echo "code bytes of the program's own object (executable sections):"
+printf '%-8s' program; for b in $BUILDS; do printf '%10s' "$b"; done; printf '\n'
+for n in $NAMES; do
+    printf '%-8s' "$n"
+    for b in $BUILDS; do
+        case "$b" in cpp11-*) f=$WORK/bl/$n.$b.obj;; *) f=$WORK/back/obj/$b/$n.obj;; esac
+        printf '%10s' "$(codebytes "$f")"
+    done
+    printf '\n'
+done
+echo
+[ "$fail" -gt 0 ] && { echo "--- windows log"; tr -d '\r' < "$WORK/windows.log" | tail -8; }
+printf 'c6747-levels: %s runs as expected, %s not, in %ss; %s kept on the box\n' "$pass" "$fail" "$(( $(date +%s) - T0 ))" "$WREMOTE"
+[ "$fail" -eq 0 ]

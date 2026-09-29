@@ -10993,3 +10993,104 @@ several instructions.
 2026-09-29: the ten-file workload runs one file per run, all at once on the
 Windows PC, through `tools/c6747/compilerpp/run-split.cmd`. The state of the
 round and what comes next are in `docs/HANDOVER-C6747-2026-09-29.md`.
+
+## Locals in registers on the C6000, and the emulator's unwinder, 2026-09-29
+
+**The tms6747 code was a stack machine until this round**: every local an `LDW`,
+`NOP 4` and a store at each use, which is why the six kernels were 8.31x cl6x
+7.4.4 -O2. Item 2 of `docs/HANDOVER-C6747-2026-09-29.md`, and the design that fits
+a backend which emits text and has no IR: **the body is walked twice** in
+`Tms6747::emitFunction` at -O1 and -O2. The first walk (`planning_`) counts each
+local's uses, weighted by loop depth (`8^depth`, capped), and marks every local
+whose address is formed - `localAddr` is the one place an address of a frame slot
+is made, so the mark is structural rather than a list of sites; the three whole-value
+accesses (`visit(Var)`, a scalar `Assign` target, a `Postfix` target) go through it
+under `plainAccess_` and count instead. The text is dropped, `planRegisters` gives
+the most used candidates A10-A13 then B10-B13 (the A file first, since `MV A10, A4`
+folds into its reader and a cross-file copy does not), a 64-bit one an even:odd
+pair, and the second walk emits `MV R, A4` for a read and `MV A4, R` for a write -
+a sub-word value narrowed first, as a store and load would have left it - with a
+parameter taking its register where it arrived. The registers go into `savedRegs()`,
+so the prologue saves and the epilogue restores them and the unwind word names them.
+
+**What is left out, each by a rule**: a slot with two types on it, a slot of a
+struct or array, an inlined callee's slot keyed past its caller's frame
+(`localBase_ + offset`, so two inlined instances share a register safely - neither
+reads before it writes), a `Var` the parser typed only through its `Assign`
+(`member-pointer-models` crashed the compiler on that one until it was excluded),
+and A10/B10/A12/B12 or their partners in a function that passes or takes more than
+six arguments, which write those registers at the call. B16-B23 for a leaf was
+measured neutral and taken back out: the copies do not fold across files, and the
+scheduler hides the restore under the epilogue's own `LDW *A15, A15`.
+
+**And one line in `foldFrame` that had never fired**: a load into its own address
+register - `LDW *A4, A4`, the common shape - was refused because the dead-after test
+read the load's result as a use of the address. Its own write is the address's last
+use; 4 to 8% on the kernels on its own.
+
+**Kernels, VM6747 -c at -O2, at ecb4d7d -> foldFrame -> registers:**
+
+| kernel | ecb4d7d | foldFrame | registers |
+| --- | --- | --- | --- |
+| fib | 4,355,822 | 4,355,822 | 3,496,133 |
+| hash | 22,314,120 | 21,674,119 | 13,248,109 |
+| isort | 10,113,900 | 9,441,150 | 6,655,303 |
+| matmul | 2,715,090 | 2,471,580 | 1,707,700 |
+| sieve | 12,700,543 | 11,767,531 | 7,742,655 |
+| virt | 3,580,521 | 3,340,493 | 2,420,439 |
+
+**On TI's C6747 cycle-accurate simulator, against both CCS toolchains at both
+levels** - `tools/c6747-levels`, which builds each kernel eight ways on the Windows
+box (`tools/c6747/bench-levels.cmd`: cl6x 7.4.4 of CCS 5.5 and cl6x 8.2.2 of CCS 7.4
+at `-O1`, `-O2` and `-O2 -ms3`, each linked by its own linker against its own
+`rts6740_elf_eh.lib`; cpp11 `-O1` and `-O2` assembled by ASM6x and linked by 7.4.4),
+runs all 48 at once and prints cycle.Total and the code bytes of each program's own
+object. Every one of the 48 printed its `.expected`:
+
+| kernel | 744-O1 | 744-O2 | 822-O1 | 822-O2 | cpp11 -O1 | cpp11 -O2 | O2 / 744-O2 | O2 / 822-O2 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 5,568,464 | 5,701,511 | 5,568,115 | 9,713,672 | 9,713,672 | 1.74 | 1.74 |
+| hash | 9,487,279 | 6,009,087 | 10,262,129 | 6,014,015 | 37,199,790 | 37,199,790 | 6.19 | 6.18 |
+| isort | 8,107,925 | 5,312,299 | 8,604,834 | 5,309,586 | 12,698,213 | 12,684,989 | 2.38 | 2.38 |
+| matmul | 1,568,800 | 1,294,024 | 1,538,071 | 982,933 | 2,874,950 | 2,874,950 | 2.22 | 2.92 |
+| sieve | 3,256,189 | 2,999,335 | 3,433,340 | 2,577,500 | 8,898,561 | 8,898,561 | 2.96 | 3.45 |
+| virt | 3,269,959 | 3,269,953 | 3,429,306 | 3,268,908 | 7,912,512 | 7,912,406 | 2.41 | 2.42 |
+| total | 31,258,616 | 24,453,162 | 32,969,191 | 23,721,057 | 79,297,698 | 79,284,368 | 3.24 | 3.34 |
+
+The total against cl6x 7.4.4 -O2 was 8.31x on 2026-09-29 morning and is 3.24x now.
+cpp11's -O1 and -O2 differ only by the inliner, which the kernels barely reach, so the
+-O1 column is the -O2 column: **cpp11 has no size level yet**, and against cl6x -O1
+it stands at 1.56x (isort) to 3.92x (hash). Code bytes, the program's own object:
+cl6x 7.4.4 `-O2 -ms3` 128 / 256 / 352 / 416 / 352 / 640 (2,144), cl6x 8.2.2 the same
+flags 128 / 288 / 384 / 448 / 320 / 640 (2,208), cpp11 -O1 384 / 704 / 1,120 / 1,472 /
+928 / 2,304 (6,912, down from 9,216) - 3.2x cl6x's size build. `-ms3` is what the
+size setting costs cl6x in cycles: fib, hash and virt take three to ten times
+longer under it than at plain -O2.
+
+**The emulator's unwinder popped no saved registers, and TI's simulator settled
+it.** With locals in A10-A13 and B10-B13, seven suite cases failed on VM6747 and six
+of them threw: `Runtime::land` sets A15, B15, B3 and A4 and nothing else, so a
+landing frame saw its callee's A10 where TI's unwinder - and the ARM-EHABI model
+the C6000 EABI copies - pops each unwound frame's saves back into the register set
+it installs at the pad. `temporary-unwind`, `string-at`, `handler-exit-ms` and
+`new-class-array-placement`, compiled by this cpp11 -O2, print their `.expected`
+on the cycle-accurate simulator on both boxes, cycle-identical (564,824 / 375,333 /
+111,919 / 436,725). The suite was run through an emulator patched to pop them
+(`Runtime::popSaved`, called as `unwindTo` leaves each frame, from the unwind
+word's mask in TI's order); that patch is for VM6747 and sits in this round's
+scratchpad as `vm6747-popsaved.patch`, since VM6747's tree carried another
+session's uncommitted change. Until it lands, `tests/tms6747.sh` at -O1 or -O2
+needs `VM=` pointing at a patched emulator; at -O0 nothing is promoted and the
+shipped emulator answers as before.
+
+**Measured at the close**: tms6747.sh 339 / 0 at -O1 and at -O2 (7 skipped for a
+64-bit long, 6 not for this target); run.sh 553 / 0, names.sh 352 / 0, overload.sh
+30 / 0; the emit golden 0 of 1377 changed - the -O0 emission of all four targets is
+byte-identical, and x86 and arm64 do not go through this code at any level.
+
+**What is next for the C6000 optimizer, in order**: the copies the register walk
+leaves - `MV A12, A16; MVK 1, A6; ADD A16, A6, A4; MV A4, A12` for `i + 1` is one
+`ADD A12, 1, A12`, which wants constant forwarding and a retarget through a
+cross-file copy in `C6xSched`; delay slots filled and `||` packets, so the `NOP 5`
+after every branch and the `NOP 4` after every load stop being empty; then
+addressing modes and software pipelining, which is where cl6x's remaining 3x is.
