@@ -83,4 +83,6 @@ private:
     static const char *bannerLine();
     void standardIncludeDirectories(const std::string &argv0);
     bool quiet_ = false;
+    // --compress or --no_compress, handed to asm6x for tms6747; empty is asm6x's default, compressed.
+    std::string asmCompress_;
 };

@@ -164,7 +164,9 @@ void Driver::usage(char *file) {
         "         host by asm6x, the project's own C6000 assembler (CPP11_AS, or\n"
         "         the one beside this program), and linked into a .out by TI's\n"
         "         lnk6x where CCS is (CPP11_TI names its C6000 compiler directory,\n"
-        "         CPP11_TILIB one holding rts6740_elf_eh.lib)\n"
+        "         CPP11_TILIB one holding rts6740_elf_eh.lib); its code uses the\n"
+        "         C64x+ 16-bit compact instructions, as TI's cl6x does, and\n"
+        "         --no_compress writes every instruction in 32 bits\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'masm' is\n"
         "         the default where this project's masm.exe is beside this\n"
         "         program (RIDE's bin), assembled by it and linked by the\n"
@@ -575,6 +577,7 @@ bool Driver::assembleObjects() {
         std::string command;
         if (targetIsTi()) {
             command = shellQuote(tiAssembler());
+            if (!asmCompress_.empty()) command += " " + asmCompress_;
             command += " " + shellQuote(temporaries_[i]);
             command += " -o " + shellQuote(objects_[i]);
         } else if (hostIsWindows() && syntax_ == Syntax::Gnu) {
@@ -644,7 +647,7 @@ bool Driver::linkTi() {
     for (const std::string &t : temporaries_) {
         std::size_t dot = t.rfind('.');
         std::string obj = (dot == std::string::npos ? t : t.substr(0, dot)) + ".obj";
-        steps.push_back(shellQuote(tiAssembler()) + " " + shellQuote(t) +
+        steps.push_back(shellQuote(tiAssembler()) + (asmCompress_.empty() ? "" : " " + asmCompress_) + " " + shellQuote(t) +
                         " -o " + shellQuote(obj));
         objects.push_back(obj);
         temporaryNames().push_back(obj);
@@ -881,6 +884,8 @@ bool Driver::parseArguments(int argc, char **argv) {
             std::printf("%s\nVersion %s, sealed %s\n", CXX1_BANNER,
                         CXX1_VERSION, CXX1_SEAL_DATE);
             std::exit(0);
+        } else if (std::strcmp(argv[i], "--no_compress") == 0 || std::strcmp(argv[i], "--compress") == 0) {
+            asmCompress_ = argv[i];
         } else if (std::strcmp(argv[i], "-nologo") == 0) {
             quiet_ = true;
         } else if (std::strcmp(argv[i], "-O0") == 0 || std::strcmp(argv[i], "-O1") == 0 ||
@@ -976,6 +981,11 @@ bool Driver::parseArguments(int argc, char **argv) {
         }
     }
 
+    if (!asmCompress_.empty() && !targetIsTi()) {
+        std::fprintf(stderr, "%s: %s is for -arch tms6747, whose compact instructions it turns on or off\n",
+                     argv[0], asmCompress_.c_str());
+        return false;
+    }
     if (assemblyOnly_ && objectOnly_) {
         std::fprintf(stderr, "%s: -S and -c ask for different things - -S stops "
                              "at assembly, -c goes one step further to an "

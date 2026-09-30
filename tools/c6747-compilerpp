@@ -24,9 +24,9 @@ COMPILERPP=${COMPILERPP:-$ROOT/../Compiler++}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
 # COMPRESS=1 (default): cpp11's objects --compress, cl6x its own default, compressed; COMPRESS=0:
-# both plain, ASM6x as it is and cl6x --no_compress - the two sides always built alike
+# both plain, ASM6x and cl6x --no_compress - the two sides always built alike
 COMPRESS=${COMPRESS:-1}
-if [ "$COMPRESS" = 1 ]; then ASM6X_FLAGS=--compress; TI_COMPRESS=; else ASM6X_FLAGS=; TI_COMPRESS=--no_compress; fi
+if [ "$COMPRESS" = 1 ]; then ASM6X_FLAGS=--compress; TI_COMPRESS=; else ASM6X_FLAGS=--no_compress; TI_COMPRESS=--no_compress; fi
 T0=$(date +%s)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
