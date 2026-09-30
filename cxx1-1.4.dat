@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 165 files, seal FF03BFB7
+CRC32  size  file - 165 files, seal BBC538C2
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 2DF96A05      2820  examples/Makefile
@@ -95,8 +95,8 @@ F0D14C0C     44838  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
 FDB7487B     15645  src/backend/Spelling.cpp
 D7404BF3     11389  src/backend/Spelling.h
-547D6122     98237  src/backend/Tms6747.cpp
-95A5D3E9     12606  src/backend/Tms6747.h
+3DD83530    111128  src/backend/Tms6747.cpp
+CD7940A6     14020  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
 BF4C34E3     96607  src/backend/X86_64Linux.cpp
@@ -108,7 +108,7 @@ F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
 857BF7D4      4403  src/optimizer/C6xModel.h
 D2A2024C     45643  src/optimizer/C6xPipe.cpp
-29ABEE04     67440  src/optimizer/C6xSched.cpp
+F88D0F3C     94380  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
 4DC6880D       381  src/optimizer/DivMagic.h
 A167EFA0      8886  src/optimizer/Inliner.cpp
