@@ -158,7 +158,8 @@ private:
     void call(const std::string &target);     // B3 = return address; B target
     void genArg(const Call &n, std::size_t i);   // argument i -> A4
     void addOffset(int bytes);                // A4 += bytes
-    void copyBlock(int size, const char *from, const char *to, int align);
+    void copyBlock(int size, const char *from, const char *to, int align, bool wide = false, const char *pred = "");
+    void copyBlockBatched(int size, const char *from, const char *to, int align, bool wide, const char *pred);
     bool inPair(const Type *t) const;         // a struct of 8 bytes or less: in registers, argument or result
     bool inPairWide(const Type *t) const;     // and one of 5 to 8 takes the pair
     bool hiddenInA4(const Type *t) const;     // a class non-trivial for calls: its result pointer is the first parameter

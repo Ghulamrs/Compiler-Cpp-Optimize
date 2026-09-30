@@ -268,25 +268,60 @@ void Tms6747::addOffset(int bytes) {
 // A struct copy, word by word then halfword and byte, each through A3 with
 // the addresses formed in A0: the zero-offset forms, like every other access
 // here. from and to are A-file registers other than A0 and A3.
-void Tms6747::copyBlock(int size, const char *from, const char *to, int align) {
+void Tms6747::copyBlock(int size, const char *from, const char *to, int align, bool wide, const char *pred) {
+    if (optimize_ > 0) { copyBlockBatched(size, from, to, align, wide, pred); return; }
     int off = 0;
     while (off < size) {
         int step = size - off >= 4 ? 4 : size - off >= 2 ? 2 : 1;
         if (step > align) step = align;     // a struct of chars may sit anywhere
         const char *ld = step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
         const char *st = step == 4 ? "STW" : step == 2 ? "STH" : "STB";
-        if (optimize_ > 0 && off / step <= 31) {       // the offset form, ucst5 in units of the access
-            const std::string at = off == 0 ? "" : "+", disp = off == 0 ? "" : "(" + std::to_string(off) + ")";
-            out_ << "\t" << ld << "\t*" << at << from << disp << ", A3\n\tNOP\t4\n";
-            out_ << "\t" << st << "\tA3, *" << at << to << disp << "\n";
-            off += step;
-            continue;
-        }
         regAdd(from, off, "A0");
         out_ << "\t" << ld << "\t*A0, A3\n\tNOP\t4\n";
         regAdd(to, off, "A0");
         out_ << "\t" << st << "\tA3, *A0\n";
         off += step;
+    }
+}
+
+// At -O1 and -O2 the loads of a batch go first, into B16-B23, and the stores after them, so the
+// loads pipeline instead of each waiting its four slots (review B9); LDDW/STDW pairs where the caller
+// vouches for both addresses being 8-aligned. B16-B23 are nobody's: the scheduler's push folding takes A16 up.
+void Tms6747::copyBlockBatched(int size, const char *from, const char *to, int align, bool wide, const char *pred) {
+    const std::string p = *pred ? std::string("\t[") + pred + "]" : "";   // every load and store under it; the address adds need none
+    int off = 0;
+    while (off < size) {
+        // One batch: up to eight registers of words, or four pairs, from a base within ucst5 reach.
+        const int base = off;
+        std::string src = from, dst = to;
+        if (base > 0) { regAdd(to, base, "A3"); regAdd(from, base, "A0"); src = "A0"; dst = "A3"; }   // A3 first: A0 is regAdd's scratch
+        std::vector<std::pair<int, int> > chunks;              // (offset, step) of this batch
+        int regs = 0, at = off;
+        while (at < size && regs < 8) {
+            int step = wide && size - at >= 8 ? 8 : size - at >= 4 ? 4 : size - at >= 2 ? 2 : 1;
+            if (step > align && step != 8) step = align;
+            if (step == 8 && (regs == 7 || (at - base) / 8 > 31)) step = 4;
+            if ((at - base) / step > 31) break;
+            chunks.push_back(std::make_pair(at, step));
+            regs += step == 8 ? 2 : 1;
+            at += step;
+        }
+        for (std::size_t k = 0, r = 16; k < chunks.size(); k++) {
+            const int o = chunks[k].first - base, step = chunks[k].second;
+            const std::string reg = step == 8 ? pairOf(("B" + std::to_string(r)).c_str()) : "B" + std::to_string(r);
+            const char *ld = step == 8 ? "LDDW" : step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
+            out_ << p << "\t" << ld << "\t*" << (o ? "+" : "") << src << (o ? "(" + std::to_string(o) + ")" : "") << ", " << reg << "\n";
+            r += step == 8 ? 2 : 1;
+        }
+        out_ << "\tNOP\t4\n";
+        for (std::size_t k = 0, r = 16; k < chunks.size(); k++) {
+            const int o = chunks[k].first - base, step = chunks[k].second;
+            const std::string reg = step == 8 ? pairOf(("B" + std::to_string(r)).c_str()) : "B" + std::to_string(r);
+            const char *st = step == 8 ? "STDW" : step == 4 ? "STW" : step == 2 ? "STH" : "STB";
+            out_ << p << "\t" << st << "\t" << reg << ", *" << (o ? "+" : "") << dst << (o ? "(" + std::to_string(o) + ")" : "") << "\n";
+            r += step == 8 ? 2 : 1;
+        }
+        off = at;
     }
 }
 
@@ -768,7 +803,7 @@ void Tms6747::visit(const Assign &n) {
     pop("A4");                       // A4 = value again
     if (bf) { bitFieldInsert(*bf); return; }
     if (n.type()->isStructOrUnion()) {
-        copyBlock(n.type()->size(target_), "A4", "A6", n.type()->align(target_));
+        copyBlock(n.type()->size(target_), "A4", "A6", n.type()->align(target_), n.type()->align(target_) >= 8);
         out_ << "\tMV\tA6, A4\n";    // the result: the target, by address
         return;
     }
@@ -1263,8 +1298,11 @@ void Tms6747::visit(const Return &n) {
             std::string skip = label("noresult", nextLabel());
             localAddr(sretSlot_, "A6");
             out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n";
-            if (sretShift_ == 0) out_ << "\tMV\tA6, A1\n\t[!A1]\tB\t" << skip << "\n\tNOP\t5\n";
-            copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_));
+            // At -O1 and -O2 the copy is predicated on the pointer instead of branched around: no delay slots.
+            const bool guard = sretShift_ == 0;
+            if (guard) out_ << "\tMV\tA6, A1\n" << (optimize_ > 0 ? "" : "\t[!A1]\tB\t" + skip + "\n\tNOP\t5\n");
+            copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_),
+                      n.value().type()->align(target_) >= 8, guard && optimize_ > 0 ? "A1" : "");
             defineLabel(skip);
             out_ << "\tMV\tA6, A4\n";
         }
@@ -1311,7 +1349,7 @@ void Tms6747::visit(const Call &n) {
         if (!args[i]->type()->isStructOrUnion()) continue;
         args[i]->accept(*this);               // A4 = the struct's address
         localAddr(n.argSlot(i), "A6");
-        copyBlock(args[i]->type()->size(target_), "A4", "A6", args[i]->type()->align(target_));
+        copyBlock(args[i]->type()->size(target_), "A4", "A6", args[i]->type()->align(target_), args[i]->type()->align(target_) >= 8);
     }
 
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount) - shift;
@@ -1687,7 +1725,7 @@ void Tms6747::emitParams(const Function &fn) {
             // Through A1, not A6: A6 is the third argument's register, still
             // to be read when an earlier struct parameter is being copied.
             localAddr(ps[i].offset, "A1");
-            copyBlock(t->size(target_), "A4", "A1", t->align(target_));
+            copyBlock(t->size(target_), "A4", "A1", t->align(target_), t->align(target_) >= 8);
             continue;
         }
         // A parameter in a register: the value as the walk found it, its arrival counted as a use.
