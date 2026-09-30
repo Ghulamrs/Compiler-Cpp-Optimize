@@ -810,6 +810,51 @@ void Tms6747::visit(const Unary &n) {
     }
 }
 
+// A right operand that is a small constant goes into the instruction (the review's B4): the
+// scst5 forms of ADD, AND, OR, XOR and the compares (constant first, so a compare turns about),
+// SUB's and a shift's ucst5, and ADDK's 16 bits for any other add or subtract.
+bool Tms6747::immediateBinary(const Binary &n) {
+    const Num *c = dynamic_cast<const Num *>(&n.rhs());
+    if (c == nullptr) return false;
+    const long long k = c->value();
+    const bool sign = n.lhs().type()->isSigned(target_), small = k >= -16 && k <= 15, ucst = k >= 0 && k <= 31;
+    const bool wide16 = k >= -32768 && k <= 32767;
+    std::string code;
+    switch (n.op()) {
+    case BinOp::Add:
+        if (small) code = "\tADD\t" + std::to_string(k) + ", A4, A4\n";
+        else if (wide16) code = "\tADDK\t" + std::to_string(k) + ", A4\n";
+        break;
+    case BinOp::Sub:
+        if (ucst) code = "\tSUB\tA4, " + std::to_string(k) + ", A4\n";
+        else if (-k >= -32768 && -k <= 32767) code = "\tADDK\t" + std::to_string(-k) + ", A4\n";
+        break;
+    case BinOp::BitAnd: case BinOp::BitOr: case BinOp::BitXor:
+        if (small) code = std::string(n.op() == BinOp::BitAnd ? "\tAND\t" : n.op() == BinOp::BitOr ? "\tOR\t" : "\tXOR\t") + std::to_string(k) + ", A4, A4\n";
+        break;
+    case BinOp::Shl: case BinOp::Shr:
+        if (ucst) code = std::string(n.op() == BinOp::Shl ? "\tSHL" : sign ? "\tSHR" : "\tSHRU") + "\tA4, " + std::to_string(k) + ", A4\n";
+        break;
+    case BinOp::Eq: case BinOp::Ne: case BinOp::Lt: case BinOp::Gt: case BinOp::Le: case BinOp::Ge: {
+        if (sign ? !small : !ucst) break;
+        // x < k is k > x, x > k is k < x; <= and >= are their opposites negated.
+        const bool lt = n.op() == BinOp::Lt || n.op() == BinOp::Ge, gt = n.op() == BinOp::Gt || n.op() == BinOp::Le;
+        const char *cmp = lt ? (sign ? "CMPGT" : "CMPGTU") : gt ? (sign ? "CMPLT" : "CMPLTU") : "CMPEQ";
+        code = std::string("\t") + cmp + "\t" + std::to_string(k) + ", A4, A4\n";
+        if (n.op() == BinOp::Ne || n.op() == BinOp::Le || n.op() == BinOp::Ge) code += "\tXOR\t1, A4, A4\n";
+        n.lhs().accept(*this);
+        out_ << code;
+        return true;
+    }
+    default: break;
+    }
+    if (code.empty()) return false;
+    n.lhs().accept(*this);
+    out_ << code;
+    narrowInt(n.type());
+    return true;
+}
+
 void Tms6747::visit(const Binary &n) {
     if (n.op() == BinOp::LAnd || n.op() == BinOp::LOr) {
         int id = nextLabel();
@@ -844,6 +889,7 @@ void Tms6747::visit(const Binary &n) {
         narrowInt(n.type());
         return;
     }
+    if (optimize_ > 0 && !ot->isFloating() && !isWide(ot) && immediateBinary(n)) return;
     n.lhs().accept(*this);          // A4 = lhs
     pushValue(ot);
     n.rhs().accept(*this);          // A4 = rhs

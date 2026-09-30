@@ -392,7 +392,7 @@ int crossings(const Line &l) {
 // A register-to-register instruction whose operands may be renamed: no
 // memory operand, and no pair - a half of A5:A4 cannot be renamed alone.
 bool renameable(const Line &l) {
-    if (!l.instr || isBranch(l.mnem) || isStore(l.mnem) || isLoad(l.mnem)) return false;
+    if (!l.instr || isBranch(l.mnem) || isStore(l.mnem) || isLoad(l.mnem) || l.mnem == "ADDK") return false;   // ADDK reads its destination
     for (std::size_t o = 0; o < l.ops.size(); o++) if (l.ops[o].find(':') != std::string::npos || l.ops[o][0] == '*') return false;
     return true;
 }
@@ -431,6 +431,7 @@ bool forwardMoves(std::vector<Line> &v) {
             readsAndWrites(v[j], reads, writes);
             if (has(reads, D)) {
                 if (!v[j].pred.empty() || (!has(writes, D) && !deadAfter(v, j, D))) break;
+                if (v[j].mnem == "ADDK" || v[j].mnem == "MVKH") break;      // the destination is read too
                 Line u = v[j];
                 bool pair = false;          // a register pair is odd:even, and a half cannot be renamed alone
                 for (std::size_t o = 0; o < u.ops.size(); o++) if (u.ops[o].find(':') != std::string::npos) pair = true;

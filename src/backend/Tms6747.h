@@ -168,6 +168,7 @@ private:
     void bitFieldExtract(const MemberAccess &m);    // unit in A4 -> the field
     void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
     void spAdjust(int delta);
+    bool immediateBinary(const Binary &n);
     void openArea(int area, bool stackArgs = false);
     void closeArea();                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
