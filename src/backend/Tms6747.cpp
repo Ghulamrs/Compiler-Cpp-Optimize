@@ -294,14 +294,14 @@ void Tms6747::closeArea() {
     areas_.pop_back();
 }
 
+// At -O1 and -O2 a word is pushed into the upper half of its slot, leaving *B15 - the word a
+// callee saves A15 in - free, so a call under it needs no area; a pair fills the slot and counts.
 void Tms6747::push() {
-    pushDepth_++;
     out_ << "\tSUB\tB15, 8, B15\n";
-    out_ << "\tSTW\tA4, *B15\n";
+    out_ << (optimize_ > 0 ? "\tSTW\tA4, *+B15(4)\n" : "\tSTW\tA4, *B15\n");
 }
 void Tms6747::pop(const char *reg) {
-    pushDepth_--;
-    out_ << "\tLDW\t*B15, " << reg << "\n\tNOP\t4\n";
+    out_ << "\tLDW\t" << (optimize_ > 0 ? "*+B15(4)" : "*B15") << ", " << reg << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
 

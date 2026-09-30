@@ -89,7 +89,7 @@ private:
     // function that calls saves B3, and one that loads the callee-saved
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
-    int pushDepth_ = 0;                       // values pushed and not yet popped
+    int pushDepth_ = 0;                       // pairs pushed and not yet popped, which fill *B15
     std::vector<int> areas_;                  // the call areas open, innermost last
     bool usesSavedArgRegs_ = false;
     bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12

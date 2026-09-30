@@ -607,11 +607,12 @@ void tidyJumps(std::vector<Line> &v) {
 
 bool isPush(const std::vector<Line> &v, std::size_t i) {
     return i + 1 < v.size() && v[i].raw == "\tSUB\tB15, 8, B15" && isStore(v[i + 1].mnem) &&
-           v[i + 1].ops.size() == 2 && v[i + 1].ops[1] == "*B15" && (v[i + 1].mnem == "STW" || v[i + 1].mnem == "STDW");
+           v[i + 1].ops.size() == 2 && ((v[i + 1].ops[1] == "*B15" && (v[i + 1].mnem == "STW" || v[i + 1].mnem == "STDW")) ||
+                                     (v[i + 1].ops[1] == "*+B15(4)" && v[i + 1].mnem == "STW"));
 }
 bool isPop(const std::vector<Line> &v, std::size_t i) {
     return i + 1 < v.size() && (v[i].mnem == "LDW" || v[i].mnem == "LDDW") && v[i].ops.size() == 2 &&
-           v[i].ops[0] == "*B15" && v[i + 1].raw == "\tADD\tB15, 8, B15";
+           (v[i].ops[0] == "*B15" || (v[i].ops[0] == "*+B15(4)" && v[i].mnem == "LDW")) && v[i + 1].raw == "\tADD\tB15, 8, B15";
 }
 
 // A push whose pop is in the same block, with no call and no other use of
