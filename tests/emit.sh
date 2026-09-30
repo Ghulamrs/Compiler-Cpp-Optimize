@@ -3,6 +3,8 @@
 #
 #   tests/emit.sh            compile, and diff against the golden if there is one
 #   tests/emit.sh --record   compile, and keep this output as the golden
+#   tests/emit.sh --o2 [--record]   tms6747 alone at -O2, against a golden of its own,
+#                            so a change to the C6000 optimizer shows as files changed
 #
 # No assembler and no linker, so this runs on any machine cxx1 builds on -
 # which is the point. A backend that cannot be run here can still be checked
@@ -17,10 +19,15 @@
 # and a suite that refused one would be a suite people stopped recording.
 set -e
 cd "$(dirname "$0")/.."
+if [ "${1:-}" = --o2 ]; then EMIT_O2=1; export EMIT_O2; shift; fi
 CXX1="${CXX1:-./cpp11.exe}"
 cxx1() { ( ulimit -t 10; $CXX1 "$@" < /dev/null ); }
 OUT=tests/out-emit
 GOLD=tests/out-emit.golden
+LEVEL=
+TARGETS="x86_64-linux x86_64-windows arm64-darwin tms6747"
+# The C6000's optimizer is a text pass the -O0 golden never reaches (review D6).
+if [ "${EMIT_O2:-}" = 1 ]; then OUT=tests/out-emit-O2; GOLD=tests/out-emit-O2.golden; LEVEL=-O2; TARGETS=tms6747; fi
 
 # Refused by name, like everything else here: a mistyped flag that ran the
 # ordinary suite would look like a recording that quietly did not happen.
@@ -33,7 +40,7 @@ emit_one() {
         echo "  skip $base for $target: $(grep "^$target\b" "tests/cases/$base.notarget" | sed "s/^$target[[:space:]]*//")"
         return
     fi
-    if cxx1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" 2>"$OUT/$base.$target.err"; then
+    if cxx1 -S -arch "$target" $LEVEL "$src" -o "$OUT/$base.$target.s" 2>"$OUT/$base.$target.err"; then
         echo pass > "$OUT/$base.$target.verdict"
     else
         echo "FAIL $base for $target:"
@@ -47,7 +54,7 @@ record=0
 case ${1:-} in
     "")        ;;
     --record)  record=1 ;;
-    *)         echo "emit.sh: '$1' is not an option - only --record is" >&2; exit 2 ;;
+    *)         echo "emit.sh: '$1' is not an option - only --o2 and --record are" >&2; exit 2 ;;
 esac
 
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -59,7 +66,7 @@ pairs() {
     for src in tests/cases/*.cpp; do
         base=$(basename "$src" .cpp)
         [ -f "tests/cases/$base.error" ] && continue
-        for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do echo "$base $target"; done
+        for target in $TARGETS; do echo "$base $target"; done
     done
 }
 pairs | xargs -P "$JOBS" -n 2 sh "$0" --one
