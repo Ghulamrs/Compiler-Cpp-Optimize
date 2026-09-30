@@ -93,8 +93,10 @@ private:
     bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12
     int frame_ = 0;                           // the locals, 8-aligned
     bool needsUnexpected_ = false;            // a noexcept function's table names __cxa_call_unexpected
+    bool needsPr2_ = false;                   // a table past 64 KB names __c6xabi_unwind_cpp_pr2
     std::vector<std::string> savedRegs() const;
     unsigned unwindWord(bool needFrame) const;
+    std::vector<unsigned> longUnwindWords() const;
     int sretSlot_ = 0;                        // where the caller's result pointer is kept
     std::size_t sretShift_ = 0;               // 1 when that pointer is A4 and the parameters start at B4
     std::size_t firstStack_ = 0;              // the first parameter passed on the stack
