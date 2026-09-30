@@ -17,9 +17,50 @@ Running them
     tests/corpus.sh              all of them, and the split
     tests/corpus.sh add          one, with what it said
 
+Each case is compiled as a `.cpp` copy in `tests/out-corpus/`, with
+`pp_helper.h` copied beside it. Since 2026-09-15 (ffc3b77) the driver turns a
+`.c` away by name - "looks like C (.c), and cxx1 compiles C++, not C" - and
+until this runner copied them every case was refused for that and nothing else:
+424 refused, which measured the file extension. The question this corpus asks
+is what happens to C when it is read as C++, and a copy asks it without
+teaching the driver a `-x` it has never needed.
+
 It exits 0 whatever happens. What it is for is `tests/out-corpus/FAILING`: run
 it before a change and after one, and **diff the failing set**. A case that
 moves between the lists is worth reading; the count on its own is not.
+
+What the split is on 2026-09-30, at 314eda4, on the Mac
+-------------------------------------------------------
+
+    365 ran and agreed, 58 refused, 1 wrong, of 424
+
+The same numbers as 2026-09-02, and the same failing set line for line: the
+compiler from just before 314eda4 gives an identical `FAILING`. That commit
+removed the implicit `void *` to object-pointer conversion ([conv.ptr]/2),
+which C relies on for `p = malloc(n)`, and one case writes it:
+`assign_types.c`, `char *w = malloc(4);` on line 21. It was already refused,
+four lines earlier, for `char *p = "literal";` - so the first error is
+unchanged and nothing moved. Take that line out and the `malloc` one is the
+error now, where before 314eda4 the case would have run: a case can hide a
+second refusal behind its first, and the failing set shows only the first.
+The others that call `malloc` cast its result or keep it in a `void *`. The
+59, by cause:
+
+* **45 refused: a string literal where a `char *` is wanted.** 39 are a call -
+  `printf(char *, ...)` in 37 of them, `puts` and a `count(char *)` in one each
+  - and 6 an initialisation or assignment. In C++11 the literal is `const
+  char[N]` and does not convert. cxx1 is right.
+* **13 refused at the link: a libc function the case declares itself, without
+  `extern "C"`.** `putchar(int)` in 10, `printf(const char *, ...)` in 2 -
+  typed correctly, so it compiles, and then its name is mangled - and
+  `malloc(long)` in 1. C++ behaving as C++.
+* **1 wrong: `pp_predefined`**, as below.
+
+The 2026-09-02 tally below comes to 39 + 7 + 6 = 52 refusals of the 58 it
+reports, so six were never accounted for; the likeliest are six more link
+failures it does not list - `printf(const char *, ...)` and `malloc(long)`
+beside `putchar` - but the failing set of that day was not kept, and that is
+a guess. The breakdown above adds up: 45 + 13 = 58.
 
 What the split was on 2026-09-02, on the Mac
 --------------------------------------------
