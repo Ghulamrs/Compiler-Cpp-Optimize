@@ -23,8 +23,8 @@ if "%SKIPBUILD%"=="1" goto launch
 del /q ccs55.out ccs74.out cpp11.out *.built 2>nul
 if not exist o55 mkdir o55
 if not exist o74 mkdir o74
-start "ccs74" /b cmd /c ""%CG74%\bin\cl6x" -mv6740 --abi=eabi -O2 --rtti --symdebug:none -I"%CG74%\include" -I. --obj_directory=o74 harness.cpp -z --rom_model -i"%C6747_EHLIB74%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m ccs74.map -o ccs74.out > ccs74.build.log 2>&1 & echo done> ccs74.built"
-"%CG55%\bin\cl6x" -mv6740 --abi=eabi -O2 --rtti --symdebug:none -I"%CG55%\include" -I. --obj_directory=o55 harness.cpp -z --rom_model -i"%C6747_EHLIB%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m ccs55.map -o ccs55.out > ccs55.build.log 2>&1
+start "ccs74" /b cmd /c ""%CG74%\bin\cl6x" -mv6740 --abi=eabi -O2 %TI_COMPRESS% --rtti --symdebug:none -I"%CG74%\include" -I. --obj_directory=o74 harness.cpp -z --rom_model -i"%C6747_EHLIB74%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m ccs74.map -o ccs74.out > ccs74.build.log 2>&1 & echo done> ccs74.built"
+"%CG55%\bin\cl6x" -mv6740 --abi=eabi -O2 %TI_COMPRESS% --rtti --symdebug:none -I"%CG55%\include" -I. --obj_directory=o55 harness.cpp -z --rom_model -i"%C6747_EHLIB%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m ccs55.map -o ccs55.out > ccs55.build.log 2>&1
 "%CG55%\bin\cl6x" -mv6740 --abi=eabi h.cpp11.obj -z --rom_model -i"%C6747_EHLIB%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m cpp11.map -o cpp11.out > cpp11.build.log 2>&1
 :wait
 if not exist ccs74.built (ping -n 6 127.0.0.1 >nul & goto wait)

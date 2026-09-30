@@ -19,8 +19,10 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WINDOWS=${CXX1_WINDOWS:-windows}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
-# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
-ASM6X_FLAGS=${ASM6X_FLAGS---compress}
+# COMPRESS=1 (default): cpp11's objects --compress, cl6x its own default, compressed; COMPRESS=0:
+# both plain, ASM6x as it is and cl6x --no_compress - the two sides always built alike
+COMPRESS=${COMPRESS:-1}
+if [ "$COMPRESS" = 1 ]; then ASM6X_FLAGS=--compress; TI_COMPRESS=; else ASM6X_FLAGS=; TI_COMPRESS=--no_compress; fi
 [ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe   # from a worktree under .claude/
 LNK6X=${LNK6X:-$ROOT/../LNK6x/build/lnk6x.exe}
 [ -x "$LNK6X" ] || LNK6X=$HOME/Developer/Claude/LNK6x/build/lnk6x.exe
@@ -61,7 +63,7 @@ COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/bl.tgz" bl
 scp -q -o BatchMode=yes "$WORK/bl.tgz" "$WINDOWS:C:/cxx1/bl-$STAMP.tgz" || { echo "c6747-levels: cannot ship to $WINDOWS"; exit 1; }
 ssh -o BatchMode=yes "$WINDOWS" "mkdir C:\\cxx1\\bench-levels 2>nul & mkdir $WREMOTE && tar -C $WREMOTE --strip-components=1 -xzf C:\\cxx1\\bl-$STAMP.tgz && del C:\\cxx1\\bl-$STAMP.tgz" > /dev/null 2>&1
 printf 'c6747-levels: running in %s\n' "$WREMOTE"
-ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\bench-levels.cmd" > "$WORK/windows.log" 2>&1
+ssh -o BatchMode=yes "$WINDOWS" "set TI_COMPRESS=$TI_COMPRESS&& $WREMOTE\\bench-levels.cmd" > "$WORK/windows.log" 2>&1
 mkdir -p "$WORK/back"
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.result" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.stdout" "$WORK/back/" 2>/dev/null
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/obj" "$WORK/back/" 2>/dev/null

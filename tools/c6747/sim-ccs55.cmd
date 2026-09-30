@@ -21,7 +21,7 @@ if "%~1"=="" exit /b %STATUS%
 set N=%~n1
 set O=%W%\out\%~n1.%BOX%
 del /q "!O!.*" 2>nul
-"%CG%\bin\cl6x" -mv6740 --abi=eabi -O2 --symdebug:none -I"%CG%\include" --obj_directory="%W%\out" "%~f1" %LINK% -m "!O!.map" -o "!O!.out" > "!O!.build.log" 2>&1
+"%CG%\bin\cl6x" -mv6740 --abi=eabi -O2 %TI_COMPRESS% --symdebug:none -I"%CG%\include" --obj_directory="%W%\out" "%~f1" %LINK% -m "!O!.map" -o "!O!.out" > "!O!.build.log" 2>&1
 if errorlevel 1 (
   echo BOX %BOX% !N! build=FAILED> "!O!.result"
   type "!O!.result"

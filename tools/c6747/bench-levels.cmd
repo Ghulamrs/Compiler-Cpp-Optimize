@@ -49,7 +49,7 @@ rem :ti <55|74> <build> <opt flags> <source>: one TI build by that toolchain, it
 set B=%~2
 if "%~1"=="55" (set CG=%CG55%& set LINK=%LINK55%) else (set CG=%CG74%& set LINK=%LINK74%)
 if not exist obj\%B% mkdir obj\%B%
-"%CG%\bin\cl6x" -mv6740 --abi=eabi %~3 --symdebug:none -I"%CG%\include" --obj_directory=obj\%B% "%~4" %LINK% -m %N%.%B%.map -o %N%.%B%.out > %N%.%B%.build.log 2>&1
+"%CG%\bin\cl6x" -mv6740 --abi=eabi %~3 %TI_COMPRESS% --symdebug:none -I"%CG%\include" --obj_directory=obj\%B% "%~4" %LINK% -m %N%.%B%.map -o %N%.%B%.out > %N%.%B%.build.log 2>&1
 if exist %N%.%B%.out set /a WANT+=1
 exit /b 0
 

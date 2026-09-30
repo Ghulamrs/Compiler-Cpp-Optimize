@@ -60,8 +60,10 @@ NAMES=$(for f in $FILES; do echo "${f%.*}"; done)
 # cpp11 compiles C++, so each program goes in under a .cpp name.
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
-# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
-ASM6X_FLAGS=${ASM6X_FLAGS---compress}
+# COMPRESS=1 (default): cpp11's objects --compress, cl6x its own default, compressed; COMPRESS=0:
+# both plain, ASM6x as it is and cl6x --no_compress - the two sides always built alike
+COMPRESS=${COMPRESS:-1}
+if [ "$COMPRESS" = 1 ]; then ASM6X_FLAGS=--compress; TI_COMPRESS=; else ASM6X_FLAGS=; TI_COMPRESS=--no_compress; fi
 CPP11_FLAGS=${CPP11_FLAGS:--O2}
 mkdir -p "$WORK/cpp11"
 for f in $FILES; do
@@ -86,9 +88,9 @@ LPROGS=$(for f in $FILES; do printf '%s/c6747/programs/%s ' "$LREMOTE" "$f"; don
     scp -q -o BatchMode=yes "$WORK/c6747.tgz" "$WINDOWS:C:/cxx1/c6747.tgz" &&
     ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $WREMOTE 2>nul & mkdir $WREMOTE && tar -C $WREMOTE -xzf C:\\cxx1\\c6747.tgz" >/dev/null
 ) > "$WORK/wship.log" 2>&1 || { echo "c6747-three: cannot ship to $WINDOWS"; cat "$WORK/wship.log"; exit 1; }
-ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\c6747\\vm-ccs74.cmd $WPROGS" > "$WORK/windows-ccs74-vm.log" 2>&1 &
+ssh -o BatchMode=yes "$WINDOWS" "set TI_COMPRESS=$TI_COMPRESS&& $WREMOTE\\c6747\\vm-ccs74.cmd $WPROGS" > "$WORK/windows-ccs74-vm.log" 2>&1 &
 P1=$!
-ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\c6747\\sim-ccs55.cmd $WPROGS" > "$WORK/windows-ccs55.log" 2>&1 &
+ssh -o BatchMode=yes "$WINDOWS" "set TI_COMPRESS=$TI_COMPRESS&& $WREMOTE\\c6747\\sim-ccs55.cmd $WPROGS" > "$WORK/windows-ccs55.log" 2>&1 &
 P2=$!
 
 # The Linux box, after anything it has been told to wait for.
@@ -97,7 +99,7 @@ P2=$!
         while kill -0 "$C6747_AFTER" 2>/dev/null; do sleep 5; done
     fi
     scp -q -i "$KEY" -o BatchMode=yes "$WORK/c6747.tgz" "$LINUX:c6747.tgz" &&
-    ssh -i "$KEY" -o BatchMode=yes "$LINUX" "rm -rf $LREMOTE && mkdir -p $LREMOTE && tar -C $LREMOTE -xzf c6747.tgz && rm c6747.tgz && sh $LREMOTE/c6747/sim-ccs55.sh $LPROGS"
+    ssh -i "$KEY" -o BatchMode=yes "$LINUX" "rm -rf $LREMOTE && mkdir -p $LREMOTE && tar -C $LREMOTE -xzf c6747.tgz && rm c6747.tgz && TI_COMPRESS=$TI_COMPRESS sh $LREMOTE/c6747/sim-ccs55.sh $LPROGS"
 ) > "$WORK/linux-ccs55.log" 2>&1 &
 P3=$!
 wait $P1; wait $P2; wait $P3

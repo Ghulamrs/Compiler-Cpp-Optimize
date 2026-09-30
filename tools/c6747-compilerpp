@@ -23,8 +23,10 @@ WINDOWS=${CXX1_WINDOWS:-windows}
 COMPILERPP=${COMPILERPP:-$ROOT/../Compiler++}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
-# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
-ASM6X_FLAGS=${ASM6X_FLAGS---compress}
+# COMPRESS=1 (default): cpp11's objects --compress, cl6x its own default, compressed; COMPRESS=0:
+# both plain, ASM6x as it is and cl6x --no_compress - the two sides always built alike
+COMPRESS=${COMPRESS:-1}
+if [ "$COMPRESS" = 1 ]; then ASM6X_FLAGS=--compress; TI_COMPRESS=; else ASM6X_FLAGS=; TI_COMPRESS=--no_compress; fi
 T0=$(date +%s)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -45,7 +47,7 @@ cp "$ROOT"/tools/c6747/C6747-ddr.cmd "$ROOT"/tools/c6747/runca.js "$ROOT"/tools/
 (
     scp -q -o BatchMode=yes "$WORK/cpph.tgz" "$WINDOWS:C:/cxx1/cpph.tgz" &&
     ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q C:\\cxx1\\cpph-run 2>nul & mkdir C:\\cxx1\\cpph-run && tar -C C:\\cxx1\\cpph-run -xzf C:\\cxx1\\cpph.tgz" > /dev/null &&
-    ssh -o BatchMode=yes -o ServerAliveInterval=30 "$WINDOWS" "C:\\cxx1\\cpph-run\\cpph\\run-windows.cmd" &&
+    ssh -o BatchMode=yes -o ServerAliveInterval=30 "$WINDOWS" "set TI_COMPRESS=$TI_COMPRESS&& C:\\cxx1\\cpph-run\\cpph\\run-windows.cmd" &&
     mkdir -p "$WORK/win" &&
     scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/cpph-run/cpph/*.result" "$WINDOWS:C:/cxx1/cpph-run/cpph/*.cio" \
         "$WINDOWS:C:/cxx1/cpph-run/cpph/*.map" "$WINDOWS:C:/cxx1/cpph-run/cpph/*.prof" \
@@ -55,7 +57,7 @@ PW=$!
 (
     scp -q -i "$KEY" -o BatchMode=yes "$WORK/cpph.tgz" "$LINUX:cpph.tgz" &&
     ssh -i "$KEY" -o BatchMode=yes -o ServerAliveInterval=30 "$LINUX" \
-        "rm -rf cpph-run && mkdir cpph-run && tar -C cpph-run -xzf cpph.tgz && rm cpph.tgz && sh cpph-run/cpph/run-linux.sh" &&
+        "rm -rf cpph-run && mkdir cpph-run && tar -C cpph-run -xzf cpph.tgz && rm cpph.tgz && TI_COMPRESS=$TI_COMPRESS sh cpph-run/cpph/run-linux.sh" &&
     mkdir -p "$WORK/lin" &&
     scp -q -i "$KEY" -o BatchMode=yes "$LINUX:cpph-run/cpph/*.result" "$LINUX:cpph-run/cpph/*.cio" \
         "$LINUX:cpph-run/cpph/*.map" \

@@ -15,7 +15,7 @@ del /q *.result *.stdout *.out 2>nul
 if not exist obj mkdir obj
 set WANT=0
 for %%f in (*.c *.cpp) do (
-  "%CG%\bin\cl6x" -mv6740 --abi=eabi -O2 --symdebug:none -I"%CG%\include" --obj_directory=obj "%%f" %LINK% -m %%~nf.cl6x.map -o %%~nf.cl6x.out > %%~nf.cl6x.build.log 2>&1
+  "%CG%\bin\cl6x" -mv6740 --abi=eabi -O2 %TI_COMPRESS% --symdebug:none -I"%CG%\include" --obj_directory=obj "%%f" %LINK% -m %%~nf.cl6x.map -o %%~nf.cl6x.out > %%~nf.cl6x.build.log 2>&1
   set /a WANT+=1
   if exist %%~nf.cpp11.obj (
     "%CG%\bin\cl6x" -mv6740 --abi=eabi %%~nf.cpp11.obj %LINK% -m %%~nf.cpp11.map -o %%~nf.cpp11.out > %%~nf.cpp11.build.log 2>&1

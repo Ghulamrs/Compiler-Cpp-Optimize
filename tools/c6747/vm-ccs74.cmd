@@ -22,7 +22,7 @@ if exist "!O!-asm" rmdir /s /q "!O!-asm"
 mkdir "!O!-asm"
 rem -n stops at assembly; --symdebug:none keeps the debug directives vm6747 does not read out of it.
 rem Not -O2: at -O2 cl6x sets main's A4 in RET's delay slots and vm6747 reports exit 1 (2026-09-28).
-"%CGT74%\bin\cl6x" -mv6740 --abi=eabi -n --symdebug:none -I"%CGT74%\include" --asm_directory="!O!-asm" "%~f1" > "!O!.build.log" 2>&1
+"%CGT74%\bin\cl6x" -mv6740 --abi=eabi -n %TI_COMPRESS% --symdebug:none -I"%CGT74%\include" --asm_directory="!O!-asm" "%~f1" > "!O!.build.log" 2>&1
 if errorlevel 1 (
   echo BOX %BOX% !N! build=FAILED> "!O!.result"
   type "!O!.result"

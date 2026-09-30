@@ -13,7 +13,7 @@ cd "$W" || exit 1
 rm -f ./*.result ./*.cio ./*.out
 mkdir -p o55
 LINK="-z --rom_model -i$EHLIB C6747-ddr.cmd -lrts6740_elf_eh.lib"
-"$CG/bin/cl6x" -mv6740 --abi=eabi -O2 --rtti --symdebug:none -I"$CG/include" -I. --obj_directory=o55 \
+"$CG/bin/cl6x" -mv6740 --abi=eabi -O2 ${TI_COMPRESS:-} --rtti --symdebug:none -I"$CG/include" -I. --obj_directory=o55 \
     harness.cpp $LINK -m ccs55.map -o ccs55.out > ccs55.build.log 2>&1
 "$CG/bin/cl6x" -mv6740 --abi=eabi h.cpp11.obj $LINK -m cpp11.map -o cpp11.out > cpp11.build.log 2>&1
 for b in ccs55 cpp11; do
