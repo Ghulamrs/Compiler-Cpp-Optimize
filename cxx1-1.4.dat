@@ -1,9 +1,9 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 162 files, seal E327A890
+CRC32  size  file - 165 files, seal 0A50A5DE
 ------------------------------------------------------------------
-AE20CC05      9923  Makefile
+47F9F56F      9941  Makefile
 2DF96A05      2820  examples/Makefile
 18130E0A      1166  examples/Makefile.linux
 B7E59690      1164  examples/Makefile.macos
@@ -28,17 +28,17 @@ D1864FE6       122  include/cfloat
 5B948597       840  include/cstdlib
 873774AC       938  include/cstring
 60ED3F29      3502  include/exception
-29AB95CC      3367  include/fstream
+3E53C566      3557  include/fstream
 F7084316      1678  include/initializer_list
 61D67355      1232  include/iomanip
 8E040977      2122  include/ios
 4BCACA63      1553  include/iostream
-114A4C67      8978  include/istream
+D9AFB186      9407  include/istream
 193559F8      4877  include/limits
 AF3574DA      4189  include/map
 2E17DEC8      3584  include/new
 00091A75       805  include/numeric
-A8987E35     13251  include/ostream
+86BA40A3     13245  include/ostream
 C49ECBC5      2228  include/set
 648E0442      2095  include/sstream
 5CE9803B      3931  include/stdexcept
@@ -69,8 +69,8 @@ E20D4640      3250  lib/time.h
 3F11D8A9      2826  msvc/build.cmd
 A0490168      1512  src/Abi.h
 6C19ADD3     25722  src/Ast.h
-887A1957     51943  src/Driver.cpp
-C075F900      2866  src/Driver.h
+D2FF9873     52617  src/Driver.cpp
+2603AB21      2999  src/Driver.h
 C8BDF6D6     19988  src/Lexer.cpp
 CDC4DEB7      2211  src/Lexer.h
 E7A9457A     72965  src/Mangle.cpp
@@ -95,8 +95,8 @@ F0D14C0C     44838  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
 FDB7487B     15645  src/backend/Spelling.cpp
 D7404BF3     11389  src/backend/Spelling.h
-D3C1E194     78524  src/backend/Tms6747.cpp
-F5D08D60     11087  src/backend/Tms6747.h
+C4EE1713     89362  src/backend/Tms6747.cpp
+6E382B37     11748  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
 BF4C34E3     96607  src/backend/X86_64Linux.cpp
@@ -106,8 +106,11 @@ BF4C34E3     96607  src/backend/X86_64Linux.cpp
 3F12405D       111  src/main.cpp
 F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
-60C0D533     45924  src/optimizer/C6xSched.cpp
+857BF7D4      4403  src/optimizer/C6xModel.h
+0D08CF75     45537  src/optimizer/C6xPipe.cpp
+D719BB6A     67083  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
+4DC6880D       381  src/optimizer/DivMagic.h
 A167EFA0      8886  src/optimizer/Inliner.cpp
 3F1FED61      3478  src/optimizer/Inliner.h
 9968D309      4307  src/optimizer/Mir.h
@@ -123,7 +126,7 @@ DC022063      2131  src/optimizer/OptDataflow.cpp
 471D07A0      1262  src/optimizer/OptDataflow.h
 A11161B1      7459  src/optimizer/OptDead.cpp
 4EDBCA26       652  src/optimizer/OptDeclines.h
-CE3D0324      5091  src/optimizer/OptDivide.cpp
+631EFF5D      5571  src/optimizer/OptDivide.cpp
 A389FF43      7092  src/optimizer/OptEffects.cpp
 AA30D7E0      1002  src/optimizer/OptEffects.h
 8C1B958F       504  src/optimizer/OptFlow.cpp
@@ -159,7 +162,7 @@ C7F1CA7B     86117  src/parser/ParserExprNew.cpp
 A480EFCD     68251  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
 4F6EB018     41895  src/parser/ParserOperator.cpp
-1A336256     52944  src/parser/ParserOverload.cpp
+C3272BD9     53071  src/parser/ParserOverload.cpp
 013A1E8F    100645  src/parser/ParserStmt.cpp
 15BBF4D9     98098  src/parser/ParserTemplate.cpp
 94D8A01E     78995  src/parser/ParserTopLevel.cpp
