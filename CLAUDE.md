@@ -11430,3 +11430,23 @@ and -O2 output assembles with ASM6x, no message.
 and cost a call: hash 5,484,080 -> 5,862,078 cycles at -O2, matmul 771,365 -> 784,035. TI's
 `remi` is a real routine (~40 cycles, the review measured); the TI simulator is the oracle for
 this change, and its run is `CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+## The evening's round, measured together on TI's simulator, 2026-09-30
+
+After the leaner calls: a pushed word in the upper half of its slot (`*+B15(4)`, so a call under
+it opens no area); the epilogue scheduled like the body; a struct copy through `*+base(off)`; a
+small constant right operand in the instruction (review B4) - with the fix that `ADDK` reads its
+destination, which tms6747.sh found as 15 wrong answers before anything was pushed; and the B3
+merge, division by a constant. **The tree at f22e710, on the Windows box:**
+
+| | cpp11 | vs CCS 5.5 (7.4.4) | vs CCS 7.4 (8.2.2) |
+| --- | --- | --- | --- |
+| Compiler++, ten files, -O2 cycles | 8,276,935,722 | 0.885 | 0.910 |
+| harness code bytes -O1 | 647,200 | | 1.18x -O1, 1.34x -O2 -ms3 |
+| harness code bytes -O2 | 707,424 | | 1.03x -O2 |
+| kernels -O2 cycles | 45,061,111 | 1.84x | 1.90x |
+
+Compiler++: all ten fingerprints are CCS 5.5's, and the image LNK6x links (cf7ef72, `--cgt=7.4.4`,
+C6747-ddr.cmd with no heap or stack option - the command file sets 16 MB and 256 KB) takes
+exactly the cycles of 7.4.4's. The kernels: 60/60 expected; hash 30.69 M -> 13.06 M cycles, the
+divide gone. All 1,040 -O1/-O2 case files assemble with ASM6x and with TI's asm6x 8.2.2.
