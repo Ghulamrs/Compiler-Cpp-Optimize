@@ -593,6 +593,7 @@ struct Local {
     std::string staticName;
 
     int scope = 0;
+    int align = 0;      // the slot's alignment, alignas included: what a backend laying the frame out must keep
 };
 
 class Function {

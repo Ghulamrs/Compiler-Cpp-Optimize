@@ -120,11 +120,23 @@ private:
     // Locals in registers at -O1 and -O2: the body is walked twice, the first time to learn which
     // scalar locals never have their address formed and how often each is used, the second with
     // the most used of those in A10-A13 and B10-B13, a 64-bit one in an even:odd pair.
-    struct Slot { int uses = 0; bool addressed = false; bool wide = false; int size = 0; };
+    struct Slot { int uses = 0; bool addressed = false; bool wide = false; int size = 0; int extent = 0; int align = 0; int winUses = 0; };
     std::map<int, Slot> slots_;                // by frame offset, an inlined callee's locals included
     std::map<int, std::string> regOf_;         // offset -> the register (the low one of a pair)
     std::vector<std::string> promoted_;        // those registers, to be saved and restored
     bool planning_ = false;                    // the first walk: counting, and deciding nothing
+    // The frame laid out by hotness at -O1 and -O2 (review B8): the most used slot nearest A15, so
+    // it takes the *-A15(k) form; every slot the first walk reached has a place, and the saved
+    // registers' band under A15 is only as wide as the function's own saves.
+    std::map<int, int> place_;                 // key -> the slot's offset in the laid-out frame
+    bool relayout_ = false;
+    int placedTop_ = 0;
+    int saveBytes_ = 40;
+    void noteExtent(int key, int size, int align);
+    void planParams(const Function &fn);
+    void planLocals(const Function &fn);
+    void planFrame();
+    int placed(int key) const;
     bool plainAccess_ = false;                 // a read or write of a whole local, not an address
     int loopDepth_ = 0;                        // a use inside a loop weighs more
     bool regCandidate(const Var &v) const;     // a whole scalar local of this function, up to 8 bytes
@@ -158,7 +170,8 @@ private:
     void call(const std::string &target);     // B3 = return address; B target
     void genArg(const Call &n, std::size_t i);   // argument i -> A4
     void addOffset(int bytes);                // A4 += bytes
-    void copyBlock(int size, const char *from, const char *to, int align);
+    void copyBlock(int size, const char *from, const char *to, int align, bool wide = false, const char *pred = "");
+    void copyBlockBatched(int size, const char *from, const char *to, int align, bool wide, const char *pred);
     bool inPair(const Type *t) const;         // a struct of 8 bytes or less: in registers, argument or result
     bool inPairWide(const Type *t) const;     // and one of 5 to 8 takes the pair
     bool hiddenInA4(const Type *t) const;     // a class non-trivial for calls: its result pointer is the first parameter
@@ -171,8 +184,8 @@ private:
     bool immediateBinary(const Binary &n);
     void openArea(int area, bool stackArgs = false);
     void closeArea();                 // B15 += delta (negative allocates)
-    void localAddr(int off, const char *dst); // dst = A15 - off
-    bool frameSlot(const Expr &e, int &disp) const;   // a local or a member of one: its displacement from A15
+    void localAddr(int off, const char *dst, int size = 4, int align = 4); // dst = A15 - off
+    bool frameSlot(const Expr &e, int &disp);   // a local or a member of one: its displacement from A15
     static bool frameFits(int disp, int size);        // whether frameOperand can name it
     std::string frameOperand(int disp, int size);     // *-A15(k), *+A15(k), or the scaled form through A0
     int accessSize(const Type *t) const;              // the bytes one load or store of t moves

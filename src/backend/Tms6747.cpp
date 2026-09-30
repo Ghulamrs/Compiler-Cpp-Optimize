@@ -209,26 +209,125 @@ void Tms6747::spAdjust(int delta) {
 
 static const int kSaveBytes = 40;   // under A15 whatever is saved, so a local's address does not wait on the body
 
-// dst = A15 - kSaveBytes - off, past the saved registers; the stack parameters lie at A15 + 4 on.
+// dst = A15 - saveBytes_ - off, past the saved registers; the stack parameters lie at A15 + 4 on.
 // dst is an A-file register. This is the one place a local's address is formed: on the first
-// walk, forming one costs the local its register.
-void Tms6747::localAddr(int off, const char *dst) {
-    if (planning_ && !plainAccess_) slots_[localBase_ + off].addressed = true;
-    off += kSaveBytes + localBase_;
+// walk, forming one costs the local its register, and records the slot's extent for the layout.
+void Tms6747::localAddr(int off, const char *dst, int size, int align) {
+    if (planning_) {
+        if (!plainAccess_) slots_[localBase_ + off].addressed = true;
+        noteExtent(localBase_ + off, size, align);
+        slots_[localBase_ + off].winUses += 1 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);   // SUBAW reaches 124
+    }
+    off = saveBytes_ + placed(localBase_ + off);
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
+    } else if (optimize_ > 0 && off % 4 == 0 && off / 4 <= 31) {
+        out_ << "\tSUBAW\tA15, " << off / 4 << ", " << dst << "\n";   // one word, the .D unit's scaled form
     } else {
         movImm("A0", off);
         out_ << "\tSUB\tA15, A0, " << dst << "\n";
     }
 }
 
+// The slot's bytes and alignment as this access sees them, the largest of every access winning.
+void Tms6747::noteExtent(int key, int size, int align) {
+    Slot &s = slots_[key];
+    if (size > s.extent) s.extent = size;
+    if (align > s.align) s.align = align;
+}
+
+// A slot's offset in the frame as laid out, or as the parser gave it where no layout is in force.
+int Tms6747::placed(int key) const {
+    if (!relayout_) return key;
+    std::map<int, int>::const_iterator it = place_.find(key);
+    if (it == place_.end()) {
+        std::fprintf(stderr, "codegen: frame slot %d of %s was reached by the second walk and not the first\n", key, functionName_.c_str());
+        std::exit(1);
+    }
+    return it->second;
+}
+
+// The parameters' own slots, which the body may never name: an unused one is still stored on entry.
+void Tms6747::planParams(const Function &fn) {
+    const std::vector<Param> &ps = fn.params();
+    for (std::size_t i = 0; i < ps.size(); i++) {
+        noteExtent(localBase_ + ps[i].offset, ps[i].type->size(target_), ps[i].type->align(target_));
+        slots_[localBase_ + ps[i].offset].winUses += 1;    // the store on entry
+    }
+}
+
+// The declared locals' whole objects: the parser names an array's first element by a Var of the
+// element's type at the array's offset, so a Var's type alone can understate the slot.
+void Tms6747::planLocals(const Function &fn) {
+    const std::vector<Local> &ls = fn.locals();
+    for (std::size_t i = 0; i < ls.size(); i++)
+        if (ls[i].type != nullptr && ls[i].staticName.empty())
+            noteExtent(localBase_ + ls[i].offset, ls[i].type->size(target_),
+                       ls[i].align > ls[i].type->align(target_) ? ls[i].align : ls[i].type->align(target_));
+}
+
+// The most used slot first, so the short *-A15(k) form reaches the accesses that run most, each at its
+// own alignment; a slot never reached, or promoted to a register, takes no room. A key inside another slot's
+// bytes (a class array's element, which the parser names as a slot) keeps its distance from that owner and adds its uses to it.
+void Tms6747::planFrame() {
+    place_.clear();
+    relayout_ = false;
+    std::vector<int> keys;
+    for (std::map<int, Slot>::const_iterator it = slots_.begin(); it != slots_.end(); ++it)
+        if (it->second.extent > 0 && !regOf_.count(it->first)) keys.push_back(it->first);
+    std::map<int, int> owner;                                 // key -> the slot holding it
+    for (std::size_t i = 0; i < keys.size(); i++) {
+        const int k = keys[i];
+        for (std::size_t j = i + 1; j < keys.size(); j++) {
+            Slot &o = slots_[keys[j]];
+            if (keys[j] - o.extent >= k) continue;
+            owner[k] = keys[j];
+            const Slot &n = slots_[k];
+            if (keys[j] - (k - n.extent) > o.extent) o.extent = keys[j] - (k - n.extent);
+            if (n.align > o.align) o.align = n.align;
+            break;
+        }
+    }
+    std::map<int, long long> weight;
+    for (std::size_t i = 0; i < keys.size(); i++) {
+        int k = keys[i];
+        const long long w = slots_[k].winUses;
+        for (int guard = 0; guard < 64; guard++) { std::map<int, int>::const_iterator it = owner.find(k); if (it == owner.end()) break; k = it->second; }
+        weight[k] += w;
+    }
+    std::vector<std::pair<long long, int> > order;          // (-weight, key), the top-level slots
+    for (std::map<int, long long>::const_iterator it = weight.begin(); it != weight.end(); ++it)
+        order.push_back(std::make_pair(-it->second, it->first));
+    std::sort(order.begin(), order.end());
+    int c = 0;
+    for (std::size_t k = 0; k < order.size(); k++) {
+        const Slot &s = slots_[order[k].second];
+        const int a = s.align < 1 ? 1 : s.align > 8 ? 8 : s.align;
+        c = (c + s.extent + a - 1) / a * a;
+        place_[order[k].second] = c;
+    }
+    for (std::size_t i = keys.size(); i-- > 0; ) {           // owners first: an owner is the larger key
+        const int k = keys[i];
+        std::map<int, int>::const_iterator it = owner.find(k);
+        if (it == owner.end()) continue;
+        const int at = place_[it->second] - (it->second - k), a = slots_[k].align > 8 ? 8 : slots_[k].align;
+        if (a > 1 && at % a != 0) { place_.clear(); return; }
+        place_[k] = at;
+    }
+    placedTop_ = align8(c);
+    relayout_ = true;
+}
+
 // A local, or a member reached from one by `.` alone, has a fixed place in the frame: its
 // displacement from A15, negative for a local and positive for a stack parameter.
-bool Tms6747::frameSlot(const Expr &e, int &disp) const {
+bool Tms6747::frameSlot(const Expr &e, int &disp) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (!v->isLocal()) return false;
-        disp = -(kSaveBytes + localBase_ + v->offset());
+        if (planning_) {              // an access the *-A15(k) form can reach: what the layout is for
+            if (v->type()) noteExtent(localBase_ + v->offset(), v->type()->size(target_), v->type()->align(target_));
+            slots_[localBase_ + v->offset()].winUses += 1 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);
+        }
+        disp = -(saveBytes_ + placed(localBase_ + v->offset()));
         return true;
     }
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
@@ -268,25 +367,60 @@ void Tms6747::addOffset(int bytes) {
 // A struct copy, word by word then halfword and byte, each through A3 with
 // the addresses formed in A0: the zero-offset forms, like every other access
 // here. from and to are A-file registers other than A0 and A3.
-void Tms6747::copyBlock(int size, const char *from, const char *to, int align) {
+void Tms6747::copyBlock(int size, const char *from, const char *to, int align, bool wide, const char *pred) {
+    if (optimize_ > 0) { copyBlockBatched(size, from, to, align, wide, pred); return; }
     int off = 0;
     while (off < size) {
         int step = size - off >= 4 ? 4 : size - off >= 2 ? 2 : 1;
         if (step > align) step = align;     // a struct of chars may sit anywhere
         const char *ld = step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
         const char *st = step == 4 ? "STW" : step == 2 ? "STH" : "STB";
-        if (optimize_ > 0 && off / step <= 31) {       // the offset form, ucst5 in units of the access
-            const std::string at = off == 0 ? "" : "+", disp = off == 0 ? "" : "(" + std::to_string(off) + ")";
-            out_ << "\t" << ld << "\t*" << at << from << disp << ", A3\n\tNOP\t4\n";
-            out_ << "\t" << st << "\tA3, *" << at << to << disp << "\n";
-            off += step;
-            continue;
-        }
         regAdd(from, off, "A0");
         out_ << "\t" << ld << "\t*A0, A3\n\tNOP\t4\n";
         regAdd(to, off, "A0");
         out_ << "\t" << st << "\tA3, *A0\n";
         off += step;
+    }
+}
+
+// At -O1 and -O2 the loads of a batch go first, into B16-B23, and the stores after them, so the
+// loads pipeline instead of each waiting its four slots (review B9); LDDW/STDW pairs where the caller
+// vouches for both addresses being 8-aligned. B16-B23 are nobody's: the scheduler's push folding takes A16 up.
+void Tms6747::copyBlockBatched(int size, const char *from, const char *to, int align, bool wide, const char *pred) {
+    const std::string p = *pred ? std::string("\t[") + pred + "]" : "";   // every load and store under it; the address adds need none
+    int off = 0;
+    while (off < size) {
+        // One batch: up to eight registers of words, or four pairs, from a base within ucst5 reach.
+        const int base = off;
+        std::string src = from, dst = to;
+        if (base > 0) { regAdd(to, base, "A3"); regAdd(from, base, "A0"); src = "A0"; dst = "A3"; }   // A3 first: A0 is regAdd's scratch
+        std::vector<std::pair<int, int> > chunks;              // (offset, step) of this batch
+        int regs = 0, at = off;
+        while (at < size && regs < 8) {
+            int step = wide && size - at >= 8 ? 8 : size - at >= 4 ? 4 : size - at >= 2 ? 2 : 1;
+            if (step > align && step != 8) step = align;
+            if (step == 8 && (regs == 7 || (at - base) / 8 > 31)) step = 4;
+            if ((at - base) / step > 31) break;
+            chunks.push_back(std::make_pair(at, step));
+            regs += step == 8 ? 2 : 1;
+            at += step;
+        }
+        for (std::size_t k = 0, r = 16; k < chunks.size(); k++) {
+            const int o = chunks[k].first - base, step = chunks[k].second;
+            const std::string reg = step == 8 ? pairOf(("B" + std::to_string(r)).c_str()) : "B" + std::to_string(r);
+            const char *ld = step == 8 ? "LDDW" : step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
+            out_ << p << "\t" << ld << "\t*" << (o ? "+" : "") << src << (o ? "(" + std::to_string(o) + ")" : "") << ", " << reg << "\n";
+            r += step == 8 ? 2 : 1;
+        }
+        out_ << "\tNOP\t4\n";
+        for (std::size_t k = 0, r = 16; k < chunks.size(); k++) {
+            const int o = chunks[k].first - base, step = chunks[k].second;
+            const std::string reg = step == 8 ? pairOf(("B" + std::to_string(r)).c_str()) : "B" + std::to_string(r);
+            const char *st = step == 8 ? "STDW" : step == 4 ? "STW" : step == 2 ? "STH" : "STB";
+            out_ << p << "\t" << st << "\t" << reg << ", *" << (o ? "+" : "") << dst << (o ? "(" + std::to_string(o) + ")" : "") << "\n";
+            r += step == 8 ? 2 : 1;
+        }
+        off = at;
     }
 }
 
@@ -365,7 +499,11 @@ void Tms6747::fpConst(const Type *t, double v, const char *reg) {
 // ---- addresses, loads, stores --------------------------------------------
 void Tms6747::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
-        if (v->isLocal()) { localAddr(v->offset(), "A4"); return; }
+        if (v->isLocal()) {
+            const Type *t = v->type();   // null where the parser typed the object through its Assign alone
+            localAddr(v->offset(), "A4", t ? t->size(target_) : 4, t ? t->align(target_) : 4);
+            return;
+        }
         movSym("A4", v->symbol());  // a global, or a function
         return;
     }
@@ -493,7 +631,7 @@ void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
     localAddr(selectorSlot, "A0");
     out_ << "\tSTW\tB4, *A0\n";
     out_ << "\tMV\tA15, B15\n";
-    spAdjust(-(kSaveBytes + frame_ + (optimize_ > 0 ? 8 : 0)));    // the call word below the frame, as the prologue keeps it
+    spAdjust(-(saveBytes_ + frame_ + (optimize_ > 0 ? 8 : 0)));    // the call word below the frame, as the prologue keeps it
 }
 
 // An upper bound on a function's bytes: four per instruction line, labels and directives none.
@@ -640,6 +778,7 @@ void Tms6747::noteUse(int key, const Type *t) {
     s.size = size;
     s.wide = size == 8;
     s.uses += 1 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);
+    noteExtent(key, size, t->align(target_));
 }
 std::string Tms6747::pairHigh(const std::string &r) { return r.substr(0, 1) + std::to_string(std::atoi(r.c_str() + 1) + 1); }
 void Tms6747::regRead(const std::string &r, bool wide) {
@@ -768,7 +907,7 @@ void Tms6747::visit(const Assign &n) {
     pop("A4");                       // A4 = value again
     if (bf) { bitFieldInsert(*bf); return; }
     if (n.type()->isStructOrUnion()) {
-        copyBlock(n.type()->size(target_), "A4", "A6", n.type()->align(target_));
+        copyBlock(n.type()->size(target_), "A4", "A6", n.type()->align(target_), n.type()->align(target_) >= 8);
         out_ << "\tMV\tA6, A4\n";    // the result: the target, by address
         return;
     }
@@ -1263,8 +1402,11 @@ void Tms6747::visit(const Return &n) {
             std::string skip = label("noresult", nextLabel());
             localAddr(sretSlot_, "A6");
             out_ << "\tLDW\t*A6, A6\n\tNOP\t4\n";
-            if (sretShift_ == 0) out_ << "\tMV\tA6, A1\n\t[!A1]\tB\t" << skip << "\n\tNOP\t5\n";
-            copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_));
+            // At -O1 and -O2 the copy is predicated on the pointer instead of branched around: no delay slots.
+            const bool guard = sretShift_ == 0;
+            if (guard) out_ << "\tMV\tA6, A1\n" << (optimize_ > 0 ? "" : "\t[!A1]\tB\t" + skip + "\n\tNOP\t5\n");
+            copyBlock(n.value().type()->size(target_), "A4", "A6", n.value().type()->align(target_),
+                      n.value().type()->align(target_) >= 8, guard && optimize_ > 0 ? "A1" : "");
             defineLabel(skip);
             out_ << "\tMV\tA6, A4\n";
         }
@@ -1310,8 +1452,8 @@ void Tms6747::visit(const Call &n) {
     for (std::size_t i = 0; i < args.size(); i++) {
         if (!args[i]->type()->isStructOrUnion()) continue;
         args[i]->accept(*this);               // A4 = the struct's address
-        localAddr(n.argSlot(i), "A6");
-        copyBlock(args[i]->type()->size(target_), "A4", "A6", args[i]->type()->align(target_));
+        localAddr(n.argSlot(i), "A6", args[i]->type()->size(target_), args[i]->type()->align(target_));
+        copyBlock(args[i]->type()->size(target_), "A4", "A6", args[i]->type()->align(target_), args[i]->type()->align(target_) >= 8);
     }
 
     std::size_t regCount = static_cast<std::size_t>(abi_.intCount) - shift;
@@ -1359,12 +1501,12 @@ void Tms6747::visit(const Call &n) {
         if (isWide(args[i - shift]->type()) || inPairWide(args[i - shift]->type())) usesSavedPairRegs_ = true;
     if (n.callee() != nullptr) pop("B1");
     if (inPlace != nullptr) { walkInPlace(*inPlace); return; }
-    if (sret) localAddr(n.resultSlot(), shift != 0 ? "A4" : "A3");    // where the result goes
+    if (sret) localAddr(n.resultSlot(), shift != 0 ? "A4" : "A3", n.type()->size(target_), n.type()->align(target_));    // where the result goes
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
     closeArea();
-    if (pair) { localAddr(n.resultSlot(), "A3"); storePair(n.type()->size(target_), n.type()->align(target_)); }
-    if (sret || pair) localAddr(n.resultSlot(), "A4");    // the value: its address
+    if (pair) { localAddr(n.resultSlot(), "A3", n.type()->size(target_), n.type()->align(target_)); storePair(n.type()->size(target_), n.type()->align(target_)); }
+    if (sret || pair) localAddr(n.resultSlot(), "A4", n.type()->size(target_), n.type()->align(target_));    // the value: its address
 }
 
 // Where a stack-passed parameter (from firstStack_ on) sits relative to the
@@ -1402,8 +1544,8 @@ std::string Tms6747::stackArgAccess(const Type *t, bool store, const std::string
 // Argument i into A4: its value, or for a struct the address of its copy.
 void Tms6747::genArg(const Call &n, std::size_t i) {
     const Type *t = n.args()[i]->type();
-    if (inPair(t)) { localAddr(n.argSlot(i), "A4"); loadPair(t->size(target_), t->align(target_)); }
-    else if (t->isStructOrUnion()) localAddr(n.argSlot(i), "A4");
+    if (inPair(t)) { localAddr(n.argSlot(i), "A4", t->size(target_), t->align(target_)); loadPair(t->size(target_), t->align(target_)); }
+    else if (t->isStructOrUnion()) localAddr(n.argSlot(i), "A4", t->size(target_), t->align(target_));
     else n.args()[i]->accept(*this);
 }
 
@@ -1452,6 +1594,7 @@ void Tms6747::walkInPlace(const Function &fn) {
     sretShift_ = 0;
     firstStack_ = static_cast<std::size_t>(abi_.intCount);
     returnLabel_ = label("inline", nextLabel());
+    if (planning_) planLocals(fn);
     emitParams(fn);
     fn.body().accept(*this);
     // A return as the body's last statement branches to the next line: dropped.
@@ -1463,7 +1606,7 @@ void Tms6747::walkInPlace(const Function &fn) {
         out_.seekp(0, std::ios::end);
     }
     defineLabel(returnLabel_);
-    if (inlineTop_ > frame_) frame_ = inlineTop_;
+    if (!relayout_ && inlineTop_ > frame_) frame_ = inlineTop_;
     inlineDepth_--;
     inlineTop_ = top;
     returnLabel_ = ret;
@@ -1679,25 +1822,25 @@ void Tms6747::emitParams(const Function &fn) {
         }
         if (inPair(t)) {
             // The value itself, into the parameter's slot, in its own bytes.
-            localAddr(ps[i].offset, "A3");
+            localAddr(ps[i].offset, "A3", t->size(target_), t->align(target_));
             storePair(t->size(target_), t->align(target_));
             continue;
         }
         if (byRef) {
             // Through A1, not A6: A6 is the third argument's register, still
             // to be read when an earlier struct parameter is being copied.
-            localAddr(ps[i].offset, "A1");
-            copyBlock(t->size(target_), "A4", "A1", t->align(target_));
+            localAddr(ps[i].offset, "A1", t->size(target_), t->align(target_));
+            copyBlock(t->size(target_), "A4", "A1", t->align(target_), t->align(target_) >= 8);
             continue;
         }
         // A parameter in a register: the value as the walk found it, its arrival counted as a use.
         const int key = localBase_ + ps[i].offset;
         if (planning_) noteUse(key, t);
         if (regOf_.count(key)) { narrowInt(t); regWrite(regOf_[key], isWide(t)); continue; }
-        const int disp = -(kSaveBytes + localBase_ + ps[i].offset);
+        const int disp = -(saveBytes_ + placed(localBase_ + ps[i].offset));
         if (frameFits(disp, accessSize(t))) { store(t, frameOperand(disp, accessSize(t))); continue; }
         plainAccess_ = true;
-        localAddr(ps[i].offset, "A0");
+        localAddr(ps[i].offset, "A0", t->size(target_), t->align(target_));
         plainAccess_ = false;
         store(t, "*A0");
     }
@@ -1754,10 +1897,11 @@ void Tms6747::walkBody(const Function &fn) {
     usesSavedArgRegs_ = false;
     usesSavedPairRegs_ = false;
     loopDepth_ = 0;
-    frame_ = align8(fn.frameSize());
-    inlineBase_ = frame_;
-    // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked in place.
-    if (inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
+    frame_ = relayout_ ? placedTop_ : align8(fn.frameSize());
+    inlineBase_ = align8(fn.frameSize());
+    // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked
+    // in place - unless the frame is laid out, which places every inlined slot and never grows.
+    if (!relayout_ && inliner_ && fn.hasLandingPads()) frame_ += kInlineDepth * align8(inliner_->largestFrame());
     fn.body().accept(*this);
     // Falling off the end returns 0 - main's C99 meaning, and what the other
     // backends do for every function - or the result pointer for a struct.
@@ -1796,12 +1940,18 @@ void Tms6747::emitFunction(const Function &fn) {
     slots_.clear();
     regOf_.clear();
     promoted_.clear();
+    relayout_ = false;
+    saveBytes_ = kSaveBytes;
     if (optimize_ > 0) {
         planning_ = true;
         walkBody(fn);
+        planParams(fn);
+        planLocals(fn);
         planning_ = false;
         out_.str(std::string());
         planRegisters(fn);
+        planFrame();
+        saveBytes_ = align8(4 * (static_cast<int>(savedRegs().size()) - 1));   // A15 goes in the caller's word
     }
     walkBody(fn);
     std::string body = out_.str();
@@ -1840,7 +1990,7 @@ void Tms6747::emitFunction(const Function &fn) {
         out_ << "\tMV\tB15, A15\n";
         for (size_t k = 1; k < saved.size(); k++)     // a leaf leaves B3 alone
             out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
-        spAdjust(-(kSaveBytes + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
+        spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
     // The prologue holds no padding, and the frame is decided after the body.
