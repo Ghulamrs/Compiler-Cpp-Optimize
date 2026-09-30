@@ -1,7 +1,6 @@
-// The C6000 passes over one function's text: the -O0 NOPs are dropped, the
-// sequential program is rewritten by the peepholes under a liveness of its
-// blocks, and each block is list-scheduled into execute packets, the delay
-// slots of its branch filled, and padded to the hazards that remain.
+// The C6000 passes over one function's text: the -O0 NOPs are dropped, the sequential program is rewritten
+// by the peepholes under a liveness of its blocks, and each block is list-scheduled into execute packets,
+// the delay slots of its branch filled, and padded to the hazards that remain.
 
 #include "C6xSched.h"
 
@@ -35,7 +34,7 @@ bool endsWith(const std::string &s, const char *p) {
 // Delay slots by mnemonic, as the -O0 backend pads them: the unknown floating
 // forms take the longest of their precision rather than none.
 int delaySlots(const std::string &m) {
-    if (m == "B") return 5;
+    if (m == "B" || m == "CALLP") return 5;
     if (startsWith(m, "LD")) return 4;
     if (m == "MPYDP") return 9;
     if (m == "ADDDP" || m == "SUBDP") return 6;
@@ -50,11 +49,9 @@ int delaySlots(const std::string &m) {
     return 0;
 }
 
-// The C67x's double-precision instructions read a pair's high word after issue - one cycle
-// later for ADDDP, SUBDP, CMPxxDP, MPYSPDP and the DPxx conversions, up to three for MPYDP,
-// MPYI and MPYID - and hold their unit that long (SPRUFE8). TI's cycle-accurate simulator:
-// 1.0 + 2.0 by ADDDP with A7 zeroed in its packet is 1, 3.0 * 2.0 by MPYDP with A7 zeroed in
-// the next is 0 (tools/c6x-dphazards finds both in a schedule).
+// The C67x's double-precision instructions read a pair's high word after issue - one cycle later for ADDDP, SUBDP, CMPxxDP, MPYSPDP and the DPxx
+// conversions, up to three for MPYDP, MPYI and MPYID - and hold their unit that long (SPRUFE8). TI's cycle-accurate simulator: 1.0 + 2.0 by ADDDP
+// with A7 zeroed in its packet is 1, 3.0 * 2.0 by MPYDP with A7 zeroed in the next is 0 (tools/c6x-dphazards finds both in a schedule).
 int lateReads(const std::string &m) {
     if (m == "MPYDP" || m == "MPYI" || m == "MPYID") return 3;
     if (m == "ADDDP" || m == "SUBDP" || m == "MPYSPDP" || m == "DPSP" || m == "DPINT" || m == "DPTRUNC") return 1;
@@ -171,7 +168,9 @@ bool isNumber(const std::string &s) {
 
 bool isLabel(const Line &l) { return !l.instr && !l.raw.empty() && l.raw[0] != '\t'; }
 std::string labelName(const Line &l) { return l.raw.substr(0, l.raw.find(':')); }
-bool blockEnd(const Line &l) { return !l.instr || l.mnem == "B"; }
+// CALLP is a branch that ends its block too, and a call: A4's rule that no push/pop pair spans a call rests on it.
+bool isBranch(const std::string &m) { return m == "B" || m == "CALLP"; }
+bool blockEnd(const Line &l) { return !l.instr || isBranch(l.mnem); }
 
 // ----- the calls, the returns and what they read and write -----
 
@@ -190,6 +189,7 @@ std::uint64_t exitLive() { return maskOf(kExitRegs, sizeof kExitRegs / sizeof kE
 
 // A branch to a symbol that is no label of this text, or through a register other than B3, is a call.
 bool isCall(const Line &l, const std::set<std::string> &labels) {
+    if (l.mnem == "CALLP") return true;
     if (l.mnem != "B" || l.ops.empty()) return false;
     if (sideOf(l.ops[0])) return l.ops[0] != "B3";
     return labels.count(l.ops[0]) == 0 && !startsWith(l.ops[0], "L$return$") && !startsWith(l.ops[0], "L.return.");
@@ -226,8 +226,8 @@ void computeLiveness(std::vector<Line> &v) {
             std::vector<std::string> reads, writes;
             readsAndWrites(l, reads, writes);
             std::uint64_t r = maskOf(reads), w = maskOf(writes);
-            if (l.mnem == "B") {
-                if (isCall(l, labels)) { r |= callReads(); w = callWrites(); }
+            if (isBranch(l.mnem)) {
+                if (isCall(l, labels)) { r |= callReads(); w = callWrites(); if (l.mnem == "CALLP") { r &= ~bitOf("B3"); w |= bitOf("B3"); } }
                 else if (isReturn(l, labels)) { exits[b] = true; fall = false; }
                 else if (labels.count(l.ops[0])) { succ[b].push_back(blockOfLabel[l.ops[0]]); if (l.pred.empty()) fall = false; }
                 else { unknown[b] = true; if (l.pred.empty()) fall = false; }
@@ -262,6 +262,10 @@ bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg
         std::vector<std::string> reads, writes;
         readsAndWrites(v[j], reads, writes);
         if (has(reads, reg)) return false;
+        if (v[j].mnem == "CALLP") {
+            if (callReads() & bitOf(reg)) return false;          // a call: its arguments
+            return (callWrites() & bitOf(reg)) || reg == "B3" || (v[j].liveOut & bitOf(reg)) == 0;
+        }
         if (v[j].mnem == "B") {
             if (sideOf(v[j].ops[0]) ? v[j].ops[0] != "B3" : !startsWith(v[j].ops[0], "L$") && !startsWith(v[j].ops[0], "L.")) {
                 if (callReads() & bitOf(reg)) return false;      // a call: its arguments
@@ -352,10 +356,9 @@ std::string renamed(const std::string &op, const std::string &from, const std::s
     return out;
 }
 
-// Whether operand o of this instruction may come over the cross path: TI's src2 -
-// the second source of the arithmetic, either of a commutative one or a compare
-// (asm6x turns them about), the value of a shift or EXT (written first) - and
-// never a count, a field instruction's source (EXTU, CLR), or a conversion's.
+// Whether operand o of this instruction may come over the cross path: TI's src2 - the second source of the
+// arithmetic, either of a commutative one or a compare (asm6x turns them about), the value of a shift or EXT
+// (written first) - and never a count, a field instruction's source (EXTU, CLR), or a conversion's.
 bool mayCross(const std::string &m, std::size_t o) {
     if (m == "ADD" || m == "AND" || m == "OR" || m == "XOR" || m == "SUB" || startsWith(m, "CMP")) return true;
     if (m == "MV" || m == "NEG" || m == "NOT" || m == "SPDP" || m == "INTSP" || m == "INTDP" || m == "SPTRUNC") return true;
@@ -370,7 +373,7 @@ unsigned unitsFor(const Line &l);
 // its destination - at most one may, over the cross path, and only in a
 // position that has a crossed form; 2 answers for anything illegal.
 int crossings(const Line &l) {
-    if (l.ops.empty() || isStore(l.mnem) || isLoad(l.mnem) || l.mnem == "B") return 0;
+    if (l.ops.empty() || isStore(l.mnem) || isLoad(l.mnem) || isBranch(l.mnem)) return 0;
     std::vector<std::string> dst;
     registersIn(l.ops.back(), dst);
     if (dst.empty()) return 0;
@@ -389,15 +392,14 @@ int crossings(const Line &l) {
 // A register-to-register instruction whose operands may be renamed: no
 // memory operand, and no pair - a half of A5:A4 cannot be renamed alone.
 bool renameable(const Line &l) {
-    if (!l.instr || l.mnem == "B" || isStore(l.mnem) || isLoad(l.mnem)) return false;
+    if (!l.instr || isBranch(l.mnem) || isStore(l.mnem) || isLoad(l.mnem)) return false;
     for (std::size_t o = 0; o < l.ops.size(); o++) if (l.ops[o].find(':') != std::string::npos || l.ops[o][0] == '*') return false;
     return true;
 }
 
-// **A copy's one reader takes the source itself**, on the straight path: `MV S, D` then the first
-// reader of D, neither S nor D written between and D dead after it - across the register files too,
-// where the reader is left with one crossing source. And the other way: an instruction whose result
-// is only copied on writes the copy's destination itself.
+// **A copy's one reader takes the source itself**, on the straight path: `MV S, D` then the first reader of D, neither
+// S nor D written between and D dead after it - across the register files too, where the reader is left with one crossing
+// source. And the other way: an instruction whose result is only copied on writes the copy's destination itself.
 bool forwardMoves(std::vector<Line> &v) {
     bool changed = false;
     for (std::size_t i = 0; i < v.size(); i++) {
@@ -528,10 +530,9 @@ bool flipPredicates(std::vector<Line> &v) {
     return changed;
 }
 
-// **A loop's back edge takes the test with it**: `B L` where L's block is a test
-// ending in `[P] B M` and M is the label after the jump becomes a copy of the
-// test ending in `[!P] B L$rot`, a label placed after the head's own branch -
-// one branch a turn instead of two, and the test overlapping the step.
+// **A loop's back edge takes the test with it**: `B L` where L's block is a test ending in `[P] B M` and
+// M is the label after the jump becomes a copy of the test ending in `[!P] B L$rot`, a label placed after
+// the head's own branch - one branch a turn instead of two, and the test overlapping the step.
 void rotateLoops(std::vector<Line> &v) {
     std::map<std::string, std::size_t> at;
     for (std::size_t i = 0; i < v.size(); i++) if (isLabel(v[i])) at[labelName(v[i])] = i;
@@ -542,7 +543,7 @@ void rotateLoops(std::vector<Line> &v) {
         bool taken = false;
         if (b.instr && b.mnem == "B" && b.pred.empty() && at.count(b.ops[0]) && i + 1 < v.size() && isLabel(v[i + 1])) {
             std::size_t h = at[b.ops[0]], e = h + 1;
-            while (e < v.size() && v[e].instr && v[e].mnem != "B") e++;
+            while (e < v.size() && v[e].instr && !isBranch(v[e].mnem)) e++;
             if (e < v.size() && e - h <= 17 && v[e].instr && v[e].mnem == "B" && !v[e].pred.empty() &&
                 v[e].ops[0] == labelName(v[i + 1]) && (i < h || i > e)) {
                 for (std::size_t k = h + 1; k < e; k++) out.push_back(v[k]);
@@ -643,7 +644,7 @@ struct Node {
 // register, the small constants on .L and .S, the wider ones on .D alone.
 unsigned unitsFor(const Line &l) {
     const std::string &m = l.mnem;
-    if (m == "B") return US;
+    if (isBranch(m)) return US;
     if (isLoad(m) || isStore(m)) return UD;
     if (m == "MPY32" || m == "MPY32U" || m == "MPYSP" || m == "MPYDP" || startsWith(m, "MPY")) return UM;
     bool pair = false;
@@ -705,10 +706,11 @@ Node makeNode(const Line &l, const std::set<std::string> &labels) {
     n.lat = delaySlots(l.mnem) + 1;
     n.late = lateReads(l.mnem);
     n.units = unitsFor(l);
-    if (l.mnem == "B") {
+    if (isBranch(l.mnem)) {
         n.branch = true;
         n.call = isCall(l, labels);
         if (n.call) { n.reads |= callReads(); n.writes |= callWrites(); }
+        if (l.mnem == "CALLP") { n.reads &= ~bitOf("B3"); n.side = 1; return n; }
         if (sideOf(l.ops[0])) { n.side = 1; if (sideOf(l.ops[0]) == 'A') n.cross = 1; }
         return n;
     }
@@ -793,12 +795,9 @@ void add(Packet &p, const Node &n) {
     p.writes |= n.writes;
 }
 
-// One block - the instructions between two labels, ending in its branch if it
-// has one - scheduled by list scheduling: the edges between instructions are
-// the register and memory orders with their distances in cycles, each cycle
-// takes the ready instructions of greatest height that its packet has units
-// for, and the branch goes as early as leaves every other instruction issued
-// in its window and landed by the time its target runs.
+// One block - the instructions between two labels, ending in its branch if it has one - scheduled by list scheduling: the edges between instructions
+// are the register and memory orders with their distances in cycles, each cycle takes the ready instructions of greatest height that its packet has
+// units for, and the branch goes as early as leaves every other instruction issued in its window and landed by the time its target runs.
 void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
     const std::size_t n = nodes.size();
     int branchAt = -1;
@@ -867,7 +866,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         }
         for (std::size_t i = 0; i < n; i++) {
             if (nodes[i].branch) continue;
-            at = std::max(at, nodes[i].issue - 5);                 // issued in the window
+            at = std::max(at, nodes[i].issue - (b.line.mnem == "CALLP" ? 0 : 5));   // issued in the window, and CALLP's is NOPs
             at = std::max(at, nodes[i].issue + nodes[i].lat - 6);  // landed when the target runs
         }
         for (;;) {
@@ -877,7 +876,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         }
         b.issue = at;
         add(cycles[static_cast<std::size_t>(at)], b);
-        length = at + 6;
+        length = b.line.mnem == "CALLP" ? at + 1 : at + 6;
     }
     int nops = 0;
     for (int c = 0; c < length; c++) {
@@ -919,10 +918,74 @@ std::string schedule(const std::vector<Line> &v) {
         if (isLabel(v[i]) && passThrough(v[i], named)) { out << v[i].raw << "\n"; continue; }
         if (!v[i].instr) { flush(); out << v[i].raw << "\n"; continue; }
         block.push_back(makeNode(v[i], labels));
-        if (v[i].mnem == "B") flush();
+        if (isBranch(v[i].mnem)) flush();
     }
     flush();
     return out.str();
+}
+
+// **A call is one CALLP**: `MVKL r, B3; MVKH r, B3; B f` with r the label after the branch is
+// `CALLP f, B3`, which sets B3 itself and carries the five NOPs - one word for four, two cycles
+// fewer. A call through a register keeps the branch.
+void foldCalls(std::vector<Line> &v) {
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (i + 3 < v.size() && v[i].mnem == "MVKL" && v[i + 1].mnem == "MVKH" && v[i + 2].mnem == "B" &&
+            v[i].pred.empty() && v[i + 1].pred.empty() && v[i + 2].pred.empty() &&
+            v[i].ops.size() == 2 && v[i + 1].ops.size() == 2 && v[i].ops[1] == "B3" && v[i + 1].ops[1] == "B3" &&
+            v[i].ops[0] == v[i + 1].ops[0] && isLabel(v[i + 3]) && labelName(v[i + 3]) == v[i].ops[0] &&
+            !v[i + 2].ops.empty() && !sideOf(v[i + 2].ops[0])) {
+            out.push_back(make("CALLP", v[i + 2].ops[0], "B3"));
+            i += 2;
+            continue;
+        }
+        out.push_back(v[i]);
+    }
+    v.swap(out);
+}
+
+// **A branch and the NOPs after it are one BNOP**: a packet holding `B x` followed by `NOP n`
+// is that packet with `BNOP x, min(n, 5)`. A label is folded only where the text is short
+// enough for BNOP's reach (PCR_S12, +-8 KB), a register only on the B side.
+std::string foldBranchNops(const std::string &text, bool near) {
+    std::vector<std::string> lines;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+    for (std::size_t i = 0; i < lines.size(); i++) {
+        bool member = startsWith(lines[i], "||");
+        Line l = parse(member ? lines[i].substr(2) : lines[i]);
+        if (!l.instr || l.mnem != "B" || l.ops.size() != 1) continue;
+        if (sideOf(l.ops[0]) ? sideOf(l.ops[0]) != 'B' : !near) continue;
+        std::size_t j = i + 1;
+        while (j < lines.size() && startsWith(lines[j], "||")) j++;
+        if (j >= lines.size()) continue;
+        Line nop = parse(lines[j]);
+        if (!nop.instr || nop.mnem != "NOP" || nop.ops.size() != 1 || !nop.pred.empty()) continue;
+        int n = std::atoi(nop.ops[0].c_str()), k = std::min(n, 5);
+        if (k <= 0) continue;
+        // The side is named: an unnamed BNOP asks for .S1 first where B asks for .S2, and an
+        // assembler moves one instruction at most to make room. .S2 where the packet allows it.
+        std::string unit = ".S2";
+        if (!sideOf(l.ops[0])) {
+            std::size_t first = i;
+            while (first > 0 && startsWith(lines[first], "||")) first--;
+            std::vector<Node> nodes;
+            std::set<std::string> none;
+            for (std::size_t m = first; m < j; m++) nodes.push_back(makeNode(parse(startsWith(lines[m], "||") ? lines[m].substr(2) : lines[m]), none));
+            std::vector<const Node *> members;
+            for (std::size_t m = 0; m < nodes.size(); m++) { if (m + first == i) nodes[m].side = 1; members.push_back(&nodes[m]); }
+            bool taken[2][4] = { { false, false, false, false }, { false, false, false, false } };
+            if (!assignUnits(members, 0, taken)) unit = ".S1";
+        }
+        std::string raw = "\t" + (l.pred.empty() ? std::string() : "[" + l.pred + "]\t") + "BNOP\t" + unit + "\t" + l.ops[0] + ", " + std::to_string(k);
+        lines[i] = (member ? "||" : "") + raw;
+        if (n > k) lines[j] = "\tNOP\t" + std::to_string(n - k);
+        else lines.erase(lines.begin() + static_cast<long>(j));
+    }
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); i++) out += lines[i] + "\n";
+    return out;
 }
 
 }   // namespace
@@ -936,6 +999,7 @@ std::string c6xSchedule(const std::string &text, int level) {
         Line l = parse(line);
         if (l.mnem != "NOP") lines.push_back(l);    // the -O0 padding, re-derived by the scheduler
     }
+    foldCalls(lines);
     foldMvk(lines);
     computeLiveness(lines);
     foldFrame(lines);
@@ -950,5 +1014,8 @@ std::string c6xSchedule(const std::string &text, int level) {
         if (!changed) break;
     }
     rotateLoops(lines);
-    return schedule(lines);
+    std::string text2 = schedule(lines);
+    std::size_t words = 0;
+    for (std::size_t i = 0; i < text2.size(); i++) if (text2[i] == '\n') words++;
+    return foldBranchNops(text2, words * 4 + 512 < 8192);
 }

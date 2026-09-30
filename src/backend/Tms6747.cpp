@@ -1644,7 +1644,7 @@ void Tms6747::emitFunction(const Function &fn) {
         out_ << "\tMV\tA15, B15\n";                 // drop the frame: SP = FP
         out_ << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
-    out_ << "\tB\tB3\n\tNOP\t5\n";
+    out_ << (optimize_ > 0 ? "\tBNOP\tB3, 5\n" : "\tB\tB3\n\tNOP\t5\n");   // one word where it may
     // TI's index entry for every function - any return address on the stack
     // - naming the table when there are handlers, holding the word itself
     // when there are none.

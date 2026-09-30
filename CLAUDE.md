@@ -11339,3 +11339,29 @@ Code bytes of the harness object, -O1: cpp11 946,368 (1,281,088 before the round
 685,728 (1.44x). 23% of cpp11's instructions are NOPs and a call is four words where CALLP is
 one - the order of work to bring every column to 1.3x or under is CALLP/BNOP, the scheduler at
 -O1, temporaries in registers, a size level, then ASM6x's compact forms.
+
+## CALLP and BNOP: the review's B5(1), 2026-09-30
+
+**A call is one `CALLP f, B3` and a branch followed by its NOPs one `BNOP`, at -O1 and -O2.**
+`foldCalls` (C6xSched) takes `MVKL r, B3; MVKH r, B3; B f` with r the label after it before
+any peephole runs, and the scheduler knows CALLP as a branch and a call whose delay slots are
+NOPs: nothing may issue after it in its block. `foldBranchNops` runs on the scheduled text: a
+packet holding `B x` followed by `NOP n` becomes that packet with `BNOP x, min(n,5)` - a label
+only where the function is short enough for BNOP's PCR_S12 reach (+-8 KB), a register only on
+the B side - and the epilogue's return is `BNOP B3, 5`. A call through a register keeps `B`.
+
+**BNOP's side is named.** An unnamed BNOP asks for .S1 first where B asks for .S2, and both
+assemblers move at most one earlier instruction to make room, so `SHL(.S1) || LDW *B15 || ADD
+B15 || BNOP` was refused by ASM6x where the same packet with `B` was not. The scheduler's own
+unit check picks .S2 where the packet allows it, .S1 otherwise; all 346 -O2 cases then assemble
+with ASM6x and with TI's asm6x 8.2.2, no warning.
+
+Measured: tms6747.sh 340/0 at -O0, -O1, -O2; emit golden 0 of 1381. Kernels on TI's simulator
+(0930-155859, 60/60 expected): cycles unchanged within 0.001% (63.667 M; the MVKL/MVKH pair was
+already hidden in packets), code bytes -O1 5,792 -> 4,896 and -O2 5,920 -> 5,056 - 2.28x cl6x
+7.4.4 `-O2 -ms3` (was 2.70x). The Compiler++ harness object: -O1 946,400 -> 803,264 bytes
+(1.46x CCS 7.4 -O1, 1.67x its -O2 -ms3; were 1.72x and 1.96x), -O2 989,504 -> 856,128 (1.25x
+CCS 7.4 -O2, was 1.44x). ASM6x's "truncated to 16 bits" warnings on the harness's exception
+tables fell from 7 to 0 at -O1 and 11 to 4 at -O2, the functions being smaller (C-A5 is still
+the real fix). **A trap met measuring it**: `git stash; make; git stash pop; make` left the
+restored sources unbuilt and two identical binaries - delete the objects before believing one.
