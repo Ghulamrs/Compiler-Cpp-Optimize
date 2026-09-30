@@ -216,10 +216,13 @@ void Tms6747::localAddr(int off, const char *dst, int size, int align) {
     if (planning_) {
         if (!plainAccess_) slots_[localBase_ + off].addressed = true;
         noteExtent(localBase_ + off, size, align);
+        slots_[localBase_ + off].winUses += 1 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);   // SUBAW reaches 124
     }
     off = saveBytes_ + placed(localBase_ + off);
     if (off >= 0 && off <= 31) {
         out_ << "\tSUB\tA15, " << off << ", " << dst << "\n";
+    } else if (optimize_ > 0 && off % 4 == 0 && off / 4 <= 31) {
+        out_ << "\tSUBAW\tA15, " << off / 4 << ", " << dst << "\n";   // one word, the .D unit's scaled form
     } else {
         movImm("A0", off);
         out_ << "\tSUB\tA15, A0, " << dst << "\n";

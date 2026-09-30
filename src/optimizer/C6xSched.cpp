@@ -295,11 +295,12 @@ int accessSize(const std::string &m) {
 // the SUB A15,k,R spelling of a small k, each with R and A0 dead after.
 void foldFrame(std::vector<Line> &v) {
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
-        if (v[i].mnem != "SUB" || v[i].ops.size() != 3 || v[i].ops[0] != "A15") continue;
+        if ((v[i].mnem != "SUB" && v[i].mnem != "SUBAW") || v[i].ops.size() != 3 || v[i].ops[0] != "A15") continue;
         std::string reg = v[i].ops[2];
         long k;
         std::size_t first = i;
-        if (isNumber(v[i].ops[1])) k = std::atol(v[i].ops[1].c_str());
+        if (v[i].mnem == "SUBAW") { if (!isNumber(v[i].ops[1])) continue; k = 4 * std::atol(v[i].ops[1].c_str()); }
+        else if (isNumber(v[i].ops[1])) k = std::atol(v[i].ops[1].c_str());
         else if (v[i].ops[1] == "A0" && i > 0 && v[i - 1].mnem == "MVK" && v[i - 1].ops.size() == 2 &&
                  v[i - 1].ops[1] == "A0" && isNumber(v[i - 1].ops[0]) && deadAfter(v, i, "A0")) {
             k = std::atol(v[i - 1].ops[0].c_str());
@@ -713,13 +714,14 @@ void foldAddressing(std::vector<Line> &v) {
         if (!l.instr || !l.pred.empty()) continue;
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
-        if ((l.mnem == "ADD" || l.mnem == "SUB") && l.ops.size() == 3 && writes.size() == 1 && !has(reads, writes[0])) {
+        if ((l.mnem == "ADD" || l.mnem == "SUB" || l.mnem == "SUBAW") && l.ops.size() == 3 && writes.size() == 1 && !has(reads, writes[0])) {
             const bool k0 = isNumber(l.ops[0]), k1 = isNumber(l.ops[1]);
-            if (l.mnem == "SUB" && !k1) continue;
+            if (l.mnem != "ADD" && !k1) continue;
             if (k0 == k1) continue;
             const std::string R = k0 ? l.ops[1] : l.ops[0], T = writes[0];
             long k = std::atol((k0 ? l.ops[0] : l.ops[1]).c_str());
-            if (l.mnem == "SUB") k = -k;
+            if (l.mnem == "SUBAW") k *= 4;             // scaled by the word
+            if (l.mnem != "ADD") k = -k;
             if (!sideOf(R) || R == T) continue;
             for (std::size_t j = i + 1; j < v.size(); j++) {
                 if (isLabel(v[j]) && passThrough(v[j], named)) continue;
@@ -896,6 +898,7 @@ unsigned unitsFor(const Line &l) {
         if (small) return UL | US | (ucst ? UD : 0);
         return ucst && m == "ADD" && crossings(l) == 0 ? UD : 0;
     }
+    if (m == "SUBAW" || m == "ADDAW") return crossings(l) == 0 ? UD : 0;   // .D alone, the sources on its side
     if (m == "SUB") {
         if (pair) return UL;
         if (at < 0) {               // a crossed first source has the .S form and .L's crossed-first one, never .D's
