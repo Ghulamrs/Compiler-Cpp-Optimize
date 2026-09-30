@@ -8,8 +8,7 @@ and *run* before this file was written, see "What was measured" below.
     cxx1.xcworkspace / cxx1.xcodeproj    Xcode, on macOS
     cxx1.sln / cxx1.vcxproj              Visual Studio 2022, on Windows
     cxx1.vcxproj.filters                 the folder tree VS shows
-    ../cxx1.sln                          the same project, opened from the root
-    generate.py                          writes all six from the source tree
+    generate.py                          writes all five from the source tree
     build-vs.cmd, check-vs.cmd           MSBuild and a smoke test, from a shell
 
 **Two configurations, both built and both run**: Debug|x64 and Release|x64 are
@@ -22,14 +21,21 @@ unreachable code, in `ParserExpr.cpp` - so a Debug build gated on warnings-as-
 errors fails on something no other toolchain mentions. Release keeps the gate,
 and Release is what `msvc\build.cmd` and `tools/verify-three` use.
 
-**A solution at the root**, `../cxx1.sln`, opens the same project: `ide/` is not
-where somebody who has just unpacked the tree looks first.
+**One set of projects, here and nowhere else.** The root `cxx1.sln`, `cxx1.vcxproj`
+and `cxx1.xcodeproj` are gone (2026-09-30): the last two were RIDE's copies, written
+into this tree by its `tools/make-projects.py`, and RIDE's `RIDE.sln` and
+`RIDE.xcworkspace` now open these. For that they build `cpp11.exe` - the name `make`
+and `msvc\build.cmd` give it - into `$(TMPDIR)/ride-xcode`, the folder every project
+in RIDE's workspace shares, with the target and product ids RIDE derives from the
+product's name; and in any solution but their own, Visual Studio writes the program
+beside that solution's others. Compiler-Ci's `ide/` is laid out the same way.
 
 ## Building
 
 Open `cxx1.xcworkspace` and press Run, or from a terminal:
 
     xcodebuild -project cxx1.xcodeproj -scheme cxx1 -configuration Release build
+    # -> $TMPDIR/ride-xcode/Release/cpp11.exe
 
 Open `cxx1.sln` in Visual Studio 2022 and build, or from a shell on that box:
 

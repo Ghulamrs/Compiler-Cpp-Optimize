@@ -19,7 +19,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))            # the checkout
 NAME = "cxx1"                # the project files keep their name...
 PRODUCT = "cpp11"            # ...and build the program src/Name.h names
+EXE = PRODUCT + ".exe"       # the file every build of it writes: make, msvc/build.cmd, RIDE
 UP = ".."                    # from ide/ to the tree, in both project dialects
+SHARED_BUILD = "$(TMPDIR)/ride-xcode"   # the build folder RIDE's projects share: see xcode()
 
 
 def sources():
@@ -47,6 +49,12 @@ def uid(text):
     """A stable 24-hex-digit id. Xcode only asks that they be unique and stable;
     deriving them from the path keeps a regenerated project diffable."""
     return hashlib.sha1(text.encode()).hexdigest()[:24].upper()
+
+
+def ride_ident(*parts):
+    """The target's and the product's ids by RIDE's rule, sha1("<exe>:<part>"): RIDE's
+    workspace and shalimar's project point at this project by them, and write nothing here."""
+    return hashlib.sha1((EXE + ":" + ":".join(parts)).encode()).hexdigest()[:24].upper()
 
 
 # ---------------------------------------------------------------- Xcode
@@ -82,7 +90,7 @@ def xcode(srcs, hdrs):
 
     src_phase = "\n".join('\t\t\t\t%s /* %s in Sources */,' % (uid("b:" + p), os.path.basename(p))
                           for p in srcs)
-    inc = os.path.join(ROOT, "lib")
+    inc = "$(SRCROOT)/%s/lib" % UP          # relative: an absolute path here names one machine
     # **Both directories, or a compiler built here cannot find <vector>.**
     # `lib/` holds the C headers and `include/` the C++ ones on top of them;
     # the Makefile passes both and these projects passed only the first, so an
@@ -91,7 +99,7 @@ def xcode(srcs, hdrs):
     # would ever have been noticed. The driver also looks *beside itself* now,
     # which is what makes an unpacked release work; this is the other half, for
     # a binary sitting in DerivedData or in x64\Release with nothing beside it.
-    cxxinc = os.path.join(ROOT, "include")
+    cxxinc = "$(SRCROOT)/%s/include" % UP
     common = ('\t\t\t\tALWAYS_SEARCH_USER_PATHS = NO;\n'
               # **The Makefile's warning line and no other.** Xcode's template
               # adds -Wshorten-64-to-32, which -Wall -Wextra do not, and it fires
@@ -115,7 +123,14 @@ def xcode(srcs, hdrs):
               '\t\t\t\t\t"CXX1_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n'
               '\t\t\t\t\t"CXX1_CXX_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n\t\t\t\t);\n'
               '\t\t\t\tPRODUCT_NAME = "%s";\n'
-              '\t\t\t\tHEADER_SEARCH_PATHS = "%s/src";\n' % (inc, cxxinc, PRODUCT, ROOT))
+              '\t\t\t\tHEADER_SEARCH_PATHS = "$(SRCROOT)/%s/src";\n'
+              # RIDE's editor takes cpp11.exe from its own BUILT_PRODUCTS_DIR,
+              # so every project in RIDE's workspace builds into one place, and
+              # for the Mac the release is built for.
+              '\t\t\t\tSYMROOT = "%s";\n'
+              '\t\t\t\tOBJROOT = "%s";\n'
+              '\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 12.0;\n'
+              % (inc, cxxinc, EXE, UP, SHARED_BUILD, SHARED_BUILD))
     return files, builds, group_secs, group_children, src_phase, common
 
 
@@ -124,9 +139,10 @@ def write_xcode(srcs, hdrs, check):
     proj = os.path.join(HERE, NAME + ".xcodeproj")
     pb = os.path.join(proj, "project.pbxproj")
 
-    ids = {k: uid(k) for k in ("project", "target", "product", "productgroup",
+    ids = {k: uid(k) for k in ("project", "productgroup",
                                "mainGroup", "sources", "cfgProject", "cfgTarget",
                                "dbgP", "relP", "dbgT", "relT")}
+    ids["target"], ids["product"] = ride_ident("target"), ride_ident("product")
     text = f"""// !$*UTF8*$!
 {{
 	archiveVersion = 1;
@@ -140,7 +156,7 @@ def write_xcode(srcs, hdrs, check):
 
 /* Begin PBXFileReference section */
 {chr(10).join(files)}
-		{ids['product']} /* {NAME} */ = {{isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = {NAME}; sourceTree = BUILT_PRODUCTS_DIR; }};
+		{ids['product']} /* {EXE} */ = {{isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = {EXE}; sourceTree = BUILT_PRODUCTS_DIR; }};
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -155,7 +171,7 @@ def write_xcode(srcs, hdrs, check):
 		{ids['productgroup']} /* Products */ = {{
 			isa = PBXGroup;
 			children = (
-				{ids['product']} /* {NAME} */,
+				{ids['product']} /* {EXE} */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -172,8 +188,8 @@ def write_xcode(srcs, hdrs, check):
 			);
 			dependencies = ();
 			name = {NAME};
-			productName = {PRODUCT};
-			productReference = {ids['product']} /* {NAME} */;
+			productName = {EXE};
+			productReference = {ids['product']} /* {EXE} */;
 			productType = "com.apple.product-type.tool";
 		}};
 /* End PBXNativeTarget section */
@@ -229,14 +245,14 @@ def write_xcode(srcs, hdrs, check):
 		{ids['dbgT']} /* Debug */ = {{
 			isa = XCBuildConfiguration;
 			buildSettings = {{
-				PRODUCT_NAME = "{PRODUCT}";
+				PRODUCT_NAME = "{EXE}";
 			}};
 			name = Debug;
 		}};
 		{ids['relT']} /* Release */ = {{
 			isa = XCBuildConfiguration;
 			buildSettings = {{
-				PRODUCT_NAME = "{PRODUCT}";
+				PRODUCT_NAME = "{EXE}";
 			}};
 			name = Release;
 		}};
@@ -281,7 +297,7 @@ def write_xcode(srcs, hdrs, check):
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "{ids['target']}"
-               BuildableName = "{NAME}"
+               BuildableName = "{EXE}"
                BlueprintName = "{NAME}"
                ReferencedContainer = "container:{NAME}.xcodeproj">
             </BuildableReference>
@@ -293,7 +309,7 @@ def write_xcode(srcs, hdrs, check):
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "{ids['target']}"
-            BuildableName = "{NAME}"
+            BuildableName = "{EXE}"
             BlueprintName = "{NAME}"
             ReferencedContainer = "container:{NAME}.xcodeproj">
          </BuildableReference>
@@ -383,8 +399,12 @@ def write_vs(srcs, hdrs, check):
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\\Microsoft.Cpp.props" />
+  <!-- **The output follows the solution that builds it.** Its own, ide\\{NAME}.sln (or
+       none), keeps build\\<config>\\; any other - RIDE.sln - puts {EXE} beside the rest of
+       that solution's programs, which is where the editor looks. The objects stay here. -->
   <PropertyGroup>
-    <OutDir>$(ProjectDir)build\\$(Configuration)\\</OutDir>
+    <OutDir Condition="'$(SolutionName)'=='{NAME}' Or '$(SolutionDir)'=='' Or '$(SolutionDir)'=='*Undefined*'">$(ProjectDir)build\\$(Configuration)\\</OutDir>
+    <OutDir Condition="'$(SolutionName)'!='{NAME}' And '$(SolutionDir)'!='' And '$(SolutionDir)'!='*Undefined*'">$(SolutionDir)$(Platform)\\$(Configuration)\\</OutDir>
     <IntDir>$(ProjectDir)build\\$(Configuration)\\obj\\</IntDir>
     <TargetName>{PRODUCT}</TargetName>
   </PropertyGroup>
@@ -499,23 +519,17 @@ EndGlobal
 </Project>
 """
 
-    # **And a solution at the root of the tree**, which is where somebody who
-    # has just unpacked this looks first. It is the same project, named by a
-    # path: two files, one project, no copy of anything.
-    rootSln = sln.replace('"%s.vcxproj"' % NAME, '"ide\\%s.vcxproj"' % NAME)
-
     pp = os.path.join(HERE, NAME + ".vcxproj")
     sp = os.path.join(HERE, NAME + ".sln")
     fp = pp + ".filters"
-    rp = os.path.join(ROOT, NAME + ".sln")
     if check:
-        for path, want in ((pp, proj), (sp, sln), (fp, filters), (rp, rootSln)):
+        for path, want in ((pp, proj), (sp, sln), (fp, filters)):
             if not os.path.exists(path) or open(path).read() != want:
                 return False
         return True
     validXml(proj, "cxx1.vcxproj")
     validXml(filters, "cxx1.vcxproj.filters")
-    for path, want in ((pp, proj), (sp, sln), (fp, filters), (rp, rootSln)):
+    for path, want in ((pp, proj), (sp, sln), (fp, filters)):
         open(path, "w", newline="\r\n").write(want)
     return True
 

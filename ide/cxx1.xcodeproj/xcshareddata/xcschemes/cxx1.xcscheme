@@ -5,8 +5,8 @@
          <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "0E8A3AD980EC179856012B7E"
-               BuildableName = "cxx1"
+               BlueprintIdentifier = "FC5035A3144E3FE75BF41BA5"
+               BuildableName = "cpp11.exe"
                BlueprintName = "cxx1"
                ReferencedContainer = "container:cxx1.xcodeproj">
             </BuildableReference>
@@ -17,8 +17,8 @@
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0E8A3AD980EC179856012B7E"
-            BuildableName = "cxx1"
+            BlueprintIdentifier = "FC5035A3144E3FE75BF41BA5"
+            BuildableName = "cpp11.exe"
             BlueprintName = "cxx1"
             ReferencedContainer = "container:cxx1.xcodeproj">
          </BuildableReference>

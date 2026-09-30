@@ -91,6 +91,8 @@
     <ClInclude Include="..\src\backend\Walker.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Linux.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Windows.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\A64Peep.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\C6xSched.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\Inliner.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\Mir.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\MirAlloc.h"><Filter>Header Files\optimizer</Filter></ClInclude>
@@ -98,6 +100,7 @@
     <ClInclude Include="..\src\optimizer\OptCore.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\OptCosts.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\OptDataflow.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\OptDeclines.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\OptEffects.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\OptFlow.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\OptFunction.h"><Filter>Header Files\optimizer</Filter></ClInclude>

@@ -38,8 +38,8 @@
 		ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 91CE00C0935BDE384E519CE8 /* Walker.cpp */; };
 		DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */; };
 		AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 80025E52DA32488A2EF7539F /* X86_64Windows.cpp */; };
-		F6AD8B130DB91E2E1A6FC034 /* A64Peep.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEB67DDEE18B6C4BE69D2062 /* A64Peep.cpp */; };
-		59771F199A742C05AC8E503A /* C6xSched.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 51D80922454E5DF0F9D68FAA /* C6xSched.cpp */; };
+		903BFCEAA264B2212C78BD11 /* A64Peep.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */; };
+		927838A3415C47BEFF72D53C /* C6xSched.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4F9178B9F267416156C0C111 /* C6xSched.cpp */; };
 		F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */; };
 		1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 402C6A145E36EDB389E81B69 /* MirAlloc.cpp */; };
 		974A77A814EA5DCC7FF333BC /* MirLocals.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2A060109E1E58D62D4A34285 /* MirLocals.cpp */; };
@@ -97,8 +97,8 @@
 		91CE00C0935BDE384E519CE8 /* Walker.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Walker.cpp; path = "../src/backend/Walker.cpp"; sourceTree = "<group>"; };
 		334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Linux.cpp; path = "../src/backend/X86_64Linux.cpp"; sourceTree = "<group>"; };
 		80025E52DA32488A2EF7539F /* X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Windows.cpp; path = "../src/backend/X86_64Windows.cpp"; sourceTree = "<group>"; };
-		BEB67DDEE18B6C4BE69D2062 /* A64Peep.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = A64Peep.cpp; path = "../src/optimizer/A64Peep.cpp"; sourceTree = "<group>"; };
-		51D80922454E5DF0F9D68FAA /* C6xSched.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = C6xSched.cpp; path = "../src/optimizer/C6xSched.cpp"; sourceTree = "<group>"; };
+		8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = A64Peep.cpp; path = "../src/optimizer/A64Peep.cpp"; sourceTree = "<group>"; };
+		4F9178B9F267416156C0C111 /* C6xSched.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = C6xSched.cpp; path = "../src/optimizer/C6xSched.cpp"; sourceTree = "<group>"; };
 		A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Inliner.cpp; path = "../src/optimizer/Inliner.cpp"; sourceTree = "<group>"; };
 		402C6A145E36EDB389E81B69 /* MirAlloc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = MirAlloc.cpp; path = "../src/optimizer/MirAlloc.cpp"; sourceTree = "<group>"; };
 		2A060109E1E58D62D4A34285 /* MirLocals.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = MirLocals.cpp; path = "../src/optimizer/MirLocals.cpp"; sourceTree = "<group>"; };
@@ -143,6 +143,8 @@
 		C681B0D6A27FF7AEF4F8EF84 /* Walker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Walker.h; path = "../src/backend/Walker.h"; sourceTree = "<group>"; };
 		12A5F71977D26CEE2AF1E2A4 /* X86_64Linux.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Linux.h; path = "../src/backend/X86_64Linux.h"; sourceTree = "<group>"; };
 		D9E2165876940A054181ABEA /* X86_64Windows.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Windows.h; path = "../src/backend/X86_64Windows.h"; sourceTree = "<group>"; };
+		000100F698007A703953C925 /* A64Peep.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = A64Peep.h; path = "../src/optimizer/A64Peep.h"; sourceTree = "<group>"; };
+		10CD4A81CEFE78E85B2FD368 /* C6xSched.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = C6xSched.h; path = "../src/optimizer/C6xSched.h"; sourceTree = "<group>"; };
 		3CF254951132485608A65AC4 /* Inliner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Inliner.h; path = "../src/optimizer/Inliner.h"; sourceTree = "<group>"; };
 		00D1AC912B4C6D97F9D444E5 /* Mir.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Mir.h; path = "../src/optimizer/Mir.h"; sourceTree = "<group>"; };
 		CAF0405A93A429E84704DCB7 /* MirAlloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = MirAlloc.h; path = "../src/optimizer/MirAlloc.h"; sourceTree = "<group>"; };
@@ -150,6 +152,7 @@
 		F3EF6094C02F382B885BEBA0 /* OptCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptCore.h; path = "../src/optimizer/OptCore.h"; sourceTree = "<group>"; };
 		4119EA1BB49D7DE2EAFB4253 /* OptCosts.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptCosts.h; path = "../src/optimizer/OptCosts.h"; sourceTree = "<group>"; };
 		C697DFFD356551E5F8785CC9 /* OptDataflow.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptDataflow.h; path = "../src/optimizer/OptDataflow.h"; sourceTree = "<group>"; };
+		D9475B4EE3003985868943BC /* OptDeclines.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptDeclines.h; path = "../src/optimizer/OptDeclines.h"; sourceTree = "<group>"; };
 		1DE350643A12378E5A3F7C5D /* OptEffects.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptEffects.h; path = "../src/optimizer/OptEffects.h"; sourceTree = "<group>"; };
 		84F596E5A9B1A3F5885283BB /* OptFlow.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptFlow.h; path = "../src/optimizer/OptFlow.h"; sourceTree = "<group>"; };
 		2435E41947D9679DB5373A78 /* OptFunction.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptFunction.h; path = "../src/optimizer/OptFunction.h"; sourceTree = "<group>"; };
@@ -160,7 +163,7 @@
 		6334D4556B061FAF3642EDA7 /* OptPipeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptPipeline.h; path = "../src/optimizer/OptPipeline.h"; sourceTree = "<group>"; };
 		D81302B456EA78F011062EF7 /* OptTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = OptTable.h; path = "../src/optimizer/OptTable.h"; sourceTree = "<group>"; };
 		DDAAA6CE03164FFC62F4FCCC /* Optimizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Optimizer.h; path = "../src/optimizer/Optimizer.h"; sourceTree = "<group>"; };
-		38A007151ABE87CC01A5B6E9 /* cxx1 */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cxx1; sourceTree = BUILT_PRODUCTS_DIR; };
+		2DC24FDB4CCDA14233AB5364 /* cpp11.exe */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cpp11.exe; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -178,7 +181,7 @@
 		1EE63A94BAD0DF0FCB0E7B8C /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				38A007151ABE87CC01A5B6E9 /* cxx1 */,
+				2DC24FDB4CCDA14233AB5364 /* cpp11.exe */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -237,8 +240,10 @@
 		868F39DBAA20F1B314EED2BA /* src/optimizer */ = {
 			isa = PBXGroup;
 			children = (
-				BEB67DDEE18B6C4BE69D2062 /* A64Peep.cpp */,
-				51D80922454E5DF0F9D68FAA /* C6xSched.cpp */,
+				8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */,
+				000100F698007A703953C925 /* A64Peep.h */,
+				4F9178B9F267416156C0C111 /* C6xSched.cpp */,
+				10CD4A81CEFE78E85B2FD368 /* C6xSched.h */,
 				A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */,
 				3CF254951132485608A65AC4 /* Inliner.h */,
 				00D1AC912B4C6D97F9D444E5 /* Mir.h */,
@@ -253,6 +258,7 @@
 				F15CE2D67FE8D941B527272E /* OptDataflow.cpp */,
 				C697DFFD356551E5F8785CC9 /* OptDataflow.h */,
 				97D55C97547F9D6C7CEDC787 /* OptDead.cpp */,
+				D9475B4EE3003985868943BC /* OptDeclines.h */,
 				6EBD784B574811D8023C44AA /* OptDivide.cpp */,
 				0252BBA8B6BACD5183B11574 /* OptEffects.cpp */,
 				1DE350643A12378E5A3F7C5D /* OptEffects.h */,
@@ -309,7 +315,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		0E8A3AD980EC179856012B7E /* cxx1 */ = {
+		FC5035A3144E3FE75BF41BA5 /* cxx1 */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B0F3D20354BE0C20B8849EC6;
 			buildPhases = (
@@ -317,8 +323,8 @@
 			);
 			dependencies = ();
 			name = cxx1;
-			productName = cpp11;
-			productReference = 38A007151ABE87CC01A5B6E9 /* cxx1 */;
+			productName = cpp11.exe;
+			productReference = 2DC24FDB4CCDA14233AB5364 /* cpp11.exe */;
 			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
@@ -340,7 +346,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				0E8A3AD980EC179856012B7E /* cxx1 */,
+				FC5035A3144E3FE75BF41BA5 /* cxx1 */,
 			);
 		};
 /* End PBXProject section */
@@ -382,8 +388,8 @@
 				ECFF4ADB02FA0FDCA8E5E830 /* Walker.cpp in Sources */,
 				DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */,
 				AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */,
-				F6AD8B130DB91E2E1A6FC034 /* A64Peep.cpp in Sources */,
-				59771F199A742C05AC8E503A /* C6xSched.cpp in Sources */,
+				903BFCEAA264B2212C78BD11 /* A64Peep.cpp in Sources */,
+				927838A3415C47BEFF72D53C /* C6xSched.cpp in Sources */,
 				F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */,
 				1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */,
 				974A77A814EA5DCC7FF333BC /* MirLocals.cpp in Sources */,
@@ -429,11 +435,14 @@
 					"-pedantic",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
-					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/lib\\\"",
-					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/include\\\"",
+					"CXX1_INCLUDE_DIR=\\\"$(SRCROOT)/../lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"$(SRCROOT)/../include\\\"",
 				);
-				PRODUCT_NAME = "cpp11";
-				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/src";
+				PRODUCT_NAME = "cpp11.exe";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src";
+				SYMROOT = "$(TMPDIR)/ride-xcode";
+				OBJROOT = "$(TMPDIR)/ride-xcode";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				GCC_OPTIMIZATION_LEVEL = 0;
 			};
 			name = Debug;
@@ -455,11 +464,14 @@
 					"-pedantic",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
-					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/lib\\\"",
-					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/include\\\"",
+					"CXX1_INCLUDE_DIR=\\\"$(SRCROOT)/../lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"$(SRCROOT)/../include\\\"",
 				);
-				PRODUCT_NAME = "cpp11";
-				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++Optimize/.claude/worktrees/agent-a9f40b90be0d22c41/src";
+				PRODUCT_NAME = "cpp11.exe";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src";
+				SYMROOT = "$(TMPDIR)/ride-xcode";
+				OBJROOT = "$(TMPDIR)/ride-xcode";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				GCC_OPTIMIZATION_LEVEL = 2;
 			};
 			name = Release;
@@ -467,14 +479,14 @@
 		5CDC95DACFA699F887E94779 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				PRODUCT_NAME = "cpp11";
+				PRODUCT_NAME = "cpp11.exe";
 			};
 			name = Debug;
 		};
 		3DD8C2C9CEEB943FC16BC582 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				PRODUCT_NAME = "cpp11";
+				PRODUCT_NAME = "cpp11.exe";
 			};
 			name = Release;
 		};
