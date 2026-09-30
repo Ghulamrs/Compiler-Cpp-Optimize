@@ -863,12 +863,15 @@ void Tms6747::planRegisters(const Function &fn) {
     regOf_.clear();
     promoted_.clear();
     if (fn.params().size() + sretShift_ > 6) usesSavedArgRegs_ = usesSavedPairRegs_ = true;
+    // A caller fills B10-B13 first: with B3 saved the B pairs sit on 8-aligned words - one STDW, one LDDW -
+    // and the A pairs do not; a function with no call fills the A side first, where a copy to A4 folds.
     static const char *const kSaved[] = { "A10", "A11", "A12", "A13", "B10", "B11", "B12", "B13" };
+    static const char *const kCaller[] = { "B10", "B11", "B12", "B13", "A10", "A11", "A12", "A13" };
     // A leaf with no loop - no call, no pad - keeps its locals in A16-A23, which nothing saves, and needs no
     // frame; one with a loop keeps the callee-saved set, the pipeliner wanting A16-A23 for the loop's values.
     static const char *const kLeaf[] = { "A16", "A17", "A18", "A19", "A20", "A21", "A22", "A23" };
     leaf_ = !hasCall_ && !hasLoop_ && !fn.hasLandingPads() && !fn.isVariadic();
-    const char *const *kRegs = leaf_ ? kLeaf : kSaved;
+    const char *const *kRegs = leaf_ ? kLeaf : hasCall_ ? kCaller : kSaved;
     std::map<std::string, bool> free;
     for (std::size_t k = 0; k < 8; k++) {
         const char *r = kRegs[k];
@@ -1965,6 +1968,18 @@ std::vector<std::string> Tms6747::savedRegs() const {
         for (std::size_t k = 0; k < spillUsed_.size(); k++) if (spillUsed_[k] == reg) want = true;
         if (want) r.push_back(reg);
     }
+    // A14, never used, is saved as a filler where it puts the A pairs on 8-aligned words: B3 and an even
+    // number of B registers above them leave A13:A12 and A11:A10 straddling, and one word mends both.
+    if (optimize_ > 0) {
+        std::size_t nB = 0, at = 0;
+        bool b3 = false, a13 = false, a12 = false, a11 = false, a10 = false;
+        for (std::size_t k = 0; k < r.size(); k++) {
+            if (r[k][0] == 'B' && r[k] != "B3") nB++;
+            if (r[k] == "B3") { b3 = true; at = k + 1; }
+            a13 |= r[k] == "A13"; a12 |= r[k] == "A12"; a11 |= r[k] == "A11"; a10 |= r[k] == "A10";
+        }
+        if (b3 && nB % 2 == 0 && ((a13 && a12) || (a11 && a10))) r.insert(r.begin() + static_cast<long>(at), "A14");
+    }
     return r;
 }
 // The frame as the second word of TI's exception index entry (tdeh_pr_c6000):
@@ -1972,7 +1987,7 @@ std::vector<std::string> Tms6747::savedRegs() const {
 // A15, B15-B10, B3, A14-A10 from bit 12 down, and B3 the return register.
 unsigned Tms6747::unwindWord(bool needFrame) const {
     static const struct { const char *reg; int bit; } bits[] = {
-        { "A15", 12 }, { "B13", 9 }, { "B12", 8 }, { "B11", 7 }, { "B10", 6 }, { "B3", 5 },
+        { "A15", 12 }, { "B13", 9 }, { "B12", 8 }, { "B11", 7 }, { "B10", 6 }, { "B3", 5 }, { "A14", 4 },
         { "A13", 3 }, { "A12", 2 }, { "A11", 1 }, { "A10", 0 } };
     unsigned mask = 0;
     if (needFrame)
@@ -2103,11 +2118,20 @@ void Tms6747::emitFunction(const Function &fn) {
     // A leaf whose parameters and locals are all in registers needs no frame at all.
     bool needFrame = frame > 0 || hasCall_ || (optimize_ > 0 ? paramInFrame_ : !fn.params().empty()) || sretSlot_ != 0 ||
                      saved.size() > 1 || fn.hasLandingPads() || fn.isVariadic();
+    // An odd:even pair saved side by side on an 8-aligned word (A15 is the caller's B15, 8-aligned) goes
+    // in one STDW and comes back in one LDDW - one round trip to memory where there were two.
+    auto pairAt = [&](std::size_t k) -> bool {
+        if (optimize_ <= 0 || k + 1 >= saved.size() || (4 * (k + 1)) % 8 != 0) return false;
+        const std::string &hi = saved[k], &lo = saved[k + 1];
+        return hi[0] == lo[0] && hi.size() == 3 && lo.size() == 3 && (lo[2] - '0') % 2 == 0 && hi == pairHigh(lo);
+    };
     if (needFrame) {
         out_ << "\tSTW\tA15, *B15\n";               // in the caller's word
         out_ << "\tMV\tB15, A15\n";
-        for (size_t k = 1; k < saved.size(); k++)     // a leaf leaves B3 alone
+        for (size_t k = 1; k < saved.size(); k++) {   // a leaf leaves B3 alone
+            if (pairAt(k)) { out_ << "\tSTDW\t" << saved[k] << ":" << saved[k + 1] << ", *-A15(" << 4 * (k + 1) << ")\n"; k++; continue; }
             out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
+        }
         spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
@@ -2115,8 +2139,10 @@ void Tms6747::emitFunction(const Function &fn) {
     std::ostringstream epi;
     epi << returnLabel_ << ":\n";
     if (needFrame) {
-        for (size_t k = 1; k < saved.size(); k++)
+        for (size_t k = 1; k < saved.size(); k++) {
+            if (pairAt(k)) { epi << "\tLDDW\t*-A15(" << 4 * (k + 1) << "), " << saved[k] << ":" << saved[k + 1] << "\n"; k++; continue; }
             epi << "\tLDW\t*-A15(" << 4 * k << "), " << saved[k] << "\n";
+        }
         epi << "\tMV\tA15, B15\n";                 // drop the frame: SP = FP
         epi << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
