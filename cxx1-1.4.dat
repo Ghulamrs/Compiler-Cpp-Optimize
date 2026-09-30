@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 162 files, seal 0627B4CD
+CRC32  size  file - 162 files, seal E327A890
 ------------------------------------------------------------------
 AE20CC05      9923  Makefile
 2DF96A05      2820  examples/Makefile
@@ -15,7 +15,7 @@ A58B27FA       365  examples/report.h
 834E5B52       403  examples/shapes.cpp
 BCF2B27D      1081  examples/shapes.h
 C450DBBD      1272  examples/unity.cpp
-042E455F     22525  ide/generate.py
+D144E4D1     23689  ide/generate.py
 7F3ECECE      4553  include/algorithm
 24D34375       483  include/cassert
 8DA08DB0       868  include/cctype
