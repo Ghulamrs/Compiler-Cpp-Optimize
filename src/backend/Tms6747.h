@@ -187,6 +187,8 @@ private:
     void isZero(const Type *t);               // A4 = (accumulator == 0)
     void fpBinary(const Binary &n, bool dp);  // operands in A5:A4 / A7:A6
     void wideBinary(const Binary &n);         // 64-bit integers, the same places
+    bool constDivisor(const Binary &n, long long &d) const;   // -O1 and up: a 32-bit / or % by a constant
+    void divideByConstant(bool quotient, bool sign, long long d);   // A4 = A4 / d or A4 % d, no helper
     void wideCast(const Type *from, const Type *to);
     int stackParamOffset(const std::vector<Param> &ps, std::size_t i);
     int stackArg(const Type *t, int &end);

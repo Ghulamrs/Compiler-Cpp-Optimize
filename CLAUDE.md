@@ -11401,3 +11401,32 @@ Measured: tms6747.sh 341/0 at -O0/-O1/-O2; all 346 -O2 cases assemble with ASM6x
 856,128 -> 778,080 (1.13x). Kernels on TI's simulator (0930-165337, 60/60 expected, LNK6x
 cycle-identical): -O1 code 4,896 -> 4,288 bytes (2.00x cl6x 7.4.4 -O2 -ms3), fib 2.4% faster,
 the rest within 0.01%.
+
+## Division by a constant on the C6000: the review's B3, third shape, 2026-09-30
+
+**At -O1 and -O2 a 32-bit `/` or `%` whose divisor folds to a constant no longer calls
+`__c6xabi_divi`/`remi`/`divu`/`remu`** (`Tms6747::divideByConstant`). The divisor is read
+through literals, integer casts to 4 bytes or more, unary `- ~ +` and `+`/`-` of such, in 32-bit
+arithmetic (`low32`), so `x / -7` and `x % (-2147483647 - 1)` are constants too. What each
+becomes, Hacker's Delight chapter 10, the magic numbers shared with x86's `divide-by-constant`
+through `src/optimizer/DivMagic.h`:
+
+| divisor | quotient | remainder |
+| --- | --- | --- |
+| 1, -1 | nothing, or `NEG` (INT_MIN / -1 wraps to INT_MIN, as NEG does) | `MVK 0` |
+| unsigned 2^k | `SHRU k` | `EXTU 32-k, 32-k` |
+| signed +-2^k (INT_MIN included) | bias by `SHR 31; SHRU 32-k`, `SHR k`, `NEG` if negative | `CLR 0, k-1` of the biased value, subtracted |
+| unsigned >= 2^31 | `CMPLTU; XOR 1` | n - q*d by `MPY32` |
+| any other | `MPY32U` (the add form where the multiplier is 33 bits) or `MPY32SU` by the magic, `SHRU`/`SHR`, plus n's sign bit for a signed one | n - q*d by `MPY32` |
+
+**0 stays the helper**, so a division by zero does what it did; 64-bit division stays the
+helper; -O0 is untouched (emit golden 0 of 1383 changed). The scheduler needed nothing new:
+`MPY32SU` and `MPY32U` are its `MPY*` row, .M and three delay slots. Checked by a model of the
+instruction sequences over 4.4 M (divisor, dividend) pairs against C's `/` and `%`, and by
+`divide-by-constant-signs.cpp` (clang's output). tms6747.sh 342/0 at -O0, -O1, -O2; every -O1
+and -O2 output assembles with ASM6x, no message.
+
+**VM6747 counts it as slower, and that is the emulator, not the code.** Its helpers are native
+and cost a call: hash 5,484,080 -> 5,862,078 cycles at -O2, matmul 771,365 -> 784,035. TI's
+`remi` is a real routine (~40 cycles, the review measured); the TI simulator is the oracle for
+this change, and its run is `CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
