@@ -553,12 +553,17 @@ bool threadPredicates(std::vector<Line> &v) {
     return changed;
 }
 
-// A label of the backend's own flow that no branch names any longer - a `shortcut` threaded past - ends no block.
+// A label of the backend's own flow that no branch names any longer - a `shortcut` threaded past, the return
+// label of a function whose one return falls into it - ends no block, so the epilogue's `B B3` can be hoisted
+// over the body's tail and the tail's results land in its delay slots.
 void dropUnnamedLabels(std::vector<Line> &v) {
     std::set<std::string> named;
     for (std::size_t i = 0; i < v.size(); i++) if (v[i].instr) for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     std::vector<Line> out;
-    for (std::size_t i = 0; i < v.size(); i++) if (!isLabel(v[i]) || !passThrough(v[i], named)) out.push_back(v[i]);
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i]) && (passThrough(v[i], named) || (startsWith(labelName(v[i]), "L.return.") && !named.count(labelName(v[i]))))) continue;
+        out.push_back(v[i]);
+    }
     v.swap(out);
 }
 
@@ -1112,15 +1117,16 @@ void foldAddressing(std::vector<Line> &v) {
                 if (blockEnd(v[j])) break;
                 std::vector<std::string> r2, w2;
                 readsAndWrites(v[j], r2, w2);
-                if (has(w2, R)) break;
+                const bool access = v[j].pred.empty() && v[j].ops.size() == 2 && (isLoad(v[j].mnem) || isStore(v[j].mnem));
+                if (has(w2, R) && !(access && isLoad(v[j].mnem) && v[j].ops[1] == R)) break;   // a load into R reads R first
                 if (!has(r2, T) && !has(w2, T)) continue;
                 const Line &u = v[j];
-                if (u.pred.empty() && u.ops.size() == 2 && (isLoad(u.mnem) || isStore(u.mnem))) {
+                if (access) {
                     const std::size_t at = isStore(u.mnem) ? 1 : 0;
                     const long size = accessSize(u.mnem), mag = k < 0 ? -k : k;
                     std::vector<std::string> data;
                     registersIn(u.ops[1 - at], data);
-                    if (u.ops[at] == "*" + T && mag % size == 0 && mag / size <= 31 && !has(data, R) && (has(data, T) || deadAfter(v, j, T))) {
+                    if (u.ops[at] == "*" + T && mag % size == 0 && mag / size <= 31 && (!has(data, R) || isLoad(u.mnem)) && (has(data, T) || deadAfter(v, j, T))) {
                         std::vector<std::string> ops = u.ops;
                         ops[at] = mag == 0 ? "*" + R : (k < 0 ? "*-" : "*+") + R + "(" + std::to_string(mag) + ")";
                         v[j] = rebuilt(u.mnem, ops);
@@ -1710,6 +1716,7 @@ std::string c6xSchedule(const std::string &text, int level) {
     if (!skipped("arms") && predicateArms(lines)) rounds(lines);
     rotateLoops(lines);
     tidyJumps(lines);
+    if (!skipped("labels")) dropUnnamedLabels(lines);
     if (!skipped("entry")) reuseEntryLoads(lines);
     if (level >= 2) { hoistInvariants(lines); pipelineLoops(lines); if (!skipped("pairs")) hoistConstantPairs(lines); }
     // After the loops are made: a value numbered across a pipelined kernel would lengthen the spans it schedules.
