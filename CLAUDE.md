@@ -11381,3 +11381,23 @@ tms6747.sh 341/0 at -O0, -O1, -O2. The Compiler++ harness assembles with no "tru
 bits" warning at -O1 or -O2 (one pr2 function). Not done: the compact pr4 cl6x uses for small
 functions, and `tools/c6747-levels` passes cl6x no `--exceptions`, so its TI columns refuse a
 program that throws.
+
+## Leaner calls and frames on the C6000, 2026-09-30
+
+Three changes at -O1 and -O2, -O0 byte-identical (emit golden 0 of 1381):
+- **A call opens no area when nothing is pushed and nothing goes on the stack.** The callee saves
+  A15 in the word at the caller's B15, so every call used to open 8 bytes (`SUB B15, 8` before,
+  `ADD` after - 11.5% of the harness's instruction lines). The frame now keeps that word at its
+  bottom (the prologue and every landing pad take 8 more), and `openArea` opens one only where a
+  push is pending (`pushDepth_`) or an argument goes on the stack.
+- **`tidyJumps`** (C6xSched): what follows an unconditional branch up to a label is dropped; a
+  branch to a label that only jumps on goes straight there; a branch to the next label, or last
+  in the text to the epilogue, is removed - fib's `BNOP end; end: BNOP L$return; ZERO A4` is gone.
+- **The frame is one `ADDK -k, B15`** where it was `MVKL; MVKH; SUB` (the scheduler reads ADDK's
+  destination as a source).
+
+Measured: tms6747.sh 341/0 at -O0/-O1/-O2; all 346 -O2 cases assemble with ASM6x and TI's asm6x
+8.2.2. Harness code bytes -O1 803,264 -> 720,128 (1.31x CCS 7.4 -O1, 1.49x its -O2 -ms3), -O2
+856,128 -> 778,080 (1.13x). Kernels on TI's simulator (0930-165337, 60/60 expected, LNK6x
+cycle-identical): -O1 code 4,896 -> 4,288 bytes (2.00x cl6x 7.4.4 -O2 -ms3), fib 2.4% faster,
+the rest within 0.01%.

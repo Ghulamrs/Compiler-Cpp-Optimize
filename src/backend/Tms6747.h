@@ -89,6 +89,8 @@ private:
     // function that calls saves B3, and one that loads the callee-saved
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
+    int pushDepth_ = 0;                       // values pushed and not yet popped
+    std::vector<int> areas_;                  // the call areas open, innermost last
     bool usesSavedArgRegs_ = false;
     bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12
     int frame_ = 0;                           // the locals, 8-aligned
@@ -165,7 +167,9 @@ private:
     void bitFieldUnitAddr(const MemberAccess &m);   // the unit's address -> A4
     void bitFieldExtract(const MemberAccess &m);    // unit in A4 -> the field
     void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
-    void spAdjust(int delta);                 // B15 += delta (negative allocates)
+    void spAdjust(int delta);
+    void openArea(int area, bool stackArgs = false);
+    void closeArea();                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
     bool frameSlot(const Expr &e, int &disp) const;   // a local or a member of one: its displacement from A15
     static bool frameFits(int disp, int size);        // whether frameOperand can name it

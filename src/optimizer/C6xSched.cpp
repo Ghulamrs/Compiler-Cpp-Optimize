@@ -151,7 +151,7 @@ void readsAndWrites(const Line &l, std::vector<std::string> &reads, std::vector<
     for (std::size_t i = 0; i < n; i++) registersIn(l.ops[i], reads);
     if (!hasDest) return;
     registersIn(l.ops.back(), writes);
-    if (l.mnem == "MVKH") registersIn(l.ops.back(), reads);
+    if (l.mnem == "MVKH" || l.mnem == "ADDK") registersIn(l.ops.back(), reads);
 }
 
 bool has(const std::vector<std::string> &v, const std::string &r) {
@@ -564,6 +564,47 @@ void rotateLoops(std::vector<Line> &v) {
     }
 }
 
+// **Jumps tidied**: what follows an unconditional branch up to the next label never runs; a branch to
+// a label whose first instruction is an unconditional jump goes where that one goes; and a branch to
+// the next label - or, last in the text, to the epilogue after it - is nothing.
+void tidyJumps(std::vector<Line> &v) {
+    std::set<std::string> labels;
+    for (std::size_t i = 0; i < v.size(); i++) if (isLabel(v[i])) labels.insert(labelName(v[i]));
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        out.push_back(v[i]);
+        if (!v[i].instr || v[i].mnem != "B" || !v[i].pred.empty() || isCall(v[i], labels)) continue;
+        while (i + 1 < v.size() && v[i + 1].instr) i++;
+    }
+    v.swap(out);
+    std::map<std::string, std::string> onward;          // a label whose first instruction is `B M`
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (!isLabel(v[i])) continue;
+        std::size_t j = i + 1;
+        while (j < v.size() && isLabel(v[j])) j++;
+        if (j < v.size() && v[j].instr && v[j].mnem == "B" && v[j].pred.empty() && !isCall(v[j], labels) && !sideOf(v[j].ops[0]))
+            onward[labelName(v[i])] = v[j].ops[0];
+    }
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (!v[i].instr || v[i].mnem != "B" || sideOf(v[i].ops[0]) || isCall(v[i], labels)) continue;
+        std::string t = v[i].ops[0];
+        for (int hops = 0; hops < 8 && onward.count(t) && onward[t] != t; hops++) t = onward[t];
+        if (t != v[i].ops[0]) v[i] = rebuilt("B", std::vector<std::string>(1, t), v[i].pred);
+    }
+    out.clear();
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (v[i].instr && v[i].mnem == "B" && !sideOf(v[i].ops[0]) && !isCall(v[i], labels)) {
+            std::size_t j = i + 1;
+            bool next = false;
+            for (; j < v.size() && !v[j].instr; j++) if (isLabel(v[j]) && labelName(v[j]) == v[i].ops[0]) next = true;
+            if (!next && j == v.size() && isReturn(v[i], labels)) next = true;
+            if (next) continue;
+        }
+        out.push_back(v[i]);
+    }
+    v.swap(out);
+}
+
 bool isPush(const std::vector<Line> &v, std::size_t i) {
     return i + 1 < v.size() && v[i].raw == "\tSUB\tB15, 8, B15" && isStore(v[i + 1].mnem) &&
            v[i + 1].ops.size() == 2 && v[i + 1].ops[1] == "*B15" && (v[i + 1].mnem == "STW" || v[i + 1].mnem == "STDW");
@@ -644,7 +685,7 @@ struct Node {
 // register, the small constants on .L and .S, the wider ones on .D alone.
 unsigned unitsFor(const Line &l) {
     const std::string &m = l.mnem;
-    if (isBranch(m)) return US;
+    if (isBranch(m) || m == "ADDK") return US;
     if (isLoad(m) || isStore(m)) return UD;
     if (m == "MPY32" || m == "MPY32U" || m == "MPYSP" || m == "MPYDP" || startsWith(m, "MPY")) return UM;
     bool pair = false;
@@ -1014,6 +1055,7 @@ std::string c6xSchedule(const std::string &text, int level) {
         if (!changed) break;
     }
     rotateLoops(lines);
+    tidyJumps(lines);
     std::string text2 = schedule(lines);
     std::size_t words = 0;
     for (std::size_t i = 0; i < text2.size(); i++) if (text2[i] == '\n') words++;

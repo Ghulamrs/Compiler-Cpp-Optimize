@@ -198,6 +198,8 @@ void Tms6747::spAdjust(int delta) {
     const char *op = delta < 0 ? "SUB" : "ADD";
     if (m <= 31) {
         out_ << "\t" << op << "\tB15, " << m << ", B15\n";
+    } else if (optimize_ > 0 && m <= 32767) {
+        out_ << "\tADDK\t" << delta << ", B15\n";       // one word for three
     } else {
         movImm("B0", m);
         out_ << "\t" << op << "\tB15, B0, B15\n";
@@ -280,11 +282,25 @@ void Tms6747::copyBlock(int size, const char *from, const char *to, int align) {
     }
 }
 
+// A call's area - the word the callee saves A15 in, and its stack arguments. At -O1 and -O2 the
+// frame keeps that word at its bottom, so a call with nothing pushed and nothing on the stack opens none.
+void Tms6747::openArea(int area, bool stackArgs) {
+    int a = optimize_ > 0 && !stackArgs && pushDepth_ == 0 ? 0 : area;
+    areas_.push_back(a);
+    spAdjust(-a);
+}
+void Tms6747::closeArea() {
+    spAdjust(areas_.back());
+    areas_.pop_back();
+}
+
 void Tms6747::push() {
+    pushDepth_++;
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTW\tA4, *B15\n";
 }
 void Tms6747::pop(const char *reg) {
+    pushDepth_--;
     out_ << "\tLDW\t*B15, " << reg << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
@@ -306,11 +322,13 @@ std::string Tms6747::pairOf(const char *reg) {
 // is already 8 bytes and B15 stays 8-aligned, which STDW and LDDW need.
 void Tms6747::pushValue(const Type *t) {
     if (!isWide(t) && !inPairWide(t)) { push(); return; }
+    pushDepth_++;
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTDW\tA5:A4, *B15\n";
 }
 void Tms6747::popValue(const Type *t, const char *reg) {
     if (!isWide(t) && !inPairWide(t)) { pop(reg); return; }
+    pushDepth_--;
     out_ << "\tLDDW\t*B15, " << pairOf(reg) << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
@@ -467,7 +485,7 @@ void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
     localAddr(selectorSlot, "A0");
     out_ << "\tSTW\tB4, *A0\n";
     out_ << "\tMV\tA15, B15\n";
-    spAdjust(-(kSaveBytes + frame_));
+    spAdjust(-(kSaveBytes + frame_ + (optimize_ > 0 ? 8 : 0)));    // the call word below the frame, as the prologue keeps it
 }
 
 // An upper bound on a function's bytes: four per instruction line, labels and directives none.
@@ -839,10 +857,10 @@ void Tms6747::visit(const Binary &n) {
         // so nothing it may clobber is assumed to survive.
         const char *helper = n.op() == BinOp::Div ? (sign ? "__c6xabi_divi" : "__c6xabi_divu")
                                                   : (sign ? "__c6xabi_remi" : "__c6xabi_remu");
-        spAdjust(-8);
+        openArea(8);
         out_ << "\tMV\tA6, B4\n";
         call(helper);
-        spAdjust(8);
+        closeArea();
         narrowInt(n.type());
         return;
     }
@@ -879,11 +897,11 @@ void Tms6747::fpBinary(const Binary &n, bool dp) {
     case BinOp::Sub: op3("SUB", dp ? 6 : 3); return;
     case BinOp::Mul: op3("MPY", dp ? 9 : 3); return;
     case BinOp::Div:
-        spAdjust(-8);
+        openArea(8);
         out_ << "\tMV\tA6, B4\n";
         if (dp) out_ << "\tMV\tA7, B5\n";
         call(dp ? "__c6xabi_divd" : "__c6xabi_divf");
-        spAdjust(8);
+        closeArea();
         return;
     case BinOp::Eq: cmp("CMPEQ", "A4"); return;
     case BinOp::Ne: cmp("CMPEQ", "A4"); out_ << "\tXOR\t1, A4, A4\n"; return;
@@ -918,10 +936,10 @@ void Tms6747::wideBinary(const Binary &n) {
     case BinOp::Div: case BinOp::Mod: {
         const char *helper = n.op() == BinOp::Div ? (sign ? "__c6xabi_divlli" : "__c6xabi_divull")
                                                   : (sign ? "__c6xabi_remlli" : "__c6xabi_remull");
-        spAdjust(-8);
+        openArea(8);
         out_ << "\tMV\tA6, B4\n\tMV\tA7, B5\n";
         call(helper);
-        spAdjust(8);
+        closeArea();
         return;
     }
     case BinOp::BitAnd: out_ << "\tAND\tA4, A6, A4\n\tAND\tA5, A7, A5\n"; return;
@@ -1112,9 +1130,9 @@ void Tms6747::wideCast(const Type *from, const Type *to) {
         helper = from->isSigned(target_) ? (isDouble(to) ? "__c6xabi_fltllid" : "__c6xabi_fltllif")
                                          : (isDouble(to) ? "__c6xabi_fltulld" : "__c6xabi_fltullf");
     if (helper != nullptr) {
-        spAdjust(-8);
+        openArea(8);
         call(helper);
-        spAdjust(8);
+        closeArea();
         return;
     }
     if (toW) out_ << (from->isSigned(target_) ? "\tSHR\tA4, 31, A5\n" : "\tZERO\tA5\n");
@@ -1158,7 +1176,7 @@ void Tms6747::visit(const Call &n) {
     int area = align8(end);
     // A callee walked in place needs no area: nothing is on the stack and nothing is called.
     const Function *inPlace = onStack == 0 && !pair && !sret ? inlineTarget(n) : nullptr;
-    if (inPlace == nullptr) spAdjust(-area);
+    if (inPlace == nullptr) openArea(area, onStack > 0);
     for (int k = 0; k < onStack; k++) {
         genArg(n, inRegs + k);
         regAdd("B15", at[k], "B0");
@@ -1188,7 +1206,7 @@ void Tms6747::visit(const Call &n) {
     if (sret) localAddr(n.resultSlot(), shift != 0 ? "A4" : "A3");    // where the result goes
 
     call(n.callee() != nullptr ? "B1" : n.symbol());
-    spAdjust(area);
+    closeArea();
     if (pair) { localAddr(n.resultSlot(), "A3"); storePair(n.type()->size(target_), n.type()->align(target_)); }
     if (sret || pair) localAddr(n.resultSlot(), "A4");    // the value: its address
 }
@@ -1340,9 +1358,9 @@ void Tms6747::visit(const Cast &n) {
         // DPTRUNC give a signed word; a full unsigned word is the helper's.
         bool dp = isDouble(from);
         if (to->size(target_) == 4 && !to->isSigned(target_)) {
-            spAdjust(-8);
+            openArea(8);
             call(dp ? "__c6xabi_fixdu" : "__c6xabi_fixfu");
-            spAdjust(8);
+            closeArea();
         } else {
             out_ << (dp ? "\tDPTRUNC\tA5:A4, A4" : "\tSPTRUNC\tA4, A4") << "\n\tNOP\t3\n";
         }
@@ -1666,7 +1684,7 @@ void Tms6747::emitFunction(const Function &fn) {
         out_ << "\tMV\tB15, A15\n";
         for (size_t k = 1; k < saved.size(); k++)     // a leaf leaves B3 alone
             out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
-        spAdjust(-(kSaveBytes + frame));
+        spAdjust(-(kSaveBytes + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
     // The prologue and epilogue hold no padding, and the frame is decided after the body.
