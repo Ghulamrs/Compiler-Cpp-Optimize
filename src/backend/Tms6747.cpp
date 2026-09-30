@@ -133,6 +133,7 @@ static std::string tiExternals(const std::string &text) {
     while (std::getline(in, line)) {
         size_t cut = line.find(';');
         if (cut != std::string::npos) line.erase(cut);
+        if (line.compare(0, 2, "||") == 0) line = "\t" + line.substr(2);   // in a packet: not a label
         size_t first = line.find_first_not_of(" \t");
         if (first == std::string::npos) continue;
         bool label = first == 0;
@@ -447,6 +448,74 @@ void Tms6747::pop(const char *reg) {
     if (spillPop(false, reg)) return;
     out_ << "\tLDW\t" << (optimize_ > 0 ? "*+B15(4)" : "*B15") << ", " << reg << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
+}
+
+// An expression of the parameters alone - registers, constants, the arithmetic that calls nothing - which
+// the early exit below can evaluate before any frame exists.
+bool Tms6747::simpleOfParams(const Expr &e, const Function &fn) const {
+    if (e.type() == nullptr || e.type()->isFloating() || e.type()->isStructOrUnion() || isWide(e.type())) return false;
+    if (const Num *n = dynamic_cast<const Num *>(&e)) return !n->type()->isFloating();
+    if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (!v->isLocal()) return false;
+        const std::vector<Param> &ps = fn.params();
+        for (std::size_t i = 0; i < ps.size() && i < firstStack_; i++)
+            if (ps[i].offset == v->offset()) return !ps[i].type->isFloating() && !ps[i].type->isStructOrUnion() && ps[i].type->size(target_) == 4 && !inPair(ps[i].type);
+        return false;
+    }
+    if (const Unary *u = dynamic_cast<const Unary *>(&e)) return (u->op() == '-' || u->op() == '!' || u->op() == '~' || u->op() == '+') && simpleOfParams(u->operand(), fn);
+    if (const Cast *c = dynamic_cast<const Cast *>(&e)) return !c->value().type()->isFloating() && !isWide(c->value().type()) && simpleOfParams(c->value(), fn);
+    if (const Binary *b = dynamic_cast<const Binary *>(&e))
+        return b->op() != BinOp::Div && b->op() != BinOp::Mod && b->op() != BinOp::LAnd && b->op() != BinOp::LOr &&
+               simpleOfParams(b->lhs(), fn) && simpleOfParams(b->rhs(), fn);
+    return false;
+}
+// **A leading `if (c) return t;` of the parameters alone runs before the prologue**: `n < 2 ? n : ...` in a
+// recursive function is answered with nothing saved and nothing restored, the frame's memory round trips
+// being what the base case cost. The parameters are read where they arrive, A4 copied aside first.
+static bool backendSkipped(const char *what) {
+    const char *e = std::getenv("CPP11_C6XSKIP");
+    return e != nullptr && (std::string(",") + e + ",").find(std::string(",") + what + ",") != std::string::npos;
+}
+std::string Tms6747::earlyExit(const Function &fn) {
+    const Block *blk = dynamic_cast<const Block *>(&fn.body());
+    if (optimize_ <= 0 || backendSkipped("early") || fn.isVariadic() || sretSlot_ != 0 || fn.params().size() > 6 || blk == nullptr || blk->body().empty()) return std::string();
+    if (fn.returns()->isFloating() || fn.returns()->isStructOrUnion() || isWide(fn.returns()) || inPair(fn.returns())) return std::string();
+    const Expr *cond = nullptr, *value = nullptr;
+    const Stmt &first = *blk->body()[0];
+    if (const Return *r = dynamic_cast<const Return *>(&first)) {
+        if (r->hasValue()) if (const Conditional *c = dynamic_cast<const Conditional *>(&r->value())) { cond = &c->cond(); value = &c->thenArm(); }
+    } else if (const If *i = dynamic_cast<const If *>(&first)) {
+        if (i->elseArm() == nullptr) if (const Return *r = dynamic_cast<const Return *>(&i->thenArm())) if (r->hasValue()) { cond = &i->cond(); value = &r->value(); }
+    }
+    if (cond == nullptr || !simpleOfParams(*cond, fn) || !simpleOfParams(*value, fn)) return std::string();
+    const std::vector<Param> &ps = fn.params();
+    for (std::size_t i = 0; i < ps.size(); i++) if (ps[i].type->isFloating() || ps[i].type->isStructOrUnion() || isWide(ps[i].type) || inPair(ps[i].type)) return std::string();
+    // Every parameter is copied to A16-A21 first: the walker's scratch registers include A6 and A8, where
+    // the third and fifth arrive. The copies come back where the test fails; the unread ones are dropped.
+    std::map<int, std::string> saved = regOf_;
+    regOf_.clear();
+    const std::size_t seq = pushSeq_;
+    pushSeq_ = 1u << 20;                                   // any push goes to the stack, below B15
+    std::ostringstream keep;
+    keep.swap(out_);
+    const std::string enter = label("enter", nextLabel());
+    for (std::size_t i = 0; i < ps.size(); i++) {
+        const std::string held = "A" + std::to_string(16 + i);
+        regOf_[localBase_ + ps[i].offset] = held;
+        out_ << "\tMV\t" << abi_.intRegs[i] << ", " << held << "\n";
+    }
+    genTruth(*cond);
+    out_ << "\tMV\tA4, A1\n\t[!A1]\tB\t" << enter << "\n\tNOP\t5\n";
+    value->accept(*this);
+    narrowInt(fn.returns());
+    out_ << "\tB\tB3\n\tNOP\t5\n";
+    defineLabel(enter);
+    for (std::size_t i = 0; i < ps.size(); i++) out_ << "\tMV\tA" << 16 + i << ", " << abi_.intRegs[i] << "\n";
+    std::string text = out_.str();
+    keep.swap(out_);
+    pushSeq_ = seq;
+    regOf_ = saved;
+    return text;
 }
 
 // The spare callee-saved register a push takes: the first free one, an even one whose odd partner is
@@ -2114,6 +2183,9 @@ void Tms6747::emitFunction(const Function &fn) {
     }
 
     int frame = frame_;
+    const std::string early = earlyExit(fn);
+    std::ostringstream pro;
+    pro.swap(out_);                                        // the prologue, scheduled with the body at -O1 and -O2
     std::vector<std::string> saved = savedRegs();
     // A leaf whose parameters and locals are all in registers needs no frame at all.
     bool needFrame = frame > 0 || hasCall_ || (optimize_ > 0 ? paramInFrame_ : !fn.params().empty()) || sretSlot_ != 0 ||
@@ -2135,6 +2207,7 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
+    pro.swap(out_);
     // The prologue holds no padding, and the frame is decided after the body.
     std::ostringstream epi;
     epi << returnLabel_ << ":\n";
@@ -2148,7 +2221,8 @@ void Tms6747::emitFunction(const Function &fn) {
     }
     epi << "\tB\tB3\n\tNOP\t5\n";
     // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
-    out_ << c6xSchedule(params + body + epi.str(), optimize_);
+    if (optimize_ > 0 && !backendSkipped("pro")) out_ << c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_);
+    else out_ << pro.str() << c6xSchedule(early + params + body + epi.str(), optimize_);
     // TI's index entry for every function - any return address on the stack
     // - naming the table when there are handlers, holding the word itself
     // when there are none.

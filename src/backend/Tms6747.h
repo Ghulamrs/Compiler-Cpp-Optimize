@@ -139,6 +139,8 @@ private:
     std::vector<std::string> spillPool_;
     std::vector<std::string> spillHeld_;       // per open push: its register, "" for the stack
     std::vector<std::string> spillUsed_;       // the registers the replay chose, saved with promoted_
+    bool simpleOfParams(const Expr &e, const Function &fn) const;
+    std::string earlyExit(const Function &fn);
     std::string chooseSpill(bool wide);
     void planSpills();
     bool spillPush(bool wide);
