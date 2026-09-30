@@ -695,7 +695,12 @@ void numberValues(std::vector<Line> &v) {
             if (l.mnem == "MVKH" || l.mnem == "ADDK") key += " #" + std::to_string(numberOf(writes[0]));
             if (isLoad(l.mnem)) key += " @" + std::to_string(stores);
             const std::string dst = writes[0];
-            if (l.mnem == "MV" && sideOf(l.ops[0])) { val[dst] = numberOf(l.ops[0]); continue; }   // a copy carries the number
+            if (l.mnem == "MV" && sideOf(l.ops[0])) {                           // a copy carries the number
+                const long n = numberOf(l.ops[0]);
+                if (val.count(dst) && val[dst] == n) { l = parse(""); continue; }   // a copy back of what it holds
+                val[dst] = n;
+                continue;
+            }
             std::map<std::string, long>::iterator it = made.find(key);
             const long number = it != made.end() ? it->second : next++;   // the same operation on the same sources
             if (it == made.end()) made[key] = number;
