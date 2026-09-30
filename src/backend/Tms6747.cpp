@@ -470,9 +470,24 @@ void Tms6747::landingPad(int pointerSlot, int selectorSlot) {
     spAdjust(-(kSaveBytes + frame_));
 }
 
+// An upper bound on a function's bytes: four per instruction line, labels and directives none.
+static std::size_t codeBytes(const std::string &text) {
+    std::size_t n = 0;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::size_t k = line.find_first_not_of(" \t|");
+        if (k == std::string::npos || line[k] == '.' || line[k] == ';' || line.back() == ':') continue;
+        n += 4;
+    }
+    return n;
+}
+
+// Past 64 KB a 16-bit scope cannot hold an offset: cl6x's pr2, 32-bit scope, the frame as byte-codes.
+static const std::size_t kLongScope = 0xF000;
+
 // The function's exception table in TI's form (lib/src/tdeh_pr_common.cpp):
-// the compact unwind word, then the scope descriptors the personality
-// routine reads in order, and a zero.
+// the unwind word (pr3's compact one, or pr2's byte-codes past kLongScope),
+// then the scope descriptors the personality routine reads in order, and a zero.
 
 // A descriptor: the range's length and its offset in the function (+2, so
 // a return address at the range's end is in and one at its start is not),
@@ -496,24 +511,32 @@ void Tms6747::emitExceptionTable(const Function &fn) {
     };
     std::ostringstream t;
     char word[16];
-    std::snprintf(word, sizeof word, "0x%08x", unwindWord(true));
-    t << "\t.sect\t\"" << ".c6xabi.extab:" << fn.symbol() << "\"\n\t.align\t4\n" << table << ":\n\t.ulong\t" << word << "\n";
+    // The trampolines lie between the body and fnEnd, which the noexcept row's length reaches.
+    std::size_t padLines = 0;
+    for (const CallSite &c : rows) padLines += 3 * (c.types.size() + 1);
+    const bool wide = codeBytes(out_.str()) + 4 * padLines >= kLongScope;
+    const char *const scope = wide ? "\t.ulong\t" : "\t.half\t";
+    t << "\t.sect\t\"" << ".c6xabi.extab:" << fn.symbol() << "\"\n\t.align\t4\n" << table << ":\n";
+    for (unsigned w : wide ? longUnwindWords() : std::vector<unsigned>(1, unwindWord(true))) {
+        std::snprintf(word, sizeof word, "0x%08x", w);
+        t << "\t.ulong\t" << word << "\n";
+    }
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
         std::string len = "$EXTAB_SCOPE(" + c.end + ") - $EXTAB_SCOPE(" + c.begin + ")";
         std::string off = "$EXTAB_SCOPE(" + c.begin + ") - $EXTAB_SCOPE(" + fn.symbol() + ") + 2";
         if (c.terminate) {           // catch anything, and terminate: cl6x's scope over a cleanup pad
-            t << "\t.half\t" << len << " + 1\n\t.half\t" << off << "\n\t.ulong\t0\n\t.ulong\t0xfffffffe\n";
+            t << scope << len << " + 1\n" << scope << off << "\n\t.ulong\t0\n\t.ulong\t0xfffffffe\n";
             continue;
         }
         for (std::size_t k = 0; k < c.types.size(); k++) {
             int ix = k < c.indices.size() ? c.indices[k] : static_cast<int>(k) + 1;
-            t << "\t.half\t" << len << " + 1\n\t.half\t" << off << "\n"
+            t << scope << len << " + 1\n" << scope << off << "\n"
               << "\t.ulong\t$EXTAB_LP(" << trampoline(c.pad, ix) << ")\n"
               << "\t.ulong\t" << (c.types[k].empty() ? std::string("0xffffffff") : "$EXTAB_RTTI(" + c.types[k] + ")") << "\n";
         }
         if (c.cleanup || c.types.empty())
-            t << "\t.half\t" << len << "\n\t.half\t" << off << "\n"
+            t << scope << len << "\n" << scope << off << "\n"
               << "\t.ulong\t$EXTAB_LP(" << trampoline(c.pad, 0) << ")\n";
     }
     // A noexcept function's exception specification, over the whole of it
@@ -521,9 +544,10 @@ void Tms6747::emitExceptionTable(const Function &fn) {
     // __cxa_call_unexpected - cl6x's row, with the offset's low bit set.
     const std::string fnEnd = "L." + fn.symbol() + ".fnend";
     if (fn.isNoexcept())
-        t << "\t.half\t$EXTAB_SCOPE(" << fnEnd << ") - $EXTAB_SCOPE(" << fn.symbol() << ")\n\t.half\t3\n\t.ulong\t0\n"
+        t << scope << "$EXTAB_SCOPE(" << fnEnd << ") - $EXTAB_SCOPE(" << fn.symbol() << ")\n" << scope << "3\n\t.ulong\t0\n"
           << "\t.symdepend\t\"__cxa_call_unexpected\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
-    t << "\t.ulong\t0\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
+    t << "\t.ulong\t0\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr" << (wide ? 2 : 3) << "\", \".c6xabi.extab:" << fn.symbol() << "\"\n";
+    if (wide) needsPr2_ = true;
     out_ << pads.str() << fnEnd << ":\n" << t.str() << "\t.text\n";
     if (fn.isNoexcept()) needsUnexpected_ = true;
 }
@@ -1536,6 +1560,17 @@ unsigned Tms6747::unwindWord(bool needFrame) const {
                 if (r == bits[k].reg) mask |= 1u << bits[k].bit;
     return 0x83000000u | (needFrame ? 0x7fu << 17 : 0u) | (mask << 4) | 7u;
 }
+// The same frame as pr2's byte-codes (readelf's tic6x decoder): MV FP, SP; pop the mask down
+// from A15; RETURN - padded with RETURN, the extra words' count in the first word's second byte.
+std::vector<unsigned> Tms6747::longUnwindWords() const {
+    const unsigned mask = unwindWord(true) >> 4 & 0x1fffu;
+    std::vector<unsigned> ops = { 0xd0u, 0x80u | mask >> 8, mask & 0xffu, 0xe7u };
+    while (ops.size() % 4 != 2) ops.push_back(0xe7u);
+    std::vector<unsigned> words(1, 0x82000000u | static_cast<unsigned>((ops.size() - 2) / 4) << 16 | ops[0] << 8 | ops[1]);
+    for (std::size_t k = 2; k < ops.size(); k += 4)
+        words.push_back(ops[k] << 24 | ops[k + 1] << 16 | ops[k + 2] << 8 | ops[k + 3]);
+    return words;
+}
 
 // One walk of the body: the per-function state reset, the statements, and the fall off the end.
 void Tms6747::walkBody(const Function &fn) {
@@ -1677,6 +1712,7 @@ void Tms6747::run(const Program &program) {
     // linker cannot otherwise see them need.
     if (!program.functions.empty())
         file_ += "\t.global\t__c6xabi_unwind_cpp_pr3\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.exidx:.text\"\n";
+    if (needsPr2_) file_ += "\t.global\t__c6xabi_unwind_cpp_pr2\n";
     if (needsUnexpected_) file_ += "\t.global\t__cxa_call_unexpected\n";
     sink_ << tiExternals(tiSpelling(file_));
 }

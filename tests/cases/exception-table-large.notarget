@@ -1,0 +1,2 @@
+x86_64-linux  too slow, not refused: the case is 2,200 calls in two functions so that the C6000's exception scopes pass 64 KB, and the x86 optimizer takes 24 s at -O1 and 33 s at -O2 on it (measured on the Mac, 2026-09-30), past the suites' 10 s ulimit. It compiles and runs at -O0. The subject is tms6747's pr2 table; arm64-darwin runs the case at every level (0.4 s at -O2).
+x86_64-windows  too slow, not refused: the same x86 optimizer, 11 s at -O2 on this case, past the suites' 10 s ulimit. The subject is tms6747's pr2 table.
