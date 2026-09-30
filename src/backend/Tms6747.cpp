@@ -275,6 +275,13 @@ void Tms6747::copyBlock(int size, const char *from, const char *to, int align) {
         if (step > align) step = align;     // a struct of chars may sit anywhere
         const char *ld = step == 4 ? "LDW" : step == 2 ? "LDH" : "LDB";
         const char *st = step == 4 ? "STW" : step == 2 ? "STH" : "STB";
+        if (optimize_ > 0 && off / step <= 31) {       // the offset form, ucst5 in units of the access
+            const std::string at = off == 0 ? "" : "+", disp = off == 0 ? "" : "(" + std::to_string(off) + ")";
+            out_ << "\t" << ld << "\t*" << at << from << disp << ", A3\n\tNOP\t4\n";
+            out_ << "\t" << st << "\tA3, *" << at << to << disp << "\n";
+            off += step;
+            continue;
+        }
         regAdd(from, off, "A0");
         out_ << "\t" << ld << "\t*A0, A3\n\tNOP\t4\n";
         regAdd(to, off, "A0");
