@@ -1,0 +1,6 @@
+hemb\lnk6x.out emb-lnk6x "harnessFile=0" 
+hin\lnk6x.out in-lnk6x-r0 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 0
+hin\ccs74.out in-ccs74-r1 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 1
+hemb\ccs55.out emb-ccs55 "harnessFile=0" 
+hin\ccs74.out in-ccs74-r0 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 0
+hemb\ccs74.out emb-ccs74 "harnessFile=0" 
