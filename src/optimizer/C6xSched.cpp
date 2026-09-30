@@ -564,7 +564,7 @@ void dropUnnamedLabels(std::vector<Line> &v) {
 
 // **A short arm is predicated instead of branched over**: `[P] B L; i1..ik; B M; L:` with k at most four
 // plain instructions none of which writes P or a stack pointer becomes `[!P] i1..ik; [!P] B M; L:` - the
-// arm skipped by its predicate where the branch skipped it, and the branch that skipped it gone.
+// arm skipped by its predicate where the branch skipped it, and the branch that skipped it gone; k may be 0.
 bool predicateArms(std::vector<Line> &v) {
     std::set<std::string> labels;
     for (std::size_t i = 0; i < v.size(); i++) if (isLabel(v[i])) labels.insert(labelName(v[i]));
@@ -583,7 +583,7 @@ bool predicateArms(std::vector<Line> &v) {
             readsAndWrites(l, reads, writes);
             if (has(writes, P) || has(reads, "B15") || has(writes, "B15") || has(writes, "A15")) ok = false;
         }
-        if (!ok || j == i + 1 || j >= v.size() || !v[j].instr || v[j].mnem != "B" || !v[j].pred.empty() || !labels.count(v[j].ops[0])) continue;
+        if (!ok || j >= v.size() || !v[j].instr || v[j].mnem != "B" || !v[j].pred.empty() || !labels.count(v[j].ops[0])) continue;
         std::size_t m = j + 1;
         bool target = false;
         for (; m < v.size() && isLabel(v[m]); m++) if (labelName(v[m]) == b.ops[0]) target = true;
@@ -708,7 +708,7 @@ void numberValues(std::vector<Line> &v) {
                 }
             }
             if (!holder.empty()) {
-                if (holder == dst) { l.instr = false; l.raw = ""; continue; }
+                if (holder == dst) { l = parse(""); continue; }   // gone: no operands left to read
                 Line r = make("MV", holder, dst);
                 if (crossings(r) <= 1) { l = r; val[dst] = number; continue; }
             }
@@ -797,11 +797,109 @@ void reuseEntryLoads(std::vector<Line> &v) {
             if (has(w, R) || has(w, X) || isStore(v[k].mnem) || v[k].mnem == "CALLP") break;
         }
         if (!entry) continue;
-        v[h + 1].instr = false;
-        v[h + 1].raw = "";
+        v[h + 1] = parse("");
     }
     std::vector<Line> out;
     for (std::size_t i = 0; i < v.size(); i++) if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
+    v.swap(out);
+}
+
+// **A constant made inside a loop nest is made before it**: `MVKL sym, d; MVKH sym, d`, the only writer of d
+// anywhere in a loop's region - inner loops and all - with d not live into the head and no branch into
+// the region but the back edge to its head, goes in front of the head. `comp` in sieve's outer loop.
+void hoistConstantPairs(std::vector<Line> &v) {
+    computeLiveness(v);
+    std::map<std::string, std::size_t> at;
+    std::map<std::string, int> named;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i])) at[labelName(v[i])] = i;
+        if (v[i].instr) for (std::size_t o = 0; o < v[i].ops.size(); o++) named[v[i].ops[o]]++;
+    }
+    std::map<std::size_t, std::vector<Line> > pre;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        const Line &b = v[i];
+        if (!b.instr || b.mnem != "B" || !at.count(b.ops[0]) || named[b.ops[0]] != 1) continue;
+        const std::size_t h = at[b.ops[0]];
+        if (h >= i || h == 0 || !v[h - 1].instr || v[h - 1].mnem != "B" || v[h - 1].pred.empty()) continue;
+        bool ok = true;                                     // every branch into the region starts inside it
+        std::set<std::string> inside;
+        for (std::size_t k = h; k <= i; k++) if (isLabel(v[k])) inside.insert(labelName(v[k]));
+        for (std::size_t k = 0; k < v.size() && ok; k++)
+            if ((k < h || k > i) && v[k].instr && v[k].mnem == "B" && inside.count(v[k].ops[0])) ok = false;
+        for (std::size_t k = h + 1; k < i && ok; k++) if (!v[k].instr && !isLabel(v[k])) ok = false;
+        if (!ok) continue;
+        std::map<std::string, int> writers;
+        for (std::size_t k = h + 1; k < i; k++) {
+            if (!v[k].instr) continue;
+            std::vector<std::string> r, w;
+            readsAndWrites(v[k], r, w);
+            if (v[k].mnem == "CALLP" || (v[k].mnem == "B" && !inside.count(v[k].ops[0]) && !at.count(v[k].ops[0]))) { writers["*"]++; }
+            for (std::size_t x = 0; x < w.size(); x++) writers[w[x]]++;
+        }
+        if (writers.count("*")) continue;                   // a call clobbers what a constant would sit in
+        std::set<std::string> used;
+        for (std::size_t k = h; k <= i; k++) if (v[k].instr) { std::vector<std::string> r, w; readsAndWrites(v[k], r, w); used.insert(r.begin(), r.end()); used.insert(w.begin(), w.end()); }
+        std::vector<Line> hoisted;
+        for (std::size_t k = h + 1; k + 1 < i; k++) {
+            const Line &l = v[k], &m = v[k + 1];
+            if (!l.instr || l.mnem != "MVKL" || l.ops.size() != 2 || !l.pred.empty() || !m.instr || m.mnem != "MVKH" || m.ops != l.ops || !m.pred.empty()) continue;
+            const std::string d = l.ops[1];
+            if (!sideOf(d) || d == "A15" || d == "B15" || d == "B3" || d == "B14") continue;
+            std::string f = d;
+            std::vector<std::pair<std::size_t, Line> > web;         // the readers renamed, where d is written elsewhere too
+            if (writers[d] != 2 || (v[h].liveIn & bitOf(d))) {
+                // A fresh register the region never names and the head is not entered with: the pair's value in
+                // it, its readers up to d's next write in this straight run renamed, or the pair stays.
+                f.clear();
+                for (int side = 0; side < 2 && f.empty(); side++)
+                    for (int n = 16; n < 32 && f.empty(); n++) {
+                        const std::string c = std::string(sideOf(d) == 'A' ? (side ? "B" : "A") : (side ? "A" : "B")) + std::to_string(n);
+                        if (!used.count(c) && !(v[h].liveIn & bitOf(c))) f = c;
+                    }
+                if (f.empty()) continue;
+                bool ok = true, ended = false;
+                for (std::size_t x = k + 2; x < i && ok && !ended; x++) {
+                    const Line &u = v[x];
+                    if (!u.instr || isBranch(u.mnem)) { ok = false; break; }
+                    std::vector<std::string> r, w;
+                    readsAndWrites(u, r, w);
+                    if (has(w, d)) ended = true;
+                    if (!has(r, d)) continue;
+                    if (!u.pred.empty() || u.mnem == "MVKH" || u.mnem == "ADDK") { ok = false; break; }
+                    std::vector<std::string> ops = u.ops;
+                    for (std::size_t o = 0; o < ops.size(); o++) {
+                        if (ops[o].find(':') != std::string::npos) { ok = false; break; }
+                        const bool read = o + 1 < ops.size() || isStore(u.mnem) || ops[o][0] == '*';
+                        if (read && !(o + 1 == ops.size() && !isStore(u.mnem) && ops[o][0] != '*')) {
+                            if (ops[o][0] == '*' && sideOf(f) != sideOf(d) && renamed(ops[o], d, f) != ops[o]) { ok = false; break; }
+                            ops[o] = renamed(ops[o], d, f);
+                        }
+                    }
+                    if (!ok) break;
+                    Line r2 = rebuilt(u.mnem, ops, u.pred);
+                    if (crossings(r2) > 1 || (unitsFor(r2) == 0 && !isLoad(r2.mnem) && !isStore(r2.mnem))) { ok = false; break; }
+                    web.push_back(std::make_pair(x, r2));
+                }
+                if (!ok || !ended) continue;
+            }
+            Line a = l, b2 = m;
+            a.ops[1] = f; b2.ops[1] = f;
+            hoisted.push_back(rebuilt(a.mnem, a.ops));
+            hoisted.push_back(rebuilt(b2.mnem, b2.ops));
+            for (std::size_t x = 0; x < web.size(); x++) v[web[x].first] = web[x].second;
+            used.insert(f);
+            v[k] = parse("");
+            v[k + 1] = parse("");
+            k++;
+        }
+        if (!hoisted.empty()) pre[h] = hoisted;
+    }
+    if (pre.empty()) return;
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (pre.count(i)) for (std::size_t k = 0; k < pre[i].size(); k++) out.push_back(pre[i][k]);
+        if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
+    }
     v.swap(out);
 }
 
@@ -1613,7 +1711,7 @@ std::string c6xSchedule(const std::string &text, int level) {
     rotateLoops(lines);
     tidyJumps(lines);
     if (!skipped("entry")) reuseEntryLoads(lines);
-    if (level >= 2) { hoistInvariants(lines); pipelineLoops(lines); }
+    if (level >= 2) { hoistInvariants(lines); pipelineLoops(lines); if (!skipped("pairs")) hoistConstantPairs(lines); }
     // After the loops are made: a value numbered across a pipelined kernel would lengthen the spans it schedules.
     computeLiveness(lines);
     if (!skipped("vn")) numberValues(lines);
