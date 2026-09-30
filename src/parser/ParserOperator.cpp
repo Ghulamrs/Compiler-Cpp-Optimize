@@ -683,6 +683,55 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
     return n;
 }
 
+// **[expr]/13: the composite pointer type of two pointers**, or null where there is
+// none - a void pointer beside an object pointer, a base beside a derived class,
+// and otherwise the similar type with each level's const the union of both.
+const Type *Parser::compositePointer(const Type *a, const Type *b) {
+    a = a->unqualified();
+    b = b->unqualified();
+    if (!a->isPointer() || !b->isPointer()) return nullptr;
+    const Type *pa = a->pointee(), *pb = b->pointee();
+    const bool anyConst = pa->isConst() || pb->isConst();
+    const Type *ua = pa->unqualified(), *ub = pb->unqualified();
+    if (ua->isVoid() != ub->isVoid()) {
+        const Type *other = ua->isVoid() ? ub : ua;
+        if (other->isFunction()) return nullptr;
+        const Type *v = ua->isVoid() ? ua : ub;
+        return types_.pointerTo(anyConst ? types_.withConst(v) : v);
+    }
+    if (ua != ub && ua->isStructOrUnion() && ub->isStructOrUnion()) {
+        const Type *base = publicBaseOffset(ua, ub) >= 0 ? ub
+                         : publicBaseOffset(ub, ua) >= 0 ? ua : nullptr;
+        if (base == nullptr) return nullptr;
+        return types_.pointerTo(anyConst ? types_.withConst(base) : base);
+    }
+    // Similar types: walk the levels below the top in lockstep, recording const.
+    std::vector<bool> ca, cb;
+    const Type *x = a, *y = b;
+    while (x->isPointer() && y->isPointer()) {
+        x = x->pointee();
+        y = y->pointee();
+        ca.push_back(x->isConst());
+        cb.push_back(y->isConst());
+        x = x->unqualified();
+        y = y->unqualified();
+    }
+    if (x != y) return nullptr;
+    // Const added at a level is added at every level above it, the top excepted.
+    std::vector<bool> c(ca.size());
+    for (std::size_t i = 0; i < c.size(); i++) {
+        c[i] = ca[i] || cb[i];
+        if (c[i] != ca[i] || c[i] != cb[i])
+            for (std::size_t k = 0; k < i; k++) c[k] = true;
+    }
+    const Type *t = x;
+    for (std::size_t i = c.size(); i-- > 0;) {
+        if (c[i]) t = types_.withConst(t);
+        t = types_.pointerTo(t);
+    }
+    return t;
+}
+
 ExprPtr Parser::conditional() {
     ExprPtr cond = logicalOr();
     if (!peek().is("?")) return cond;
@@ -793,6 +842,11 @@ ExprPtr Parser::conditional() {
     } else if (tb->isPointer() && isNullConstant(*a)) {
         result = tb;
         a = convert(std::move(a), result);
+    } else if (const Type *both = compositePointer(ta, tb)) {
+        // [expr.cond]/6: two pointers meet at their composite pointer type.
+        result = both;
+        a = convert(std::move(a), result);
+        b = convert(std::move(b), result);
     } else {
         src_.fail(pos, "the arms of '?:' have incompatible types '" +
                        ta->describe() + "' and '" + tb->describe() + "'");

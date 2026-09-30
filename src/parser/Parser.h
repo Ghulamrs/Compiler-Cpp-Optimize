@@ -1533,6 +1533,7 @@ private:
     GlobalSym *findGlobalToUpdate(const std::string &name);
 
     const Type *composite(const Type *a, const Type *b);
+    const Type *compositePointer(const Type *a, const Type *b);
     void declareFunction(const std::string &name, const Type *returns,
                          const std::vector<const Type *> &params,
                          bool variadic, bool defining, std::size_t pos,
