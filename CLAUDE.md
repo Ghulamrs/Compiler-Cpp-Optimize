@@ -11531,3 +11531,25 @@ outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. T
 **Left.** Re-running the copy peepholes after hoisting (the `MV A4, A21; MV A21, A4` round trip a clobber that is
 gone used to need) broke every kernel's output and was taken back out unexamined; it is the next cycle to find.
 A store's address recomputed from the counter after `ADD 1, i, i` is still its own web, and `*A11++` is item 2.
+
+## Addresses folded into the access on the C6000, 2026-09-30
+
+**`foldAddressing` (C6xSched.cpp) runs at -O1 and -O2 after the pipeliner, over the sequential text that is
+left.** Two shapes, each stepping over a pass-through label as the scheduler does: `ADD R, k, T` (or `SUB`) whose
+first use of T is a load or store through `*T`, R untouched between and T dead after (or T the load's own
+destination), becomes `*+R(k)` or `*-R(k)`, k a whole number of elements up to 31; and `*R` followed by
+`ADD k, R, R` (or `SUB`) with nothing touching R between becomes `*R++(k)` or `*R--(k)`, k in bytes as the
+backend spells every offset, and the ADD goes - never on A15 or B15, whose `SUB B15, 8, B15` is a push the frame
+passes recognise. VM6747 reads the bare `*R++` as one byte whatever the width (`LDW *A12++` was refused as
+"not 4-byte units") where TI reads one element, so the byte form is the one both agree on. `readsAndWrites` now counts a `++`/`--` address register among the instruction's writes,
+so liveness, `deadAfter`, the scheduler's write conflicts and the packet's write set all see it; the write
+lands at the access's own latency in the model, a cycle early for a load's address, which is safe. A verbatim
+line - a pipelined kernel - makes everything live before it in `computeLiveness`, so a fold next to one cannot
+take a register the kernel reads.
+
+**Measured.** VM6747 -c at -O2: virt 1,440,240 -> 1,400,239 (the pushed argument words as `*+B15(k)`), the
+rest within one cycle; hash's `*p` loop reads `LDB *A11++, A4`. `tests/cases/pointer-strides.cpp` (clang's
+output): byte, short, word and double walks forward and back, a step of three shorts, a step of three bytes
+that is no whole element, the pointer returned after the walk. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345
+-O2 outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.

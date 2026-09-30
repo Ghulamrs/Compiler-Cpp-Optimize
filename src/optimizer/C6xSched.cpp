@@ -7,6 +7,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -139,6 +140,8 @@ void readsAndWrites(const Line &l, std::vector<std::string> &reads, std::vector<
     bool hasDest = !isStore(l.mnem) && l.mnem != "B" && l.mnem != "NOP" && l.ops.back()[0] != '*';
     std::size_t n = hasDest ? l.ops.size() - 1 : l.ops.size();
     for (std::size_t i = 0; i < n; i++) registersIn(l.ops[i], reads);
+    for (std::size_t i = 0; i < l.ops.size(); i++)      // `*R++`, `*R--`: the access writes its address register too
+        if (l.ops[i][0] == '*' && (l.ops[i].find("++") != std::string::npos || l.ops[i].find("--") != std::string::npos)) registersIn(l.ops[i], writes);
     if (!hasDest) return;
     registersIn(l.ops.back(), writes);
     if (l.mnem == "MVKH" || l.mnem == "ADDK") registersIn(l.ops.back(), reads);
@@ -232,9 +235,9 @@ void computeLiveness(std::vector<Line> &v) {
         changed = false;
         for (std::size_t b = nb; b-- > 0;) {
             std::uint64_t o = exits[b] ? exitLive() : 0;
-            if (unknown[b]) o = ~0ull;
+            if (unknown[b] || v[starts[b]].verbatim) o = ~0ull;
             for (std::size_t k = 0; k < succ[b].size(); k++) o |= in[succ[b][k]];
-            std::uint64_t n = use[b] | (o & ~def[b]);
+            std::uint64_t n = v[starts[b]].verbatim ? ~0ull : use[b] | (o & ~def[b]);
             if (o != out[b] || n != in[b]) { out[b] = o; in[b] = n; changed = true; }
         }
     }
@@ -697,6 +700,83 @@ void hoistInvariants(std::vector<Line> &v) {
         if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
     }
     v.swap(out);
+}
+
+// **Addresses folded into the access**: `ADD R, k, T` whose one reader is a load or store through `*T`, T dead
+// after, is `*+R(k)`; and `*R` followed by `ADD k, R, R` with nothing touching R between, k whole elements
+// up to 31, is `*R++` or `*R++[n]` and the ADD goes - `SUB` the same way with a minus.
+void foldAddressing(std::vector<Line> &v) {
+    std::set<std::string> named;
+    for (std::size_t i = 0; i < v.size(); i++) for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
+    for (std::size_t i = 0; i + 1 < v.size(); i++) {
+        const Line &l = v[i];
+        if (!l.instr || !l.pred.empty()) continue;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(l, reads, writes);
+        if ((l.mnem == "ADD" || l.mnem == "SUB") && l.ops.size() == 3 && writes.size() == 1 && !has(reads, writes[0])) {
+            const bool k0 = isNumber(l.ops[0]), k1 = isNumber(l.ops[1]);
+            if (l.mnem == "SUB" && !k1) continue;
+            if (k0 == k1) continue;
+            const std::string R = k0 ? l.ops[1] : l.ops[0], T = writes[0];
+            long k = std::atol((k0 ? l.ops[0] : l.ops[1]).c_str());
+            if (l.mnem == "SUB") k = -k;
+            if (!sideOf(R) || R == T) continue;
+            for (std::size_t j = i + 1; j < v.size(); j++) {
+                if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+                if (blockEnd(v[j])) break;
+                std::vector<std::string> r2, w2;
+                readsAndWrites(v[j], r2, w2);
+                if (has(w2, R)) break;
+                if (!has(r2, T) && !has(w2, T)) continue;
+                const Line &u = v[j];
+                if (u.pred.empty() && u.ops.size() == 2 && (isLoad(u.mnem) || isStore(u.mnem))) {
+                    const std::size_t at = isStore(u.mnem) ? 1 : 0;
+                    const long size = accessSize(u.mnem), mag = k < 0 ? -k : k;
+                    std::vector<std::string> data;
+                    registersIn(u.ops[1 - at], data);
+                    if (u.ops[at] == "*" + T && mag % size == 0 && mag / size <= 31 && !has(data, R) && (has(data, T) || deadAfter(v, j, T))) {
+                        std::vector<std::string> ops = u.ops;
+                        ops[at] = mag == 0 ? "*" + R : (k < 0 ? "*-" : "*+") + R + "(" + std::to_string(mag) + ")";
+                        v[j] = rebuilt(u.mnem, ops);
+                        v.erase(v.begin() + static_cast<long>(i));
+                        i--;
+                    }
+                }
+                break;
+            }
+            continue;
+        }
+        if ((isLoad(l.mnem) || isStore(l.mnem)) && l.ops.size() == 2) {
+            const std::size_t at = isStore(l.mnem) ? 1 : 0;
+            if (l.ops[at].size() < 2 || l.ops[at][0] != '*' || !sideOf(l.ops[at].substr(1))) continue;
+            const std::string R = l.ops[at].substr(1);
+            std::vector<std::string> data;
+            registersIn(l.ops[1 - at], data);
+            if (has(data, R) || R == "A15" || R == "B15") continue;      // a push keeps its shape
+            for (std::size_t j = i + 1; j < v.size(); j++) {
+                if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+                if (blockEnd(v[j])) break;
+                std::vector<std::string> r2, w2;
+                readsAndWrites(v[j], r2, w2);
+                if (!has(r2, R) && !has(w2, R)) continue;
+                const Line &u = v[j];
+                const bool k0 = u.ops.size() == 3 && isNumber(u.ops[0]), k1 = u.ops.size() == 3 && isNumber(u.ops[1]);
+                if (u.pred.empty() && (u.mnem == "ADD" || u.mnem == "SUB") && u.ops.size() == 3 && u.ops[2] == R && (k0 != k1) &&
+                    (k0 ? u.ops[1] : u.ops[0]) == R && !(u.mnem == "SUB" && k0)) {
+                    long k = std::atol((k0 ? u.ops[0] : u.ops[1]).c_str());
+                    if (u.mnem == "SUB") k = -k;
+                    const long size = accessSize(l.mnem), mag = k < 0 ? -k : k;
+                    if (mag != 0 && mag % size == 0 && mag / size <= 31) {
+                        std::vector<std::string> ops = l.ops;
+                        ops[at] = "*" + R + (k < 0 ? "--" : "++") + "(" + std::to_string(mag) + ")";
+                        v[i] = rebuilt(l.mnem, ops);
+                        v.erase(v.begin() + static_cast<long>(j));
+                    }
+                }
+                break;
+            }
+        }
+    }
 }
 
 // **Jumps tidied**: what follows an unconditional branch up to the next label never runs; a branch to
@@ -1165,6 +1245,8 @@ std::string c6xSchedule(const std::string &text, int level) {
     rotateLoops(lines);
     tidyJumps(lines);
     if (level >= 2) { hoistInvariants(lines); pipelineLoops(lines); }
+    computeLiveness(lines);
+    foldAddressing(lines);
     std::string text2 = schedule(lines);
     std::size_t words = 0;
     for (std::size_t i = 0; i < text2.size(); i++) if (text2[i] == '\n') words++;
