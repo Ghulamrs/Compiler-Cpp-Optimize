@@ -60,6 +60,8 @@ NAMES=$(for f in $FILES; do echo "${f%.*}"; done)
 # cpp11 compiles C++, so each program goes in under a .cpp name.
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
+ASM6X_FLAGS=${ASM6X_FLAGS---compress}
 CPP11_FLAGS=${CPP11_FLAGS:--O2}
 mkdir -p "$WORK/cpp11"
 for f in $FILES; do
@@ -67,13 +69,13 @@ for f in $FILES; do
     cp "$WORK/c6747/programs/$f" "$WORK/cpp11/$n.cpp"
     if "$CPP11" -arch tms6747 -nologo $CPP11_FLAGS -S "$WORK/cpp11/$n.cpp" -o "$WORK/cpp11/$n.s" \
            > "$WORK/cpp11/$n.log" 2>&1 &&
-       "$ASM6X" "$WORK/cpp11/$n.s" -o "$WORK/c6747/programs/$n.cpp11.obj" >> "$WORK/cpp11/$n.log" 2>&1; then :
+       "$ASM6X" $ASM6X_FLAGS "$WORK/cpp11/$n.s" -o "$WORK/c6747/programs/$n.cpp11.obj" >> "$WORK/cpp11/$n.log" 2>&1; then :
     else
         echo "c6747-three: cpp11 did not build $n:"; sed 's/^/      /' "$WORK/cpp11/$n.log" | head -4
     fi
     # For the size table: cpp11 -O1, the level that optimises for size. Not shipped.
     "$CPP11" -arch tms6747 -nologo -O1 -S "$WORK/cpp11/$n.cpp" -o "$WORK/cpp11/$n.O1.s" > /dev/null 2>&1 &&
-        "$ASM6X" "$WORK/cpp11/$n.O1.s" -o "$WORK/cpp11/$n.O1.obj" > /dev/null 2>&1
+        "$ASM6X" $ASM6X_FLAGS "$WORK/cpp11/$n.O1.s" -o "$WORK/cpp11/$n.O1.obj" > /dev/null 2>&1
 done
 COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/c6747.tgz" c6747
 WPROGS=$(for f in $FILES; do printf '%s\\programs\\%s ' "$WREMOTE\\c6747" "$f"; done)

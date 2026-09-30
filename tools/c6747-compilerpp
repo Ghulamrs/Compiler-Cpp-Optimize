@@ -23,6 +23,8 @@ WINDOWS=${CXX1_WINDOWS:-windows}
 COMPILERPP=${COMPILERPP:-$ROOT/../Compiler++}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
+ASM6X_FLAGS=${ASM6X_FLAGS---compress}
 T0=$(date +%s)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -34,7 +36,7 @@ python3 "$ROOT/tools/c6747/compilerpp/make-harness.py" "$COMPILERPP" "$H" \
 clang++ -std=c++98 -O2 -w -o "$WORK/ref" "$H/harness.cpp" && "$WORK/ref" > "$WORK/ref.txt" || exit 1
 # cpp11's object, here.
 "$CPP11" -arch tms6747 -nologo -O2 -S "$H/harness.cpp" -o "$WORK/h.s" &&
-    "$ASM6X" "$WORK/h.s" -o "$H/h.cpp11.obj" 2> "$WORK/asm6x.log" ||
+    "$ASM6X" $ASM6X_FLAGS "$WORK/h.s" -o "$H/h.cpp11.obj" 2> "$WORK/asm6x.log" ||
     { echo "c6747-compilerpp: cpp11 did not build the harness"; tail -5 "$WORK/asm6x.log"; exit 1; }
 cp "$ROOT"/tools/c6747/C6747-ddr.cmd "$ROOT"/tools/c6747/runca.js "$ROOT"/tools/c6747/prof.js "$ROOT"/tools/c6747/*.ccxml \
    "$ROOT"/tools/c6747/compilerpp/run-windows.cmd "$ROOT"/tools/c6747/compilerpp/run-linux.sh "$H/"

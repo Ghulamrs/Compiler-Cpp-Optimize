@@ -19,6 +19,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WINDOWS=${CXX1_WINDOWS:-windows}
 CPP11=${CPP11:-$ROOT/cpp11.exe}
 ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+# --compress as cl6x does by default for the C674x, so sizes compare like for like; ASM6X_FLAGS= for plain 32-bit
+ASM6X_FLAGS=${ASM6X_FLAGS---compress}
 [ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe   # from a worktree under .claude/
 LNK6X=${LNK6X:-$ROOT/../LNK6x/build/lnk6x.exe}
 [ -x "$LNK6X" ] || LNK6X=$HOME/Developer/Claude/LNK6x/build/lnk6x.exe
@@ -45,7 +47,7 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
     cp "$p" "$WORK/$n.cpp"
     for L in O1 O2; do
         if "$CPP11" -arch tms6747 -nologo -$L -S "$WORK/$n.cpp" -o "$WORK/$n.$L.s" > "$WORK/$n.$L.log" 2>&1 &&
-           "$ASM6X" "$WORK/$n.$L.s" -o "$WORK/bl/$n.cpp11-$L.obj" >> "$WORK/$n.$L.log" 2>&1; then :
+           "$ASM6X" $ASM6X_FLAGS "$WORK/$n.$L.s" -o "$WORK/bl/$n.cpp11-$L.obj" >> "$WORK/$n.$L.log" 2>&1; then :
         else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; continue; fi
         # LNK6x's image of the same object, made here from the command file and library TI's linker gets.
         [ -x "$LNK6X" ] && [ -f "$TILIB/rts6740_elf_eh.lib" ] || continue
