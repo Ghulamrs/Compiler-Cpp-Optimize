@@ -1,4 +1,5 @@
 #include "OptPasses.h"
+#include "DivMagic.h"
 
 #include <algorithm>
 
@@ -7,40 +8,6 @@ namespace opt {
 namespace {
 
 bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kGprs; }
-
-// **Hacker's Delight's magic number for a signed 32-bit divisor** d >= 2:
-// q = (n * M) >> (32 + s), M taken unsigned in a 64-bit product, plus one
-// where n is negative.
-void signedMagic(unsigned d, unsigned long long &M, int &s) {
-    const unsigned long long two31 = 1ULL << 31;
-    const unsigned long long anc = two31 - 1 - two31 % d;
-    int p = 31;
-    unsigned long long q1 = two31 / anc, r1 = two31 - q1 * anc;
-    unsigned long long q2 = two31 / d, r2 = two31 - q2 * d;
-    unsigned long long delta;
-    do {
-        ++p;
-        q1 *= 2; r1 *= 2;
-        if (r1 >= anc) { ++q1; r1 -= anc; }
-        q2 *= 2; r2 *= 2;
-        if (r2 >= d) { ++q2; r2 -= d; }
-        delta = d - r2;
-    } while (q1 < delta || (q1 == delta && r1 == 0));
-    M = (q2 + 1) & 0xffffffffULL;
-    s = p - 32;
-}
-
-// An unsigned 32-bit divisor's multiplier where one below 2^32 is exact:
-// M = ceil(2^(32+s) / d) with M*d - 2^(32+s) < 2^s; false where none is.
-bool unsignedMagic(unsigned d, unsigned long long &M, int &s) {
-    for (s = 0; s < 32; ++s) {
-        const unsigned long long p = 1ULL << (32 + s);
-        M = (p + d - 1) / d;
-        if (M >= (1ULL << 32)) return false;
-        if (M * d - p < (1ULL << s)) return true;
-    }
-    return false;
-}
 
 Instr two(const char *m, Operand a, Operand b) { return Instr{m, a, b, 2}; }
 Operand r32(int id) { return Operand::ofReg(id, 4); }
@@ -112,6 +79,52 @@ bool divideByConstant(Stream &s, Flow &f) {
         s.insert(s.begin() + site.at, es.begin(), es.end());
     }
     return true;
+}
+
+// **Hacker's Delight's magic number for a signed 32-bit divisor** d >= 2:
+// q = (n * M) >> (32 + s), M taken unsigned in a 64-bit product, plus one
+// where n is negative.
+void signedMagic(unsigned d, unsigned long long &M, int &s) {
+    const unsigned long long two31 = 1ULL << 31;
+    const unsigned long long anc = two31 - 1 - two31 % d;
+    int p = 31;
+    unsigned long long q1 = two31 / anc, r1 = two31 - q1 * anc;
+    unsigned long long q2 = two31 / d, r2 = two31 - q2 * d;
+    unsigned long long delta;
+    do {
+        ++p;
+        q1 *= 2; r1 *= 2;
+        if (r1 >= anc) { ++q1; r1 -= anc; }
+        q2 *= 2; r2 *= 2;
+        if (r2 >= d) { ++q2; r2 -= d; }
+        delta = d - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+    M = (q2 + 1) & 0xffffffffULL;
+    s = p - 32;
+}
+
+// An unsigned 32-bit divisor's multiplier where one below 2^32 is exact:
+// M = ceil(2^(32+s) / d) with M*d - 2^(32+s) < 2^s; false where none is.
+bool unsignedMagic(unsigned d, unsigned long long &M, int &s) {
+    for (s = 0; s < 32; ++s) {
+        const unsigned long long p = 1ULL << (32 + s);
+        M = (p + d - 1) / d;
+        if (M >= (1ULL << 32)) return false;
+        if (M * d - p < (1ULL << s)) return true;
+    }
+    return false;
+}
+
+// The same with the 33-bit multipliers kept, for 2 <= d < 2^31: M below 2^33,
+// `add` set where it is 2^32 or more, q then ((n - hi) >> 1) + hi >> (s - 1).
+void unsignedMagicAdd(unsigned d, unsigned long long &M, int &s, bool &add) {
+    for (s = 0; s < 32; ++s) {
+        const unsigned long long p = 1ULL << (32 + s);
+        M = (p + d - 1) / d;
+        if (M * d - p <= (1ULL << s)) break;
+    }
+    add = M >= (1ULL << 32);
+    M &= 0xffffffffULL;
 }
 
 }

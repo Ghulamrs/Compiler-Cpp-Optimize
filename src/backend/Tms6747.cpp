@@ -1,6 +1,7 @@
 #include "Tms6747.h"
 #include "../optimizer/C6xSched.h"
 #include "../optimizer/OptDeclines.h"
+#include "../optimizer/DivMagic.h"
 
 #include "../Abi.h"
 #include "../Ast.h"
@@ -811,6 +812,13 @@ void Tms6747::visit(const Binary &n) {
             return;
         }
     }
+    long long divisor;
+    if (constDivisor(n, divisor)) {
+        n.lhs().accept(*this);
+        divideByConstant(n.op() == BinOp::Div, ot->isSigned(target_), divisor);
+        narrowInt(n.type());
+        return;
+    }
     n.lhs().accept(*this);          // A4 = lhs
     pushValue(ot);
     n.rhs().accept(*this);          // A4 = rhs
@@ -858,6 +866,101 @@ void Tms6747::visit(const Binary &n) {
         return;
     default: unsupported("this binary operator");
     }
+}
+
+// An integer constant's low 32 bits: a literal, and +, -, ~ and the casts to integers of 4 bytes or
+// more over one, which all commute with truncation; anything else, or a narrower cast, is not one.
+static bool low32(const Expr &e, const Target &t, unsigned &v) {
+    const Type *ty = e.type();
+    if (ty == nullptr || !ty->isInteger() || ty->isBool()) return false;
+    if (const Num *k = dynamic_cast<const Num *>(&e)) { v = static_cast<unsigned>(k->value()); return true; }
+    if (const Cast *c = dynamic_cast<const Cast *>(&e)) return ty->size(t) >= 4 && low32(c->value(), t, v);
+    if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
+        if (!low32(u->operand(), t, v)) return false;
+        if (u->op() == '-') v = 0u - v;
+        else if (u->op() == '~') v = ~v;
+        else if (u->op() != '+') return false;
+        return true;
+    }
+    const Binary *b = dynamic_cast<const Binary *>(&e);
+    unsigned l, r;
+    if (b == nullptr || (b->op() != BinOp::Add && b->op() != BinOp::Sub)) return false;
+    if (!low32(b->lhs(), t, l) || !low32(b->rhs(), t, r)) return false;
+    v = b->op() == BinOp::Add ? l + r : l - r;
+    return true;
+}
+
+// A 32-bit `/` or `%` whose divisor is a constant other than 0, at -O1 and up, as a value of the
+// operands' type. 0 stays the helper's, as at -O0.
+bool Tms6747::constDivisor(const Binary &n, long long &d) const {
+    const Type *ot = n.lhs().type();
+    if (optimize_ <= 0 || (n.op() != BinOp::Div && n.op() != BinOp::Mod)) return false;
+    if (!ot->isInteger() || ot->size(target_) != 4) return false;
+    unsigned u;
+    if (!low32(n.rhs(), target_, u)) return false;
+    d = ot->isSigned(target_) ? static_cast<long long>(static_cast<int>(u)) : static_cast<long long>(u);
+    return d != 0;
+}
+
+// Division by a constant as Hacker's Delight has it (chapter 10): a power of two a shift, with the
+// signed bias; otherwise the high word of MPY32U or MPY32SU by the magic number and a shift, and a
+// remainder n - q*d. The dividend is in A4; A0, A1, A3 and A6 are scratch, as elsewhere here.
+void Tms6747::divideByConstant(bool quotient, bool sign, long long d) {
+    unsigned a = sign ? (d < 0 ? 0u - static_cast<unsigned>(d) : static_cast<unsigned>(d))
+                      : static_cast<unsigned>(d);
+    bool negate = sign && d < 0;
+    if (a == 1) {                           // n / -1 wraps INT_MIN to itself, as NEG does
+        if (!quotient) out_ << "\tMVK\t0, A4\n";
+        else if (negate) out_ << "\tNEG\tA4, A4\n";
+        return;
+    }
+    int k = 0;
+    while (k < 32 && (1ULL << k) < a) k++;
+    if ((1ULL << k) == a) {
+        if (!sign) {
+            if (quotient) out_ << "\tSHRU\tA4, " << k << ", A4\n";
+            else out_ << "\tEXTU\tA4, " << (32 - k) << ", " << (32 - k) << ", A4\n";
+            return;
+        }
+        // Round toward zero: a negative n is biased by 2^k - 1 before the shift.
+        if (k == 1) out_ << "\tSHRU\tA4, 31, A0\n";
+        else out_ << "\tSHR\tA4, 31, A0\n\tSHRU\tA0, " << (32 - k) << ", A0\n";
+        out_ << "\tADD\tA4, A0, A0\n";
+        if (quotient) {
+            out_ << "\tSHR\tA0, " << k << ", A4\n";
+            if (negate) out_ << "\tNEG\tA4, A4\n";
+        } else {
+            out_ << "\tCLR\tA0, 0, " << (k - 1) << ", A0\n\tSUB\tA4, A0, A4\n";
+        }
+        return;
+    }
+    unsigned long long M;
+    int s;
+    if (!sign && a >= 0x80000000u) {        // the quotient is 0 or 1
+        movImm("A6", a);
+        out_ << "\tCMPLTU\tA4, A6, A3\n\tXOR\t1, A3, A3\n";
+    } else if (!sign) {
+        bool add;
+        opt::unsignedMagicAdd(a, M, s, add);
+        movImm("A6", static_cast<long long>(M));
+        out_ << "\tMPY32U\tA4, A6, A1:A0\n\tNOP\t3\n";
+        if (!add) {
+            out_ << (s ? "\tSHRU\tA1, " + std::to_string(s) + ", A3\n" : std::string("\tMV\tA1, A3\n"));
+        } else {
+            out_ << "\tSUB\tA4, A1, A3\n\tSHRU\tA3, 1, A3\n\tADD\tA3, A1, A3\n";
+            if (s > 1) out_ << "\tSHRU\tA3, " << (s - 1) << ", A3\n";
+        }
+    } else {
+        opt::signedMagic(a, M, s);
+        movImm("A6", static_cast<long long>(M));
+        out_ << "\tMPY32SU\tA4, A6, A1:A0\n\tNOP\t3\n";   // n signed, M unsigned: the high word
+        out_ << (s ? "\tSHR\tA1, " + std::to_string(s) + ", A3\n" : std::string("\tMV\tA1, A3\n"));
+        out_ << "\tSHRU\tA4, 31, A0\n\tADD\tA3, A0, A3\n";   // plus one where n is negative
+        if (negate) out_ << "\tNEG\tA3, A3\n";
+    }
+    if (quotient) { out_ << "\tMV\tA3, A4\n"; return; }
+    movImm("A6", d);
+    out_ << "\tMPY32\tA3, A6, A3\n\tNOP\t3\n\tSUB\tA4, A3, A4\n";
 }
 
 // The C674x's own SP/DP instructions, each with its delay slots as NOPs
