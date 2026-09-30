@@ -44,6 +44,7 @@
     <ClCompile Include="..\src\backend\X86_64Linux.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\backend\X86_64Windows.cpp"><Filter>Source Files\backend</Filter></ClCompile>
     <ClCompile Include="..\src\optimizer\A64Peep.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
+    <ClCompile Include="..\src\optimizer\C6xPipe.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
     <ClCompile Include="..\src\optimizer\C6xSched.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
     <ClCompile Include="..\src\optimizer\Inliner.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
     <ClCompile Include="..\src\optimizer\MirAlloc.cpp"><Filter>Source Files\optimizer</Filter></ClCompile>
@@ -92,7 +93,9 @@
     <ClInclude Include="..\src\backend\X86_64Linux.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\backend\X86_64Windows.h"><Filter>Header Files\backend</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\A64Peep.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\C6xModel.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\C6xSched.h"><Filter>Header Files\optimizer</Filter></ClInclude>
+    <ClInclude Include="..\src\optimizer\DivMagic.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\Inliner.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\Mir.h"><Filter>Header Files\optimizer</Filter></ClInclude>
     <ClInclude Include="..\src\optimizer\MirAlloc.h"><Filter>Header Files\optimizer</Filter></ClInclude>

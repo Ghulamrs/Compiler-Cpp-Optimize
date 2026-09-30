@@ -39,6 +39,7 @@
 		DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */; };
 		AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 80025E52DA32488A2EF7539F /* X86_64Windows.cpp */; };
 		903BFCEAA264B2212C78BD11 /* A64Peep.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */; };
+		399E4BB5F93D70D7DEC56D50 /* C6xPipe.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C545AD0A2E8762CE81AC088 /* C6xPipe.cpp */; };
 		927838A3415C47BEFF72D53C /* C6xSched.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4F9178B9F267416156C0C111 /* C6xSched.cpp */; };
 		F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */; };
 		1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 402C6A145E36EDB389E81B69 /* MirAlloc.cpp */; };
@@ -98,6 +99,7 @@
 		334CD99BDE8B6A591C8500E5 /* X86_64Linux.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Linux.cpp; path = "../src/backend/X86_64Linux.cpp"; sourceTree = "<group>"; };
 		80025E52DA32488A2EF7539F /* X86_64Windows.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = X86_64Windows.cpp; path = "../src/backend/X86_64Windows.cpp"; sourceTree = "<group>"; };
 		8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = A64Peep.cpp; path = "../src/optimizer/A64Peep.cpp"; sourceTree = "<group>"; };
+		4C545AD0A2E8762CE81AC088 /* C6xPipe.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = C6xPipe.cpp; path = "../src/optimizer/C6xPipe.cpp"; sourceTree = "<group>"; };
 		4F9178B9F267416156C0C111 /* C6xSched.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = C6xSched.cpp; path = "../src/optimizer/C6xSched.cpp"; sourceTree = "<group>"; };
 		A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Inliner.cpp; path = "../src/optimizer/Inliner.cpp"; sourceTree = "<group>"; };
 		402C6A145E36EDB389E81B69 /* MirAlloc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = MirAlloc.cpp; path = "../src/optimizer/MirAlloc.cpp"; sourceTree = "<group>"; };
@@ -144,7 +146,9 @@
 		12A5F71977D26CEE2AF1E2A4 /* X86_64Linux.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Linux.h; path = "../src/backend/X86_64Linux.h"; sourceTree = "<group>"; };
 		D9E2165876940A054181ABEA /* X86_64Windows.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = X86_64Windows.h; path = "../src/backend/X86_64Windows.h"; sourceTree = "<group>"; };
 		000100F698007A703953C925 /* A64Peep.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = A64Peep.h; path = "../src/optimizer/A64Peep.h"; sourceTree = "<group>"; };
+		3AB28797CC2B36EA79777891 /* C6xModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = C6xModel.h; path = "../src/optimizer/C6xModel.h"; sourceTree = "<group>"; };
 		10CD4A81CEFE78E85B2FD368 /* C6xSched.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = C6xSched.h; path = "../src/optimizer/C6xSched.h"; sourceTree = "<group>"; };
+		B32EA0424FFF11FA6974916D /* DivMagic.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = DivMagic.h; path = "../src/optimizer/DivMagic.h"; sourceTree = "<group>"; };
 		3CF254951132485608A65AC4 /* Inliner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Inliner.h; path = "../src/optimizer/Inliner.h"; sourceTree = "<group>"; };
 		00D1AC912B4C6D97F9D444E5 /* Mir.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Mir.h; path = "../src/optimizer/Mir.h"; sourceTree = "<group>"; };
 		CAF0405A93A429E84704DCB7 /* MirAlloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = MirAlloc.h; path = "../src/optimizer/MirAlloc.h"; sourceTree = "<group>"; };
@@ -242,8 +246,11 @@
 			children = (
 				8A1C00C07A09F31BD1EBBFCE /* A64Peep.cpp */,
 				000100F698007A703953C925 /* A64Peep.h */,
+				3AB28797CC2B36EA79777891 /* C6xModel.h */,
+				4C545AD0A2E8762CE81AC088 /* C6xPipe.cpp */,
 				4F9178B9F267416156C0C111 /* C6xSched.cpp */,
 				10CD4A81CEFE78E85B2FD368 /* C6xSched.h */,
+				B32EA0424FFF11FA6974916D /* DivMagic.h */,
 				A34D7BA64BC85EB6858B59E7 /* Inliner.cpp */,
 				3CF254951132485608A65AC4 /* Inliner.h */,
 				00D1AC912B4C6D97F9D444E5 /* Mir.h */,
@@ -389,6 +396,7 @@
 				DEA45A10FA3892FD4AE58700 /* X86_64Linux.cpp in Sources */,
 				AD991EF6B756D66904E0D106 /* X86_64Windows.cpp in Sources */,
 				903BFCEAA264B2212C78BD11 /* A64Peep.cpp in Sources */,
+				399E4BB5F93D70D7DEC56D50 /* C6xPipe.cpp in Sources */,
 				927838A3415C47BEFF72D53C /* C6xSched.cpp in Sources */,
 				F88959C76FB177A1B06356A5 /* Inliner.cpp in Sources */,
 				1A6F388AA4B4BF059CD442C7 /* MirAlloc.cpp in Sources */,
