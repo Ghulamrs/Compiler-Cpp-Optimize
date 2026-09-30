@@ -3,27 +3,18 @@
 // the delay slots of its branch filled, and padded to the hazards that remain.
 
 #include "C6xSched.h"
+#include "C6xModel.h"
 
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <set>
 #include <sstream>
 #include <vector>
 
-namespace {
-
-enum { UL = 1, US = 2, UD = 4, UM = 8 };   // the units, as a bitmask
-
-struct Line {
-    std::string raw;
-    bool instr = false;
-    std::string pred;                   // "A1" or "!A1", read as A1
-    std::string mnem;
-    std::vector<std::string> ops;
-    std::uint64_t liveOut = ~0ull;      // the registers live at the end of this line's block
-};
+namespace c6x {
 
 bool startsWith(const std::string &s, const char *p) { return s.compare(0, std::string(p).size(), p) == 0; }
 bool endsWith(const std::string &s, const char *p) {
@@ -87,7 +78,7 @@ Line parse(const std::string &raw) {
     return l;
 }
 
-Line make(const std::string &mnem, const std::string &a, const std::string &b = "", const std::string &c = "") {
+Line make(const std::string &mnem, const std::string &a, const std::string &b, const std::string &c) {
     std::string raw = "\t" + mnem + "\t" + a;
     if (!b.empty()) raw += ", " + b;
     if (!c.empty()) raw += ", " + c;
@@ -95,7 +86,7 @@ Line make(const std::string &mnem, const std::string &a, const std::string &b = 
 }
 
 // An instruction rebuilt from its parts, every operand kept, and the predicate with it.
-Line rebuilt(const std::string &mnem, const std::vector<std::string> &ops, const std::string &pred = "") {
+Line rebuilt(const std::string &mnem, const std::vector<std::string> &ops, const std::string &pred) {
     std::string raw = "\t" + (pred.empty() ? std::string() : "[" + pred + "]\t") + mnem;
     for (std::size_t o = 0; o < ops.size(); o++) raw += (o == 0 ? "\t" : ", ") + ops[o];
     return parse(raw);
@@ -149,6 +140,8 @@ void readsAndWrites(const Line &l, std::vector<std::string> &reads, std::vector<
     bool hasDest = !isStore(l.mnem) && l.mnem != "B" && l.mnem != "NOP" && l.ops.back()[0] != '*';
     std::size_t n = hasDest ? l.ops.size() - 1 : l.ops.size();
     for (std::size_t i = 0; i < n; i++) registersIn(l.ops[i], reads);
+    for (std::size_t i = 0; i < l.ops.size(); i++)      // `*R++`, `*R--`: the access writes its address register too
+        if (l.ops[i][0] == '*' && (l.ops[i].find("++") != std::string::npos || l.ops[i].find("--") != std::string::npos)) registersIn(l.ops[i], writes);
     if (!hasDest) return;
     registersIn(l.ops.back(), writes);
     if (l.mnem == "MVKH" || l.mnem == "ADDK") registersIn(l.ops.back(), reads);
@@ -242,15 +235,15 @@ void computeLiveness(std::vector<Line> &v) {
         changed = false;
         for (std::size_t b = nb; b-- > 0;) {
             std::uint64_t o = exits[b] ? exitLive() : 0;
-            if (unknown[b]) o = ~0ull;
+            if (unknown[b] || v[starts[b]].verbatim) o = ~0ull;
             for (std::size_t k = 0; k < succ[b].size(); k++) o |= in[succ[b][k]];
-            std::uint64_t n = use[b] | (o & ~def[b]);
+            std::uint64_t n = v[starts[b]].verbatim ? ~0ull : use[b] | (o & ~def[b]);
             if (o != out[b] || n != in[b]) { out[b] = o; in[b] = n; changed = true; }
         }
     }
     for (std::size_t b = 0; b < nb; b++) {
         std::size_t end = b + 1 < nb ? starts[b + 1] : v.size();
-        for (std::size_t i = starts[b]; i < end; i++) v[i].liveOut = out[b];
+        for (std::size_t i = starts[b]; i < end; i++) { v[i].liveOut = out[b]; v[i].liveIn = in[b]; }
     }
 }
 
@@ -565,6 +558,227 @@ void rotateLoops(std::vector<Line> &v) {
     }
 }
 
+// **A loop's invariants move to its preheader**: in a rotated loop - one block, entered by falling into its
+// head from the test that guards it - an instruction whose sources the loop never writes is computed once
+// before the head; a destination the loop also writes elsewhere takes a fresh register for that one value.
+void hoistInvariants(std::vector<Line> &v) {
+    computeLiveness(v);
+    std::set<std::string> labels, named;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i])) labels.insert(labelName(v[i]));
+        for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
+    }
+    std::map<std::size_t, std::vector<Line> > pre;          // the preheader to insert before a head
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (!v[i].instr || v[i].mnem != "B" || v[i].pred.empty() || !labels.count(v[i].ops[0])) continue;
+        std::size_t h = i; int uses = 0;
+        for (std::size_t k = 0; k < i; k++) if (isLabel(v[k]) && labelName(v[k]) == v[i].ops[0]) h = k;
+        for (std::size_t k = 0; k < v.size(); k++) if (v[k].instr) for (std::size_t o = 0; o < v[k].ops.size(); o++) if (v[k].ops[o] == v[i].ops[0]) uses++;
+        if (h == i || uses != 1 || h == 0 || !v[h - 1].instr || v[h - 1].mnem != "B" || v[h - 1].pred.empty()) continue;
+        bool ok = true;
+        std::vector<std::size_t> body;
+        for (std::size_t k = h + 1; k < i && ok; k++) {
+            if (isLabel(v[k])) { ok = passThrough(v[k], named); continue; }
+            if (!v[k].instr || isBranch(v[k].mnem)) ok = false;
+            else body.push_back(k);
+        }
+        if (!ok) continue;
+        std::set<std::string> used;
+        for (std::size_t b = 0; b < body.size(); b++) {
+            std::vector<std::string> reads, writes;
+            readsAndWrites(v[body[b]], reads, writes);
+            for (std::size_t r = 0; r < reads.size(); r++) used.insert(reads[r]);
+            for (std::size_t w = 0; w < writes.size(); w++) used.insert(writes[w]);
+        }
+        std::vector<std::string> pool;
+        for (int side = 0; side < 2; side++)
+            for (int k = 3; k < 32; k++) {
+                if ((k >= 10 && k <= 15) || (side == 1 && k == 3)) continue;
+                std::string r = std::string(side ? "B" : "A") + std::to_string(k);
+                if (!used.count(r) && !(v[i].liveOut & bitOf(r))) pool.push_back(r);
+            }
+        std::vector<Line> hoisted;
+        std::vector<bool> gone(body.size(), false);
+        for (bool changed = true; changed;) {
+            changed = false;
+            std::map<std::string, int> writers;                 // the loop's writes per register, this round
+            for (std::size_t b = 0; b < body.size(); b++) {
+                if (gone[b]) continue;
+                std::vector<std::string> reads, writes;
+                readsAndWrites(v[body[b]], reads, writes);
+                for (std::size_t w = 0; w < writes.size(); w++) writers[writes[w]]++;
+            }
+            for (std::size_t b = 0; b < body.size() && !changed; b++) {
+                const Line &l = v[body[b]];
+                if (gone[b] || !l.pred.empty() || isLoad(l.mnem) || isStore(l.mnem) || l.mnem == "MVKH" || l.mnem == "ADDK" || l.ops.size() < 2) continue;
+                std::vector<std::string> reads, writes;
+                readsAndWrites(l, reads, writes);
+                if (writes.size() != 1) continue;
+                const std::string d = writes[0];
+                if (d == "A15" || d == "B15" || d == "B3" || d == "B14" || has(reads, d)) continue;
+                bool pair = l.mnem == "MVKL" && b + 1 < body.size() && !gone[b + 1] && v[body[b + 1]].mnem == "MVKH" && v[body[b + 1]].ops == l.ops && v[body[b + 1]].pred.empty();
+                if (l.mnem == "MVKL" && !pair) continue;
+                bool invariant = true;
+                for (std::size_t r = 0; r < reads.size(); r++) if (writers.count(reads[r])) invariant = false;
+                if (!invariant) continue;
+                // The value's web: its reads up to the next write of d; none may come before the loop's first write.
+                std::size_t next = body.size(), first = b;
+                for (std::size_t k = 0; k < body.size(); k++) {
+                    if (gone[k] || k == b || (pair && k == b + 1)) continue;
+                    std::vector<std::string> r2, w2;
+                    readsAndWrites(v[body[k]], r2, w2);
+                    if (has(w2, d)) { if (k < first) first = k; if (k > b && k < next) next = k; }
+                }
+                bool early = false;
+                for (std::size_t k = 0; k < first; k++) { std::vector<std::string> r2, w2; readsAndWrites(v[body[k]], r2, w2); if (has(r2, d)) early = true; }
+                if (early && next == body.size()) continue;                        // this value reaches the next turn
+                if (next < body.size() && (v[body[next]].mnem == "MVKH" || v[body[next]].mnem == "ADDK")) continue;
+                // The web renamed to f: every reader rebuilt, the next writer's sources too; false where a
+                // reader cannot take f - a memory operand or a predicate, or a crossing the form lacks.
+                auto renameWeb = [&](const std::string &f, bool apply) -> bool {
+                    Line own = l; own.ops.back() = f;                          // the hoisted instruction's own form
+                    if (crossings(rebuilt(own.mnem, own.ops)) > 1 || unitsFor(rebuilt(own.mnem, own.ops)) == 0) return false;
+                    for (std::size_t k = b + 1; k <= next && k < body.size(); k++) {
+                        if (gone[k] || (pair && k == b + 1)) continue;
+                        Line &u = v[body[k]];
+                        std::vector<std::string> ops = u.ops;
+                        std::size_t last = isStore(u.mnem) || u.mnem == "B" || ops.back()[0] == '*' ? ops.size() : ops.size() - 1;
+                        for (std::size_t o = 0; o < ops.size(); o++)
+                            if ((o < last || ops[o][0] == '*' || (k != next && (u.mnem == "MVKH" || u.mnem == "ADDK"))) && renamed(ops[o], d, f) != ops[o]) {
+                                if ((sideOf(f) != sideOf(d) && ops[o][0] == '*') || ops[o].find(':') != std::string::npos) return false;
+                                ops[o] = renamed(ops[o], d, f);
+                            }
+                        if (!u.pred.empty() && renamed(u.pred, d, f) != u.pred) return false;
+                        Line r = rebuilt(u.mnem, ops, u.pred);
+                        if (sideOf(f) != sideOf(d) && (crossings(r) > 1 || unitsFor(r) == 0)) return false;
+                        if (apply) u = r;
+                    }
+                    return true;
+                };
+                // The same value hoisted already - the same instruction over the same sources - is reused.
+                std::string f;
+                const bool exits = next == body.size() && (v[i].liveOut & bitOf(d));
+                if (!exits) for (std::size_t e = 0; e < hoisted.size() && f.empty(); e++) {
+                    const Line &m = hoisted[e];
+                    if (m.mnem != l.mnem || m.ops.size() != l.ops.size()) continue;
+                    bool same = true;
+                    for (std::size_t o = 0; o + 1 < l.ops.size(); o++) if (m.ops[o] != l.ops[o]) same = false;
+                    if (same && pair && !(e + 1 < hoisted.size() && hoisted[e + 1].mnem == "MVKH" && hoisted[e + 1].ops == m.ops)) same = false;
+                    if (same && renameWeb(m.ops.back(), false)) f = m.ops.back();
+                }
+                const bool reuse = !f.empty();
+                if (!reuse) {
+                    if (writers[d] <= (pair ? 2 : 1)) f = d;
+                    else {
+                        if (exits) continue;                                       // the exit reads this value
+                        for (int side = 1; side >= 0 && f.empty(); side--)
+                            for (std::size_t k = 0; k < pool.size() && f.empty(); k++)
+                                if (sideIndex(pool[k]) == side && renameWeb(pool[k], false)) { f = pool[k]; pool.erase(pool.begin() + static_cast<long>(k)); }
+                        if (f.empty()) continue;
+                    }
+                }
+                if (f != d) renameWeb(f, true);
+                if (reuse) { for (std::size_t k = b; k < b + (pair ? 2u : 1u); k++) gone[k] = true; changed = true; continue; }
+                for (std::size_t k = b; k < b + (pair ? 2u : 1u); k++) {
+                    Line m = v[body[k]];
+                    m.ops.back() = f;
+                    hoisted.push_back(rebuilt(m.mnem, m.ops));
+                    gone[k] = true;
+                }
+                changed = true;
+            }
+        }
+        if (hoisted.empty()) continue;
+        pre[h] = hoisted;
+        std::vector<Line> kept;
+        for (std::size_t b = 0; b < body.size(); b++) if (gone[b]) v[body[b]].instr = false, v[body[b]].raw = "";
+    }
+    if (pre.empty()) return;
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (pre.count(i)) for (std::size_t k = 0; k < pre[i].size(); k++) out.push_back(pre[i][k]);
+        if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
+    }
+    v.swap(out);
+}
+
+// **Addresses folded into the access**: `ADD R, k, T` whose one reader is a load or store through `*T`, T dead
+// after, is `*+R(k)`; and `*R` followed by `ADD k, R, R` with nothing touching R between, k whole elements
+// up to 31, is `*R++` or `*R++[n]` and the ADD goes - `SUB` the same way with a minus.
+void foldAddressing(std::vector<Line> &v) {
+    std::set<std::string> named;
+    for (std::size_t i = 0; i < v.size(); i++) for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
+    for (std::size_t i = 0; i + 1 < v.size(); i++) {
+        const Line &l = v[i];
+        if (!l.instr || !l.pred.empty()) continue;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(l, reads, writes);
+        if ((l.mnem == "ADD" || l.mnem == "SUB") && l.ops.size() == 3 && writes.size() == 1 && !has(reads, writes[0])) {
+            const bool k0 = isNumber(l.ops[0]), k1 = isNumber(l.ops[1]);
+            if (l.mnem == "SUB" && !k1) continue;
+            if (k0 == k1) continue;
+            const std::string R = k0 ? l.ops[1] : l.ops[0], T = writes[0];
+            long k = std::atol((k0 ? l.ops[0] : l.ops[1]).c_str());
+            if (l.mnem == "SUB") k = -k;
+            if (!sideOf(R) || R == T) continue;
+            for (std::size_t j = i + 1; j < v.size(); j++) {
+                if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+                if (blockEnd(v[j])) break;
+                std::vector<std::string> r2, w2;
+                readsAndWrites(v[j], r2, w2);
+                if (has(w2, R)) break;
+                if (!has(r2, T) && !has(w2, T)) continue;
+                const Line &u = v[j];
+                if (u.pred.empty() && u.ops.size() == 2 && (isLoad(u.mnem) || isStore(u.mnem))) {
+                    const std::size_t at = isStore(u.mnem) ? 1 : 0;
+                    const long size = accessSize(u.mnem), mag = k < 0 ? -k : k;
+                    std::vector<std::string> data;
+                    registersIn(u.ops[1 - at], data);
+                    if (u.ops[at] == "*" + T && mag % size == 0 && mag / size <= 31 && !has(data, R) && (has(data, T) || deadAfter(v, j, T))) {
+                        std::vector<std::string> ops = u.ops;
+                        ops[at] = mag == 0 ? "*" + R : (k < 0 ? "*-" : "*+") + R + "(" + std::to_string(mag) + ")";
+                        v[j] = rebuilt(u.mnem, ops);
+                        v.erase(v.begin() + static_cast<long>(i));
+                        i--;
+                    }
+                }
+                break;
+            }
+            continue;
+        }
+        if ((isLoad(l.mnem) || isStore(l.mnem)) && l.ops.size() == 2) {
+            const std::size_t at = isStore(l.mnem) ? 1 : 0;
+            if (l.ops[at].size() < 2 || l.ops[at][0] != '*' || !sideOf(l.ops[at].substr(1))) continue;
+            const std::string R = l.ops[at].substr(1);
+            std::vector<std::string> data;
+            registersIn(l.ops[1 - at], data);
+            if (has(data, R) || R == "A15" || R == "B15") continue;      // a push keeps its shape
+            for (std::size_t j = i + 1; j < v.size(); j++) {
+                if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+                if (blockEnd(v[j])) break;
+                std::vector<std::string> r2, w2;
+                readsAndWrites(v[j], r2, w2);
+                if (!has(r2, R) && !has(w2, R)) continue;
+                const Line &u = v[j];
+                const bool k0 = u.ops.size() == 3 && isNumber(u.ops[0]), k1 = u.ops.size() == 3 && isNumber(u.ops[1]);
+                if (u.pred.empty() && (u.mnem == "ADD" || u.mnem == "SUB") && u.ops.size() == 3 && u.ops[2] == R && (k0 != k1) &&
+                    (k0 ? u.ops[1] : u.ops[0]) == R && !(u.mnem == "SUB" && k0)) {
+                    long k = std::atol((k0 ? u.ops[0] : u.ops[1]).c_str());
+                    if (u.mnem == "SUB") k = -k;
+                    const long size = accessSize(l.mnem), mag = k < 0 ? -k : k;
+                    if (mag != 0 && mag % size == 0 && mag / size <= 31) {
+                        std::vector<std::string> ops = l.ops;
+                        ops[at] = "*" + R + (k < 0 ? "--" : "++") + "(" + std::to_string(mag) + ")";
+                        v[i] = rebuilt(l.mnem, ops);
+                        v.erase(v.begin() + static_cast<long>(j));
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
 // **Jumps tidied**: what follows an unconditional branch up to the next label never runs; a branch to
 // a label whose first instruction is an unconditional jump goes where that one goes; and a branch to
 // the next label - or, last in the text, to the epilogue after it - is nothing.
@@ -662,25 +876,6 @@ void foldPushPop(std::vector<Line> &v) {
 
 // ----- the list scheduler -----
 
-
-// One instruction as the scheduler sees it: what it reads and writes, its
-// latency, the units it has a form on, its side and cross path, its memory
-// access, and the edges from the earlier instructions it must follow.
-struct Node {
-    Line line;
-    std::uint64_t reads = 0, writes = 0;
-    int lat = 1;
-    int late = 0;                       // the cycles after issue its sources are still read, and its unit held
-    unsigned units = 0;                 // a bitmask of UL, US, UD, UM; 0 for a form the table does not know
-    int side = -1;                      // 0 A, 1 B, -1 either (a branch to a label)
-    int cross = -1;                     // the cross path used, by the side that reads: 0 1X, 1 2X, -1 none
-    bool mem = false, store = false;
-    int tpath = -1;                     // a load's or store's data path: the data register's side
-    std::string memBase; long memOff = 0; int memSize = 0; bool memFrame = false;
-    bool branch = false, call = false;
-    std::vector<std::pair<int, int> > preds;   // (earlier node, the least distance in cycles)
-    int issue = -1, height = 0;
-};
 
 // The units a mnemonic has a form on for these operands, from asm6x's table
 // (ASM6x src/forms.h): the three-operand arithmetic on any of .L .S .D with a
@@ -784,18 +979,6 @@ bool mayAlias(const Node &a, const Node &b) {
     return a.memOff < b.memOff + b.memSize && b.memOff < a.memOff + a.memSize;
 }
 
-// The packet being filled at one cycle: the units taken on each side, the
-// cross paths, the data paths, the registers written and the branch.
-struct Packet {
-    bool unit[2][4] = { { false, false, false, false }, { false, false, false, false } };
-    bool held[2][4] = { { false, false, false, false }, { false, false, false, false } };   // by an earlier cycle's DP instruction
-    bool cross[2] = { false, false }, tpath[2] = { false, false };
-    std::uint64_t writes = 0;
-    bool branch = false, alone = false;
-    int count = 0;
-    std::vector<const Node *> members;
-};
-
 // Whether every member, with the candidate added, can be given a unit: a
 // depth-first assignment over the four letters of a side, the side of a
 // branch to a label chosen too.
@@ -838,12 +1021,22 @@ void add(Packet &p, const Node &n) {
     p.writes |= n.writes;
 }
 
+struct Pending { std::uint64_t writes; int lands; };   // a write in flight where a block ends, for the one fallen into
+
 // One block - the instructions between two labels, ending in its branch if it has one - scheduled by list scheduling: the edges between instructions
 // are the register and memory orders with their distances in cycles, each cycle takes the ready instructions of greatest height that its packet has
 // units for, and the branch goes as early as leaves every other instruction issued in its window and landed by the time its target runs.
-void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
+std::vector<Pending> scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out, const std::vector<Pending> &in, bool carry) {
     const std::size_t n = nodes.size();
-    int branchAt = -1;
+    int branchAt = -1, landing = 0;
+    std::vector<int> minIssue(n, 0);                     // what the block before still has in flight
+    for (std::size_t p = 0; p < in.size(); p++) {
+        landing = std::max(landing, in[p].lands);
+        for (std::size_t i = 0; i < n; i++) {
+            if (nodes[i].reads & in[p].writes) minIssue[i] = std::max(minIssue[i], in[p].lands);
+            if (nodes[i].writes & in[p].writes) minIssue[i] = std::max(minIssue[i], in[p].lands - nodes[i].lat + 1);
+        }
+    }
     for (std::size_t i = 0; i < n; i++) if (nodes[i].branch) branchAt = static_cast<int>(i);
     for (std::size_t i = 0; i < n; i++) {
         Node &b = nodes[i];
@@ -873,7 +1066,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
             int best = -1;
             for (std::size_t i = 0; i < n; i++) {
                 Node &x = nodes[i];
-                if (x.issue >= 0 || x.branch) continue;
+                if (x.issue >= 0 || x.branch || c < minIssue[i]) continue;
                 bool ready = true;
                 for (std::size_t e = 0; e < x.preds.size() && ready; e++) {
                     const Node &y = nodes[static_cast<std::size_t>(x.preds[e].first)];
@@ -902,7 +1095,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
     for (std::size_t i = 0; i < n; i++) if (!nodes[i].branch) length = std::max(length, nodes[i].issue + nodes[i].lat);
     if (branchAt >= 0) {
         Node &b = nodes[static_cast<std::size_t>(branchAt)];
-        int at = 0;
+        int at = std::max(0, landing - 6);
         for (std::size_t e = 0; e < b.preds.size(); e++) {
             const Node &y = nodes[static_cast<std::size_t>(b.preds[e].first)];
             at = std::max(at, y.issue + b.preds[e].second);
@@ -921,6 +1114,16 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         add(cycles[static_cast<std::size_t>(at)], b);
         length = b.line.mnem == "CALLP" ? at + 1 : at + 6;
     }
+    // Falling into a label: the block ends at its last issue, its late landings handed on; else it waits for them.
+    std::vector<Pending> pend;
+    if (carry && branchAt < 0) {
+        length = 0;
+        for (std::size_t i = 0; i < n; i++) length = std::max(length, nodes[i].issue + 1 + nodes[i].late);
+        for (std::size_t i = 0; i < n; i++)
+            if (nodes[i].issue + nodes[i].lat > length) { Pending p = { nodes[i].writes, nodes[i].issue + nodes[i].lat - length }; pend.push_back(p); }
+        for (std::size_t p = 0; p < in.size(); p++)
+            if (in[p].lands > length) { Pending q = { in[p].writes, in[p].lands - length }; pend.push_back(q); }
+    } else length = std::max(length, landing);
     int nops = 0;
     for (int c = 0; c < length; c++) {
         const Packet *p = c < static_cast<int>(cycles.size()) ? &cycles[static_cast<std::size_t>(c)] : nullptr;
@@ -929,6 +1132,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         for (std::size_t k = 0; k < p->members.size(); k++) out << (k == 0 ? "" : "||") << p->members[k]->line.raw << "\n";
     }
     while (nops > 0) { out << "\tNOP\t" << std::min(nops, 9) << "\n"; nops -= std::min(nops, 9); }
+    return pend;
 }
 
 // A label of the backend's own flow - the kinds only a branch of this text
@@ -956,14 +1160,26 @@ std::string schedule(const std::vector<Line> &v) {
     }
     std::ostringstream out;
     std::vector<Node> block;
-    auto flush = [&]() { if (!block.empty()) scheduleBlock(block, out); block.clear(); };
+    std::vector<Pending> pend;
+    // A label is fallen into with the block's late writes in flight; anything else waits for them to land.
+    auto flush = [&](bool carry) {
+        if (!block.empty()) pend = scheduleBlock(block, out, pend, carry);
+        else if (!carry) {
+            int wait = 0;
+            for (std::size_t p = 0; p < pend.size(); p++) wait = std::max(wait, pend[p].lands);
+            while (wait > 0) { out << "\tNOP\t" << std::min(wait, 9) << "\n"; wait -= std::min(wait, 9); }
+            pend.clear();
+        }
+        block.clear();
+    };
     for (std::size_t i = 0; i < v.size(); i++) {
         if (isLabel(v[i]) && passThrough(v[i], named)) { out << v[i].raw << "\n"; continue; }
-        if (!v[i].instr) { flush(); out << v[i].raw << "\n"; continue; }
+        if (v[i].verbatim) { flush(false); out << v[i].raw << "\n"; continue; }
+        if (!v[i].instr) { flush(isLabel(v[i])); out << v[i].raw << "\n"; continue; }
         block.push_back(makeNode(v[i], labels));
-        if (isBranch(v[i].mnem)) flush();
+        if (isBranch(v[i].mnem)) flush(true);
     }
-    flush();
+    flush(false);
     return out.str();
 }
 
@@ -1031,7 +1247,9 @@ std::string foldBranchNops(const std::string &text, bool near) {
     return out;
 }
 
-}   // namespace
+}   // namespace c6x
+
+using namespace c6x;
 
 std::string c6xSchedule(const std::string &text, int level) {
     if (level <= 0) return text;
@@ -1058,6 +1276,9 @@ std::string c6xSchedule(const std::string &text, int level) {
     }
     rotateLoops(lines);
     tidyJumps(lines);
+    if (level >= 2) { hoistInvariants(lines); pipelineLoops(lines); }
+    computeLiveness(lines);
+    foldAddressing(lines);
     std::string text2 = schedule(lines);
     std::size_t words = 0;
     for (std::size_t i = 0; i < text2.size(); i++) if (text2[i] == '\n') words++;

@@ -1843,9 +1843,7 @@ void Tms6747::emitFunction(const Function &fn) {
         spAdjust(-(kSaveBytes + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
-    // The prologue and epilogue hold no padding, and the frame is decided after the body.
-    out_ << c6xSchedule(params + body, optimize_);
-
+    // The prologue holds no padding, and the frame is decided after the body.
     std::ostringstream epi;
     epi << returnLabel_ << ":\n";
     if (needFrame) {
@@ -1855,8 +1853,8 @@ void Tms6747::emitFunction(const Function &fn) {
         epi << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
     epi << "\tB\tB3\n\tNOP\t5\n";
-    // Scheduled at -O1 and -O2 like the body: the restores go under the return's delay slots.
-    out_ << c6xSchedule(epi.str(), optimize_);
+    // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
+    out_ << c6xSchedule(params + body + epi.str(), optimize_);
     // TI's index entry for every function - any return address on the stack
     // - naming the table when there are handlers, holding the word itself
     // when there are none.

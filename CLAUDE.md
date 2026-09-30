@@ -11450,3 +11450,128 @@ Compiler++: all ten fingerprints are CCS 5.5's, and the image LNK6x links (cf7ef
 C6747-ddr.cmd with no heap or stack option - the command file sets 16 MB and 256 KB) takes
 exactly the cycles of 7.4.4's. The kernels: 60/60 expected; hash 30.69 M -> 13.06 M cycles, the
 divide gone. All 1,040 -O1/-O2 case files assemble with ASM6x and with TI's asm6x 8.2.2.
+
+## Software pipelining on the C6000, 2026-09-30
+
+**`src/optimizer/C6xPipe.cpp` modulo-schedules the innermost counted loops of the tms6747 text at -O2**, called
+once from `c6xSchedule` after `rotateLoops` and `tidyJumps`; -O1 and -O0 are untouched (emit golden 0 of 1387).
+The machine model it shares with the list scheduler - `Line`, `Node`, `Packet`, `fits`, `unitsFor`, the liveness -
+moved from C6xSched.cpp's anonymous namespace into `C6xModel.h` under `namespace c6x`, unchanged.
+
+**What is a candidate.** One block from a label to `[P] B label`: no call, no branch, no directive, no named label
+inside (a `.step` label nobody names passes through), no write to A15 or B15, every instruction of a known unit,
+at most 64 of them. Its test is the last writer of P: `CMPLT i, n` or `CMPGT n, i` under `[P]` (i < n), or
+`CMPGT i, n` / `CMPLT n, i` under `[!P]` (i <= n), signed or unsigned, n a register the loop does not write or one
+written only by `MVK k` before the test; i stepped exactly once by `ADD 1, i, i` before the test; P read by the
+branch alone unless rewritten first (hash's `MPY32SU ... A1:A0`), and dead at the exit. The trip count is then
+`n - i` (+1), known at entry. Anything else is refused by name, `CPP11_PIPE=1` printing every reason.
+
+**What it does.** The body's temporaries are split into webs first - each write of a recycled register (the
+backend's A4, A6) starts a value of its own with a fresh name from the pool of caller-saved registers the loop and
+its exit leave alone, pairs kept aligned - so each value's span is its own. Dependences: register flow, anti and
+output orders within the iteration and wrapped round the back edge; memory orders from address forms
+(`@symbol + k*iv + c`, the frame, an invariant register), so a store and a load of different globals, or the same
+array eight bytes apart a turn later, are independent, and everything unknown aliases. II is searched upward from
+`1 + the longest late read` while `5*II <= 4*seq` (seq the longest path of one iteration); each instruction goes
+in program order at the first cycle of its window whose modulo slot has room, the branch and the count's `SUB`
+reserved first, and an old-value reader placed too early for its writer is pushed later and the II retried. A
+register whose value outlives II gets q = 2^k copies, named per iteration (`j mod q`, an old-value read `j-1`); the
+kernel is unrolled u = 2^k >= max(6/II, q) rounds so that no branch is issued while another is in flight
+(VM6747 faults on that, and cl6x's SPLOOP is not used). Emitted: the guard (`X = ((n-i) - (S-1)) >> log2 u`,
+`[1 > X] B loop`), the counter `SUB X, 1, C` and the entry copies as an ordinary block, then the prologue, the
+kernel with `[C] B kernel || SUB C, 1, C` at cycle `u*II - 6`, and the epilogue as verbatim packets, then the exit
+copies and the loop's own test - the original loop follows and runs the `K mod u` iterations left over.
+
+**Measured.** `tests/cases/pipelined-loops.cpp` (clang's output) runs five shapes at trip counts 0, 1, 2, 3..9,
+15..17, 31..33, 64, 100, 257: a store from the counter, a loop-carried hash, `a[i] = a[i-1] + x`, two arrays
+with a running sum, the counter read after; it caught the epilogue naming the drained iterations backwards
+(iteration `K'+S-1-d` at distance d, not `S-2-s+d`), which 342 suite cases had not. VM6747 -c on the kernels at
+-O2, before -> after: hash 5,862,054 -> 3,776,054 (II=9, S=2, u=2), sieve 3,296,415 -> 2,896,439 (its first loop,
+II=3, S=2, u=2), matmul 784,012 -> 777,460 (the sum loop, II=10); fib, isort, virt unchanged. tms6747.sh 343/0 at
+-O0, -O1 and -O2; all 343 -O2 outputs assemble with ASM6x, no message; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+**Refused or left, each visible with `CPP11_PIPE=1`.** matmul's inner loop (`mc[i][j] += x * mb[k][j]`): 39
+instructions, every one on side A, and the webs exhaust the A-side pool before the copies are counted - hoisting
+the invariant `MVKL/MVKH`, `MVK 192` and `MPY32 A11, 192` out of it is what it waits for. Loops whose count is not
+`n - i`: a 64-bit counter (sieve's inner loop), `*p` as the test (hash's second loop), a predicated body (isort).
+No cross-path or B-side placement of a renamed value; no SPLOOP; no speculation of any kind - every iteration the
+pipeline runs is one the loop would have run.
+
+## Loop invariants hoisted to a preheader on the C6000, 2026-09-30
+
+**`hoistInvariants` (C6xSched.cpp) runs at -O2 before the pipeliner sees a loop.** A rotated loop - one block,
+entered by falling into its head from the test that guards it, its head named by the back branch alone - gets a
+preheader between that test's branch and the head, executed once per entry and skipped when the loop is empty.
+An instruction goes there when its sources are registers the loop never writes, or constants: `MVK`, a
+`MVKL`/`MVKH` pair (taken together), `MPY32` of an invariant by a hoisted constant, `ADD` of two invariants, and
+so on to a fixed point, so `mc + i*192` leaves matmul's inner loop whole. A destination the loop writes elsewhere
+takes a fresh register for that one value - its web, the reads up to the next writer, that writer's sources
+included - from side B where every reader has a crossed form for it (hash's `MVK 63` for its `CMPLT`, `MVK 26`
+for its `MPY32`), else its own side; a memory operand, a predicate, a pair half or a value the exit reads keeps
+its name and stays. Two hoisted instructions of the same operator over the same sources are one (`MVKL/MVKH mc`
+three times in matmul was three registers, and the pipeliner then could not tell `mc` from `mb`): the second's
+web takes the first's register. The pipeliner reads the preheader back with the same value rules, so a hoisted
+base is `@symbol + 192*reg:A11` to its alias analysis rather than an opaque register - which is what let
+matmul's load and store of `mc[i][j]` be told apart from `mb[k][j]` again.
+
+**And the II search no longer gives up renaming at the first II.** A schedule at II whose copies the pool cannot
+supply is passed over for II+1 with every register still renameable; only past the bound are the units without
+copies left unrenamed and the search rerun. matmul's inner loop went from refused to II=20 by that alone.
+
+**Measured.** VM6747 -c at -O2, the parent commit -> pipelining -> this round: hash 5,862,054 -> 3,776,054 ->
+2,910,054 (II 9 -> 5); matmul 784,012 -> 777,460 -> 362,260 (the inner loop II=20, S=2, 24 instructions of a
+62-cycle body); sieve 3,296,415 -> 2,896,439 -> 2,430,821; isort 3,533,045 -> 3,517,482 (its seed loop, II=14);
+fib and virt unchanged. `tests/cases/hoisted-invariants.cpp` (clang's output): a base shared by a load and a
+store, a row address from the outer index, a constant in a register the loop reuses and a value read after the
+loop, and a loop of no turns whose preheader must not run. tms6747.sh 344/0 at -O0, -O1, -O2; 344/344 -O2
+outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+**Left.** Re-running the copy peepholes after hoisting (the `MV A4, A21; MV A21, A4` round trip a clobber that is
+gone used to need) broke every kernel's output and was taken back out unexamined; it is the next cycle to find.
+A store's address recomputed from the counter after `ADD 1, i, i` is still its own web, and `*A11++` is item 2.
+
+## Addresses folded into the access on the C6000, 2026-09-30
+
+**`foldAddressing` (C6xSched.cpp) runs at -O1 and -O2 after the pipeliner, over the sequential text that is
+left.** Two shapes, each stepping over a pass-through label as the scheduler does: `ADD R, k, T` (or `SUB`) whose
+first use of T is a load or store through `*T`, R untouched between and T dead after (or T the load's own
+destination), becomes `*+R(k)` or `*-R(k)`, k a whole number of elements up to 31; and `*R` followed by
+`ADD k, R, R` (or `SUB`) with nothing touching R between becomes `*R++(k)` or `*R--(k)`, k in bytes as the
+backend spells every offset, and the ADD goes - never on A15 or B15, whose `SUB B15, 8, B15` is a push the frame
+passes recognise. VM6747 reads the bare `*R++` as one byte whatever the width (`LDW *A12++` was refused as
+"not 4-byte units") where TI reads one element, so the byte form is the one both agree on. `readsAndWrites` now counts a `++`/`--` address register among the instruction's writes,
+so liveness, `deadAfter`, the scheduler's write conflicts and the packet's write set all see it; the write
+lands at the access's own latency in the model, a cycle early for a load's address, which is safe. A verbatim
+line - a pipelined kernel - makes everything live before it in `computeLiveness`, so a fold next to one cannot
+take a register the kernel reads.
+
+**Measured.** VM6747 -c at -O2: virt 1,440,240 -> 1,400,239 (the pushed argument words as `*+B15(k)`), the
+rest within one cycle; hash's `*p` loop reads `LDB *A11++, A4`. `tests/cases/pointer-strides.cpp` (clang's
+output): byte, short, word and double walks forward and back, a step of three shorts, a step of three bytes
+that is no whole element, the pointer returned after the walk. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345
+-O2 outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+## A block's late writes cross into the label it falls into, on the C6000, 2026-09-30
+
+**`scheduleBlock` used to land everything at a block's end** - a load's four delay slots, a multiply's three -
+before the label that follows, whoever reaches that label. It hands them on now: a block that ends by falling
+into a label stops at its last issue (a DP instruction's unit hold included) and returns the writes still in
+flight with the cycle each lands; the next block schedules under them - a reader of such a register issues no
+earlier than the landing, a writer lands strictly after it, its branch goes no earlier than the landing less
+six, and if it ends without a label after it, it waits for what is left. A block reached by a branch from
+elsewhere as well as by falling through sees the same constraints, which on the branching path merely wait for
+nothing, since a taken branch lands everything before its target runs as before. A directive, a verbatim
+kernel or the end of the text still wait for every landing, as does an empty run of labels before one.
+
+**The epilogue is scheduled with the body**, one `c6xSchedule` call where there were two, so a function's
+last result lands under its return's delay slots: `MPY32 A16, A4, A4` straight into `L$return: LDW || MV ||
+B B3` where `NOP 3` stood, which is virt's `area()`. At -O0 the call returns its text unchanged, so the golden
+did not move.
+
+**Measured.** VM6747 -c at -O2: virt 1,400,239 -> 1,340,239; the other five kernels to the cycle, their
+functions ending in a loop's exit branch. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345 -O2 outputs assemble with
+ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
