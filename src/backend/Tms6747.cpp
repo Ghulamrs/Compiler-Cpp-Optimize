@@ -133,6 +133,7 @@ static std::string tiExternals(const std::string &text) {
     while (std::getline(in, line)) {
         size_t cut = line.find(';');
         if (cut != std::string::npos) line.erase(cut);
+        if (line.compare(0, 2, "||") == 0) line = "\t" + line.substr(2);   // in a packet: not a label
         size_t first = line.find_first_not_of(" \t");
         if (first == std::string::npos) continue;
         bool label = first == 0;
@@ -439,12 +440,144 @@ void Tms6747::closeArea() {
 // At -O1 and -O2 a word is pushed into the upper half of its slot, leaving *B15 - the word a
 // callee saves A15 in - free, so a call under it needs no area; a pair fills the slot and counts.
 void Tms6747::push() {
+    if (spillPush(false)) return;
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << (optimize_ > 0 ? "\tSTW\tA4, *+B15(4)\n" : "\tSTW\tA4, *B15\n");
 }
 void Tms6747::pop(const char *reg) {
+    if (spillPop(false, reg)) return;
     out_ << "\tLDW\t" << (optimize_ > 0 ? "*+B15(4)" : "*B15") << ", " << reg << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
+}
+
+// An expression of the parameters alone - registers, constants, the arithmetic that calls nothing - which
+// the early exit below can evaluate before any frame exists.
+bool Tms6747::simpleOfParams(const Expr &e, const Function &fn) const {
+    if (e.type() == nullptr || e.type()->isFloating() || e.type()->isStructOrUnion() || isWide(e.type())) return false;
+    if (const Num *n = dynamic_cast<const Num *>(&e)) return !n->type()->isFloating();
+    if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (!v->isLocal()) return false;
+        const std::vector<Param> &ps = fn.params();
+        for (std::size_t i = 0; i < ps.size() && i < firstStack_; i++)
+            if (ps[i].offset == v->offset()) return !ps[i].type->isFloating() && !ps[i].type->isStructOrUnion() && ps[i].type->size(target_) == 4 && !inPair(ps[i].type);
+        return false;
+    }
+    if (const Unary *u = dynamic_cast<const Unary *>(&e)) return (u->op() == '-' || u->op() == '!' || u->op() == '~' || u->op() == '+') && simpleOfParams(u->operand(), fn);
+    if (const Cast *c = dynamic_cast<const Cast *>(&e)) return !c->value().type()->isFloating() && !isWide(c->value().type()) && simpleOfParams(c->value(), fn);
+    if (const Binary *b = dynamic_cast<const Binary *>(&e))
+        return b->op() != BinOp::Div && b->op() != BinOp::Mod && b->op() != BinOp::LAnd && b->op() != BinOp::LOr &&
+               simpleOfParams(b->lhs(), fn) && simpleOfParams(b->rhs(), fn);
+    return false;
+}
+// **A leading `if (c) return t;` of the parameters alone runs before the prologue**: `n < 2 ? n : ...` in a
+// recursive function is answered with nothing saved and nothing restored, the frame's memory round trips
+// being what the base case cost. The parameters are read where they arrive, A4 copied aside first.
+static bool backendSkipped(const char *what) {
+    const char *e = std::getenv("CPP11_C6XSKIP");
+    return e != nullptr && (std::string(",") + e + ",").find(std::string(",") + what + ",") != std::string::npos;
+}
+std::string Tms6747::earlyExit(const Function &fn) {
+    const Block *blk = dynamic_cast<const Block *>(&fn.body());
+    if (optimize_ <= 0 || backendSkipped("early") || fn.isVariadic() || sretSlot_ != 0 || fn.params().size() > 6 || blk == nullptr || blk->body().empty()) return std::string();
+    if (fn.returns()->isFloating() || fn.returns()->isStructOrUnion() || isWide(fn.returns()) || inPair(fn.returns())) return std::string();
+    const Expr *cond = nullptr, *value = nullptr;
+    const Stmt &first = *blk->body()[0];
+    if (const Return *r = dynamic_cast<const Return *>(&first)) {
+        if (r->hasValue()) if (const Conditional *c = dynamic_cast<const Conditional *>(&r->value())) { cond = &c->cond(); value = &c->thenArm(); }
+    } else if (const If *i = dynamic_cast<const If *>(&first)) {
+        if (i->elseArm() == nullptr) if (const Return *r = dynamic_cast<const Return *>(&i->thenArm())) if (r->hasValue()) { cond = &i->cond(); value = &r->value(); }
+    }
+    if (cond == nullptr || !simpleOfParams(*cond, fn) || !simpleOfParams(*value, fn)) return std::string();
+    const std::vector<Param> &ps = fn.params();
+    for (std::size_t i = 0; i < ps.size(); i++) if (ps[i].type->isFloating() || ps[i].type->isStructOrUnion() || isWide(ps[i].type) || inPair(ps[i].type)) return std::string();
+    // Every parameter is copied to A16-A21 first: the walker's scratch registers include A6 and A8, where
+    // the third and fifth arrive. The copies come back where the test fails; the unread ones are dropped.
+    std::map<int, std::string> saved = regOf_;
+    regOf_.clear();
+    const std::size_t seq = pushSeq_;
+    pushSeq_ = 1u << 20;                                   // any push goes to the stack, below B15
+    std::ostringstream keep;
+    keep.swap(out_);
+    const std::string enter = label("enter", nextLabel());
+    for (std::size_t i = 0; i < ps.size(); i++) {
+        const std::string held = "A" + std::to_string(16 + i);
+        regOf_[localBase_ + ps[i].offset] = held;
+        out_ << "\tMV\t" << abi_.intRegs[i] << ", " << held << "\n";
+    }
+    genTruth(*cond);
+    out_ << "\tMV\tA4, A1\n\t[!A1]\tB\t" << enter << "\n\tNOP\t5\n";
+    value->accept(*this);
+    narrowInt(fn.returns());
+    out_ << "\tB\tB3\n\tNOP\t5\n";
+    defineLabel(enter);
+    for (std::size_t i = 0; i < ps.size(); i++) out_ << "\tMV\tA" << 16 + i << ", " << abi_.intRegs[i] << "\n";
+    std::string text = out_.str();
+    keep.swap(out_);
+    pushSeq_ = seq;
+    regOf_ = saved;
+    return text;
+}
+
+// The spare callee-saved register a push takes: the first free one, an even one whose odd partner is
+// free too for a pair. Replayed by planSpills and again live, over the same events, so both agree.
+std::string Tms6747::chooseSpill(bool wide) {
+    for (std::size_t k = 0; k < spillPool_.size(); k++) {
+        const std::string &r = spillPool_[k];
+        bool held = false;
+        for (std::size_t h = 0; h < spillHeld_.size(); h++) if (spillHeld_[h] == r || (wide && spillHeld_[h] == pairHigh(r))) held = true;
+        if (held || (wide && ((r[2] - '0') % 2 != 0 || std::find(spillPool_.begin(), spillPool_.end(), pairHigh(r)) == spillPool_.end()))) continue;
+        bool wideHeld = false;             // a pair held over this one's odd partner
+        for (std::size_t h = 0; h < spillHeld_.size(); h++) if (!spillHeld_[h].empty() && pairHigh(spillHeld_[h]) == r) wideHeld = true;
+        if (wideHeld) continue;
+        if (std::find(spillUsed_.begin(), spillUsed_.end(), r) == spillUsed_.end()) spillUsed_.push_back(r);
+        if (wide && std::find(spillUsed_.begin(), spillUsed_.end(), pairHigh(r)) == spillUsed_.end()) spillUsed_.push_back(pairHigh(r));
+        return r;
+    }
+    return std::string();
+}
+// The first walk's pushes and pops replayed, so the registers they will take are saved by the prologue.
+void Tms6747::planSpills() {
+    spillUsed_.clear();
+    spillHeld_.clear();
+    std::size_t seq = 0;
+    for (std::size_t e = 0; e < pushEvents_.size(); e++) {
+        if (pushEvents_[e] < 0) { spillHeld_.pop_back(); continue; }
+        const std::size_t s = seq++;
+        spillHeld_.push_back(s < pushCrossesCall_.size() && pushCrossesCall_[s] ? chooseSpill(pushEvents_[e] == 2) : std::string());
+    }
+    spillHeld_.clear();
+}
+bool Tms6747::spillPush(bool wide) {
+    const std::size_t seq = pushSeq_++;
+    if (planning_) {
+        pushOpen_.push_back(std::make_pair(seq, callCount_));
+        pushEvents_.push_back(wide ? 2 : 1);
+        if (pushLoop_.size() <= seq) pushLoop_.resize(seq + 1, 0);
+        pushLoop_[seq] = loopDepth_;
+        if (pushCrossesCall_.size() <= seq) pushCrossesCall_.resize(seq + 1, false);
+        return false;
+    }
+    std::string r;
+    if (optimize_ > 0 && seq < pushCrossesCall_.size() && pushCrossesCall_[seq]) r = chooseSpill(wide);
+    spillHeld_.push_back(r);
+    if (r.empty()) return false;
+    out_ << "\tMV\tA4, " << r << "\n";
+    if (wide) out_ << "\tMV\tA5, " << pairHigh(r) << "\n";
+    return true;
+}
+bool Tms6747::spillPop(bool wide, const char *reg) {
+    if (planning_) {
+        if (!pushOpen_.empty()) { pushCrossesCall_[pushOpen_.back().first] = callCount_ != pushOpen_.back().second; pushOpen_.pop_back(); }
+        pushEvents_.push_back(-1);
+        return false;
+    }
+    if (spillHeld_.empty()) return false;
+    const std::string r = spillHeld_.back();
+    spillHeld_.pop_back();
+    if (r.empty()) return false;
+    out_ << "\tMV\t" << r << ", " << reg << "\n";
+    if (wide) out_ << "\tMV\t" << pairHigh(r) << ", " << pairHigh(reg) << "\n";
+    return true;
 }
 
 // ---- doubles: a register pair, and 8-byte moves through the stack --------
@@ -464,12 +597,14 @@ std::string Tms6747::pairOf(const char *reg) {
 // is already 8 bytes and B15 stays 8-aligned, which STDW and LDDW need.
 void Tms6747::pushValue(const Type *t) {
     if (!isWide(t) && !inPairWide(t)) { push(); return; }
+    if (spillPush(true)) return;
     pushDepth_++;
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTDW\tA5:A4, *B15\n";
 }
 void Tms6747::popValue(const Type *t, const char *reg) {
     if (!isWide(t) && !inPairWide(t)) { pop(reg); return; }
+    if (spillPop(true, reg)) return;
     pushDepth_--;
     out_ << "\tLDDW\t*B15, " << pairOf(reg) << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
@@ -797,34 +932,69 @@ void Tms6747::planRegisters(const Function &fn) {
     regOf_.clear();
     promoted_.clear();
     if (fn.params().size() + sretShift_ > 6) usesSavedArgRegs_ = usesSavedPairRegs_ = true;
-    static const char *const kRegs[] = { "A10", "A11", "A12", "A13", "B10", "B11", "B12", "B13" };
+    // A caller fills B10-B13 first: with B3 saved the B pairs sit on 8-aligned words - one STDW, one LDDW -
+    // and the A pairs do not; a function with no call fills the A side first, where a copy to A4 folds.
+    static const char *const kSaved[] = { "A10", "A11", "A12", "A13", "B10", "B11", "B12", "B13" };
+    static const char *const kCaller[] = { "B10", "B11", "B12", "B13", "A10", "A11", "A12", "A13" };
+    // A leaf with no loop - no call, no pad - keeps its locals in A16-A23, which nothing saves, and needs no
+    // frame; one with a loop keeps the callee-saved set, the pipeliner wanting A16-A23 for the loop's values.
+    static const char *const kLeaf[] = { "A16", "A17", "A18", "A19", "A20", "A21", "A22", "A23" };
+    leaf_ = !hasCall_ && !hasLoop_ && !fn.hasLandingPads() && !fn.isVariadic();
+    const char *const *kRegs = leaf_ ? kLeaf : hasCall_ ? kCaller : kSaved;
     std::map<std::string, bool> free;
-    for (const char *r : kRegs) {
+    for (std::size_t k = 0; k < 8; k++) {
+        const char *r = kRegs[k];
         const bool even = (r[2] - '0') % 2 == 0;
-        free[r] = even ? !usesSavedArgRegs_ : !usesSavedPairRegs_;
+        free[r] = leaf_ || (even ? !usesSavedArgRegs_ : !usesSavedPairRegs_);
     }
-    std::vector<std::pair<int, int> > order;                 // (-uses, offset)
+    // The pushes that cross a call, by how many are held at once: each level a slot weighted as a local
+    // would be, wide where any pair is pushed at it, competing with the locals for the registers.
+    std::vector<Slot> demand;
+    {
+        std::vector<bool> heldCross;
+        std::size_t seq = 0, level = 0;
+        for (std::size_t e = 0; e < pushEvents_.size(); e++) {
+            if (pushEvents_[e] < 0) { if (heldCross.back()) level--; heldCross.pop_back(); continue; }
+            const bool c = seq < pushCrossesCall_.size() && pushCrossesCall_[seq];
+            if (c) {
+                if (demand.size() <= level) demand.push_back(Slot());
+                demand[level].uses += 2 << (pushLoop_[seq] > 4 ? 12 : 3 * pushLoop_[seq]);
+                if (pushEvents_[e] == 2) demand[level].wide = true;
+                level++;
+            }
+            heldCross.push_back(c);
+            seq++;
+        }
+    }
+    std::vector<std::pair<int, int> > order;                 // (-uses, offset; -1 - level for a push slot)
     for (std::map<int, Slot>::const_iterator it = slots_.begin(); it != slots_.end(); ++it)
         if (!it->second.addressed && it->second.uses >= 2) order.push_back(std::make_pair(-it->second.uses, it->first));
+    for (std::size_t d = 0; d < demand.size(); d++) order.push_back(std::make_pair(-demand[d].uses, -1 - static_cast<int>(d)));
     std::sort(order.begin(), order.end());
+    spillPool_.clear();
     for (std::size_t k = 0; k < order.size(); k++) {
-        const Slot &s = slots_[order[k].second];
-        for (const char *r : kRegs) {
+        const bool pushSlot = order[k].second < 0;
+        const Slot &s = pushSlot ? demand[static_cast<std::size_t>(-1 - order[k].second)] : slots_[order[k].second];
+        for (std::size_t q = 0; q < 8; q++) {
+            const char *r = kRegs[q];
             if (!free[r]) continue;
             const std::string hi = pairHigh(r);
             if (s.wide && ((r[2] - '0') % 2 != 0 || !free[hi])) continue;
             free[r] = false;
+            if (pushSlot) { spillPool_.push_back(r); if (s.wide) { free[hi] = false; spillPool_.push_back(hi); } break; }
             promoted_.push_back(r);
             if (s.wide) { free[hi] = false; promoted_.push_back(hi); }
             regOf_[order[k].second] = r;
             break;
         }
     }
+    std::sort(spillPool_.begin(), spillPool_.end());
+    planSpills();
 }
 
-void Tms6747::visit(const While &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
-void Tms6747::visit(const For &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
-void Tms6747::visit(const DoWhile &n) { loopDepth_++; Walker::visit(n); loopDepth_--; }
+void Tms6747::visit(const While &n) { hasLoop_ = true; loopDepth_++; Walker::visit(n); loopDepth_--; }
+void Tms6747::visit(const For &n) { hasLoop_ = true; loopDepth_++; Walker::visit(n); loopDepth_--; }
+void Tms6747::visit(const DoWhile &n) { hasLoop_ = true; loopDepth_++; Walker::visit(n); loopDepth_--; }
 
 // ---- bit-fields ----------------------------------------------------------
 // A bit-field is width bits from bitOffset up in the unit at the member's
@@ -1625,6 +1795,7 @@ void Tms6747::call(const std::string &target) {
     out_ << "\tB\t" << target << "\n\tNOP\t5\n";
     defineLabel(ret);
     hasCall_ = true;
+    callCount_++;
 }
 
 // Between integers and pointers a conversion is a narrowing at most: A4
@@ -1815,6 +1986,7 @@ void Tms6747::emitParams(const Function &fn) {
             }
         } else {
             // The caller's B15 was A15; its stack arguments start one word above that.
+            paramInFrame_ = true;
             const int at = stackParamOffset(ps, i);
             const int sz = byRef ? 4 : accessSize(t);
             if (frameFits(at, sz)) out_ << stackArgAccess(t, false, frameOperand(at, sz));
@@ -1822,6 +1994,7 @@ void Tms6747::emitParams(const Function &fn) {
         }
         if (inPair(t)) {
             // The value itself, into the parameter's slot, in its own bytes.
+            paramInFrame_ = true;
             localAddr(ps[i].offset, "A3", t->size(target_), t->align(target_));
             storePair(t->size(target_), t->align(target_));
             continue;
@@ -1829,6 +2002,7 @@ void Tms6747::emitParams(const Function &fn) {
         if (byRef) {
             // Through A1, not A6: A6 is the third argument's register, still
             // to be read when an earlier struct parameter is being copied.
+            paramInFrame_ = true;
             localAddr(ps[i].offset, "A1", t->size(target_), t->align(target_));
             copyBlock(t->size(target_), "A4", "A1", t->align(target_), t->align(target_) >= 8);
             continue;
@@ -1837,6 +2011,7 @@ void Tms6747::emitParams(const Function &fn) {
         const int key = localBase_ + ps[i].offset;
         if (planning_) noteUse(key, t);
         if (regOf_.count(key)) { narrowInt(t); regWrite(regOf_[key], isWide(t)); continue; }
+        paramInFrame_ = true;
         const int disp = -(saveBytes_ + placed(localBase_ + ps[i].offset));
         if (frameFits(disp, accessSize(t))) { store(t, frameOperand(disp, accessSize(t))); continue; }
         plainAccess_ = true;
@@ -1859,7 +2034,20 @@ std::vector<std::string> Tms6747::savedRegs() const {
         const bool odd = (reg[2] - '0') % 2 != 0;
         bool want = std::string(reg) == "B3" ? hasCall_ : odd ? usesSavedPairRegs_ : usesSavedArgRegs_;
         for (std::size_t k = 0; k < promoted_.size(); k++) if (promoted_[k] == reg) want = true;
+        for (std::size_t k = 0; k < spillUsed_.size(); k++) if (spillUsed_[k] == reg) want = true;
         if (want) r.push_back(reg);
+    }
+    // A14, never used, is saved as a filler where it puts the A pairs on 8-aligned words: B3 and an even
+    // number of B registers above them leave A13:A12 and A11:A10 straddling, and one word mends both.
+    if (optimize_ > 0) {
+        std::size_t nB = 0, at = 0;
+        bool b3 = false, a13 = false, a12 = false, a11 = false, a10 = false;
+        for (std::size_t k = 0; k < r.size(); k++) {
+            if (r[k][0] == 'B' && r[k] != "B3") nB++;
+            if (r[k] == "B3") { b3 = true; at = k + 1; }
+            a13 |= r[k] == "A13"; a12 |= r[k] == "A12"; a11 |= r[k] == "A11"; a10 |= r[k] == "A10";
+        }
+        if (b3 && nB % 2 == 0 && ((a13 && a12) || (a11 && a10))) r.insert(r.begin() + static_cast<long>(at), "A14");
     }
     return r;
 }
@@ -1868,7 +2056,7 @@ std::vector<std::string> Tms6747::savedRegs() const {
 // A15, B15-B10, B3, A14-A10 from bit 12 down, and B3 the return register.
 unsigned Tms6747::unwindWord(bool needFrame) const {
     static const struct { const char *reg; int bit; } bits[] = {
-        { "A15", 12 }, { "B13", 9 }, { "B12", 8 }, { "B11", 7 }, { "B10", 6 }, { "B3", 5 },
+        { "A15", 12 }, { "B13", 9 }, { "B12", 8 }, { "B11", 7 }, { "B10", 6 }, { "B3", 5 }, { "A14", 4 },
         { "A13", 3 }, { "A12", 2 }, { "A11", 1 }, { "A10", 0 } };
     unsigned mask = 0;
     if (needFrame)
@@ -1897,6 +2085,12 @@ void Tms6747::walkBody(const Function &fn) {
     usesSavedArgRegs_ = false;
     usesSavedPairRegs_ = false;
     loopDepth_ = 0;
+    callCount_ = 0;
+    hasLoop_ = false;
+    pushSeq_ = 0;
+    pushOpen_.clear();
+    spillHeld_.clear();
+    if (planning_) { pushCrossesCall_.clear(); pushEvents_.clear(); pushLoop_.clear(); }
     frame_ = relayout_ ? placedTop_ : align8(fn.frameSize());
     inlineBase_ = align8(fn.frameSize());
     // A pad sets SP from the frame as it stands: a function with one reserves room for any callee walked
@@ -1940,6 +2134,12 @@ void Tms6747::emitFunction(const Function &fn) {
     slots_.clear();
     regOf_.clear();
     promoted_.clear();
+    spillPool_.clear();
+    spillUsed_.clear();
+    pushCrossesCall_.clear();
+    pushEvents_.clear();
+    leaf_ = false;
+    paramInFrame_ = false;
     relayout_ = false;
     saveBytes_ = kSaveBytes;
     if (optimize_ > 0) {
@@ -1983,28 +2183,46 @@ void Tms6747::emitFunction(const Function &fn) {
     }
 
     int frame = frame_;
+    const std::string early = earlyExit(fn);
+    std::ostringstream pro;
+    pro.swap(out_);                                        // the prologue, scheduled with the body at -O1 and -O2
     std::vector<std::string> saved = savedRegs();
-    bool needFrame = frame > 0 || hasCall_ || !fn.params().empty() || sretSlot_ != 0 || saved.size() > 1;
+    // A leaf whose parameters and locals are all in registers needs no frame at all.
+    bool needFrame = frame > 0 || hasCall_ || (optimize_ > 0 ? paramInFrame_ : !fn.params().empty()) || sretSlot_ != 0 ||
+                     saved.size() > 1 || fn.hasLandingPads() || fn.isVariadic();
+    // An odd:even pair saved side by side on an 8-aligned word (A15 is the caller's B15, 8-aligned) goes
+    // in one STDW and comes back in one LDDW - one round trip to memory where there were two.
+    auto pairAt = [&](std::size_t k) -> bool {
+        if (optimize_ <= 0 || k + 1 >= saved.size() || (4 * (k + 1)) % 8 != 0) return false;
+        const std::string &hi = saved[k], &lo = saved[k + 1];
+        return hi[0] == lo[0] && hi.size() == 3 && lo.size() == 3 && (lo[2] - '0') % 2 == 0 && hi == pairHigh(lo);
+    };
     if (needFrame) {
         out_ << "\tSTW\tA15, *B15\n";               // in the caller's word
         out_ << "\tMV\tB15, A15\n";
-        for (size_t k = 1; k < saved.size(); k++)     // a leaf leaves B3 alone
+        for (size_t k = 1; k < saved.size(); k++) {   // a leaf leaves B3 alone
+            if (pairAt(k)) { out_ << "\tSTDW\t" << saved[k] << ":" << saved[k + 1] << ", *-A15(" << 4 * (k + 1) << ")\n"; k++; continue; }
             out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
+        }
         spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
 
+    pro.swap(out_);
     // The prologue holds no padding, and the frame is decided after the body.
     std::ostringstream epi;
     epi << returnLabel_ << ":\n";
     if (needFrame) {
-        for (size_t k = 1; k < saved.size(); k++)
+        for (size_t k = 1; k < saved.size(); k++) {
+            if (pairAt(k)) { epi << "\tLDDW\t*-A15(" << 4 * (k + 1) << "), " << saved[k] << ":" << saved[k + 1] << "\n"; k++; continue; }
             epi << "\tLDW\t*-A15(" << 4 * k << "), " << saved[k] << "\n";
+        }
         epi << "\tMV\tA15, B15\n";                 // drop the frame: SP = FP
         epi << "\tLDW\t*A15, A15\n\tNOP\t4\n";      // the caller's FP, last
     }
     epi << "\tB\tB3\n\tNOP\t5\n";
     // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
-    out_ << c6xSchedule(params + body + epi.str(), optimize_);
+    if (optimize_ > 0 && !backendSkipped("pro")) out_ << c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_);
+    else out_ << pro.str() << c6xSchedule(early + params + body + epi.str(), optimize_);
     // TI's index entry for every function - any return address on the stack
     // - naming the table when there are handlers, holding the word itself
     // when there are none.
