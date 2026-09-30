@@ -11277,3 +11277,45 @@ addressing-mode folding - `MVKL/MVKH` of a global inside a loop, the
 `LDB *A11` read twice in hash's loop - which is where the 5.1x on hash and the
 remaining 2.6x sit. `tests/tms6747.sh` 339/0 at -O0, -O1 and -O2; run.sh
 553/0, names.sh 352/0, overload.sh 30/0.
+
+## Fable's review mended, first round: the three tools against both CCS toolchains, 2026-09-30
+
+**Fable 5.1's review of 2026-09-29 is `docs/REVIEW-TOOLCHAIN-2026-09-29.md`, frozen**, and
+its work, found uncommitted in session worktrees after the usage limit, is on the main
+branches now: the C6000 scheduler (tms-opt 958bbd7..8dad5e8), C-B1's frame operands (the
+merge 15126e9), ASM6x's local order and hashed lookup, LNK6x's unwind index.
+
+**What was mended, each measured against TI on the Windows box:**
+- LNK6x: the unwind index is loaded and composed (L-A1, L-A10); `R_C6000_EHTYPE` is
+  **S + A - static base**, not S + A as the review's probe wrote it (lnk6x 7.4.4: fffffd40 for
+  a type_info at 8000a7f4, DP 8000aab4); an output section fills the gap alignment left before
+  it; rle24 is 7.4.4's (least frequent escape, `E n` for 1-3 escapes, the 16- and 24-bit long
+  forms - L-A2); `.cinit` records by descending size. A throw probe links and runs cycle-identical
+  to 7.4.4's image (258,355); 18 of the review's 20 kernel images identical to 7.4.4's in every
+  loaded section (isort's `.cinit` is 4 bytes short - open).
+- ASM6x: each body at its own alignment, `e_phentsize` 32, `sh_entsize` as asm6x (A-A2, A-A3):
+  byte-identical to asm6x 8.2.2's own objects on 271 of 317 edge probes, 11 of 11 linkcheck,
+  3 of 7 encoding files, where it was none; the rest differ only in the order of the globals.
+  Symbol lookup by hash: the 7.5 MB Compiler++ harness in 0.43 s, was 1.9 s, output identical.
+
+**A correction, and a trap:** `tests/tms6747.sh` takes its level from `CXX1_FLAGS`, not any
+other name - runs with `CPP11_OPT=-O2` are -O0. The C-B1 merge's own message gives -O0's
+numbers (70.8 M -> 51.9 M cycles, -27%) as if they were -O2's; at -O1 and -O2 C-B1 is -0.8%
+(9.28 M -> 9.21 M), locals in registers having taken most of what it reached. 340/0 at all three.
+
+**The kernels on TI's C6747 cycle-accurate simulator (cycle.Total), 0930-063736, 60 of 60 runs
+printing their `.expected`:**
+
+| kernel | 744-O2 | 822-O2 | cpp11 -O2 | O2 / 744 | O2 / 822 |
+| --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 5,568,115 | 9,656,532 | 1.73 | 1.73 |
+| hash | 6,009,087 | 6,014,015 | 30,691,756 | 5.10 | 5.10 |
+| isort | 5,312,299 | 5,309,586 | 9,652,827 | 1.81 | 1.81 |
+| matmul | 1,294,024 | 982,933 | 1,961,046 | 1.51 | 1.99 |
+| sieve | 2,999,335 | 2,577,500 | 4,452,349 | 1.48 | 1.72 |
+| virt | 3,269,953 | 3,268,908 | 7,252,225 | 2.21 | 2.21 |
+| total | 24,453,162 | 23,721,057 | 63,666,735 | 2.60 | 2.68 |
+
+2.60x cl6x 7.4.4 -O2 where it was 3.24x on 2026-09-29, and **the LNK6x-linked images now
+take exactly the cycles of the 7.4.4-linked ones on every kernel** (was within 24). -O1 is
+2.04x 7.4.4 -O1. hash is where the gap is: 126,000 `__c6xabi_remi` calls, the review's B3.
