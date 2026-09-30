@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 162 files, seal 0E309AD9
+CRC32  size  file - 162 files, seal 0627B4CD
 ------------------------------------------------------------------
 AE20CC05      9923  Makefile
 2DF96A05      2820  examples/Makefile
@@ -42,7 +42,7 @@ A8987E35     13251  include/ostream
 C49ECBC5      2228  include/set
 648E0442      2095  include/sstream
 5CE9803B      3931  include/stdexcept
-1FDD76EE     15120  include/string
+CCCA5E9F     16447  include/string
 1001F7EE      9467  include/type_traits
 C61AA3C2      3220  include/typeinfo
 5B033C02      2156  include/utility
@@ -95,8 +95,8 @@ F0D14C0C     44838  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
 FDB7487B     15645  src/backend/Spelling.cpp
 D7404BF3     11389  src/backend/Spelling.h
-B28DE3DF     64347  src/backend/Tms6747.cpp
-4DAA0B86      7919  src/backend/Tms6747.h
+D3C1E194     78524  src/backend/Tms6747.cpp
+F5D08D60     11087  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
 BF4C34E3     96607  src/backend/X86_64Linux.cpp
@@ -106,10 +106,10 @@ BF4C34E3     96607  src/backend/X86_64Linux.cpp
 3F12405D       111  src/main.cpp
 F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
-5C9C564D     18388  src/optimizer/C6xSched.cpp
+60C0D533     45924  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
-E2C66E0F      8731  src/optimizer/Inliner.cpp
-962CD3D9      3006  src/optimizer/Inliner.h
+A167EFA0      8886  src/optimizer/Inliner.cpp
+3F1FED61      3478  src/optimizer/Inliner.h
 9968D309      4307  src/optimizer/Mir.h
 81E0B17C     20599  src/optimizer/MirAlloc.cpp
 2AD08ACD      4465  src/optimizer/MirAlloc.h
@@ -149,7 +149,7 @@ D5A5640B      3328  src/optimizer/OptTable.h
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 1C14F096     36229  src/parser/Parser.cpp
-9154BB49    117395  src/parser/Parser.h
+9597188B    117459  src/parser/Parser.h
 9BBF50AC    199014  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
 34A216F2    110754  src/parser/ParserExpr.cpp
@@ -158,12 +158,12 @@ D5A5640B      3328  src/optimizer/OptTable.h
 C7F1CA7B     86117  src/parser/ParserExprNew.cpp
 A480EFCD     68251  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
-A0821712     39559  src/parser/ParserOperator.cpp
+4F6EB018     41895  src/parser/ParserOperator.cpp
 1A336256     52944  src/parser/ParserOverload.cpp
 013A1E8F    100645  src/parser/ParserStmt.cpp
-B60497CC     97366  src/parser/ParserTemplate.cpp
+15BBF4D9     98098  src/parser/ParserTemplate.cpp
 94D8A01E     78995  src/parser/ParserTopLevel.cpp
 A98E0DE5    119608  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
-Sealed on 27-09-2026
+Sealed on 30-09-2026
