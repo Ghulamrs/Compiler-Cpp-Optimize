@@ -1,0 +1,6 @@
+hin\cpp11.out in-cpp11-r1 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 1
+hin\lnk6x.out in-lnk6x-r1 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 1
+hin\ccs55.out in-ccs55-r1 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 1
+hemb\cpp11.out emb-cpp11 "harnessFile=0" 
+hin\cpp11.out in-cpp11-r0 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 0
+hin\ccs55.out in-ccs55-r0 - cxxpp C:/cxx1/input/cpp/workload/adventure.cpp 0
