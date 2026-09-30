@@ -124,6 +124,25 @@ private:
     std::map<int, Slot> slots_;                // by frame offset, an inlined callee's locals included
     std::map<int, std::string> regOf_;         // offset -> the register (the low one of a pair)
     std::vector<std::string> promoted_;        // those registers, to be saved and restored
+    // A push whose pop lies past a call keeps its value in a spare callee-saved register: the memory
+    // it would go through is an L1D stall on the C6747. The first walk records which pushes cross a
+    // call; planSpills replays them to learn the registers, and the second walk hands them out.
+    std::vector<bool> pushCrossesCall_;
+    std::vector<int> pushEvents_;              // the first walk: +1 a word push, +2 a pair push, -1 a pop
+    std::vector<int> pushLoop_;                // per push, the loop depth it was met at
+    std::vector<std::pair<std::size_t, int> > pushOpen_;   // (seq, calls so far) per open push, first walk
+    std::size_t pushSeq_ = 0;
+    int callCount_ = 0;
+    bool leaf_ = false;                        // the first walk found no call and no loop: locals go in A16-A23
+    bool hasLoop_ = false;
+    bool paramInFrame_ = false;                // a parameter reached through A15
+    std::vector<std::string> spillPool_;
+    std::vector<std::string> spillHeld_;       // per open push: its register, "" for the stack
+    std::vector<std::string> spillUsed_;       // the registers the replay chose, saved with promoted_
+    std::string chooseSpill(bool wide);
+    void planSpills();
+    bool spillPush(bool wide);
+    bool spillPop(bool wide, const char *reg);
     bool planning_ = false;                    // the first walk: counting, and deciding nothing
     // The frame laid out by hotness at -O1 and -O2 (review B8): the most used slot nearest A15, so
     // it takes the *-A15(k) form; every slot the first walk reached has a place, and the saved

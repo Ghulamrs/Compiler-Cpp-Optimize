@@ -856,8 +856,20 @@ void foldPushPop(std::vector<Line> &v) {
         int depth = 0;
         for (std::size_t q = 0; q < pairs.size(); q++)
             if (pairs[q].first < push && pairs[q].second > pop) depth++;
-        if (depth >= 8) continue;
-        std::string lo = "A" + std::to_string(16 + 2 * depth), hi = "A" + std::to_string(17 + 2 * depth);
+        // The pair's registers must be dead at the push and untouched up to the pop - a leaf's local may
+        // live in A16-A23 - so the depth steps up past any that are not.
+        std::string lo, hi;
+        for (; depth < 8 && lo.empty(); depth++) {
+            const std::string l = "A" + std::to_string(16 + 2 * depth), h = "A" + std::to_string(17 + 2 * depth);
+            bool ok = deadAfter(v, push, l) && deadAfter(v, push, h);
+            for (std::size_t k = push + 1; k <= pop + 1 && ok; k++) {
+                std::vector<std::string> r, w;
+                readsAndWrites(v[k], r, w);
+                if (has(r, l) || has(w, l) || has(r, h) || has(w, h)) ok = false;
+            }
+            if (ok) { lo = l; hi = h; }
+        }
+        if (lo.empty()) continue;
         std::string src = v[push + 1].ops[0], dst = v[pop].ops[1];
         if (v[push + 1].mnem == "STDW") {      // the pair's halves take the two stack lines
             v[push] = make("MV", src.substr(src.find(':') + 1), lo);
