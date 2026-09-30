@@ -11497,3 +11497,37 @@ the invariant `MVKL/MVKH`, `MVK 192` and `MPY32 A11, 192` out of it is what it w
 `n - i`: a 64-bit counter (sieve's inner loop), `*p` as the test (hash's second loop), a predicated body (isort).
 No cross-path or B-side placement of a renamed value; no SPLOOP; no speculation of any kind - every iteration the
 pipeline runs is one the loop would have run.
+
+## Loop invariants hoisted to a preheader on the C6000, 2026-09-30
+
+**`hoistInvariants` (C6xSched.cpp) runs at -O2 before the pipeliner sees a loop.** A rotated loop - one block,
+entered by falling into its head from the test that guards it, its head named by the back branch alone - gets a
+preheader between that test's branch and the head, executed once per entry and skipped when the loop is empty.
+An instruction goes there when its sources are registers the loop never writes, or constants: `MVK`, a
+`MVKL`/`MVKH` pair (taken together), `MPY32` of an invariant by a hoisted constant, `ADD` of two invariants, and
+so on to a fixed point, so `mc + i*192` leaves matmul's inner loop whole. A destination the loop writes elsewhere
+takes a fresh register for that one value - its web, the reads up to the next writer, that writer's sources
+included - from side B where every reader has a crossed form for it (hash's `MVK 63` for its `CMPLT`, `MVK 26`
+for its `MPY32`), else its own side; a memory operand, a predicate, a pair half or a value the exit reads keeps
+its name and stays. Two hoisted instructions of the same operator over the same sources are one (`MVKL/MVKH mc`
+three times in matmul was three registers, and the pipeliner then could not tell `mc` from `mb`): the second's
+web takes the first's register. The pipeliner reads the preheader back with the same value rules, so a hoisted
+base is `@symbol + 192*reg:A11` to its alias analysis rather than an opaque register - which is what let
+matmul's load and store of `mc[i][j]` be told apart from `mb[k][j]` again.
+
+**And the II search no longer gives up renaming at the first II.** A schedule at II whose copies the pool cannot
+supply is passed over for II+1 with every register still renameable; only past the bound are the units without
+copies left unrenamed and the search rerun. matmul's inner loop went from refused to II=20 by that alone.
+
+**Measured.** VM6747 -c at -O2, the parent commit -> pipelining -> this round: hash 5,862,054 -> 3,776,054 ->
+2,910,054 (II 9 -> 5); matmul 784,012 -> 777,460 -> 362,260 (the inner loop II=20, S=2, 24 instructions of a
+62-cycle body); sieve 3,296,415 -> 2,896,439 -> 2,430,821; isort 3,533,045 -> 3,517,482 (its seed loop, II=14);
+fib and virt unchanged. `tests/cases/hoisted-invariants.cpp` (clang's output): a base shared by a load and a
+store, a row address from the outer index, a constant in a register the loop reuses and a value read after the
+loop, and a loop of no turns whose preheader must not run. tms6747.sh 344/0 at -O0, -O1, -O2; 344/344 -O2
+outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+**Left.** Re-running the copy peepholes after hoisting (the `MV A4, A21; MV A21, A4` round trip a clobber that is
+gone used to need) broke every kernel's output and was taken back out unexamined; it is the next cycle to find.
+A store's address recomputed from the counter after `ADD 1, i, i` is still its own web, and `*A11++` is item 2.

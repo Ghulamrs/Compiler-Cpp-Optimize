@@ -55,18 +55,52 @@ std::string objectOf(const Form &f) {
 
 struct Access { bool known = false; Form addr; };
 
+// What one line makes of its destination - a form, or nothing known - entered in val, the rest of its writes lost.
+void evalLine(const Line &l, const std::vector<std::string> &writes, std::map<std::string, Form> &val, std::set<std::string> &lost) {
+    if (writes.empty()) return;
+    const std::string &d = writes.back();
+    Form nv; bool knownV = false; long k = 0, k2 = 0;
+    const std::vector<std::string> &p = l.ops;
+    bool cst0 = p.size() > 1 && isNumber(p[0]), cst1 = p.size() > 2 && isNumber(p[1]);
+    Form v0 = p.size() > 1 && val.count(p[0]) ? val[p[0]] : Form(), v1 = p.size() > 2 && val.count(p[1]) ? val[p[1]] : Form();
+    bool k0 = cst0 || (p.size() > 1 && !v0.empty()), k1 = cst1 || (p.size() > 2 && !v1.empty());
+    if (cst0) v0 = formOf("", std::atol(p[0].c_str()));
+    if (cst1) v1 = formOf("", std::atol(p[1].c_str()));
+    if (l.pred.empty() && writes.size() == 1) {
+        if (l.mnem == "MVK" && cst0) { nv = v0; knownV = true; }
+        else if (l.mnem == "MVKL" && p.size() == 2) { nv = cst0 ? v0 : formOf("@" + p[0]); knownV = true; }
+        else if (l.mnem == "MVKH" && p.size() == 2 && val.count(d) && val[d] == (cst0 ? v0 : formOf("@" + p[0]))) { nv = val[d]; knownV = true; }
+        else if (l.mnem == "MV" && k0) { nv = v0; knownV = true; }
+        else if (l.mnem == "ADD" && k0 && k1) { nv = combine(v0, v1, 1); knownV = true; }
+        else if (l.mnem == "SUB" && k0 && k1) { nv = combine(v0, v1, -1); knownV = true; }
+        else if (l.mnem == "ADDK" && cst0 && val.count(d)) { nv = combine(val[d], v0, 1); knownV = true; }
+        else if (l.mnem == "SHL" && k0 && cst1 && isConstForm(v1, k) && k >= 0 && k < 31) { nv = scaled(v0, 1L << k); knownV = true; }
+        else if (l.mnem == "MPY32" && k0 && k1 && (isConstForm(v1, k2) || isConstForm(v0, k))) { nv = isConstForm(v1, k2) ? scaled(v0, k2) : scaled(v1, k); knownV = true; }
+    }
+    for (std::size_t w = 0; w < writes.size(); w++) { val.erase(writes[w]); lost.insert(writes[w]); }
+    if (knownV && !nv.empty()) { val[d] = nv; lost.erase(d); }
+}
+
 // The address forms of the body's memory operands, from a walk over the body with the induction variable as
 // `iv`, a register the loop never writes as its own term, and a register written before its first read unknown.
-std::vector<Access> addressForms(const std::vector<Line> &body, const std::string &iv, const std::set<std::string> &written) {
-    std::map<std::string, Form> val;
+std::vector<Access> addressForms(const std::vector<Line> &body, const std::vector<Line> &pre, const std::string &iv, const std::set<std::string> &written) {
+    std::map<std::string, Form> val, before;
     std::set<std::string> lost;
+    for (std::size_t o = 0; o < pre.size(); o++) {           // what the preheader computed, by the same rules
+        std::vector<std::string> reads, writes;
+        readsAndWrites(pre[o], reads, writes);
+        for (std::size_t r = 0; r < reads.size(); r++) if (!before.count(reads[r]) && !lost.count(reads[r])) before[reads[r]] = formOf(reads[r] == "A15" ? "A15" : "reg:" + reads[r]);
+        evalLine(pre[o], writes, before, lost);
+    }
+    lost.clear();
     std::vector<Access> out(body.size());
     for (std::size_t o = 0; o < body.size(); o++) {
         const Line &l = body[o];
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
         for (std::size_t r = 0; r < reads.size(); r++)
-            if (!val.count(reads[r]) && !lost.count(reads[r])) val[reads[r]] = reads[r] == iv ? formOf("iv") : written.count(reads[r]) ? Form() : formOf(reads[r] == "A15" ? "A15" : "reg:" + reads[r]);
+            if (!val.count(reads[r]) && !lost.count(reads[r]))
+                val[reads[r]] = reads[r] == iv ? formOf("iv") : written.count(reads[r]) ? Form() : before.count(reads[r]) ? before[reads[r]] : formOf(reads[r] == "A15" ? "A15" : "reg:" + reads[r]);
         if (isLoad(l.mnem) || isStore(l.mnem)) {
             const std::string &m = isStore(l.mnem) ? l.ops[1] : l.ops[0];
             std::string base; long off = 0; std::string index; long sign = 1;
@@ -88,29 +122,7 @@ std::vector<Access> addressForms(const std::vector<Line> &body, const std::strin
                 out[o].known = true; out[o].addr = a;
             }
         }
-        // What this line makes of its destination: a form, or nothing known.
-        if (writes.empty()) continue;
-        const std::string &d = writes.back();
-        Form nv; bool knownV = false; long k = 0, k2 = 0;
-        const std::vector<std::string> &p = l.ops;
-        bool cst0 = p.size() > 1 && isNumber(p[0]), cst1 = p.size() > 2 && isNumber(p[1]);
-        Form v0 = p.size() > 1 && val.count(p[0]) ? val[p[0]] : Form(), v1 = p.size() > 2 && val.count(p[1]) ? val[p[1]] : Form();
-        bool k0 = cst0 || (p.size() > 1 && !v0.empty()), k1 = cst1 || (p.size() > 2 && !v1.empty());
-        if (cst0) v0 = formOf("", std::atol(p[0].c_str()));
-        if (cst1) v1 = formOf("", std::atol(p[1].c_str()));
-        if (l.pred.empty() && writes.size() == 1) {
-            if (l.mnem == "MVK" && cst0) { nv = v0; knownV = true; }
-            else if (l.mnem == "MVKL" && p.size() == 2) { nv = cst0 ? v0 : formOf("@" + p[0]); knownV = true; }
-            else if (l.mnem == "MVKH" && p.size() == 2 && val.count(d) && val[d] == (cst0 ? v0 : formOf("@" + p[0]))) { nv = val[d]; knownV = true; }
-            else if (l.mnem == "MV" && k0) { nv = v0; knownV = true; }
-            else if (l.mnem == "ADD" && k0 && k1) { nv = combine(v0, v1, 1); knownV = true; }
-            else if (l.mnem == "SUB" && k0 && k1) { nv = combine(v0, v1, -1); knownV = true; }
-            else if (l.mnem == "ADDK" && cst0 && val.count(d)) { nv = combine(val[d], v0, 1); knownV = true; }
-            else if (l.mnem == "SHL" && k0 && cst1 && isConstForm(v1, k) && k >= 0 && k < 31) { nv = scaled(v0, 1L << k); knownV = true; }
-            else if (l.mnem == "MPY32" && k0 && k1 && (isConstForm(v1, k2) || isConstForm(v0, k))) { nv = isConstForm(v1, k2) ? scaled(v0, k2) : scaled(v1, k); knownV = true; }
-        }
-        for (std::size_t w = 0; w < writes.size(); w++) { val.erase(writes[w]); lost.insert(writes[w]); }
-        if (knownV && !nv.empty()) { val[d] = nv; lost.erase(d); }
+        evalLine(l, writes, val, lost);
     }
     return out;
 }
@@ -138,7 +150,7 @@ struct Loop {
     long boundK = 0;
     std::size_t cmp = 0;
     std::vector<std::size_t> bodyAt;    // the body's instruction lines, the compare and the branch left out
-    std::vector<Line> body;
+    std::vector<Line> body, pre;          // the body, and the block that falls into the head
     std::vector<Node> nodes;
     std::vector<Edge> edges;
     std::set<std::string> used, written, predicated, rmwFirst;
@@ -158,6 +170,7 @@ bool recognise(const std::vector<Line> &v, std::size_t back, const std::set<std:
     if (!found) { why = "the head is not above"; return false; }
     if (back + 1 >= v.size() || !isLabel(v[back + 1])) { why = "no exit label after the branch"; return false; }
     L.head = h; L.back = back; L.exitName = labelName(v[back + 1]);
+    for (std::size_t k = h; k-- > 0 && v[k].instr && !isBranch(v[k].mnem);) L.pre.insert(L.pre.begin(), v[k]);
     int names = 0;
     for (std::size_t i = 0; i < v.size(); i++) if (v[i].instr) for (std::size_t o = 0; o < v[i].ops.size(); o++) if (v[i].ops[o] == L.label) names++;
     if (names != 1) { why = "the head is entered from elsewhere"; return false; }
@@ -268,7 +281,7 @@ void buildEdges(Loop &L, const std::set<std::string> &renameable) {
         }
     }
     if (tracing() > 3) for (std::size_t e = 0; e < L.edges.size(); e++) std::fprintf(stderr, "  edge %s %d->%d (%d,%d)\n", L.edges[e].why, L.edges[e].from, L.edges[e].to, L.edges[e].delay, L.edges[e].dist);
-    std::vector<Access> addr = addressForms(L.body, L.iv, L.written);
+    std::vector<Access> addr = addressForms(L.body, L.pre, L.iv, L.written);
     for (std::size_t a = 0; a < n.size(); a++) {
         if (!n[a].mem) continue;
         for (std::size_t b = a; b < n.size(); b++) {
@@ -546,10 +559,10 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
     }
     std::set<std::string> renameable;
     for (std::size_t u = 0; u < units.size(); u++) {
-        bool ok = false;
+        bool ok = true;                                     // every half written: a pair's names move together
         for (std::size_t h = 0; h < units[u].regs.size(); h++) {
             const std::string &r = units[u].regs[h];
-            if (L.written.count(r)) ok = true;
+            if (!L.written.count(r)) ok = false;
             if (L.predicated.count(r) || L.rmwFirst.count(r) || r == L.C || r == "A15" || r == "B15" || r == "B3" || r == "B14") { ok = false; break; }
         }
         if (ok) for (std::size_t h = 0; h < units[u].regs.size(); h++) renameable.insert(units[u].regs[h]);
@@ -564,60 +577,66 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
         seq = criticalPath(L);
         int lateMax = 0;
         for (std::size_t o = 0; o < L.nodes.size(); o++) lateMax = std::max(lateMax, L.nodes[o].late);
-        bool ok = false;
-        for (II = lateMax + 1; II <= 64 && 5 * II <= 4 * seq && !ok; II++) {
+        // Each II in turn: a schedule, then the copies its spans need; an II whose copies the pool cannot
+        // give is passed over for the next, and only past the bound are the units without them left unrenamed.
+        bool any = false, done = false;
+        std::vector<std::string> failed;
+        for (II = lateMax + 1; II <= 64 && 5 * II <= 4 * seq; II++) {
+            bool ok = false;
             std::vector<int> push(L.nodes.size(), 0), was;
             for (int retry = 0; retry < 8 && !ok; retry++) { was = push; ok = scheduleAt(L, II, t, renameable, minQ, push); if (push == was) break; }
-            if (ok) break;
-        }
-        if (!ok) { why = "no schedule under four fifths of the " + std::to_string(seq) + "-cycle iteration"; return false; }
-        int len = 0;
-        for (std::size_t o = 0; o < t.size(); o++) len = std::max(len, t[o] + 1);
-        S = (len + II - 1) / II;
-        // Each unit's span from its first write's landing to its last use, the reads of the old value a turn on.
-        int qMax = 1;
-        std::size_t k = 0;
-        std::vector<std::string> failed;
-        for (std::size_t x = 0; x < units.size(); x++) { units[x].q = 1; units[x].carried = units[x].exits = false; }
-        for (std::map<std::string, std::size_t>::const_iterator it = unitOf.begin(); it != unitOf.end(); ++it, k++) {
-            Unit &un = units[it->second];
-            const std::uint64_t bit = bitOf(it->first);
-            if (!renameable.count(it->first) || !L.written.count(it->first)) continue;
-            int start = 1 << 30, end = 0;
-            for (std::size_t o = 0; o < L.nodes.size(); o++) {
-                if (L.nodes[o].writes & bit) { start = std::min(start, t[o] + L.nodes[o].lat); end = std::max(end, t[o] + L.nodes[o].lat); }
-                if (L.nodes[o].reads & bit) end = std::max(end, t[o] + L.nodes[o].late + (firstWrite[k] >= static_cast<int>(o) ? II : 0));
-            }
-            int q = std::max((end - start) / II + 1, minQ.count(it->first) ? minQ[it->first] : 1);
-            un.q = std::max(un.q, pow2At(q));
-            if (firstWrite[k] < (1 << 30)) for (std::size_t o = 0; o <= static_cast<std::size_t>(firstWrite[k]); o++) if (L.nodes[o].reads & bit) un.carried = true;
-            if ((L.liveExit & bit) || it->first == L.iv || it->first == L.bound) un.exits = true;
-        }
-        for (std::size_t x = 0; x < units.size(); x++) qMax = std::max(qMax, units[x].q);
-        u = pow2At(std::max((6 + II - 1) / II, qMax));
-        // The copies: the register itself, then q-1 more of its side - a pair's two halves aligned.
-        std::vector<std::string> free = pool;
-        for (std::size_t x = 0; x < units.size(); x++) {
-            Unit &un = units[x];
-            un.copies.assign(un.regs.size(), std::vector<std::string>());
-            for (std::size_t h = 0; h < un.regs.size(); h++) un.copies[h].push_back(un.regs[h]);
-            for (int c = 1; c < un.q; c++) {
-                bool got = false;
-                for (std::size_t f = 0; f < free.size() && !got; f++) {
-                    if (sideOf(free[f]) != sideOf(un.regs[0])) continue;
-                    if (un.regs.size() == 1) { un.copies[0].push_back(free[f]); free.erase(free.begin() + static_cast<long>(f)); got = true; break; }
-                    int num = std::atoi(free[f].c_str() + 1);
-                    if (num % 2) continue;
-                    std::string hi = std::string(1, free[f][0]) + std::to_string(num + 1);
-                    std::vector<std::string>::iterator ih = std::find(free.begin(), free.end(), hi);
-                    if (ih == free.end()) continue;
-                    un.copies[0].push_back(free[f]); un.copies[1].push_back(hi);
-                    free.erase(ih); free.erase(free.begin() + static_cast<long>(f)); got = true;
+            if (!ok) continue;
+            any = true;
+            failed.clear();
+            int len = 0;
+            for (std::size_t o = 0; o < t.size(); o++) len = std::max(len, t[o] + 1);
+            S = (len + II - 1) / II;
+            // Each unit's span from its first write's landing to its last use, the reads of the old value a turn on.
+            int qMax = 1;
+            std::size_t k = 0;
+            for (std::size_t x = 0; x < units.size(); x++) { units[x].q = 1; units[x].carried = units[x].exits = false; }
+            for (std::map<std::string, std::size_t>::const_iterator it = unitOf.begin(); it != unitOf.end(); ++it, k++) {
+                Unit &un = units[it->second];
+                const std::uint64_t bit = bitOf(it->first);
+                if (!renameable.count(it->first) || !L.written.count(it->first)) continue;
+                int start = 1 << 30, end = 0;
+                for (std::size_t o = 0; o < L.nodes.size(); o++) {
+                    if (L.nodes[o].writes & bit) { start = std::min(start, t[o] + L.nodes[o].lat); end = std::max(end, t[o] + L.nodes[o].lat); }
+                    if (L.nodes[o].reads & bit) end = std::max(end, t[o] + L.nodes[o].late + (firstWrite[k] >= static_cast<int>(o) ? II : 0));
                 }
-                if (!got) { failed.push_back(un.regs[0]); break; }
+                int q = std::max((end - start) / II + 1, minQ.count(it->first) ? minQ[it->first] : 1);
+                un.q = std::max(un.q, pow2At(q));
+                if (firstWrite[k] < (1 << 30)) for (std::size_t o = 0; o <= static_cast<std::size_t>(firstWrite[k]); o++) if (L.nodes[o].reads & bit) un.carried = true;
+                if ((L.liveExit & bit) || it->first == L.iv || it->first == L.bound) un.exits = true;
             }
+            for (std::size_t x = 0; x < units.size(); x++) qMax = std::max(qMax, units[x].q);
+            u = pow2At(std::max((6 + II - 1) / II, qMax));
+            // The copies: the register itself, then q-1 more of its side - a pair's two halves aligned.
+            std::vector<std::string> free = pool;
+            for (std::size_t x = 0; x < units.size(); x++) {
+                Unit &un = units[x];
+                un.copies.assign(un.regs.size(), std::vector<std::string>());
+                for (std::size_t h = 0; h < un.regs.size(); h++) un.copies[h].push_back(un.regs[h]);
+                for (int c = 1; c < un.q; c++) {
+                    bool got = false;
+                    for (std::size_t f = 0; f < free.size() && !got; f++) {
+                        if (sideOf(free[f]) != sideOf(un.regs[0])) continue;
+                        if (un.regs.size() == 1) { un.copies[0].push_back(free[f]); free.erase(free.begin() + static_cast<long>(f)); got = true; break; }
+                        int num = std::atoi(free[f].c_str() + 1);
+                        if (num % 2) continue;
+                        std::string hi = std::string(1, free[f][0]) + std::to_string(num + 1);
+                        std::vector<std::string>::iterator ih = std::find(free.begin(), free.end(), hi);
+                        if (ih == free.end()) continue;
+                        un.copies[0].push_back(free[f]); un.copies[1].push_back(hi);
+                        free.erase(ih); free.erase(free.begin() + static_cast<long>(f)); got = true;
+                    }
+                    if (!got) { failed.push_back(un.regs[0]); break; }
+                }
+            }
+            if (failed.empty()) { done = true; break; }
         }
-        if (failed.empty()) break;
+        if (!any) { why = "no schedule under four fifths of the " + std::to_string(seq) + "-cycle iteration"; return false; }
+        if (done) break;
         for (std::size_t f = 0; f < failed.size(); f++) {
             const Unit &un = units[unitOf[failed[f]]];
             if (tracing() > 1) std::fprintf(stderr, "  II=%d: no %d copies of %s\n", II, un.q, failed[f].c_str());
