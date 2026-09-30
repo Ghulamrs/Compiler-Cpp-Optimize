@@ -11319,3 +11319,23 @@ printing their `.expected`:**
 2.60x cl6x 7.4.4 -O2 where it was 3.24x on 2026-09-29, and **the LNK6x-linked images now
 take exactly the cycles of the 7.4.4-linked ones on every kernel** (was within 24). -O1 is
 2.04x 7.4.4 -O1. hash is where the gap is: 126,000 `__c6xabi_remi` calls, the review's B3.
+
+**Compiler++, the whole program, 2026-09-30 (C:\cxx1\split\cpp4): faster than both TI compilers
+at -O2, and not yet their size.** Ten files, one simulator run each, 40 of 40 with clang's
+fingerprint; cpp11 -O2 + ASM6x linked by 7.4.4 and by LNK6x take the same cycles on every file.
+
+| | CCS 5.5 (7.4.4) | CCS 7.4 (8.2.2) | cpp11 -O2 | ÷ 7.4 | ÷ 5.5 |
+| --- | --- | --- | --- | --- | --- |
+| cycles, ten files | 9,355,361,348 | 9,097,357,333 | 8,683,542,284 | 0.955 | 0.928 |
+| at 300 MHz | 31,185 ms | 30,325 ms | 28,945 ms | | |
+
+Before the round (09-29 09:16) cpp11 was 1.19x and 1.16x. The TI columns repeat 09-29's to the
+cycle. Linux, adventure alone: cpp11 and the LNK6x image 512,478,427 - Windows' exact count -
+where 7.4.4's own image is 514,185,011 there and 497,211,043 on Windows (the two installs build
+different code; Windows is the reference).
+
+Code bytes of the harness object, -O1: cpp11 946,368 (1,281,088 before the round) against
+550,752 for 8.2.2 -O1 (1.72x) and 482,400 for 8.2.2 -O2 -ms3 (1.96x); -O2 989,472 against
+685,728 (1.44x). 23% of cpp11's instructions are NOPs and a call is four words where CALLP is
+one - the order of work to bring every column to 1.3x or under is CALLP/BNOP, the scheduler at
+-O1, temporaries in registers, a size level, then ASM6x's compact forms.

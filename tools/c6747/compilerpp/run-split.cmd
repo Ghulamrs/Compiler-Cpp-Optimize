@@ -14,11 +14,13 @@ if "%C6747_EHLIB%"=="" set C6747_EHLIB=C:\cxx1\c6747-lib
 if "%C6747_EHLIB74%"=="" set C6747_EHLIB74=C:\Users\GRA\Documents\VM6747\tilib
 if "%FILES%"=="" set FILES=10
 if "%MAXRUNS%"=="" set MAXRUNS=12
+rem BUILDS: the images to time; lnk6x.out, cpp11's object linked by LNK6x on the Mac, is shipped ready.
+if "%BUILDS%"=="" set BUILDS=ccs55 ccs74 cpp11
 cd /d "%W%"
 del /q *.result *.cio *.log 2>nul
 rem SKIPBUILD=1 reuses the three images already here.
 if "%SKIPBUILD%"=="1" goto launch
-del /q *.out *.built 2>nul
+del /q ccs55.out ccs74.out cpp11.out *.built 2>nul
 if not exist o55 mkdir o55
 if not exist o74 mkdir o74
 start "ccs74" /b cmd /c ""%CG74%\bin\cl6x" -mv6740 --abi=eabi -O2 --rtti --symdebug:none -I"%CG74%\include" -I. --obj_directory=o74 harness.cpp -z --rom_model -i"%C6747_EHLIB74%" C6747-ddr.cmd -lrts6740_elf_eh.lib -m ccs74.map -o ccs74.out > ccs74.build.log 2>&1 & echo done> ccs74.built"
@@ -30,9 +32,11 @@ if not exist ccs74.built (ping -n 6 127.0.0.1 >nul & goto wait)
 set /a LAST=%FILES%-1
 rem Three seconds apart, every simulator session starting its own Eclipse, and no more than
 rem MAXRUNS at once: a run slowed by too many beside it is a run that meets the 30-minute cap.
-for %%b in (ccs55 ccs74 cpp11) do for /l %%k in (0,1,%LAST%) do call :start %%b %%k
+for %%b in (%BUILDS%) do for /l %%k in (0,1,%LAST%) do call :start %%b %%k
 rem Held open until every run has answered, or the session's children could go with it.
-set /a WANT=3*%FILES%
+set NB=0
+for %%b in (%BUILDS%) do set /a NB+=1
+set /a WANT=%NB%*%FILES%
 :gather
 set N=0
 for %%r in (*.result) do set /a N+=1
