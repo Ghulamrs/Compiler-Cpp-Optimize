@@ -11365,3 +11365,19 @@ CCS 7.4 -O2, was 1.44x). ASM6x's "truncated to 16 bits" warnings on the harness'
 tables fell from 7 to 0 at -O1 and 11 to 4 at -O2, the functions being smaller (C-A5 is still
 the real fix). **A trap met measuring it**: `git stash; make; git stash pop; make` left the
 restored sources unbuilt and two identical binaries - delete the objects before believing one.
+
+## C-A5: a function past 64 KB gets pr2 tables, and TI's runtime unwinds them, 2026-09-30
+
+**`Tms6747::emitExceptionTable` wrote every table as pr3 with `.half` scopes**, which wrap past
+64 KB. A function whose instruction lines reach 0xF000 bytes (4 bytes a line, an upper bound)
+now gets `__c6xabi_unwind_cpp_pr2`: every scope `.ulong`, and the frame as pr2 byte-codes -
+`d0` SP from A15, `80|mask` the pops with pr3's mask, `e7` return and padding (`0x8201d090,
+0x6fe7e7e7` for A15, B10, B3, A10-A13). The byte-code layout was read against cl6x's own
+`0x8201eb00, 0xa043e7e7`; the non-compact pop is the EABI's. **TI's C6747 simulator is the
+proof**: `exception-table-large` (two 1,100-call functions, ~70 KB each at -O2) prints its
+`.expected` at -O1 and -O2, linked by lnk6x 7.4.4 and by LNK6x (`MAP=C6747-ddr.cmd
+tools/c6747-levels`, its .text being past SHRAM). VM6747 learned pr2 in `bdf893b`; with it
+tms6747.sh 341/0 at -O0, -O1, -O2. The Compiler++ harness assembles with no "truncated to 16
+bits" warning at -O1 or -O2 (one pr2 function). Not done: the compact pr4 cl6x uses for small
+functions, and `tools/c6747-levels` passes cl6x no `--exceptions`, so its TI columns refuse a
+program that throws.

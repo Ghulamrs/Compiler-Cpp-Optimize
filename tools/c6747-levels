@@ -22,6 +22,7 @@ ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
 [ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe   # from a worktree under .claude/
 LNK6X=${LNK6X:-$ROOT/../LNK6x/build/lnk6x.exe}
 [ -x "$LNK6X" ] || LNK6X=$HOME/Developer/Claude/LNK6x/build/lnk6x.exe
+MAP=${MAP:-C6747.cmd}
 TILIB=${TILIB:-$HOME/c6747-lib}   # a copy of the box's C:\cxx1\c6747-lib: rts6740_elf_eh.lib from 7.4.4's mklib
 STAMP=${STAMP:-$(date +%m%d-%H%M%S)}
 WREMOTE="C:\\cxx1\\bench-levels\\$STAMP"
@@ -31,7 +32,8 @@ T0=$(date +%s)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bl"
-for f in C6747.cmd runca.js c6747ca-windows.ccxml par-one.cmd bench-levels.cmd; do cp "$ROOT/tools/c6747/$f" "$WORK/bl/"; done
+for f in runca.js c6747ca-windows.ccxml par-one.cmd bench-levels.cmd; do cp "$ROOT/tools/c6747/$f" "$WORK/bl/"; done
+cp "$ROOT/tools/c6747/$MAP" "$WORK/bl/C6747.cmd"   # MAP=C6747-ddr.cmd for a program past SHRAM's 128 KB
 NAMES=""
 for p in "$DIR"/*.c "$DIR"/*.cpp; do
     [ -f "$p" ] || continue
@@ -48,7 +50,7 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
         # LNK6x's image of the same object, made here from the command file and library TI's linker gets.
         [ -x "$LNK6X" ] && [ -f "$TILIB/rts6740_elf_eh.lib" ] || continue
         if "$LNK6X" --cgt=7.4.4 -mv6740 --abi=eabi "$WORK/bl/$n.cpp11-$L.obj" --heap_size=0x800 --stack_size=0x800 -i"$TILIB" \
-              --rom_model "$ROOT/tools/c6747/C6747.cmd" -lrts6740_elf_eh.lib -m "$WORK/bl/$n.cpp11-$L-lnk6x.map" \
+              --rom_model "$ROOT/tools/c6747/$MAP" -lrts6740_elf_eh.lib -m "$WORK/bl/$n.cpp11-$L-lnk6x.map" \
               -o "$WORK/bl/$n.cpp11-$L-lnk6x.out" > "$WORK/$n.$L.lnk6x.log" 2>&1; then :
         else echo "c6747-levels: LNK6x did not link $n -$L:"; sed 's/^/      /' "$WORK/$n.$L.lnk6x.log" | head -4; fi
     done
