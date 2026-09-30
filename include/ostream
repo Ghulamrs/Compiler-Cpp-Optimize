@@ -119,7 +119,7 @@ public:
 
     ostream &write(const char *s, streamsize n) {
         if (buf_ != 0) {
-            for (streamsize i = 0; i < n; i++) *buf_ += s[i];
+            if (n > 0) buf_->append(s, (std::size_t)n);
             return *this;
         }
         FILE *f = target();

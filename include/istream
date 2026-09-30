@@ -216,14 +216,24 @@ inline istream &getline(istream &in, string &s, char delim) {
 
 inline istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
 
-// Everything left in the source, copied a byte at a time. `<ostream>` is
-// already included above, so both sides of this are complete here.
+// Everything left in the source, in blocks: a string source's remainder in one write, a file
+// through fread 512 bytes at a time (fgetc per byte cost ~630 cycles a byte on the C6747).
 inline ostream &operator<<(ostream &out, streamsource src) {
-    if (src.from == 0) return out;
-    int c = src.from->get();
-    while (c >= 0) {
-        out.put((char)c);
-        c = src.from->get();
+    istream *in = src.from;
+    if (in == 0) return out;
+    if (in->src_ != 0) {
+        if (in->pos_ < in->src_->size())
+            out.write(in->src_->data() + in->pos_, (streamsize)(in->src_->size() - in->pos_));
+        in->pos_ = in->src_->size();
+        return out;
+    }
+    FILE *f = in->target();
+    if (f == 0) return out;
+    char block[512];
+    for (;;) {
+        std::size_t n = std::fread(block, 1, sizeof block, f);
+        if (n > 0) out.write(block, (streamsize)n);
+        if (n < sizeof block) break;
     }
     return out;
 }

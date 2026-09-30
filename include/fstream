@@ -82,8 +82,14 @@ public:
     // Whole-file read, which is what `rdbuf()` would have been used for.
     string readAll() {
         string all;
-        int c = get();
-        while (c >= 0) { all += (char)c; c = get(); }
+        FILE *f = target();
+        if (f == 0) return all;
+        char block[512];
+        for (;;) {
+            std::size_t n = std::fread(block, 1, sizeof block, f);
+            if (n > 0) all.append(block, n);
+            if (n < sizeof block) break;
+        }
         return all;
     }
 };
