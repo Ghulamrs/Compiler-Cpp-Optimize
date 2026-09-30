@@ -1,9 +1,9 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 27-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 165 files, seal 0A50A5DE
+CRC32  size  file - 165 files, seal FF03BFB7
 ------------------------------------------------------------------
-47F9F56F      9941  Makefile
+535824C4     10265  Makefile
 2DF96A05      2820  examples/Makefile
 18130E0A      1166  examples/Makefile.linux
 B7E59690      1164  examples/Makefile.macos
@@ -68,7 +68,7 @@ CAFE9E5B      3766  lib/math.h
 E20D4640      3250  lib/time.h
 3F11D8A9      2826  msvc/build.cmd
 A0490168      1512  src/Abi.h
-6C19ADD3     25722  src/Ast.h
+B86FC4E8     25835  src/Ast.h
 D2FF9873     52617  src/Driver.cpp
 2603AB21      2999  src/Driver.h
 C8BDF6D6     19988  src/Lexer.cpp
@@ -95,8 +95,8 @@ F0D14C0C     44838  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
 FDB7487B     15645  src/backend/Spelling.cpp
 D7404BF3     11389  src/backend/Spelling.h
-C4EE1713     89362  src/backend/Tms6747.cpp
-6E382B37     11748  src/backend/Tms6747.h
+547D6122     98237  src/backend/Tms6747.cpp
+95A5D3E9     12606  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
 BF4C34E3     96607  src/backend/X86_64Linux.cpp
@@ -107,8 +107,8 @@ BF4C34E3     96607  src/backend/X86_64Linux.cpp
 F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
 857BF7D4      4403  src/optimizer/C6xModel.h
-0D08CF75     45537  src/optimizer/C6xPipe.cpp
-D719BB6A     67083  src/optimizer/C6xSched.cpp
+D2A2024C     45643  src/optimizer/C6xPipe.cpp
+29ABEE04     67440  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
 4DC6880D       381  src/optimizer/DivMagic.h
 A167EFA0      8886  src/optimizer/Inliner.cpp
@@ -151,7 +151,7 @@ D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
-1C14F096     36229  src/parser/Parser.cpp
+95439B05     36347  src/parser/Parser.cpp
 9597188B    117459  src/parser/Parser.h
 9BBF50AC    199014  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
