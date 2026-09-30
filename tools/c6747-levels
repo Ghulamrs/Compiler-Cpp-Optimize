@@ -47,7 +47,7 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
         else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; continue; fi
         # LNK6x's image of the same object, made here from the command file and library TI's linker gets.
         [ -x "$LNK6X" ] && [ -f "$TILIB/rts6740_elf_eh.lib" ] || continue
-        if "$LNK6X" -mv6740 --abi=eabi "$WORK/bl/$n.cpp11-$L.obj" --heap_size=0x800 --stack_size=0x800 -i"$TILIB" \
+        if "$LNK6X" --cgt=7.4.4 -mv6740 --abi=eabi "$WORK/bl/$n.cpp11-$L.obj" --heap_size=0x800 --stack_size=0x800 -i"$TILIB" \
               --rom_model "$ROOT/tools/c6747/C6747.cmd" -lrts6740_elf_eh.lib -m "$WORK/bl/$n.cpp11-$L-lnk6x.map" \
               -o "$WORK/bl/$n.cpp11-$L-lnk6x.out" > "$WORK/$n.$L.lnk6x.log" 2>&1; then :
         else echo "c6747-levels: LNK6x did not link $n -$L:"; sed 's/^/      /' "$WORK/$n.$L.lnk6x.log" | head -4; fi
