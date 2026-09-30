@@ -1,0 +1,1 @@
+'void *' converts to another pointer only with a cast in C++

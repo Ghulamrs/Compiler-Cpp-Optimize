@@ -86,20 +86,13 @@ Until 2026-09-17 the owner was the function's *bare* name, `f.n`, so S::f,
 T::f, f(int) and f(double) collided in one file and a destructor's static
 was `~S.d`, which no assembler takes; the mangled symbol is unique.
 
-## A `void *` converts to any object pointer on its own
+## A `void *` converted to any object pointer on its own - closed 2026-09-30
 
-```cpp
-void *raw = malloc(4);
-int *p = raw;        // cxx1 accepts. C++ requires a cast; C does not.
-```
-
-This is C's rule, inherited from Compiler-C along with the parser, and it is
-what lets the untriaged C corpus reach `malloc` without a cast. It is the one
-direction that is wrong: `int *` to `void *` is legal in both languages.
-
-The const hole in it *is* closed - `const int *` will not convert to `void *`,
-only to `const void *` - because that route would have undone the whole of the
-const work in one line.
+`int *p = raw;` for a `void *raw` was accepted, C's rule inherited from Compiler-C
+and kept so the untriaged C corpus could reach `malloc` without a cast. cpp11 now
+sends a `.c` file to c90, so nothing here needed it, and [conv.ptr]/2 is followed:
+`T *` to `void *` implicitly (its const kept), back only by a cast. Fable's review
+of 2026-09-29 (A7) found it; `tests/cases/void-pointer-to-object-refused.cpp`.
 
 ## A class name cannot be hidden by an object of the same name
 

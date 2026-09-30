@@ -583,8 +583,8 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
             from->pointee()->isConst())
             return Rank::None;
-        if (to->pointee()->isVoid() || from->pointee()->isVoid())
-            return Rank::Conversion;
+        // [conv.ptr]/2: any object pointer to void *, and never back without a cast.
+        if (to->pointee()->isVoid()) return Rank::Conversion;
         return Rank::None;
     }
 
@@ -1074,13 +1074,14 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (publiclyDerivedFrom(ft->pointee(), to->pointee()) &&
             (to->pointee()->isConst() || !ft->pointee()->isConst()))
             return;
-        // An implicit conversion through void * is C's rule, kept here and
-        // recorded in docs/CONFORMANCE.md - but it must not become the way
-        // round const that the rule above just closed.
+        // [conv.ptr]/2: an object pointer converts to void * implicitly, keeping its const;
+        // void * converts back only by a cast, which is where C++ parts from C.
         if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
             ft->pointee()->isConst())
             refuse(" - 'void *' would drop the const; 'const void *' keeps it");
-        if (to->pointee()->isVoid() || ft->pointee()->isVoid()) return;
+        if (to->pointee()->isVoid()) return;
+        if (ft->pointee()->isVoid())
+            refuse(" - 'void *' converts to another pointer only with a cast in C++, where C allows it");
         // The commonest way to meet this rule is a C program handing a
         // string literal to a 'char *', so it is worth saying which rule
         // stopped it rather than leaving the reader to work back from const.
