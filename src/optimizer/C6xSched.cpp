@@ -969,6 +969,37 @@ void foldAddressing(std::vector<Line> &v) {
         if (!l.instr || !l.pred.empty()) continue;
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
+        // `ADD k, R, R` whose next touch of R is an access through `*R` is that access through `*++R(k)`.
+        if ((l.mnem == "ADD" || l.mnem == "SUB") && l.ops.size() == 3 && writes.size() == 1 && l.ops[2] == writes[0] &&
+            sideOf(writes[0]) && writes[0] != "A15" && writes[0] != "B15" && (isNumber(l.ops[0]) != isNumber(l.ops[1])) &&
+            (isNumber(l.ops[0]) ? l.ops[1] : l.ops[0]) == writes[0] && !(l.mnem == "SUB" && isNumber(l.ops[0]))) {
+            const std::string R = writes[0];
+            long k = std::atol((isNumber(l.ops[0]) ? l.ops[0] : l.ops[1]).c_str());
+            if (l.mnem == "SUB") k = -k;
+            for (std::size_t j = i + 1; j < v.size(); j++) {
+                if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+                if (blockEnd(v[j])) break;
+                std::vector<std::string> r2, w2;
+                readsAndWrites(v[j], r2, w2);
+                if (!has(r2, R) && !has(w2, R)) continue;
+                const Line &u = v[j];
+                if (u.pred.empty() && u.ops.size() == 2 && (isLoad(u.mnem) || isStore(u.mnem))) {
+                    const std::size_t at = isStore(u.mnem) ? 1 : 0;
+                    const long size = accessSize(u.mnem), mag = k < 0 ? -k : k;
+                    std::vector<std::string> data;
+                    registersIn(u.ops[1 - at], data);
+                    if (u.ops[at] == "*" + R && mag != 0 && mag % size == 0 && mag <= 31 && !has(data, R)) {
+                        std::vector<std::string> ops = u.ops;
+                        ops[at] = (k < 0 ? "*--" : "*++") + R + "(" + std::to_string(mag) + ")";
+                        v[j] = rebuilt(u.mnem, ops);
+                        v.erase(v.begin() + static_cast<long>(i));
+                        i--;
+                    }
+                }
+                break;
+            }
+            continue;
+        }
         if ((l.mnem == "ADD" || l.mnem == "SUB" || l.mnem == "SUBAW") && l.ops.size() == 3 && writes.size() == 1 && !has(reads, writes[0])) {
             const bool k0 = isNumber(l.ops[0]), k1 = isNumber(l.ops[1]);
             if (l.mnem != "ADD" && !k1) continue;
