@@ -3,6 +3,7 @@
 // the delay slots of its branch filled, and padded to the hazards that remain.
 
 #include "C6xSched.h"
+#include "C6xModel.h"
 
 #include <cctype>
 #include <cstdint>
@@ -12,18 +13,7 @@
 #include <sstream>
 #include <vector>
 
-namespace {
-
-enum { UL = 1, US = 2, UD = 4, UM = 8 };   // the units, as a bitmask
-
-struct Line {
-    std::string raw;
-    bool instr = false;
-    std::string pred;                   // "A1" or "!A1", read as A1
-    std::string mnem;
-    std::vector<std::string> ops;
-    std::uint64_t liveOut = ~0ull;      // the registers live at the end of this line's block
-};
+namespace c6x {
 
 bool startsWith(const std::string &s, const char *p) { return s.compare(0, std::string(p).size(), p) == 0; }
 bool endsWith(const std::string &s, const char *p) {
@@ -87,7 +77,7 @@ Line parse(const std::string &raw) {
     return l;
 }
 
-Line make(const std::string &mnem, const std::string &a, const std::string &b = "", const std::string &c = "") {
+Line make(const std::string &mnem, const std::string &a, const std::string &b, const std::string &c) {
     std::string raw = "\t" + mnem + "\t" + a;
     if (!b.empty()) raw += ", " + b;
     if (!c.empty()) raw += ", " + c;
@@ -95,7 +85,7 @@ Line make(const std::string &mnem, const std::string &a, const std::string &b = 
 }
 
 // An instruction rebuilt from its parts, every operand kept, and the predicate with it.
-Line rebuilt(const std::string &mnem, const std::vector<std::string> &ops, const std::string &pred = "") {
+Line rebuilt(const std::string &mnem, const std::vector<std::string> &ops, const std::string &pred) {
     std::string raw = "\t" + (pred.empty() ? std::string() : "[" + pred + "]\t") + mnem;
     for (std::size_t o = 0; o < ops.size(); o++) raw += (o == 0 ? "\t" : ", ") + ops[o];
     return parse(raw);
@@ -250,7 +240,7 @@ void computeLiveness(std::vector<Line> &v) {
     }
     for (std::size_t b = 0; b < nb; b++) {
         std::size_t end = b + 1 < nb ? starts[b + 1] : v.size();
-        for (std::size_t i = starts[b]; i < end; i++) v[i].liveOut = out[b];
+        for (std::size_t i = starts[b]; i < end; i++) { v[i].liveOut = out[b]; v[i].liveIn = in[b]; }
     }
 }
 
@@ -663,25 +653,6 @@ void foldPushPop(std::vector<Line> &v) {
 // ----- the list scheduler -----
 
 
-// One instruction as the scheduler sees it: what it reads and writes, its
-// latency, the units it has a form on, its side and cross path, its memory
-// access, and the edges from the earlier instructions it must follow.
-struct Node {
-    Line line;
-    std::uint64_t reads = 0, writes = 0;
-    int lat = 1;
-    int late = 0;                       // the cycles after issue its sources are still read, and its unit held
-    unsigned units = 0;                 // a bitmask of UL, US, UD, UM; 0 for a form the table does not know
-    int side = -1;                      // 0 A, 1 B, -1 either (a branch to a label)
-    int cross = -1;                     // the cross path used, by the side that reads: 0 1X, 1 2X, -1 none
-    bool mem = false, store = false;
-    int tpath = -1;                     // a load's or store's data path: the data register's side
-    std::string memBase; long memOff = 0; int memSize = 0; bool memFrame = false;
-    bool branch = false, call = false;
-    std::vector<std::pair<int, int> > preds;   // (earlier node, the least distance in cycles)
-    int issue = -1, height = 0;
-};
-
 // The units a mnemonic has a form on for these operands, from asm6x's table
 // (ASM6x src/forms.h): the three-operand arithmetic on any of .L .S .D with a
 // register, the small constants on .L and .S, the wider ones on .D alone.
@@ -783,18 +754,6 @@ bool mayAlias(const Node &a, const Node &b) {
     if (!a.memFrame || !b.memFrame) return true;
     return a.memOff < b.memOff + b.memSize && b.memOff < a.memOff + a.memSize;
 }
-
-// The packet being filled at one cycle: the units taken on each side, the
-// cross paths, the data paths, the registers written and the branch.
-struct Packet {
-    bool unit[2][4] = { { false, false, false, false }, { false, false, false, false } };
-    bool held[2][4] = { { false, false, false, false }, { false, false, false, false } };   // by an earlier cycle's DP instruction
-    bool cross[2] = { false, false }, tpath[2] = { false, false };
-    std::uint64_t writes = 0;
-    bool branch = false, alone = false;
-    int count = 0;
-    std::vector<const Node *> members;
-};
 
 // Whether every member, with the candidate added, can be given a unit: a
 // depth-first assignment over the four letters of a side, the side of a
@@ -959,6 +918,7 @@ std::string schedule(const std::vector<Line> &v) {
     auto flush = [&]() { if (!block.empty()) scheduleBlock(block, out); block.clear(); };
     for (std::size_t i = 0; i < v.size(); i++) {
         if (isLabel(v[i]) && passThrough(v[i], named)) { out << v[i].raw << "\n"; continue; }
+        if (v[i].verbatim) { flush(); out << v[i].raw << "\n"; continue; }
         if (!v[i].instr) { flush(); out << v[i].raw << "\n"; continue; }
         block.push_back(makeNode(v[i], labels));
         if (isBranch(v[i].mnem)) flush();
@@ -1031,7 +991,9 @@ std::string foldBranchNops(const std::string &text, bool near) {
     return out;
 }
 
-}   // namespace
+}   // namespace c6x
+
+using namespace c6x;
 
 std::string c6xSchedule(const std::string &text, int level) {
     if (level <= 0) return text;
@@ -1058,6 +1020,7 @@ std::string c6xSchedule(const std::string &text, int level) {
     }
     rotateLoops(lines);
     tidyJumps(lines);
+    if (level >= 2) pipelineLoops(lines);
     std::string text2 = schedule(lines);
     std::size_t words = 0;
     for (std::size_t i = 0; i < text2.size(); i++) if (text2[i] == '\n') words++;
