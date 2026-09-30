@@ -133,7 +133,10 @@ $(OBJDIR)/%.o: src/%.cpp
 # extern "C", which are rung 2.
 # The suites are told which binary, since a BINDIR build puts cpp11.exe
 # somewhere other than here; unset, each falls back to ./cpp11.exe.
+# ide/'s Visual Studio and Xcode projects list their sources by name, where this Makefile globs:
+# a source missing there built here and failed RIDE's Windows link (C6xPipe.cpp, 2026-09-30).
 test: $(TARGET)
+	@python3 ide/generate.py --check >/dev/null || { echo "make test: ide/ projects are stale - run python3 ide/generate.py"; exit 1; }
 	@CXX1=$(TARGET) ./tests/run.sh
 	@CXX1=$(TARGET) ./tests/emit.sh
 	@CXX1=$(TARGET) ./tests/names.sh

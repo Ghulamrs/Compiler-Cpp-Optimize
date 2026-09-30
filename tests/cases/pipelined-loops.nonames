@@ -1,0 +1,3 @@
+x86_64-linux  `main.counts` against clang's `_ZZ4mainE6counts` is how cxx1 spells a **static local** - a name of its own rather than the Itanium local-name encoding, as every static-local case here does (direct-init-scalar.nonames); nothing links against it, a static local having no linkage. Every other name agrees.
+x86_64-windows  The same static local, `?counts@?1??main@@9@4QBHB` in clang's spelling.
+arm64-darwin  The same, with Mach-O's leading underscore.
