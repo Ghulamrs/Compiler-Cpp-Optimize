@@ -143,6 +143,10 @@ private:
     void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
     void spAdjust(int delta);                 // B15 += delta (negative allocates)
     void localAddr(int off, const char *dst); // dst = A15 - off
+    bool frameSlot(const Expr &e, int &disp) const;   // a local or a member of one: its displacement from A15
+    static bool frameFits(int disp, int size);        // whether frameOperand can name it
+    std::string frameOperand(int disp, int size);     // *-A15(k), *+A15(k), or the scaled form through A0
+    int accessSize(const Type *t) const;              // the bytes one load or store of t moves
     void push();                              // push A4
     void pop(const char *reg);                // reg = top; SP += 8
     bool isDouble(const Type *t) const;       // a 64-bit floating type
@@ -158,10 +162,11 @@ private:
     void wideCast(const Type *from, const Type *to);
     int stackParamOffset(const std::vector<Param> &ps, std::size_t i);
     int stackArg(const Type *t, int &end);
-    std::string stackArgAccess(const Type *t, bool store, const char *reg);
+    std::string stackArgAccess(const Type *t, bool store, const std::string &mem);
     void genAddr(const Expr &e);              // address of an lvalue -> A4
     void load(const Type *t);                 // [A4] -> A4
-    void store(const Type *t, const char *addrReg);  // A4 -> [addrReg]
+    void loadFrom(const Type *t, const std::string &mem);   // mem -> A4
+    void store(const Type *t, const std::string &mem);      // A4 -> mem
     void narrowInt(const Type *t);            // truncate A4 to t's width
     void emitGlobal(const Global &g, Segment seg);
     void emitData(const Program &program);

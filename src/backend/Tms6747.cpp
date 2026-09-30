@@ -217,6 +217,42 @@ void Tms6747::localAddr(int off, const char *dst) {
     }
 }
 
+// A local, or a member reached from one by `.` alone, has a fixed place in the frame: its
+// displacement from A15, negative for a local and positive for a stack parameter.
+bool Tms6747::frameSlot(const Expr &e, int &disp) const {
+    if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (!v->isLocal()) return false;
+        disp = -(kSaveBytes + localBase_ + v->offset());
+        return true;
+    }
+    if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
+        if (m->isBitField() || !frameSlot(m->object(), disp)) return false;
+        disp += m->offset();
+        return true;
+    }
+    return false;
+}
+
+// The ucst5 form holds 31 units of the access size, the register form 32767 (MVK into A0).
+bool Tms6747::frameFits(int disp, int size) {
+    int k = disp < 0 ? -disp : disp;
+    return k % size == 0 && k / size <= 32767;
+}
+
+// The operand naming the frame slot at disp for an access of size bytes: `*-A15(k)` where k
+// fits, the scaled register form past that, A0 written. The caller asked frameFits first.
+std::string Tms6747::frameOperand(int disp, int size) {
+    int k = disp < 0 ? -disp : disp;
+    const char *sign = disp < 0 ? "-" : "+";
+    if (k / size <= 31) return std::string("*") + sign + "A15(" + std::to_string(k) + ")";
+    out_ << "\tMVK\t" << k / size << ", A0\n";
+    return std::string("*") + sign + "A15[A0]";
+}
+
+int Tms6747::accessSize(const Type *t) const {
+    return isWide(t) || inPairWide(t) ? 8 : t->size(target_);
+}
+
 // A4 += bytes, for a member's offset.
 void Tms6747::addOffset(int bytes) {
     if (bytes == 0) return;
@@ -338,22 +374,23 @@ void Tms6747::genAddr(const Expr &e) {
     unsupported("this address");
 }
 
-void Tms6747::load(const Type *t) {
+void Tms6747::load(const Type *t) { loadFrom(t, "*A4"); }
+void Tms6747::loadFrom(const Type *t, const std::string &mem) {
     if (t->isArray() || t->isStructOrUnion()) return;   // the address is the value
-    if (isWide(t)) { out_ << "\tLDDW\t*A4, A5:A4\n\tNOP\t4\n"; return; }
+    if (isWide(t)) { out_ << "\tLDDW\t" << mem << ", A5:A4\n\tNOP\t4\n"; return; }
     int sz = t->size(target_);
     bool sign = t->isSigned(target_);
     const char *op = sz == 1 ? (sign ? "LDB" : "LDBU")
                    : sz == 2 ? (sign ? "LDH" : "LDHU")
                              : "LDW";
-    out_ << "\t" << op << "\t*A4, A4\n\tNOP\t4\n";
+    out_ << "\t" << op << "\t" << mem << ", A4\n\tNOP\t4\n";
 }
 
-void Tms6747::store(const Type *t, const char *addrReg) {
-    if (isWide(t)) { out_ << "\tSTDW\tA5:A4, *" << addrReg << "\n"; return; }
+void Tms6747::store(const Type *t, const std::string &mem) {
+    if (isWide(t)) { out_ << "\tSTDW\tA5:A4, " << mem << "\n"; return; }
     int sz = t->size(target_);
     const char *op = sz == 1 ? "STB" : sz == 2 ? "STH" : "STW";
-    out_ << "\t" << op << "\tA4, *" << addrReg << "\n";
+    out_ << "\t" << op << "\tA4, " << mem << "\n";
 }
 
 void Tms6747::narrowInt(const Type *t) {
@@ -512,7 +549,16 @@ void Tms6747::visit(const Num &n) {
     movImm("A4", n.value());
     if (isWide(n.type())) movImm("A5", n.value() >> 32);
 }
-void Tms6747::visit(const Var &n) { genAddr(n); load(n.type()); }
+// A scalar local is read where it sits, A15-relative, and an aggregate answers with its address.
+void Tms6747::visit(const Var &n) {
+    int disp;
+    if (!n.type()->isArray() && !n.type()->isStructOrUnion() && frameSlot(n, disp) && frameFits(disp, accessSize(n.type()))) {
+        loadFrom(n.type(), frameOperand(disp, accessSize(n.type())));
+        return;
+    }
+    genAddr(n);
+    load(n.type());
+}
 
 // ---- bit-fields ----------------------------------------------------------
 // A bit-field is width bits from bitOffset up in the unit at the member's
@@ -547,7 +593,7 @@ void Tms6747::bitFieldInsert(const MemberAccess &m) {     // value A4 -> *A6
         if (low <= 31) out_ << "\tCLR\tA4, " << low << ", " << (high < 31 ? high : 31) << ", A4\n";
         if (high >= 32) out_ << "\tCLR\tA5, " << (low > 32 ? low - 32 : 0) << ", " << (high - 32) << ", A5\n";
         out_ << "\tOR\tA4, A8, A4\n\tOR\tA5, A9, A5\n";
-        store(m.type(), "A6");
+        store(m.type(), "*A6");
         bitFieldExtract(m);
         return;
     }
@@ -559,7 +605,7 @@ void Tms6747::bitFieldInsert(const MemberAccess &m) {     // value A4 -> *A6
          << ", A3\n";                                       // the low width bits
     if (low != 0) out_ << "\tSHL\tA3, " << low << ", A3\n";
     out_ << "\tOR\tA4, A3, A4\n";
-    store(m.type(), "A6");
+    store(m.type(), "*A6");
     bitFieldExtract(m);                     // the expression's value: the field
 }
 
@@ -567,6 +613,12 @@ void Tms6747::visit(const Assign &n) {
     const MemberAccess *bf = dynamic_cast<const MemberAccess *>(&n.target());
     if (bf != nullptr && !bf->isBitField()) bf = nullptr;
 
+    int disp;
+    if (bf == nullptr && !n.type()->isStructOrUnion() && frameSlot(n.target(), disp) && frameFits(disp, accessSize(n.type()))) {
+        n.value().accept(*this);    // A4 = the value, and stays it: the result
+        store(n.type(), frameOperand(disp, accessSize(n.type())));
+        return;
+    }
     n.value().accept(*this);        // A4 = value (a struct's is its address)
     push();                         // save the value
     if (bf) bitFieldUnitAddr(*bf);  // A4 = the unit's address
@@ -579,7 +631,7 @@ void Tms6747::visit(const Assign &n) {
         out_ << "\tMV\tA6, A4\n";    // the result: the target, by address
         return;
     }
-    store(n.type(), "A6");           // *A6 = A4 ; A4 stays the value (the result)
+    store(n.type(), "*A6");           // *A6 = A4 ; A4 stays the value (the result)
 }
 
 void Tms6747::visit(const Unary &n) {
@@ -799,10 +851,16 @@ void Tms6747::wideBinary(const Binary &n) {
 
 void Tms6747::visit(const Postfix &n) {
     const Type *t = n.type();
-    genAddr(n.target());            // A4 = address
-    push();                         // save address
-    load(t);                        // A4 = old value
-    pushValue(t);                   // save old value  (stack: top=old, next=addr)
+    // An integer local in its slot: the old value kept in A6 (A7) while A4 is stepped and stored.
+    int disp;
+    const bool inFrame = !t->isFloating() && frameSlot(n.target(), disp) && frameFits(disp, accessSize(t));
+    if (inFrame) { loadFrom(t, frameOperand(disp, accessSize(t))); moveValue(t, "A6"); }
+    else {
+        genAddr(n.target());        // A4 = address
+        push();                     // save address
+        load(t);                    // A4 = old value
+        pushValue(t);               // save old value  (stack: top=old, next=addr)
+    }
     int step = n.step();
     if (t->isFloating()) {
         bool dp = isDouble(t);
@@ -819,9 +877,12 @@ void Tms6747::visit(const Postfix &n) {
         else { movImm("A0", step); out_ << (n.increment() ? "\tADD\tA4, A0, A4\n" : "\tSUB\tA4, A0, A4\n"); }
         narrowInt(t);               // A4 = new value
     }
-    popValue(t, "A6");              // A6 = old value
-    pop("A3");                      // A3 = address
-    store(t, "A3");                 // *A3 = new value (A4)
+    if (inFrame) store(t, frameOperand(disp, accessSize(t)));
+    else {
+        popValue(t, "A6");          // A6 = old value
+        pop("A3");                  // A3 = address
+        store(t, "*A3");            // *A3 = new value (A4)
+    }
     out_ << "\tMV\tA6, A4\n";        // the expression's value is the old value
     if (isWide(t)) out_ << "\tMV\tA7, A5\n";
 }
@@ -956,7 +1017,7 @@ void Tms6747::visit(const Call &n) {
     for (int k = 0; k < onStack; k++) {
         genArg(n, inRegs + k);
         regAdd("B15", at[k], "B0");
-        out_ << stackArgAccess(args[inRegs + k]->type(), true, "B0");
+        out_ << stackArgAccess(args[inRegs + k]->type(), true, "*B0");
     }
 
     if (n.callee() != nullptr) {
@@ -1009,14 +1070,14 @@ int Tms6747::stackArg(const Type *t, int &end) {
     return at;
 }
 // The load or store of a stack argument of type t at *reg, in its own size.
-std::string Tms6747::stackArgAccess(const Type *t, bool store, const char *reg) {
-    if (isWide(t) || inPairWide(t)) return std::string(store ? "\tSTDW\tA5:A4, *" : "\tLDDW\t*") + reg + (store ? "\n" : ", A5:A4\n\tNOP\t4\n");
+std::string Tms6747::stackArgAccess(const Type *t, bool store, const std::string &mem) {
+    if (isWide(t) || inPairWide(t)) return std::string(store ? "\tSTDW\tA5:A4, " : "\tLDDW\t") + mem + (store ? "\n" : ", A5:A4\n\tNOP\t4\n");
     int sz = t->isStructOrUnion() || t->isArray() ? 4 : t->size(target_);
     bool sign = !t->isStructOrUnion() && !t->isArray() && t->isSigned(target_);
     const char *op = store ? (sz == 1 ? "STB" : sz == 2 ? "STH" : "STW")
                            : (sz == 1 ? (sign ? "LDB" : "LDBU") : sz == 2 ? (sign ? "LDH" : "LDHU") : "LDW");
-    if (store) return std::string("\t") + op + "\tA4, *" + reg + "\n";
-    return std::string("\t") + op + "\t*" + reg + ", A4\n\tNOP\t4\n";
+    if (store) return std::string("\t") + op + "\tA4, " + mem + "\n";
+    return std::string("\t") + op + "\t" + mem + ", A4\n\tNOP\t4\n";
 }
 
 // Argument i into A4: its value, or for a struct the address of its copy.
@@ -1181,6 +1242,11 @@ void Tms6747::visit(const MemberAccess &n) {
         bitFieldExtract(n);
         return;
     }
+    int disp;
+    if (!n.type()->isArray() && !n.type()->isStructOrUnion() && frameSlot(n, disp) && frameFits(disp, accessSize(n.type()))) {
+        loadFrom(n.type(), frameOperand(disp, accessSize(n.type())));
+        return;
+    }
     genAddr(n);
     load(n.type());
 }
@@ -1287,10 +1353,11 @@ void Tms6747::emitParams(const Function &fn) {
                 }
             }
         } else {
-            // The caller's B15 was A15; its stack arguments start one word
-            // above that.
-            regAdd("A15", stackParamOffset(ps, i), "A0");
-            out_ << stackArgAccess(t, false, "A0");
+            // The caller's B15 was A15; its stack arguments start one word above that.
+            const int at = stackParamOffset(ps, i);
+            const int sz = byRef ? 4 : accessSize(t);
+            if (frameFits(at, sz)) out_ << stackArgAccess(t, false, frameOperand(at, sz));
+            else { regAdd("A15", at, "A0"); out_ << stackArgAccess(t, false, "*A0"); }
         }
         if (inPair(t)) {
             // The value itself, into the parameter's slot, in its own bytes.
@@ -1305,8 +1372,10 @@ void Tms6747::emitParams(const Function &fn) {
             copyBlock(t->size(target_), "A4", "A1", t->align(target_));
             continue;
         }
+        const int disp = -(kSaveBytes + localBase_ + ps[i].offset);
+        if (frameFits(disp, accessSize(t))) { store(t, frameOperand(disp, accessSize(t))); continue; }
         localAddr(ps[i].offset, "A0");
-        store(t, "A0");
+        store(t, "*A0");
     }
 }
 
