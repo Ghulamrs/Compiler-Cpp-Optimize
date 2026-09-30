@@ -1021,12 +1021,22 @@ void add(Packet &p, const Node &n) {
     p.writes |= n.writes;
 }
 
+struct Pending { std::uint64_t writes; int lands; };   // a write in flight where a block ends, for the one fallen into
+
 // One block - the instructions between two labels, ending in its branch if it has one - scheduled by list scheduling: the edges between instructions
 // are the register and memory orders with their distances in cycles, each cycle takes the ready instructions of greatest height that its packet has
 // units for, and the branch goes as early as leaves every other instruction issued in its window and landed by the time its target runs.
-void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
+std::vector<Pending> scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out, const std::vector<Pending> &in, bool carry) {
     const std::size_t n = nodes.size();
-    int branchAt = -1;
+    int branchAt = -1, landing = 0;
+    std::vector<int> minIssue(n, 0);                     // what the block before still has in flight
+    for (std::size_t p = 0; p < in.size(); p++) {
+        landing = std::max(landing, in[p].lands);
+        for (std::size_t i = 0; i < n; i++) {
+            if (nodes[i].reads & in[p].writes) minIssue[i] = std::max(minIssue[i], in[p].lands);
+            if (nodes[i].writes & in[p].writes) minIssue[i] = std::max(minIssue[i], in[p].lands - nodes[i].lat + 1);
+        }
+    }
     for (std::size_t i = 0; i < n; i++) if (nodes[i].branch) branchAt = static_cast<int>(i);
     for (std::size_t i = 0; i < n; i++) {
         Node &b = nodes[i];
@@ -1056,7 +1066,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
             int best = -1;
             for (std::size_t i = 0; i < n; i++) {
                 Node &x = nodes[i];
-                if (x.issue >= 0 || x.branch) continue;
+                if (x.issue >= 0 || x.branch || c < minIssue[i]) continue;
                 bool ready = true;
                 for (std::size_t e = 0; e < x.preds.size() && ready; e++) {
                     const Node &y = nodes[static_cast<std::size_t>(x.preds[e].first)];
@@ -1085,7 +1095,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
     for (std::size_t i = 0; i < n; i++) if (!nodes[i].branch) length = std::max(length, nodes[i].issue + nodes[i].lat);
     if (branchAt >= 0) {
         Node &b = nodes[static_cast<std::size_t>(branchAt)];
-        int at = 0;
+        int at = std::max(0, landing - 6);
         for (std::size_t e = 0; e < b.preds.size(); e++) {
             const Node &y = nodes[static_cast<std::size_t>(b.preds[e].first)];
             at = std::max(at, y.issue + b.preds[e].second);
@@ -1104,6 +1114,16 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         add(cycles[static_cast<std::size_t>(at)], b);
         length = b.line.mnem == "CALLP" ? at + 1 : at + 6;
     }
+    // Falling into a label: the block ends at its last issue, its late landings handed on; else it waits for them.
+    std::vector<Pending> pend;
+    if (carry && branchAt < 0) {
+        length = 0;
+        for (std::size_t i = 0; i < n; i++) length = std::max(length, nodes[i].issue + 1 + nodes[i].late);
+        for (std::size_t i = 0; i < n; i++)
+            if (nodes[i].issue + nodes[i].lat > length) { Pending p = { nodes[i].writes, nodes[i].issue + nodes[i].lat - length }; pend.push_back(p); }
+        for (std::size_t p = 0; p < in.size(); p++)
+            if (in[p].lands > length) { Pending q = { in[p].writes, in[p].lands - length }; pend.push_back(q); }
+    } else length = std::max(length, landing);
     int nops = 0;
     for (int c = 0; c < length; c++) {
         const Packet *p = c < static_cast<int>(cycles.size()) ? &cycles[static_cast<std::size_t>(c)] : nullptr;
@@ -1112,6 +1132,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
         for (std::size_t k = 0; k < p->members.size(); k++) out << (k == 0 ? "" : "||") << p->members[k]->line.raw << "\n";
     }
     while (nops > 0) { out << "\tNOP\t" << std::min(nops, 9) << "\n"; nops -= std::min(nops, 9); }
+    return pend;
 }
 
 // A label of the backend's own flow - the kinds only a branch of this text
@@ -1139,15 +1160,26 @@ std::string schedule(const std::vector<Line> &v) {
     }
     std::ostringstream out;
     std::vector<Node> block;
-    auto flush = [&]() { if (!block.empty()) scheduleBlock(block, out); block.clear(); };
+    std::vector<Pending> pend;
+    // A label is fallen into with the block's late writes in flight; anything else waits for them to land.
+    auto flush = [&](bool carry) {
+        if (!block.empty()) pend = scheduleBlock(block, out, pend, carry);
+        else if (!carry) {
+            int wait = 0;
+            for (std::size_t p = 0; p < pend.size(); p++) wait = std::max(wait, pend[p].lands);
+            while (wait > 0) { out << "\tNOP\t" << std::min(wait, 9) << "\n"; wait -= std::min(wait, 9); }
+            pend.clear();
+        }
+        block.clear();
+    };
     for (std::size_t i = 0; i < v.size(); i++) {
         if (isLabel(v[i]) && passThrough(v[i], named)) { out << v[i].raw << "\n"; continue; }
-        if (v[i].verbatim) { flush(); out << v[i].raw << "\n"; continue; }
-        if (!v[i].instr) { flush(); out << v[i].raw << "\n"; continue; }
+        if (v[i].verbatim) { flush(false); out << v[i].raw << "\n"; continue; }
+        if (!v[i].instr) { flush(isLabel(v[i])); out << v[i].raw << "\n"; continue; }
         block.push_back(makeNode(v[i], labels));
-        if (isBranch(v[i].mnem)) flush();
+        if (isBranch(v[i].mnem)) flush(true);
     }
-    flush();
+    flush(false);
     return out.str();
 }
 

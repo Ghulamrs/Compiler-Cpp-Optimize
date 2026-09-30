@@ -11553,3 +11553,25 @@ output): byte, short, word and double walks forward and back, a step of three sh
 that is no whole element, the pointer returned after the walk. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345
 -O2 outputs assemble with ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
 `CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+## A block's late writes cross into the label it falls into, on the C6000, 2026-09-30
+
+**`scheduleBlock` used to land everything at a block's end** - a load's four delay slots, a multiply's three -
+before the label that follows, whoever reaches that label. It hands them on now: a block that ends by falling
+into a label stops at its last issue (a DP instruction's unit hold included) and returns the writes still in
+flight with the cycle each lands; the next block schedules under them - a reader of such a register issues no
+earlier than the landing, a writer lands strictly after it, its branch goes no earlier than the landing less
+six, and if it ends without a label after it, it waits for what is left. A block reached by a branch from
+elsewhere as well as by falling through sees the same constraints, which on the branching path merely wait for
+nothing, since a taken branch lands everything before its target runs as before. A directive, a verbatim
+kernel or the end of the text still wait for every landing, as does an empty run of labels before one.
+
+**The epilogue is scheduled with the body**, one `c6xSchedule` call where there were two, so a function's
+last result lands under its return's delay slots: `MPY32 A16, A4, A4` straight into `L$return: LDW || MV ||
+B B3` where `NOP 3` stood, which is virt's `area()`. At -O0 the call returns its text unchanged, so the golden
+did not move.
+
+**Measured.** VM6747 -c at -O2: virt 1,400,239 -> 1,340,239; the other five kernels to the cycle, their
+functions ending in a loop's exit branch. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345 -O2 outputs assemble with
+ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
+`CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
