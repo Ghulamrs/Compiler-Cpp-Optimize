@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""c6x-dphazards file.s ... - the C67x double-precision hazards a C6000 schedule must keep.
+
+Walked cycle by cycle within each block (a packet is one cycle, NOP n is n):
+  late read   ADDDP, SUBDP, CMPxxDP, MPYSPDP, DPINT, DPSP, DPTRUNC read a pair's high word one
+              cycle after issue, MPYDP, MPYI and MPYID up to three: a write to a source
+              register that lands before the last read corrupts it (SPRUFE8, each
+              instruction's pipeline table). A write issued at cycle c with d delay slots is
+              seen from c + d + 1, so it corrupts a read in cycle r when c + d < r.
+  busy unit   the same instructions hold their unit 2 cycles (4 for MPYDP, MPYI, MPYID): no
+              other instruction may take that unit on that side in the cycles between.
+Prints each violation and a count; exit 1 if any.
+"""
+import re, sys
+
+READ_SPAN = {'MPYDP': 3, 'MPYI': 3, 'MPYID': 3}
+FU_BUSY = {'MPYDP': 4, 'MPYI': 4, 'MPYID': 4}
+DELAY = {'MPYDP': 9, 'ADDDP': 6, 'SUBDP': 6, 'INTDP': 4, 'INTDPU': 4, 'MPYSP': 3, 'ADDSP': 3,
+         'SUBSP': 3, 'MPYSPDP': 6, 'DPSP': 3, 'DPINT': 3, 'DPTRUNC': 3, 'SPDP': 1, 'MPY32': 3,
+         'MPY32U': 3, 'MPYI': 8, 'MPYID': 9}
+
+
+def dp_reader(m):
+    if m in READ_SPAN: return True
+    return m in ('ADDDP', 'SUBDP', 'MPYSPDP', 'DPINT', 'DPSP', 'DPTRUNC') or (m.startswith('CMP') and m.endswith('DP'))
+
+
+def delay(m):
+    if m in DELAY: return DELAY[m]
+    if m.startswith('LD'): return 4
+    if m.startswith('CMP') and (m.endswith('DP') or m.endswith('SP')): return 1
+    return 0
+
+
+def regs(op):
+    out = []
+    for part in re.findall(r'[AB]\d+(?::[AB]\d+)?', op):
+        for r in part.split(':'): out.append(r)
+    return out
+
+
+def parse(line):
+    s = line.split(';')[0].rstrip()
+    if not s.strip() or not s[0].isspace() and not s.startswith('||'): return None
+    par = s.lstrip().startswith('||')
+    body = s.lstrip().lstrip('|').strip()
+    if body.startswith('.'): return None
+    m = re.match(r'(\[!?[AB]\d\]\s*)?([A-Z][A-Z0-9]*)(\.[A-Z][12]X?)?\s*(.*)', body)
+    if not m: return None
+    mn, unit, rest = m.group(2), m.group(3), m.group(4)
+    ops = [o.strip() for o in rest.split(',')] if rest else []
+    return par, mn, unit, ops
+
+
+def check(path):
+    bad = 0
+    cyc = 0
+    pending = []   # (last read cycle, regs, text, line no) of DP readers in this block
+    busy = []      # (until cycle, side, unit letter or None, text)
+    writes = []    # (land cycle, reg, text, line no) of writes in this block
+    for no, line in enumerate(open(path, errors='ignore'), 1):
+        raw = line.rstrip('\n')
+        if raw and not raw[0].isspace() and not raw.startswith('||'):
+            cyc = 0; pending = []; busy = []; writes = []   # a label: a block begins
+            continue
+        p = parse(raw)
+        if p is None: continue
+        par, mn, unit, ops = p
+        if mn == 'NOP':
+            cyc += int(ops[0]) if ops and ops[0].isdigit() else 1
+            continue
+        if not par: cyc += 1
+        dst = regs(ops[-1]) if ops and mn not in ('B', 'BNOP') and not mn.startswith('ST') else []
+        srcs = [r for o in (ops[:-1] if dst else ops) for r in regs(o)]
+        land = cyc + delay(mn)
+        # a write landing inside an earlier DP reader's read window
+        for (last, rs, txt, ln) in pending:
+            for r in dst:
+                if r in rs and land < last and ln != no:
+                    bad += 1
+                    print('%s:%d: late read: %s writes %s at cycle %d, but %s (line %d) reads it until %d'
+                          % (path, no, raw.strip(), r, land, txt, ln, last))
+        # this unit held by an earlier multi-cycle instruction
+        side = None; letter = None
+        if unit: side, letter = unit[2], unit[1]
+        elif mn.startswith('MPY') and dst: side, letter, unit = dst[0][0].replace('A', '1').replace('B', '2'), 'M', '.M?'
+        for (until, s, u, txt) in busy:
+            if letter and s == side and u == letter and cyc <= until and txt != raw.strip():
+                bad += 1
+                print('%s:%d: busy unit: %s on %s while %s holds it until %d' % (path, no, raw.strip(), unit, txt, until))
+        if dp_reader(mn):
+            span = READ_SPAN.get(mn, 1)
+            pending.append((cyc + span, set(srcs), raw.strip(), no))
+            # a write in the same packet or before that lands in the window
+            for (wland, r, txt, ln) in writes:
+                if r in srcs and cyc <= wland < cyc + span:
+                    bad += 1
+                    print('%s:%d: late read: %s (line %d) writes %s at cycle %d, inside %s\'s reads until %d'
+                          % (path, ln, txt, ln, r, wland, raw.strip(), cyc + span))
+            if letter: busy.append((cyc + FU_BUSY.get(mn, 2) - 1, side, letter, raw.strip()))
+        for r in dst: writes.append((land, r, raw.strip(), no))
+    return bad
+
+
+total = 0
+for f in sys.argv[1:]:
+    total += check(f)
+print('c6x-dphazards: %d violation(s) in %d file(s)' % (total, len(sys.argv) - 1))
+sys.exit(1 if total else 0)

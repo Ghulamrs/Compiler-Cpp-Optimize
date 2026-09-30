@@ -50,6 +50,17 @@ int delaySlots(const std::string &m) {
     return 0;
 }
 
+// The C67x's double-precision instructions read a pair's high word after issue - one cycle
+// later for ADDDP, SUBDP, CMPxxDP, MPYSPDP and the DPxx conversions, up to three for MPYDP,
+// MPYI and MPYID - and hold their unit that long (SPRUFE8). TI's cycle-accurate simulator:
+// 1.0 + 2.0 by ADDDP with A7 zeroed in its packet is 1, 3.0 * 2.0 by MPYDP with A7 zeroed in
+// the next is 0 (tools/c6x-dphazards finds both in a schedule).
+int lateReads(const std::string &m) {
+    if (m == "MPYDP" || m == "MPYI" || m == "MPYID") return 3;
+    if (m == "ADDDP" || m == "SUBDP" || m == "MPYSPDP" || m == "DPSP" || m == "DPINT" || m == "DPTRUNC") return 1;
+    return startsWith(m, "CMP") && endsWith(m, "DP") ? 1 : 0;
+}
+
 Line parse(const std::string &raw) {
     Line l;
     l.raw = raw;
@@ -615,6 +626,7 @@ struct Node {
     Line line;
     std::uint64_t reads = 0, writes = 0;
     int lat = 1;
+    int late = 0;                       // the cycles after issue its sources are still read, and its unit held
     unsigned units = 0;                 // a bitmask of UL, US, UD, UM; 0 for a form the table does not know
     int side = -1;                      // 0 A, 1 B, -1 either (a branch to a label)
     int cross = -1;                     // the cross path used, by the side that reads: 0 1X, 1 2X, -1 none
@@ -691,6 +703,7 @@ Node makeNode(const Line &l, const std::set<std::string> &labels) {
     n.reads = maskOf(reads);
     n.writes = maskOf(writes);
     n.lat = delaySlots(l.mnem) + 1;
+    n.late = lateReads(l.mnem);
     n.units = unitsFor(l);
     if (l.mnem == "B") {
         n.branch = true;
@@ -730,6 +743,7 @@ bool mayAlias(const Node &a, const Node &b) {
 // cross paths, the data paths, the registers written and the branch.
 struct Packet {
     bool unit[2][4] = { { false, false, false, false }, { false, false, false, false } };
+    bool held[2][4] = { { false, false, false, false }, { false, false, false, false } };   // by an earlier cycle's DP instruction
     bool cross[2] = { false, false }, tpath[2] = { false, false };
     std::uint64_t writes = 0;
     bool branch = false, alone = false;
@@ -764,7 +778,8 @@ bool fits(const Packet &p, const Node &n) {
     if (n.writes & p.writes) return false;
     std::vector<const Node *> m = p.members;
     m.push_back(&n);
-    bool taken[2][4] = { { false, false, false, false }, { false, false, false, false } };
+    bool taken[2][4];
+    for (int s = 0; s < 2; s++) for (int u = 0; u < 4; u++) taken[s][u] = p.held[s][u];
     return assignUnits(m, 0, taken);
 }
 
@@ -794,7 +809,7 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
             const Node &a = nodes[j];
             int d = -1;
             if (a.writes & b.reads) d = std::max(d, a.lat);
-            if (a.reads & b.writes) d = std::max(d, a.store ? 1 : 0);
+            if (a.reads & b.writes) d = std::max(d, std::max(a.store ? 1 : 0, a.late - b.lat + 1));
             if (a.writes & b.writes) d = std::max(d, std::max(1, a.lat - b.lat + 1));
             if (a.mem && b.mem && (a.store || b.store) && mayAlias(a, b)) d = std::max(d, 1);
             if (d >= 0) b.preds.push_back(std::make_pair(static_cast<int>(j), d));
@@ -810,9 +825,9 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
     std::vector<Packet> cycles;
     std::size_t left = n - (branchAt >= 0 ? 1 : 0);
     for (int c = 0; left > 0; c++) {
-        cycles.push_back(Packet());
-        Packet &p = cycles.back();
+        if (static_cast<int>(cycles.size()) <= c) cycles.push_back(Packet());
         for (;;) {
+            Packet &p = cycles[static_cast<std::size_t>(c)];   // taken afresh: holding a unit may grow the vector
             int best = -1;
             for (std::size_t i = 0; i < n; i++) {
                 Node &x = nodes[i];
@@ -827,9 +842,18 @@ void scheduleBlock(std::vector<Node> &nodes, std::ostringstream &out) {
                 if (best < 0 || x.height > nodes[static_cast<std::size_t>(best)].height) best = static_cast<int>(i);
             }
             if (best < 0) break;
-            nodes[static_cast<std::size_t>(best)].issue = c;
-            add(p, nodes[static_cast<std::size_t>(best)]);
+            Node &chosen = nodes[static_cast<std::size_t>(best)];
+            chosen.issue = c;
+            add(p, chosen);
             left--;
+            // A DP instruction holds its unit on its side - each it might be given - for its late cycles.
+            for (int k = 1; k <= chosen.late; k++) {
+                while (static_cast<int>(cycles.size()) <= c + k) cycles.push_back(Packet());
+                for (int side = 0; side < 2; side++) {
+                    if (chosen.side >= 0 && chosen.side != side) continue;
+                    for (int u = 0; u < 4; u++) if (chosen.units & (1u << u)) cycles[static_cast<std::size_t>(c + k)].held[side][u] = true;
+                }
+            }
         }
     }
     int length = 0;
