@@ -10,8 +10,8 @@ list of files that differ, added or gone, and a non-zero status - so a build
 script can gate on it.
 
 What is sealed is what a release *is*: the compiler's own sources, the two
-header directories every program it compiles reaches into, and the worked
-example that ships beside them. Nothing that is
+header directories every program it compiles reaches into - source code only,
+no examples. Nothing that is
 generated (obj/, cxx1.exe, tests/out-*) and nothing that is documentation, which
 changes without the compiler changing.
 
@@ -52,7 +52,7 @@ BANNER = fromVersionHeader("CXX1_BANNER",
                            "c2026 G. R. Akhtar - ISO C++ 11,  Compiler")
 
 # The directories a release is made of, each walked in full.
-SEALED = ("src", "include", "lib", "examples")
+SEALED = ("src", "include", "lib")
 # ... and these files beside them, which decide how it is built.
 SEALED_FILES = ("Makefile", "msvc/build.cmd", "ide/generate.py")
 
