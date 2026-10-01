@@ -41,7 +41,7 @@ for src in tests/c-corpus/*.c; do
     cp "$src" "$OUT/$base.cpp"
     if ! ( ulimit -t 10; $CXX1 -Itests/c-corpus "$OUT/$base.cpp" -o "$OUT/$base" ) >"$OUT/$base.err" 2>&1; then
         refused=$((refused + 1))
-        echo "refused $base: $(head -1 "$OUT/$base.err")" >> "$OUT/FAILING"
+        echo "refused $base: $(grep -v '^©' "$OUT/$base.err" | head -1)" >> "$OUT/FAILING"   # past the banner
         [ -n "$only" ] && { echo "refused:"; sed 's/^/    /' "$OUT/$base.err"; }
         continue
     fi
