@@ -393,7 +393,10 @@ private:
                                           const std::vector<const Type *> &argTypes,
                                           std::size_t pos);
     // Member function templates, keyed by "<ownerTag>::<member>".
-    std::map<std::string, TemplateDecl> memberTemplates_;
+    // Every member template of a name - `operator*` may have one for a matrix and one for a vector.
+    std::map<std::string, std::vector<TemplateDecl> > memberTemplates_;
+    // An instantiation made, keyed by the template's own position and its arguments.
+    std::map<std::string, std::size_t> memberTemplateMade_;
     // Set one-shot while a member-template specialization's body is replayed through declareMember:
     // the source member name, the display name with its arguments ("head<3>"), and those arguments,
     // so declareMember keys and mangles the specialization rather than the plain member.
@@ -2001,6 +2004,11 @@ private:
     // `V<N>` naming the class whose body is being read: steps to the `(` after it when it does.
     bool atOwnTemplateId(const std::string &tag, const std::string &local);
     bool ownArgsThenParen() const;
+    const Type *declaringClassOf(const Type *cls, const std::string &name) const;
+    void instantiateViableMemberTemplate(const TemplateDecl &mt,
+                                         const std::vector<const Type *> &argTypes, std::size_t pos);
+    bool deduceFromArgument(const Type *param, const Type *arg, std::vector<const Type *> *binding,
+                            std::vector<long long> *values, std::string *why);
     // `using X = T;` is an alias declaration and not a using-declaration.
     void refuseAliasDeclaration();
     // `= default` and `= delete` sit where `= 0` does, and a constructor

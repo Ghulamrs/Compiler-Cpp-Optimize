@@ -490,6 +490,17 @@ const Type *Parser::findMemberOwner(const Type *cls,
     return nullptr;
 }
 
+// **The class whose scope declares `name`**, a member template counting as a declaration:
+// `q * r` for a `Q : V` finds V's `template <int K> operator*`, [class.member.lookup].
+const Type *Parser::declaringClassOf(const Type *cls, const std::string &name) const {
+    if (cls == nullptr) return nullptr;
+    const Type *c = cls->unqualified();
+    if (overloadsOf(c->tag() + "::" + name) != nullptr || isMemberTemplate(c, name)) return c;
+    for (const Type::BaseSpec &b : c->bases())
+        if (const Type *found = declaringClassOf(b.type, name)) return found;
+    return nullptr;
+}
+
 ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos) {
     std::vector<ExprPtr> args;

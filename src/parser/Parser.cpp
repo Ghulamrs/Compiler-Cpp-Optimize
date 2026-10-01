@@ -684,6 +684,9 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     // A body replayed here was written inside a class body, so every definition it produces is implicitly inline.
     replayingInline_ = true;
 
+    // **The outer function comes back on every way out**: a member template instantiated
+    // inside a trial may throw from here, and the call that follows still reads its locals.
+    try {
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         // A friend's body is written inside the class and belongs outside it,
@@ -702,6 +705,12 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         if (scope != nullptr) classStack_.pop_back();
         inlineOwner_.clear();
         inlineOwnerName_.clear();
+    }
+    } catch (...) {
+        inlineOwner_.clear();
+        inlineOwnerName_.clear();
+        restoreFunctionState(outer);
+        throw;
     }
     restoreFunctionState(outer);
 }

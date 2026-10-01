@@ -1199,6 +1199,50 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
     return true;
 }
 
+// Every base of `cls` that is a specialization of `name`, at any depth.
+static void basesNamed(const Type *cls, const std::string &name, std::vector<const Type *> *out) {
+    for (const Type::BaseSpec &b : cls->unqualified()->bases()) {
+        const Type *t = b.type->unqualified();
+        if (t->isSpecialization() && t->templateName() == name) out->push_back(t);
+        basesNamed(t, name, out);
+    }
+}
+
+// **[temp.deduct.call]/4.3: a parameter `V<K>`, `V<K> &` or `V<K> *` deduces from a base**
+// of the argument's class when the class itself is no `V` - `q * r` for `Q<4> : V<4>` gives
+// K = 4. Only at the parameter's top, and only where exactly one base deduces.
+bool Parser::deduceFromArgument(const Type *param, const Type *arg,
+                                std::vector<const Type *> *binding,
+                                std::vector<long long> *values, std::string *why) {
+    const std::vector<const Type *> before = *binding;
+    const std::vector<long long> beforeValues = values ? *values : std::vector<long long>();
+    if (deduceOne(param, arg, binding, values, why)) return true;
+    const bool viaPointer = param->isPointer() && arg != nullptr && arg->isPointer();
+    const Type *p = viaPointer ? param->pointee() : param->isReference() ? param->referent() : param;
+    const Type *a = viaPointer ? arg->pointee() : arg != nullptr && arg->isReference() ? arg->referent() : arg;
+    if (p == nullptr || a == nullptr) return false;
+    p = p->unqualified();
+    if (!p->isSpecialization() || !a->unqualified()->isStructOrUnion()) return false;
+    std::vector<const Type *> bases;
+    basesNamed(a, p->templateName(), &bases);
+    int found = 0;
+    std::vector<const Type *> got;
+    std::vector<long long> gotValues;
+    for (const Type *b : bases) {
+        std::vector<const Type *> tryBinding = before;
+        std::vector<long long> tryValues = beforeValues;
+        std::string ignored;
+        const Type *as = viaPointer ? types_.pointerTo(b) : b;
+        if (!deduceOne(p, viaPointer ? b : as, &tryBinding, values ? &tryValues : nullptr, &ignored))
+            continue;
+        if (++found == 1) { got = tryBinding; gotValues = tryValues; }
+    }
+    if (found != 1) return false;
+    *binding = got;
+    if (values) *values = gotValues;
+    return true;
+}
+
 // The whole call. Answers false with a reason rather than failing, because a
 // name may be both a template and an ordinary function: deduction not
 // working is then not an error, it is one fewer candidate.
@@ -1246,7 +1290,7 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
 
     binding->assign(decl.params.size(), nullptr);
     for (std::size_t i = 0; i < deduceFrom; i++)
-        if (!deduceOne(fn->params()[i], argTypes[i], binding, values, why)) {
+        if (!deduceFromArgument(fn->params()[i], argTypes[i], binding, values, why)) {
             *why = "'" + decl.params[i < decl.params.size() ? i : 0].name +
                    "' cannot be worked out from this call: " + *why;
             return false;
@@ -1653,6 +1697,13 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     // **The `>>` mark is one slot and this parse can spend it.**
     const std::size_t outerAngle = angleSplit_;
 
+    // **The class being read around this one keeps its own**: a member template recorded after
+    // `Vec<N>` in Mat's body would otherwise capture Vec's parameters as Mat's.
+    const std::vector<TemplateArg> outerArgs = instantiatingArgs_;
+    const std::string outerNamespace = instantiatingNamespace_;
+    const auto outerParams = instantiatingParams_;
+    const auto outerBinding = instantiatingBinding_;
+    const auto outerValues = instantiatingValues_;
     classInstantiationTag_ = tag;
     if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
@@ -1671,7 +1722,11 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     angleSplit_ = outerAngle;
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
-    instantiatingArgs_.clear();
+    instantiatingArgs_ = outerArgs;
+    instantiatingNamespace_ = outerNamespace;
+    instantiatingParams_ = outerParams;
+    instantiatingBinding_ = outerBinding;
+    instantiatingValues_ = outerValues;
     classStack_.swap(outerClasses);
     currentClass_ = outerCurrent;
     inlineOwner_ = outerInline;
@@ -1843,7 +1898,8 @@ void Parser::refuseTemplateId() {
 ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
                                    const std::string &name, std::size_t pos) {
     const Type *plain = obj->unqualified();
-    const TemplateDecl mt = memberTemplates_[plain->tag() + "::" + name];
+    const std::vector<TemplateDecl> &templates = memberTemplates_[plain->tag() + "::" + name];
+    TemplateDecl mt = templates.front();
 
     std::vector<const Type *> binding;
     std::vector<long long> values;
@@ -1865,15 +1921,20 @@ ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
         for (std::size_t i = 0; i < deducedArgs.size(); i++)
             argTypes.push_back(deducedArgs[i]->type());
         std::string why;
-        std::vector<Shadow> undo;
-        if (!mt.classParams.empty())
-            bindTemplateParameters(mt.classParams, mt.classBinding,
-                                   mt.classValues,
-                                   std::vector<std::vector<const Type *> >(),
-                                   &undo);
-        const bool ok = deduceTemplateArguments(mt, argTypes, &binding, &values,
-                                                &packs, &why);
-        unbindTemplateParameters(undo);
+        bool ok = false;
+        // **The first of the name's templates that deduces is the one called.**
+        for (std::size_t t = 0; t < templates.size() && !ok; t++) {
+            std::vector<Shadow> undo;
+            if (!templates[t].classParams.empty())
+                bindTemplateParameters(templates[t].classParams, templates[t].classBinding,
+                                       templates[t].classValues,
+                                       std::vector<std::vector<const Type *> >(),
+                                       &undo);
+            ok = deduceTemplateArguments(templates[t], argTypes, &binding, &values,
+                                         &packs, &why);
+            unbindTemplateParameters(undo);
+            if (ok) mt = templates[t];
+        }
         if (!ok)
             src_.fail(pos, "'" + plain->describe() + "::" + name + "' is a "
                            "member function template and " + why);
@@ -1942,8 +2003,10 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
     const std::vector<TemplateArg> &args, std::size_t pos) {
     const std::string display = specializationKey(mt.name, args);   // head<3>
     const std::string key = mt.ownerTag + "::" + display;
-    if (const std::vector<std::size_t> *had = overloadsOf(key))
-        return &functions_[(*had)[0]];
+    // Two templates of one name may each be instantiated at K = 3: the cache is per template.
+    const std::string made = key + "@" + std::to_string(mt.afterParams);
+    if (memberTemplateMade_.count(made) != 0) return &functions_[memberTemplateMade_[made]];
+    const std::size_t before = functions_.size();
     if (!mt.defined)
         src_.fail(pos, "'" + mt.ownerTag + "::" + mt.name + "' is declared but "
                        "not defined, so there is nothing to instantiate");
@@ -1981,8 +2044,15 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
     memberTemplateArgs_ = wasArgs;
     unbindTemplateParameters(undo);
 
+    // The function this replay declared under the key - the first one past `before`.
     const std::vector<std::size_t> *had = overloadsOf(key);
-    return had != nullptr ? &functions_[(*had)[0]] : nullptr;
+    if (had == nullptr) return nullptr;
+    for (std::size_t i = 0; i < had->size(); i++)
+        if ((*had)[i] >= before) {
+            memberTemplateMade_[made] = (*had)[i];
+            return &functions_[(*had)[i]];
+        }
+    return &functions_[(*had)[0]];
 }
 
 // **Function templates as overload-resolution candidates.**
@@ -2082,10 +2152,17 @@ void Parser::instantiateViableMemberTemplates(
     const Type *cls, const std::string &name,
     const std::vector<const Type *> &argTypes, std::size_t pos) {
     if (cls == nullptr || cls->tag().empty()) return;
-    std::map<std::string, TemplateDecl>::const_iterator it =
+    std::map<std::string, std::vector<TemplateDecl> >::const_iterator it =
         memberTemplates_.find(cls->tag() + "::" + name);
     if (it == memberTemplates_.end()) return;
-    const TemplateDecl mt = it->second;
+    const std::vector<TemplateDecl> all = it->second;
+    for (std::size_t t = 0; t < all.size(); t++) instantiateViableMemberTemplate(all[t], argTypes, pos);
+}
+
+// One member template as a candidate: deduced, and instantiated where that works.
+void Parser::instantiateViableMemberTemplate(const TemplateDecl &mt,
+                                             const std::vector<const Type *> &argTypes,
+                                             std::size_t pos) {
 
     std::vector<const Type *> binding;
     std::vector<long long> values;

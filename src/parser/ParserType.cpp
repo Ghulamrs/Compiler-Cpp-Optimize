@@ -541,7 +541,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                   "its class must be defined there too - an "
                                   "out-of-line member template is not supported "
                                   "yet");
-            memberTemplates_[tag + "::" + mname] = mt;
+            memberTemplates_[tag + "::" + mname].push_back(mt);
             continue;
         }
 

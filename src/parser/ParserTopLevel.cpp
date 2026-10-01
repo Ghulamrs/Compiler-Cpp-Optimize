@@ -776,7 +776,14 @@ void Parser::topLevel(Program &program) {
         // **A member function template specialization declares itself here.**
         if (memberTemplateInst_ && d.name == memberTemplateOf_) {
             key = d.qualifier + "::" + memberTemplateName_;
-            if (overloadsOf(key) == nullptr) {
+            // Declared unless one with these parameters is: two templates of a name meet at K = 3.
+            bool declared = false;
+            if (const std::vector<std::size_t> *set = overloadsOf(key))
+                for (std::size_t k = 0; k < set->size(); k++)
+                    if (functions_[(*set)[k]].constThis == constThis &&
+                        sameParameters(functions_[(*set)[k]].params, params))
+                        declared = true;
+            if (!declared) {
                 const Type *fnType =
                     types_.functionType(d.type, params, variadic);
                 const char code = memberTemplateAccess_ == Access::Public ? 'Q'
