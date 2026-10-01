@@ -31,6 +31,7 @@ struct Line {
 struct Node {
     Line line;
     std::uint64_t reads = 0, writes = 0;
+    std::uint64_t stepped = 0;          // the address register a `*R++` or `*R--` access writes, in E1 rather than at its latency
     int lat = 1;
     int late = 0;                       // the cycles after issue its sources are still read, and its unit held
     unsigned units = 0;                 // a bitmask of UL, US, UD, UM; 0 for a form the table does not know
@@ -87,6 +88,7 @@ Node makeNode(const Line &l, const std::set<std::string> &labels);
 bool fits(const Packet &p, const Node &n);
 void add(Packet &p, const Node &n);
 bool passThrough(const Line &l, const std::set<std::string> &named);
+std::string steppedRegister(const Line &l, long &by);
 
 // The software pipeliner (C6xPipe.cpp): the innermost counted loops of the text rewritten as verbatim lines.
 void pipelineLoops(std::vector<Line> &v);

@@ -94,18 +94,38 @@ std::vector<Access> addressForms(const std::vector<Line> &body, const std::vecto
         evalLine(pre[o], writes, before, lost);
     }
     lost.clear();
+    // A pointer the accesses alone step: on entry to a turn it is the preheader's value plus its stride per turn gone.
+    std::map<std::string, long> stride, stepWrites, allWrites;
+    for (std::size_t o = 0; o < body.size(); o++) {
+        std::vector<std::string> reads, writes;
+        readsAndWrites(body[o], reads, writes);
+        for (std::size_t w = 0; w < writes.size(); w++) allWrites[writes[w]]++;
+        long by;
+        const std::string r = steppedRegister(body[o], by);
+        if (!r.empty()) { stride[r] += by; stepWrites[r]++; }
+    }
+    const Form turns = combine(formOf("iv"), formOf("reg:" + iv), -1);
     std::vector<Access> out(body.size());
     for (std::size_t o = 0; o < body.size(); o++) {
         const Line &l = body[o];
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
-        for (std::size_t r = 0; r < reads.size(); r++)
-            if (!val.count(reads[r]) && !lost.count(reads[r]))
-                val[reads[r]] = reads[r] == iv ? formOf("iv") : written.count(reads[r]) ? Form() : before.count(reads[r]) ? before[reads[r]] : formOf(reads[r] == "A15" ? "A15" : "reg:" + reads[r]);
+        for (std::size_t r = 0; r < reads.size(); r++) {
+            if (val.count(reads[r]) || lost.count(reads[r])) continue;
+            const std::string &x = reads[r];
+            if (x == iv) val[x] = formOf("iv");
+            else if (stepWrites.count(x) && stepWrites[x] == allWrites[x] && before.count(x) && x != iv) val[x] = combine(before[x], scaled(turns, stride[x]), 1);
+            else val[x] = written.count(x) ? Form() : before.count(x) ? before[x] : formOf(x == "A15" ? "A15" : "reg:" + x);
+        }
+        long by = 0;
+        const std::string stepReg = steppedRegister(l, by);
+        Form stepFrom; bool stepKnown = !stepReg.empty() && val.count(stepReg) && !val[stepReg].empty();
+        if (stepKnown) stepFrom = val[stepReg];
         if (isLoad(l.mnem) || isStore(l.mnem)) {
             const std::string &m = isStore(l.mnem) ? l.ops[1] : l.ops[0];
             std::string base; long off = 0; std::string index; long sign = 1;
-            if (m.size() > 1 && m[0] == '*' && (m[1] == '+' || m[1] == '-') && m.find('(') != std::string::npos) {
+            if (!stepReg.empty()) { base = stepReg; if (m.compare(0, 3, "*++") == 0 || m.compare(0, 3, "*--") == 0) off = by, sign = 1; }
+            else if (m.size() > 1 && m[0] == '*' && (m[1] == '+' || m[1] == '-') && m.find('(') != std::string::npos) {
                 sign = m[1] == '-' ? -1 : 1;
                 base = m.substr(2, m.find('(') - 2);
                 off = std::atol(m.substr(m.find('(') + 1).c_str());
@@ -124,6 +144,7 @@ std::vector<Access> addressForms(const std::vector<Line> &body, const std::vecto
             }
         }
         evalLine(l, writes, val, lost);
+        if (stepKnown) { val[stepReg] = combine(stepFrom, formOf("", by), 1); lost.erase(stepReg); }
     }
     return out;
 }
@@ -259,6 +280,8 @@ void buildEdges(Loop &L, const std::set<std::string> &renameable) {
     }
     for (std::map<std::string, std::vector<std::pair<int, bool> > >::iterator it = acc.begin(); it != acc.end(); ++it) {
         const std::vector<std::pair<int, bool> > &a = it->second;
+        // A writer's result lands at its latency - but an address it steps lands in E1, a cycle after issue.
+        auto latOf = [&](int w) { return (n[static_cast<std::size_t>(w)].stepped & bitOf(it->first)) ? 1 : n[static_cast<std::size_t>(w)].lat; };
         int firstW = -1, lastW = -1;
         for (std::size_t k = 0; k < a.size(); k++) if (a[k].second) { if (firstW < 0) firstW = static_cast<int>(k); lastW = static_cast<int>(k); }
         if (firstW < 0) continue;
@@ -268,8 +291,8 @@ void buildEdges(Loop &L, const std::set<std::string> &renameable) {
             for (std::size_t m = k + 1; m < a.size(); m++) if (a[m].second) { nextW = static_cast<int>(m); break; }
             const int op = a[k].first;
             if (!a[k].second) {
-                if (prevW >= 0 && a[static_cast<std::size_t>(prevW)].first != op) { Edge e = { a[static_cast<std::size_t>(prevW)].first, op, n[static_cast<std::size_t>(a[static_cast<std::size_t>(prevW)].first)].lat, 0, "flow" }; L.edges.push_back(e); }
-                if (prevW < 0) { Edge e = { a[static_cast<std::size_t>(lastW)].first, op, n[static_cast<std::size_t>(a[static_cast<std::size_t>(lastW)].first)].lat, 1, "flow1" }; L.edges.push_back(e); }
+                if (prevW >= 0 && a[static_cast<std::size_t>(prevW)].first != op) { Edge e = { a[static_cast<std::size_t>(prevW)].first, op, latOf(a[static_cast<std::size_t>(prevW)].first), 0, "flow" }; L.edges.push_back(e); }
+                if (prevW < 0) { Edge e = { a[static_cast<std::size_t>(lastW)].first, op, latOf(a[static_cast<std::size_t>(lastW)].first), 1, "flow1" }; L.edges.push_back(e); }
                 if (nextW >= 0 && a[static_cast<std::size_t>(nextW)].first != op && (prevW >= 0 || !renameable.count(it->first))) { const Node &w = n[static_cast<std::size_t>(a[static_cast<std::size_t>(nextW)].first)]; Edge e = { op, a[static_cast<std::size_t>(nextW)].first, antiDelay(n[static_cast<std::size_t>(op)], w), 0, "anti" }; L.edges.push_back(e); }
                 if (nextW < 0 && !renameable.count(it->first)) { const Node &w = n[static_cast<std::size_t>(a[static_cast<std::size_t>(firstW)].first)]; Edge e = { op, a[static_cast<std::size_t>(firstW)].first, antiDelay(n[static_cast<std::size_t>(op)], w), 1, "anti1" }; L.edges.push_back(e); }
             } else if (nextW >= 0) {
@@ -306,6 +329,51 @@ int criticalPath(const Loop &L) {
     return std::max(len, 6);
 }
 
+// The reservation table rebuilt from every instruction's cycle but the one left out - with the branch and the
+// count's step at their slot and each DP instruction's late cycles held - and whether that one fits at cycle c.
+bool fitsAt(const Loop &L, int II, const std::vector<int> &t, std::uint64_t renameMask, const std::vector<Node> &extra, int sb, std::size_t skip, int c) {
+    std::vector<Packet> mrt(static_cast<std::size_t>(II));
+    std::vector<Node> store;
+    store.reserve(2 + L.nodes.size() * 5);
+    for (int k = 0; k < 2; k++) { store.push_back(extra[static_cast<std::size_t>(k)]); add(mrt[static_cast<std::size_t>(sb)], store.back()); }
+    for (std::size_t o = 0; o < L.nodes.size(); o++) {
+        if (o == skip || t[o] < 0) continue;
+        store.push_back(L.nodes[o]);
+        store.back().writes &= ~renameMask;
+        add(mrt[static_cast<std::size_t>(t[o] % II)], store.back());
+        for (int k = 1; k <= L.nodes[o].late; k++) {
+            Node ph; ph.units = L.nodes[o].units; ph.side = L.nodes[o].side; ph.cross = L.nodes[o].cross;
+            store.push_back(ph);
+            add(mrt[static_cast<std::size_t>((t[o] + k) % II)], store.back());
+        }
+    }
+    Node x = L.nodes[skip];
+    x.writes &= ~renameMask;
+    if (!fits(mrt[static_cast<std::size_t>(c % II)], x)) return false;
+    for (int k = 1; k <= x.late; k++) {
+        Node ph; ph.units = x.units; ph.side = x.side; ph.cross = x.cross;
+        if (!fits(mrt[static_cast<std::size_t>((c + k) % II)], ph)) return false;
+    }
+    return true;
+}
+
+// An instruction that reads no renamed register - a load through a pointer, a constant - goes as late as its
+// readers allow, so the value it makes lives for fewer cycles and wants fewer copies; later in program order first.
+void sinkProducers(const Loop &L, int II, std::vector<int> &t, std::uint64_t renameMask, const std::vector<Node> &extra, int sb) {
+    for (std::size_t o = L.nodes.size(); o-- > 0;) {
+        if ((L.nodes[o].reads & renameMask) || !(L.nodes[o].writes & renameMask)) continue;
+        int hi = 1 << 30;
+        for (std::size_t e = 0; e < L.edges.size(); e++) {
+            const Edge &d = L.edges[e];
+            if (d.from != static_cast<int>(o) || d.to == static_cast<int>(o)) continue;
+            hi = std::min(hi, t[static_cast<std::size_t>(d.to)] - d.delay + d.dist * II);
+        }
+        if (hi >= (1 << 30)) continue;
+        for (int c = hi; c > t[o]; c--)
+            if (fitsAt(L, II, t, renameMask, extra, sb, o, c)) { t[o] = c; break; }
+    }
+}
+
 // One try at an initiation interval: each instruction in program order at the first cycle in the window its
 // scheduled neighbours leave it whose modulo slot has room - the branch and the count's step reserved first.
 bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string> &renameable, std::map<std::string, int> &minQ, std::vector<int> &push) {
@@ -320,7 +388,7 @@ bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string
     std::set<std::string> lab;
     lab.insert(L.label + "$pipe");
     extra.push_back(makeNode(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.C), lab));
-    extra.push_back(makeNode(make("SUB", L.C, "1", L.C), std::set<std::string>()));
+    extra.push_back(makeNode(make("ADD", "-1", L.C, L.C), std::set<std::string>()));
     const int sb = ((6 % II) == 0 ? 0 : II - 6 % II);
     for (int k = 0; k < 2; k++) { if (!fits(mrt[static_cast<std::size_t>(sb)], extra[static_cast<std::size_t>(k)])) return false; add(mrt[static_cast<std::size_t>(sb)], extra[static_cast<std::size_t>(k)]); }
     for (std::size_t o = 0; o < n; o++) {
@@ -346,21 +414,14 @@ bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string
             if (!fits(mrt[s], xv)) continue;
             bool held = true;
             for (int k = 1; k <= x.late && held; k++) {
-                Node ph; ph.units = x.units; ph.side = x.side;
+                Node ph; ph.units = x.units; ph.side = x.side; ph.cross = x.cross;
                 held = fits(mrt[static_cast<std::size_t>((c + k) % II)], ph);
             }
             if (!held) continue;
             t[o] = c;
-            for (std::size_t m = 0; m < mrt[s].members.size(); m++) {
-                const std::uint64_t both = mrt[s].members[m]->writes & x.writes & renameMask;
-                if (!both) continue;
-                for (std::size_t p = 0; p < o; p++)
-                    if (t[p] >= 0 && t[p] % II == c % II && (L.nodes[p].writes & both))
-                        for (int r = 0; r < 64; r++) if (both & (1ull << r)) { std::string name = std::string(r < 32 ? "A" : "B") + std::to_string(r % 32); minQ[name] = std::max(minQ[name], (c - t[p]) / II + 1); }
-            }
             add(mrt[s], xv);
             for (int k = 1; k <= x.late; k++) {
-                Node ph; ph.units = x.units; ph.side = x.side;
+                Node ph; ph.units = x.units; ph.side = x.side; ph.cross = x.cross;
                 extra.push_back(ph);
                 add(mrt[static_cast<std::size_t>((c + k) % II)], extra.back());
             }
@@ -373,6 +434,14 @@ bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string
             return false;
         }
     }
+    sinkProducers(L, II, t, renameMask, extra, sb);
+    // Two writes of one renamed register in one slot are different iterations' copies: q must tell them apart.
+    for (std::size_t o = 0; o < n; o++)
+        for (std::size_t p = 0; p < o; p++) {
+            const std::uint64_t both = L.nodes[p].writes & L.nodes[o].writes & renameMask;
+            if (!both || t[p] % II != t[o] % II) continue;
+            for (int r = 0; r < 64; r++) if (both & (1ull << r)) { std::string name = std::string(r < 32 ? "A" : "B") + std::to_string(r % 32); minQ[name] = std::max(minQ[name], std::abs(t[o] - t[p]) / II + 1); }
+        }
     return true;
 }
 
@@ -434,7 +503,8 @@ void renameWebs(Loop &L, std::vector<std::string> &pool) {
         const Line &l = L.body[o];
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
-        bool rmw = l.mnem == "MVKH" || l.mnem == "ADDK" || !l.pred.empty();
+        long by;
+        bool rmw = l.mnem == "MVKH" || l.mnem == "ADDK" || !l.pred.empty() || !steppedRegister(l, by).empty();
         for (std::size_t r = 0; r < reads.size(); r++) {
             if (!cur.count(reads[r])) { Web w; w.reg = reads[r]; w.keep = true; cur[reads[r]] = static_cast<int>(webs.size()); webs.push_back(w); }
             opWebs[o].push_back(std::make_pair(cur[reads[r]], 0));
@@ -515,9 +585,50 @@ void renameWebs(Loop &L, std::vector<std::string> &pool) {
     for (std::size_t o = 0; o < L.body.size(); o++) {
         std::vector<std::string> reads, writes;
         readsAndWrites(L.body[o], reads, writes);
+        long by;
+        const std::string stepped = steppedRegister(L.body[o], by);
         for (std::size_t w = 0; w < writes.size(); w++) {
             if (!seen.count(writes[w]) && (L.body[o].mnem == "MVKH" || L.body[o].mnem == "ADDK")) L.rmwFirst.insert(writes[w]);
+            if (writes[w] == stepped) L.rmwFirst.insert(writes[w]);
             seen.insert(writes[w]);
+        }
+    }
+}
+
+// Whether register r is read before it is written on the path from line k round the back edge to line o - the
+// value r holds after line o is wanted - or is live at the exit.
+bool wantedAfter(const Loop &L, std::size_t o, const std::string &r) {
+    const std::vector<Line> &b = L.body;
+    for (std::size_t n = 0, k = o + 1; n < b.size(); n++, k = (k + 1) % b.size()) {
+        std::vector<std::string> reads, writes;
+        readsAndWrites(b[k], reads, writes);
+        if (has(reads, r)) return true;
+        if (has(writes, r)) return false;
+    }
+    return true;
+}
+
+// **The body's own copies**: `MV S, D` copied straight back by `MV D, S` with neither written between is one copy, and
+// a copy nothing reads before the register is written again - round the back edge too, the exit not reading it - is none.
+// The backend saves a result across the address it computes next, and the save is a web the schedule would carry.
+void foldBodyCopies(Loop &L) {
+    std::vector<Line> &b = L.body;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t o = 0; o < b.size() && !changed; o++) {
+            if (b[o].mnem != "MV" || b[o].ops.size() != 2 || !b[o].pred.empty() || !sideOf(b[o].ops[0]) || !sideOf(b[o].ops[1])) continue;
+            const std::string S = b[o].ops[0], D = b[o].ops[1];
+            if (D == "A15" || D == "B15" || D == "B3" || D == "B14" || D == L.iv || D == L.bound || D == L.P) continue;
+            for (std::size_t k = o + 1; k < b.size(); k++) {
+                std::vector<std::string> reads, writes;
+                readsAndWrites(b[k], reads, writes);
+                if (b[k].mnem == "MV" && b[k].ops.size() == 2 && b[k].pred.empty() && b[k].ops[0] == D && b[k].ops[1] == S) { b.erase(b.begin() + static_cast<long>(k)); changed = true; break; }
+                if (has(writes, S) || has(writes, D)) break;
+            }
+            if (changed) break;
+            if ((L.liveExit & bitOf(D)) || wantedAfter(L, o, D)) continue;
+            b.erase(b.begin() + static_cast<long>(o));
+            changed = true;
         }
     }
 }
@@ -536,6 +647,8 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
     for (std::size_t k = 0; k < pool.size() && X.empty(); k++) if (sideOf(pool[k]) == sideOf(L.C)) X = pool[k];
     if (X.empty()) { why = "no free register for the count"; return false; }
     pool.erase(std::find(pool.begin(), pool.end(), X));
+    foldBodyCopies(L);
+    if (tracing() > 4) for (std::size_t o = 0; o < L.body.size(); o++) std::fprintf(stderr, "  as written%s\n", L.body[o].raw.c_str());
     renameWebs(L, pool);
     std::set<std::string> labels;
     labels.insert(L.label + "$pipe");
@@ -635,6 +748,7 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
                 }
             }
             if (failed.empty()) { done = true; break; }
+            if (tracing() > 1) std::fprintf(stderr, "  II=%d: S=%d, no %d copies of %s - trying II+1\n", II, S, units[unitOf[failed[0]]].q, failed[0].c_str());
         }
         if (!any) { why = "no schedule under four fifths of the " + std::to_string(seq) + "-cycle iteration"; return false; }
         if (done) break;
@@ -679,7 +793,7 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
         for (int s = 0; s < II; s++) {
             std::vector<std::string> p;
             for (std::size_t o = 0; o < n; o++) if (t[o] % II == s) p.push_back(spelled(L, units, unitOf, firstWrite, o, S - 1 + c - t[o] / II));
-            if (c * II + s == u * II - 6) { p.push_back(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.C).raw); p.push_back(make("SUB", L.C, "1", L.C).raw); }
+            if (c * II + s == u * II - 6) { p.push_back(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.C).raw); p.push_back(make("ADD", "-1", L.C, L.C).raw); }
             cyc.push_back(p);
         }
     emitCycles(out, cyc);
