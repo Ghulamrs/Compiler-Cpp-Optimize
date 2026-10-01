@@ -11674,6 +11674,9 @@ C++11 and that no case had:
 Measured: both cases agree with clang byte for byte; run 564/0, emit 1407/0 and the golden
 0 of 1399 changed, names 360/0, overload 30/0, tms6747.sh 347/0.
 
-**Not done, and next on the same sample**: a class that declares `operator=(const double *)`
-still has its implicit copy assignment ([class.copy]/17), and cpp11 offers only the declared
-one, so `matrix[i] = v` with `v` a `CVector<3>` is refused at `Matrix.h:19`.
+**And a third, behind them**: a class that declares `operator=(const double *)` still has its
+implicit copy assignment, [class.copy]/17 - only `X`, `X &` or `const X &` make one a copy. All
+of a class's `operator=`s share one set, and `copyAssignOf` answered with the first, so
+`matrix[i] = v` called `operator=(const double *)` with a `CVector<3>`; and the implicit copy
+was not declared beside any `operator=`. Both now ask for a copy (or move) by its parameter.
+With the three, the sample compiles unchanged and prints what clang prints.
