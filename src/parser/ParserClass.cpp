@@ -301,8 +301,7 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
     (void)access;
 
     // Its own frame: `this`, and on Windows the flag beside it.
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     std::vector<Param> params;
     int thisSlot = allocateFrameSlot(self);
     params.push_back(Param{ self, thisSlot });
@@ -362,7 +361,7 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
     // neighbours say the implicit definition is - so several translation units
     // may each hold one and the linker folds them.
     current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 }
 
 // **What cl's most-derived flag guards**: the vbtable pointers this class
@@ -580,8 +579,7 @@ void Parser::synthesizeCompleteCtor(const Type *type,
     const std::string &cls = type->tag();
     const Type *self = types_.pointerTo(type);
 
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     // **The arguments take their slots before `this`, which is C2's order and
     // not the obvious one.**
     std::vector<int> argSlots;
@@ -646,7 +644,7 @@ void Parser::synthesizeCompleteCtor(const Type *type,
                                            std::vector<::Local>()));
     current_->functions.back().setSymbol(c1);
     if (isInline) current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 }
 
 void Parser::synthesizeCompleteDtor(const Type *type, const std::string &d1,
@@ -655,8 +653,7 @@ void Parser::synthesizeCompleteDtor(const Type *type, const std::string &d1,
     const std::string &cls = type->tag();
     const Type *self = types_.pointerTo(type);
 
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
     params.push_back(Param{ self, thisSlot });
@@ -690,7 +687,7 @@ void Parser::synthesizeCompleteDtor(const Type *type, const std::string &d1,
                                            std::vector<::Local>()));
     current_->functions.back().setSymbol(d1);
     if (isInline) current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 }
 
 const Parser::Signature *Parser::destructorOf(const Type *cls) const {
@@ -988,8 +985,7 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
         if (current_->functions[i].symbol() == name) return name;
 
     const Type *self = types_.pointerTo(type);
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
 
     std::vector<Param> params;
     int thisSlot = allocateFrameSlot(self);
@@ -1044,7 +1040,7 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
     current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     return name;
 }
 
@@ -1059,8 +1055,7 @@ std::string Parser::synthesizeVcallThunk(const Type *cls, const Signature &f,
         if (current_->functions[i].symbol() == name) return name;   // one per slot
 
     const Type *self = types_.pointerTo(cls);
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
     params.push_back(Param{ self, thisSlot });
@@ -1117,7 +1112,7 @@ std::string Parser::synthesizeVcallThunk(const Type *cls, const Signature &f,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
     current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     return name;
 }
 
@@ -2227,8 +2222,7 @@ std::string Parser::vectorConstructor(const Type *cls, std::size_t pos) {
 
     const Type *ptr = types_.pointerTo(cls);
     const Type *sizeT = types_.get(target_.sizeType());
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     const int baseSlot = allocateFrameSlot(ptr);
     const int countSlot = allocateFrameSlot(sizeT);
     const int indexSlot = allocateFrameSlot(types_.intType());
@@ -2263,7 +2257,7 @@ std::string Parser::vectorConstructor(const Type *cls, std::size_t pos) {
                                            alignTo(frameSize_, 16), true, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     return name;
 }
 
@@ -2279,8 +2273,7 @@ std::string Parser::vectorDestructor(const Type *cls, std::size_t pos) {
     const Type *ptr = types_.pointerTo(cls);
     const Type *sizeT = types_.get(target_.sizeType());
     const Type *idx = types_.intType();
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     const int baseSlot = allocateFrameSlot(ptr);
     const int countSlot = allocateFrameSlot(sizeT);
     const int indexSlot = allocateFrameSlot(idx);
@@ -2319,7 +2312,7 @@ std::string Parser::vectorDestructor(const Type *cls, std::size_t pos) {
                                            alignTo(frameSize_, 16), true, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     return name;
 }
 
@@ -2582,8 +2575,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
     const Type *type = findTypedef(cls);
     if (type == nullptr || !type->isStructOrUnion()) return;
 
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     const Type *self = types_.pointerTo(type);
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
@@ -2662,7 +2654,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
     // The Microsoft wrapper: `??1` above stops at this class's own part, and
     // `??_D` destroys it and then the virtual bases.
     if (target_.microsoftNames() && type->hasVirtualBase()) {
-        frameSize_ = savedFrame;
+        closeFrame(savedFrame);
         synthesizeCompleteDtor(type, vbaseDestructorSymbol(cls), symbol, true,
                                pos);
     }
@@ -2671,13 +2663,13 @@ void Parser::synthesizeDestructor(std::size_t which) {
         itaniumDestructorName(cls, type, false, &d2);
         if (type->hasVirtualBase()) {
             current_->functions.back().setSymbol(d2);
-            frameSize_ = savedFrame;
+            closeFrame(savedFrame);
             synthesizeCompleteDtor(type, symbol, d2, true, pos);
         } else {
             current_->functions.back().setAlias(d2);
         }
     }
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 
     // A virtual one carries the deleting form into the vtable beside it, the
     // same as a written virtual destructor does.
@@ -2814,8 +2806,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
     const Type *type = findTypedef(cls);
     if (type == nullptr || !type->isStructOrUnion()) return;
 
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     const Type *self = types_.pointerTo(type);
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
@@ -2941,7 +2932,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             // C1 builds them and calls it.
             if (type->hasVirtualBase()) {
                 current_->functions.back().setSymbol(c2);
-                frameSize_ = savedFrame;
+                closeFrame(savedFrame);
                 vttSlot_ = savedVtt;
                 synthesizeCompleteCtor(type, std::vector<const Type *>(),
                                        symbol, c2, true, pos);
@@ -2950,7 +2941,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             current_->functions.back().setAlias(c2);
         }
     }
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     vttSlot_ = savedVtt;
 }
 
@@ -3017,8 +3008,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                      : moving    ? "move constructor"
                                  : "copy constructor";
 
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     const Type *self = types_.pointerTo(type);
     const Type *srcPtr = types_.pointerTo(srcRef->referent());
     std::vector<Param> params;
@@ -3240,7 +3230,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
             // virtual base out of `that` and then calls C2 for the rest.
             if (type->hasVirtualBase()) {
                 current_->functions.back().setSymbol(c2);
-                frameSize_ = savedFrame;
+                closeFrame(savedFrame);
                 vttSlot_ = savedVtt;
                 synthesizeCompleteCtor(type, ps, symbol, c2, true, pos, 0,
                                        moving);
@@ -3249,7 +3239,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
             current_->functions.back().setAlias(c2);
         }
     }
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     vttSlot_ = savedVtt;
 }
 

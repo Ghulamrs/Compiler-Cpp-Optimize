@@ -1526,6 +1526,10 @@ private:
     int declare(const std::string &name, const Type *type, std::size_t pos,
                 int alignAtLeast = 0);
     int allocateFrameSlot(const Type *type, int alignAtLeast = 0);
+    // A synthesised function's own frame, opened mid-function: size 0 and no free slot, the caller's put back by closeFrame.
+    struct FrameSave { int size; std::vector<FreeSlot> free; };
+    FrameSave openFrame();
+    void closeFrame(const FrameSave &saved);
     int alignasSpecifier();
     void refuseWeakAlignas(int asked, const Type *t, std::size_t pos);
     void declareStaticLocal(const std::string &name, const Type *type,
