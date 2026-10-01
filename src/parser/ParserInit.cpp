@@ -12,6 +12,13 @@
 #include <cmath>
 #include <cstring>
 
+// Whether `base` is a base class of `cls`, at any depth.
+static bool hasBaseClass(const Type *cls, const Type *base) {
+    for (const Type::BaseSpec &b : cls->unqualified()->bases())
+        if (b.type->unqualified() == base || hasBaseClass(b.type, base)) return true;
+    return false;
+}
+
 Parser::Init Parser::parseInitialiser() {
     Init in;
     in.pos = peek().pos;
@@ -940,6 +947,24 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
     // for `T t(v)` an explicit one too, [over.match.copy]/1.
     if (!ci.listInit && !ci.valueInit)
         convertThroughConversionFunction(args, d.type, !ci.copyInit, d.pos);
+
+    // **A derived object copied into a base whose copy is trivial is sliced**: `V v = q;` copies
+    // q's V subobject, and with no copy constructor function to choose the bytes are the copy.
+    if (!ci.listInit && !ci.valueInit && args.size() == 1 && args[0]->type() != nullptr &&
+        isGlvalue(*args[0])) {
+        const Type *argType = args[0]->type();
+        const Type *to = d.type->unqualified(), *from = argType->unqualified();
+        if (from != to && from->isStructOrUnion() && to->isStructOrUnion() &&
+            copyConstructorOf(to) == nullptr && moveConstructorOf(to) == nullptr &&
+            hasBaseClass(from, to)) {
+            const Type *target = argType->isConst() ? types_.withConst(to) : to;
+            ExprPtr addr(new Unary('&', std::move(args[0])));
+            addr->setType(types_.pointerTo(argType));
+            ExprPtr base(new Unary('*', convert(std::move(addr), types_.pointerTo(target))));
+            base->setType(target);
+            args[0] = std::move(base);
+        }
+    }
 
     // **An elided copy still needs a copy constructor that may be chosen.**
     // [class.copy]/31 selects and checks it even where the copy itself is

@@ -749,7 +749,7 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
         if (lp->isStructOrUnion()) {
             std::vector<const Type *> one;
             one.push_back(right->type());
-            instantiateViableMemberTemplates(lp, name, one, pos);
+            instantiateViableMemberTemplates(declaringClassOf(lp, name), name, one, pos);
         }
     }
 
