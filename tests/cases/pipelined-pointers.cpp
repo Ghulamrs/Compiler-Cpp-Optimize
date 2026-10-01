@@ -51,8 +51,10 @@ static int tail(int n) {
     return s + i;
 }
 
+// At file scope: a static local named in `main` has no Itanium name here yet (`main.counts`), which names.sh would report.
+static const int counts[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 257 };
+
 int main() {
-    static const int counts[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 257 };
     int k, i;
     for (i = 0; i < 300; ++i) { da[i] = i * 0.5 - 20; db[i] = (i % 7) - 3; dc[i] = 0.25 * i; ib[i] = i * 11 - 500; }
     for (k = 0; k < 17; ++k) {

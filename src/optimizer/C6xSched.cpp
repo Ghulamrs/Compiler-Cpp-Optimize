@@ -1351,6 +1351,133 @@ void inductionPointers(std::vector<Line> &v) {
     v.swap(out);
 }
 
+// **A loop that fills memory with one value stores doublewords**: a rotated loop of `ADD 1, iv, iv`, `STB|STH|STW V,
+// *P++(k)` and the compare of iv against a bound the loop never writes - K elements, known at entry - becomes, past 15
+// elements, a loop up to the next 8-byte boundary, `STDW` of the value replicated, and the elements left over.
+void widenFills(std::vector<Line> &v) {
+    computeLiveness(v);
+    std::set<std::string> labels, named;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (isLabel(v[i])) labels.insert(labelName(v[i]));
+        for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
+    }
+    std::map<std::size_t, std::vector<Line> > pre;
+    for (std::size_t i = 0; i + 1 < v.size(); i++) {
+        if (!v[i].instr || v[i].mnem != "B" || v[i].pred.empty() || !labels.count(v[i].ops[0]) || !isLabel(v[i + 1])) continue;
+        std::size_t h = i; int uses = 0;
+        for (std::size_t k = 0; k < i; k++) if (isLabel(v[k]) && labelName(v[k]) == v[i].ops[0]) h = k;
+        for (std::size_t k = 0; k < v.size(); k++) if (v[k].instr) for (std::size_t o = 0; o < v[k].ops.size(); o++) if (v[k].ops[o] == v[i].ops[0]) uses++;
+        if (h == i || uses != 1 || h == 0) continue;
+        std::size_t g = h;
+        while (g > 0 && v[g - 1].instr && !isBranch(v[g - 1].mnem)) g--;
+        if (g == 0 || !v[g - 1].instr || v[g - 1].mnem != "B" || v[g - 1].pred.empty()) continue;
+        std::vector<std::size_t> body;
+        bool ok = true;
+        for (std::size_t k = h + 1; k < i && ok; k++) {
+            if (isLabel(v[k])) { ok = passThrough(v[k], named); continue; }
+            if (!v[k].instr || !v[k].pred.empty()) ok = false; else body.push_back(k);
+        }
+        if (!ok || body.size() != 3) continue;
+        // The three: the step, the store through the stepped pointer, and the compare the branch reads.
+        std::string iv, V, P, n, C = v[i].pred[0] == '!' ? v[i].pred.substr(1) : v[i].pred;
+        const bool negated = v[i].pred[0] == '!';
+        long k = 0; std::size_t stepAt = 0, cmpAt = 0, storeAt = 0; bool plusOne = false;
+        for (std::size_t b = 0; b < 3; b++) {
+            const Line &l = v[body[b]];
+            if (l.mnem == "ADD" && l.ops.size() == 3 && ((l.ops[0] == "1" && l.ops[1] == l.ops[2]) || (l.ops[1] == "1" && l.ops[0] == l.ops[2])) && iv.empty()) { iv = l.ops[2]; stepAt = b; }
+            else if (isStore(l.mnem) && l.ops.size() == 2 && P.empty() && (l.mnem == "STB" || l.mnem == "STH" || l.mnem == "STW")) {
+                long by = 0;
+                P = steppedRegister(l, by); V = l.ops[0]; k = accessSize(l.mnem); storeAt = b;
+                if (by != k || P.empty() || !sideOf(V)) P.clear();
+            } else if ((l.mnem == "CMPLT" || l.mnem == "CMPGT") && l.ops.size() == 3 && l.ops[2] == C && cmpAt == 0 && b > 0) cmpAt = b;
+        }
+        if (iv.empty() || P.empty() || cmpAt == 0 || cmpAt < stepAt) continue;
+        const Line &c = v[body[cmpAt]];
+        const bool lt = c.mnem == "CMPLT";
+        if (lt == !negated) { if (c.ops[0] != iv) continue; n = c.ops[1]; }
+        else { if (c.ops[1] != iv) continue; n = c.ops[0]; }
+        plusOne = negated;
+        if (n == iv || n == P || n == V || P == iv || V == iv || V == P || P == "A15" || P == "B15" || (!isNumber(n) && !sideOf(n))) continue;
+        if (storeAt == cmpAt || (v[i].liveOut & bitOf(C)) || (v[i + 1].liveIn & bitOf(C))) continue;
+        const std::uint64_t liveAtExits = v[i].liveOut | v[i + 1].liveIn, liveHead = v[h].liveIn;
+        std::set<std::string> used;
+        used.insert(iv); used.insert(P); used.insert(V); used.insert(C); if (!isNumber(n)) used.insert(n);
+        const char S = sideOf(P), SV = sideOf(V);
+        // Seven registers beside the pointer and a condition, from what the loop never names and nothing after it reads.
+        auto takeReg = [&](char side, bool pair) -> std::string {
+            for (int kk = 3; kk < 32; kk++) {
+                if ((kk >= 10 && kk <= 15) || (side == 'B' && kk == 3) || (pair && kk % 2)) continue;
+                std::string r = std::string(1, side) + std::to_string(kk), r2 = std::string(1, side) + std::to_string(kk + 1);
+                if (used.count(r) || (liveAtExits & bitOf(r)) || (liveHead & bitOf(r))) continue;
+                if (pair && (kk + 1 >= 32 || used.count(r2) || (liveAtExits & bitOf(r2)) || (liveHead & bitOf(r2)))) continue;
+                used.insert(r); if (pair) used.insert(r2);
+                return r;
+            }
+            return "";
+        };
+        std::string cond;
+        for (int kk = 0; kk < 3 && cond.empty(); kk++) {
+            std::string r = std::string(1, S) + std::to_string(kk);
+            if (!used.count(r) && !(liveAtExits & bitOf(r)) && !(liveHead & bitOf(r))) { cond = r; used.insert(r); }
+        }
+        const std::string K = takeReg(S, false), A = takeReg(S, false), M = takeReg(S, false), T = takeReg(S, false), X = takeReg(S, false), lo = takeReg(SV, true);
+        if (cond.empty() || K.empty() || A.empty() || M.empty() || T.empty() || X.empty() || lo.empty()) continue;
+        const std::string hi = std::string(1, lo[0]) + std::to_string(std::atoi(lo.c_str() + 1) + 1);
+        const int log2k = k == 1 ? 0 : k == 2 ? 1 : 2, per = 3 - log2k;
+        std::vector<Line> out;
+        bool legal = true;
+        // A line with a form, a crossed first source brought over through X where the machine has none for it.
+        auto put = [&](Line l) {
+            if (legalForm(l)) { out.push_back(l); return; }
+            if (l.ops.size() == 3 && sideOf(l.ops[0]) && sideOf(l.ops[0]) != sideOf(l.ops[2])) {
+                Line mv = make("MV", l.ops[0], X), again = rebuilt(l.mnem, std::vector<std::string>{ X, l.ops[1], l.ops[2] }, l.pred);
+                if (legalForm(mv) && legalForm(again)) { out.push_back(mv); out.push_back(again); return; }
+            }
+            legal = false;
+        };
+        const std::string base = labelName(v[h]), Lh = base + "$fh", Lw = base + "$fw", Lk = base + "$fw$rot", Lt = base + "$ft", exit = labelName(v[i + 1]);
+        auto branch = [&](const std::string &to, const std::string &pred) { out.push_back(rebuilt("B", std::vector<std::string>(1, to), pred)); };
+        if (isNumber(n)) {
+            const long nk = std::atol(n.c_str());
+            if (nk >= -32768 && nk <= 32767) put(make("MVK", n, K)); else { put(make("MVKL", n, K)); put(make("MVKH", n, K)); }
+            put(make("SUB", K, iv, K));
+        } else put(make("SUB", n, iv, K));
+        if (plusOne) put(make("ADD", "1", K, K));
+        put(make("CMPGT", "15", K, cond)); branch(base, cond);
+        if (k == 1) { put(rebuilt("EXTU", std::vector<std::string>{ V, "24", "24", lo })); put(make("SHL", lo, "8", hi)); put(make("OR", lo, hi, lo)); put(make("SHL", lo, "16", hi)); put(make("OR", lo, hi, lo)); put(make("MV", lo, hi)); }
+        else if (k == 2) { put(rebuilt("EXTU", std::vector<std::string>{ V, "16", "16", lo })); put(make("SHL", lo, "16", hi)); put(make("OR", lo, hi, lo)); put(make("MV", lo, hi)); }
+        else { put(make("MV", V, lo)); put(make("MV", V, hi)); }
+        put(make("NEG", P, A)); put(make("AND", "7", A, A)); if (log2k) put(make("SHR", A, std::to_string(log2k), A));
+        put(make("SUB", K, A, M)); put(make("SHR", M, std::to_string(per), M));
+        put(make("SHL", M, std::to_string(per), T)); put(make("SUB", K, T, T)); put(make("SUB", T, A, T));
+        put(make("ADD", K, iv, iv));
+        put(make("CMPEQ", "0", A, cond)); branch(Lw, cond);
+        out.push_back(parse(Lh + ":"));
+        out.push_back(v[body[storeAt]]); put(make("SUB", A, "1", A)); put(make("CMPGT", A, "0", cond)); branch(Lh, cond);
+        out.push_back(parse(Lh + "$x:"));
+        out.push_back(parse(Lw + ":"));
+        put(make("MVK", "0", X));
+        out.push_back(parse(Lk + ":"));
+        put(make("STDW", hi + ":" + lo, "*" + P + "++(8)")); put(make("ADD", "1", X, X)); put(make("CMPLT", X, M, cond)); branch(Lk, cond);
+        out.push_back(parse(Lk + "$x:"));
+        put(make("CMPEQ", "0", T, cond)); branch(exit, cond);
+        out.push_back(parse(Lt + ":"));
+        out.push_back(v[body[storeAt]]); put(make("SUB", T, "1", T)); put(make("CMPGT", T, "0", cond)); branch(Lt, cond);
+        out.push_back(parse(Lt + "$x:"));
+        branch(exit, "");
+        if (!legal) continue;
+        if (std::getenv("CPP11_FILL")) std::fprintf(stderr, "fill %s: %s of %s through %s, %ld-byte elements\n", base.c_str(), v[body[storeAt]].mnem.c_str(), V.c_str(), P.c_str(), k);
+        pre[h] = out;
+    }
+    if (pre.empty()) return;
+    std::vector<Line> out;
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (pre.count(i)) out.insert(out.end(), pre[i].begin(), pre[i].end());
+        out.push_back(v[i]);
+    }
+    v.swap(out);
+}
+
 // **Addresses folded into the access**: `ADD R, k, T` whose one reader is a load or store through `*T`, T dead
 // after, is `*+R(k)`; and `*R` followed by `ADD k, R, R` with nothing touching R between, k whole elements
 // up to 31, is `*R++` or `*R++[n]` and the ADD goes - `SUB` the same way with a minus.
@@ -2017,6 +2144,7 @@ std::string c6xSchedule(const std::string &text, int level) {
     if (level >= 2) {
         hoistInvariants(lines);
         if (!skipped("induct")) inductionPointers(lines);
+        if (!skipped("fill")) widenFills(lines);
         pipelineLoops(lines);
         if (!skipped("pairs")) hoistConstantPairs(lines);
     }

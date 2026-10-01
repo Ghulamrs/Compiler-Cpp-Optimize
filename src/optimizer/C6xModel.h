@@ -89,6 +89,8 @@ bool fits(const Packet &p, const Node &n);
 void add(Packet &p, const Node &n);
 bool passThrough(const Line &l, const std::set<std::string> &named);
 std::string steppedRegister(const Line &l, long &by);
+std::string pairOf(const std::string &lo, const std::string &hi);
+bool legalForm(Line &r);
 
 // The software pipeliner (C6xPipe.cpp): the innermost counted loops of the text rewritten as verbatim lines.
 void pipelineLoops(std::vector<Line> &v);

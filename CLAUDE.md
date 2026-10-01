@@ -11575,3 +11575,82 @@ did not move.
 functions ending in a loop's exit branch. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345 -O2 outputs assemble with
 ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
 `CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+## matmul and sieve against cl6x on the C6000: pairs made in place, pointers stepped, a stepped counter pipelined, a fill stored as doublewords, 2026-10-01
+
+**Branch `c6x-matmul-sieve` off tms-opt 902271f, two commits, measured on TI's C6747 cycle-accurate simulator
+(`tools/c6747-levels`, 60 of 60 runs printing their `.expected`, LNK6x's images cycle-identical to lnk6x 7.4.4's):**
+
+| kernel | 744-O2 | 822-O2 | cpp11 -O2 at 902271f | now | /744 | /822 |
+| --- | --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 5,568,115 | 4,273,094 | 4,273,094 | .76 | .76 |
+| hash | 6,009,087 | 6,014,015 | 6,807,872 | 6,807,670 | 1.13 | 1.13 |
+| isort | 5,312,299 | 5,309,586 | 5,956,804 | 5,956,804 | 1.12 | 1.12 |
+| matmul | 1,294,024 | 982,933 | 1,485,216 | **980,582** | .75 | .99 |
+| sieve | 2,999,335 | 2,577,500 | 3,595,800 | **3,117,718** | 1.03 | 1.20 |
+| virt | 3,269,953 | 3,268,908 | 3,631,729 | 3,631,729 | 1.11 | 1.11 |
+
+Every column is at or under 1.3x now, and the four kernels not worked on are unchanged to the cycle but hash, 202
+cycles shorter (its pair copies). The baseline column is 902271f's own compiler run the same evening, in the same tool.
+Code bytes of the program's own object at -O2: matmul 1,312 -> 1,280 against cl6x's 1,152 / 1,280 (`-O2 -ms3` 416 /
+448), sieve 576 -> 1,088 against 416 / 544 (352 / 320) - the fill and the stepped kernel are code the sequential loop
+did not need.
+
+**Step 1 found what each kernel paid for, and the C6000's own counters settled the last of it.** cl6x 8.2.2 pipelines
+matmul's inner loop at `SPLOOPD 4` with `LDDW *A3++, LDDW *B9++, MPYDP, ADDDP, STDW *B8++`; cpp11's was II=20 over 24
+ops, twelve of them `MV`s copying the backend's `A5:A4` stack-machine pairs, and the register pool ran out before the
+copies were counted. sieve's inner loop - `for (j = i*i; j <= n; j += i)` with a 64-bit `j` - was refused: "the test
+is not a compare of two", its test being the eleven-instruction two-word compare. The TI profile of sieve put 2.2 M of
+3.6 M cycles in that loop at 31 cycles a turn. And when the inner loop ran at II=5 the simulator moved by 58,000 cycles
+where the emulator moved by a million: `cycle.CPU` 1,420,197 against `CPU.stall.mem.L1D` 2,112,566 (cl6x 774,432 and
+1,798,694). Everything is in uncached SHRAM, a byte store costs a write-buffer stall, and the init loop's 20,000 `STB`s
+were 440,000 cycles of the gap - measured by hand-writing them as 2,500 `STDW`s first.
+
+**What was written, in the order it landed.**
+- **A pair copied whole is made where it goes** (`forwardPairMoves`, C6xSched): `W ..., H:L; MV L,X; MV H,Y` becomes
+  `W ..., Y:X`, and `MV S,L; MV T,H` before the one reader of `H:L` becomes that reader over `T:S`. A pair crosses only
+  as the second source of `MPYDP`, `ADDDP`, `SUBDP` (`pairMayCross`), and `ADDDP`/`SUBDP` cross on .S alone - ASM6x's
+  forms.h, confirmed by TI's asm6x refusing the rest.
+- **An address stepped with the counter is a pointer the access steps** (`inductionPointers`): `SHL iv,k,S; ADD base,
+  S,T; LDx/STx *T` is `*P++(1<<k)` with P made once in the preheader, from T where nothing else writes or exits with it,
+  else a pool register. The scheduler's model learned that a `*R++` writes R in E1 (`Node::stepped`, latency 1).
+- **The pipeliner recognises a stepped and a two-word counter** (`recogniseStepped`, C6xPipe): the body read as algebra -
+  `s:R`, `k:N`, `sum{..}`, `lt()`, `ltu()`, `eq{}`, `and{}`, `or{}` over the values at entry - must leave `lo` as
+  `lo + s`, `hi` as `hi + shi + carry`, and compute P as `lo' < n`, `n < lo'`, or the two-word `hi'<nhi | (hi'==nhi &
+  lo' <u nlo)`. The test stays in the body; the kernel's branch reads it against a bound moved back by `m = 2u-2-d`
+  steps, so **no turn the loop would not have run is begun**; the entry guard checks the step's sign, that `m*s` and
+  `g*s` fit, that `n - K` does not overflow, and that turn `g = u+S-2` exists, and falls back to the loop as written -
+  which stays, as the remainder. Each refusal is named under `CPP11_PIPE=2`.
+- **The sequential loop pays its branch**: `criticalPath` adds the six cycles from the predicate's landing to the next
+  turn, which the overlapped kernel never pays - sieve's loop read seq=6 and was refused at II=5 under the 4/5 rule, and
+  reads 12.
+- **Sinking a producer to its latest cycle is off**: it bought matmul II but TI's simulator said 1,038,288 against
+  980,582 without it, and `CPP11_NOSINK` and `CPP11_PIPE_MINII` went with the experiment.
+- **A fill loop stores doublewords** (`widenFills`, C6xSched, -O2): a rotated loop of `ADD 1,iv,iv`, `STB|STH|STW V,
+  *P++(k)` and the compare, past 15 elements, becomes a loop up to the 8-byte boundary, `STDW` of V replicated, and
+  the elements left; the counter and pointer end where the loop would have left them, and the short count runs the
+  loop as written. The alignment of P is what the original stores already required.
+
+**Cases**: `pipelined-stepped.cpp` (six stepped shapes - 64-bit by a register, one word `<=` and `<`, a constant step,
+a 64-bit constant step, a bound two steps above INT_MIN whose guard overflows - at 17 trip counts), `fill-stores.cpp`
+(bytes, shorts, words from eight alignments at 18 counts, the bytes outside the run checked), `pipelined-pointers.cpp`
+from the first commit; all clang's output. Gates at the close: tms6747.sh 348/0 at -O0, -O1, -O2; 348 of 348 -O2
+outputs assemble with ASM6x, no message; emit golden 0 of 1403 changed at -O0 (8 added); the tms6747 -O2 golden 97 of
+353 changed - 39 of them a `*R++` access, 3 a new kernel, and the line kinds leaving are `MV` (1,050) and `ADD`/`SHL`
+(1,115) - against 902271f's; run.sh 564/0; names.sh 361/0; overload.sh 30/0; `make comments` 0.
+
+**Compiler++ re-timed, the ten-file input benchmark on the box** (`C:\cxx1\input\all`, the input-reading harness
+linked by LNK6x `--cgt=7.4.4 --args=1024`, one simulator run per file, every fingerprint clang's): 7,930,895,902
+cycles against 7,936,487,108 before - adventure 464,214,530, bank 789,157,170, containers 845,015,797, geometry
+1,396,573,861, matrix 710,669,153, parser 561,612,751, shapes 839,212,647, simulation 622,923,798, sorting
+790,524,563, strings 910,991,632 - 0.820x CCS 7.4's 9,667,289,523. Nothing in it is a fill or a stepped loop, so the
+0.07% is the pair copies and the pointers. **Two things about the box the run taught:** ten DSS sessions started while
+`c6747-levels` had sixty running lost nine of ten to sessions that printed the workspace note and nothing else (the
+levels run lost two of sixty the same way) - one simulator job at a time on that box, not one tool at a time; and a
+lane file with CRLF endings carries the CR into the program's last argument, which `runargs.js` then cannot parse -
+`lane.cmd`'s lists are LF.
+
+**Left, each named.** sieve's outer loop is 25 cycles a turn - `MVKL/MVKH comp` not hoisted from a loop of several
+blocks, two taken branches a turn - and is the CPU gap to cl6x; the L1D stalls are the uncached map's. A fill whose
+value is narrowed inside the loop (`shorts[i] = value` emits an `EXT` a turn) is not widened. A loop counting down, or
+stepped by `SUB`, is not a stepped counter. No SPLOOP: cl6x's loop buffer is what keeps its kernels off the fetch path.

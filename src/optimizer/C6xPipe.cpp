@@ -177,9 +177,236 @@ struct Loop {
     std::vector<Edge> edges;
     std::set<std::string> used, written, predicated, rmwFirst;
     std::uint64_t liveExit = 0;
+    // A counter stepped by more than one: the test stays in the body and the kernel's branch reads it against a bound
+    // moved back by the turns in flight, so no turn the loop would not have run is begun. Low word first throughout.
+    bool stepped = false, wide = false;
+    std::vector<std::string> ivs, bounds, steps;
+    std::vector<std::size_t> testBody;          // the body's compares that read a bound
+    // A counter's word, a bound or a step the kernel and the remainder both read under its own name.
+    bool pinned(const std::string &r) const {
+        return std::find(ivs.begin(), ivs.end(), r) != ivs.end() || std::find(bounds.begin(), bounds.end(), r) != bounds.end() ||
+               std::find(steps.begin(), steps.end(), r) != steps.end();
+    }
 };
 
 const char *const kCond[] = { "A0", "A1", "A2", "B0", "B1", "B2" };
+
+// ----- the body read as algebra: what each register holds at its end, as a term over the values it came in with -----
+
+// A term is a string: `s:R` the value R held at entry, `k:N` a constant, `sum{a,b,..}` a sorted flattened sum, `lt(a,b)`,
+// `ltu(a,b)`, `eq{a,b}`, `and{a,b}`, `or{a,b}` the compares and logic (the braces sorted), and `op:N` anything else.
+std::string joinSorted(std::vector<std::string> ts) {
+    std::sort(ts.begin(), ts.end());
+    std::string s;
+    for (std::size_t i = 0; i < ts.size(); i++) s += (i ? "," : "") + ts[i];
+    return s;
+}
+// The terms between the brackets of one, split at the commas of its own level.
+std::vector<std::string> splitTop(const std::string &inner) {
+    std::vector<std::string> parts;
+    int depth = 0; std::size_t from = 0;
+    for (std::size_t c = 0; c <= inner.size(); c++) {
+        if (c == inner.size() || (inner[c] == ',' && depth == 0)) { parts.push_back(inner.substr(from, c - from)); from = c + 1; }
+        else if (inner[c] == '(' || inner[c] == '{') depth++;
+        else if (inner[c] == ')' || inner[c] == '}') depth--;
+    }
+    return parts;
+}
+std::string sumOf(const std::string &a, const std::string &b) {
+    std::vector<std::string> ts;
+    const std::string *parts[2] = { &a, &b };
+    for (int i = 0; i < 2; i++) {
+        const std::string &p = *parts[i];
+        if (p.compare(0, 4, "sum{") == 0) { std::vector<std::string> in = splitTop(p.substr(4, p.size() - 5)); ts.insert(ts.end(), in.begin(), in.end()); }
+        else ts.push_back(p);
+    }
+    return "sum{" + joinSorted(ts) + "}";
+}
+
+// The terms of every register after the body, and the term P is computed from, by one pass in program order.
+std::map<std::string, std::string> evaluateBody(const std::vector<Line> &v, const Loop &L, std::vector<std::string> &lineTerms) {
+    std::map<std::string, std::string> env;
+    auto term = [&](const std::string &op) -> std::string {
+        if (isNumber(op)) return "k:" + op;
+        if (!env.count(op)) env[op] = "s:" + op;
+        return env[op];
+    };
+    for (std::size_t k = 0; k < L.bodyAt.size(); k++) {
+        const Line &l = v[L.bodyAt[k]];
+        std::vector<std::string> reads, writes;
+        readsAndWrites(l, reads, writes);
+        for (std::size_t r = 0; r < reads.size(); r++) term(reads[r]);
+        std::string t;
+        const bool plain = l.pred.empty() && l.ops.size() == 3 && writes.size() == 1 && l.ops[2] == writes[0];
+        if (l.mnem == "MV" && l.pred.empty() && l.ops.size() == 2 && writes.size() == 1) t = term(l.ops[0]);
+        else if (plain && l.mnem == "ADD") t = sumOf(term(l.ops[0]), term(l.ops[1]));
+        else if (plain && l.mnem == "CMPLT") t = "lt(" + term(l.ops[0]) + "," + term(l.ops[1]) + ")";
+        else if (plain && l.mnem == "CMPGT") t = "lt(" + term(l.ops[1]) + "," + term(l.ops[0]) + ")";
+        else if (plain && l.mnem == "CMPLTU") t = "ltu(" + term(l.ops[0]) + "," + term(l.ops[1]) + ")";
+        else if (plain && l.mnem == "CMPGTU") t = "ltu(" + term(l.ops[1]) + "," + term(l.ops[0]) + ")";
+        else if (plain && (l.mnem == "CMPEQ" || l.mnem == "AND" || l.mnem == "OR")) {
+            std::vector<std::string> ts; ts.push_back(term(l.ops[0])); ts.push_back(term(l.ops[1]));
+            t = (l.mnem == "CMPEQ" ? "eq{" : l.mnem == "AND" ? "and{" : "or{") + joinSorted(ts) + "}";
+        }
+        for (std::size_t w = 0; w < writes.size(); w++) env[writes[w]] = t.empty() || writes.size() > 1 ? "op:" + std::to_string(k) + ":" + writes[w] : t;
+        lineTerms.push_back(t.empty() || writes.size() != 1 ? "" : env[writes[0]]);
+    }
+    return env;
+}
+
+// **A counter stepped by more than one, or sixty-four bits wide**: the body, read as algebra, must leave registers lo (and
+// hi) as `lo + s` (and `hi + shi + carry`) for s the loop never writes, and compute P as `lo' < n` or `n < lo'` - the two-word
+// signed form `hi'<nhi | (hi'==nhi & lo' <u nlo)` for a wide one - so the loop runs while iv < n or iv <= n by its own test.
+bool recogniseStepped(const std::vector<Line> &v, Loop &L, std::string &why, const std::string &fallback) {
+    why = fallback;
+    auto no = [&](const char *r) { if (tracing() > 1) why += std::string(" [stepped: ") + r + "]"; return false; };
+    L.liveExit = v[L.back + 1].liveIn;
+    if (L.liveExit & bitOf(L.P)) return no("the predicate lives past the loop");
+    std::map<std::string, int> writers, readers;
+    std::map<std::string, std::size_t> writerAt;
+    for (std::size_t k = 0; k < L.bodyAt.size(); k++) {
+        std::vector<std::string> reads, writes;
+        readsAndWrites(v[L.bodyAt[k]], reads, writes);
+        for (std::size_t r = 0; r < reads.size(); r++) readers[reads[r]]++;
+        for (std::size_t w = 0; w < writes.size(); w++) { writers[writes[w]]++; writerAt[writes[w]] = k; }
+    }
+    if (writers[L.P] != 1) return no("the predicate is written more than once");
+    std::vector<std::string> lineTerms;
+    std::map<std::string, std::string> env = evaluateBody(v, L, lineTerms);
+    // The steps: a register whose end term is itself plus one invariant (lo), and one that adds a carry of lo's sum (hi).
+    auto invariant = [&](const std::string &t, std::string &reg) -> bool {
+        if (t.compare(0, 2, "k:") == 0) { reg = t.substr(2); return true; }
+        if (t.compare(0, 2, "s:") != 0) return false;
+        reg = t.substr(2);
+        return sideOf(reg) && !writers.count(reg);
+    };
+    std::string lo, slo, hi, shi;
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end() && lo.empty(); ++it) {
+        const std::string &r = it->first, &t = it->second;
+        if (!sideOf(r) || !writers.count(r) || t.compare(0, 4, "sum{") != 0) continue;
+        const std::string a = "s:" + r;
+        if (t == sumOf(a, "k:0") || env[L.P].find(t) == std::string::npos) continue;   // the counter the test reads
+        std::vector<std::string> ts = splitTop(t.substr(4, t.size() - 5));
+        if (ts.size() != 2) continue;
+        std::string x = ts[0], y = ts[1], s;
+        const std::string other = x == a ? y : y == a ? x : "";
+        if (other.empty() || !invariant(other, s) || (s != r && s == "0")) continue;
+        lo = r; slo = s;
+    }
+    if (lo.empty()) return no("no counter stepped by an invariant");
+    const std::string loTerm = env[lo], carry = "ltu(" + loTerm + "," + (isNumber(slo) ? "k:" : "s:") + slo + ")";
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end() && hi.empty(); ++it) {
+        const std::string &r = it->first, &t = it->second;
+        if (!sideOf(r) || r == lo || !writers.count(r) || t.compare(0, 4, "sum{") != 0 || t.find(carry) == std::string::npos) continue;
+        std::string rest = sumOf("s:" + r, carry), s;
+        // t is sum{s:r, carry, step}: the step is what remains when those two are taken out.
+        std::string cand;
+        std::vector<std::string> parts = splitTop(t.substr(4, t.size() - 5));
+        if (parts.size() != 3) continue;
+        for (std::size_t p = 0; p < parts.size(); p++) if (parts[p] != "s:" + r && parts[p] != carry) cand = parts[p];
+        if (cand.empty() || !invariant(cand, s) || sumOf(rest, cand) != t) continue;
+        hi = r; shi = s;
+    }
+    L.wide = !hi.empty();
+    if (L.wide && (isNumber(slo) != isNumber(shi))) return no("the two steps are not both registers or both constants");
+    // The predicate: the stepped value against a bound the loop never writes, one or two words, signed.
+    const std::string p = env[L.P], hiTerm = L.wide ? env[hi] : "";
+    if (tracing() > 2) std::fprintf(stderr, "  stepped: lo %s + %s, hi %s + %s, %s = %s\n", lo.c_str(), slo.c_str(), hi.c_str(), shi.c_str(), L.P.c_str(), p.c_str());
+    std::string nlo, nhi;
+    bool less = false;                    // the loop runs while iv < n; else while iv <= n
+    auto boundOf = [&](const std::string &t, std::string &reg) -> bool { return t.compare(0, 2, "s:") == 0 && invariant(t, reg) && reg != lo && reg != hi; };
+    if (!L.wide) {
+        if (p.compare(0, 3, "lt(") != 0) return no("the predicate is not a compare");
+        std::vector<std::string> xy = splitTop(p.substr(3, p.size() - 4));
+        if (xy.size() != 2) return no("the predicate is not a compare");
+        const std::string x = xy[0], y = xy[1];
+        if (x == loTerm && boundOf(y, nlo)) less = true;
+        else if (y == loTerm && boundOf(x, nlo)) less = false;
+        else return no("the compare is not of the stepped counter against an invariant");
+    } else {
+        // or{and{eq{hi',nhi},ltu(lo',nlo)},lt(hi',nhi)} for iv < n; the operands the other way round for n < iv.
+        for (int dir = 0; dir < 2 && nlo.empty(); dir++) {
+            for (std::map<std::string, std::string>::const_iterator a = env.begin(); a != env.end() && nlo.empty(); ++a) {
+                std::string nl, nh;
+                if (!boundOf("s:" + a->first, nl) || a->first == lo || a->first == hi) continue;
+                for (std::map<std::string, std::string>::const_iterator b = env.begin(); b != env.end() && nlo.empty(); ++b) {
+                    if (!boundOf("s:" + b->first, nh) || b->first == a->first) continue;
+                    const std::string NL = "s:" + nl, NH = "s:" + nh;
+                    std::vector<std::string> e; e.push_back(hiTerm); e.push_back(NH);
+                    std::string ltu = dir == 0 ? "ltu(" + loTerm + "," + NL + ")" : "ltu(" + NL + "," + loTerm + ")";
+                    std::string lt = dir == 0 ? "lt(" + hiTerm + "," + NH + ")" : "lt(" + NH + "," + hiTerm + ")";
+                    std::vector<std::string> an; an.push_back("eq{" + joinSorted(e) + "}"); an.push_back(ltu);
+                    std::vector<std::string> o; o.push_back("and{" + joinSorted(an) + "}"); o.push_back(lt);
+                    if (p == "or{" + joinSorted(o) + "}") { nlo = nl; nhi = nh; less = dir == 0; }
+                }
+            }
+        }
+        if (nlo.empty()) return no("the two-word compare is not of the stepped counter against an invariant");
+    }
+    // `[P] B` with P = iv < n runs while iv < n; `[!P] B` with P = n < iv runs while iv <= n; the other two count down.
+    if (less == L.negated) return no("the branch sense runs the loop while the test fails");
+    L.plusOne = !less;
+    // The lines that feed P, by the last writer before each read; the compares reading a bound must be among them,
+    // must compare the stepped counter's term, and must be read by nothing else - they are the lines the kernel's
+    // moved bound is substituted into.
+    auto lastWriterBefore = [&](const std::string &x, std::size_t k) -> long {
+        for (std::size_t j = k; j-- > 0;) {
+            std::vector<std::string> reads, writes;
+            readsAndWrites(v[L.bodyAt[j]], reads, writes);
+            if (has(writes, x)) return static_cast<long>(j);
+        }
+        return -1;
+    };
+    std::set<std::size_t> feeding;
+    std::vector<std::size_t> work(1, writerAt[L.P]);
+    while (!work.empty()) {
+        std::size_t k = work.back(); work.pop_back();
+        if (!feeding.insert(k).second) continue;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(v[L.bodyAt[k]], reads, writes);
+        for (std::size_t r = 0; r < reads.size(); r++) { long w = lastWriterBefore(reads[r], k); if (w >= 0) work.push_back(static_cast<std::size_t>(w)); }
+    }
+    std::vector<std::size_t> tree;
+    for (std::size_t k = 0; k < L.bodyAt.size(); k++) {
+        const Line &l = v[L.bodyAt[k]];
+        std::vector<std::string> reads, writes;
+        readsAndWrites(l, reads, writes);
+        const bool rlo = has(reads, nlo), rhi = L.wide && has(reads, nhi);
+        if (!rlo && !rhi) continue;
+        if (!feeding.count(k) || l.ops.size() != 3 || !l.pred.empty() || l.mnem.compare(0, 3, "CMP") != 0 || writes.size() != 1) return no("a bound is read outside the test");
+        if (l.ops[2] == nlo || l.ops[2] == nhi) return no("the test writes a bound");
+        const std::string &lt = lineTerms[k], want = rlo ? loTerm : hiTerm, bound = "s:" + (rlo ? nlo : nhi);
+        if (lt.empty() || lt.find(want) == std::string::npos || lt.find(bound) == std::string::npos) return no("the test reads the counter before its step");
+        for (std::size_t k2 = k + 1; k2 < L.bodyAt.size(); k2++) {
+            std::vector<std::string> r2, w2;
+            readsAndWrites(v[L.bodyAt[k2]], r2, w2);
+            if (has(r2, writes[0]) && !feeding.count(k2)) return no("a bound's compare is read outside the test");
+            if (has(w2, writes[0])) break;
+        }
+        tree.push_back(k);
+    }
+    if (tree.empty()) return no("no compare reads the bound");
+    if (isNumber(nlo) || (L.wide && isNumber(nhi))) return no("a constant bound");
+    if (isNumber(slo) && L.wide) return no("a constant step on a two-word counter");
+    if (isNumber(slo) && std::atol(slo.c_str()) <= 0) return no("a step that is not positive");
+    L.stepped = true;
+    L.iv = lo; L.bound = nlo; L.cmp = L.bodyAt[writerAt[L.P]];
+    L.ivs.push_back(lo); L.bounds.push_back(nlo); L.steps.push_back(slo);
+    if (L.wide) { L.ivs.push_back(hi); L.bounds.push_back(nhi); L.steps.push_back(shi); }
+    L.used.clear(); L.written.clear(); L.predicated.clear();
+    for (std::size_t k = 0; k < L.bodyAt.size(); k++) {
+        const Line &l = v[L.bodyAt[k]];
+        std::vector<std::string> reads, writes;
+        readsAndWrites(l, reads, writes);
+        for (std::size_t r = 0; r < reads.size(); r++) L.used.insert(reads[r]);
+        for (std::size_t w = 0; w < writes.size(); w++) { L.used.insert(writes[w]); L.written.insert(writes[w]); if (!l.pred.empty()) L.predicated.insert(writes[w]); }
+        if (l.mnem == "MV" && l.ops.size() == 2 && l.ops[0] == l.ops[1]) continue;
+        if (std::find(tree.begin(), tree.end(), k) != tree.end()) L.testBody.push_back(L.body.size());
+        L.body.push_back(l);
+    }
+    why.clear();
+    return true;
+}
 
 bool recognise(const std::vector<Line> &v, std::size_t back, const std::set<std::string> &labels, const std::set<std::string> &named, Loop &L, std::string &why) {
     const Line &b = v[back];
@@ -218,7 +445,7 @@ bool recognise(const std::vector<Line> &v, std::size_t back, const std::set<std:
     if (!cmpFound) { why = "the predicate is not written in the loop"; return false; }
     const Line &c = v[L.cmp];
     bool lt = c.mnem == "CMPLT" || c.mnem == "CMPLTU", gt = c.mnem == "CMPGT" || c.mnem == "CMPGTU";
-    if ((!lt && !gt) || c.ops.size() != 3 || !c.pred.empty() || c.ops[2] != L.P) { why = "the test is not a compare of two"; return false; }
+    if ((!lt && !gt) || c.ops.size() != 3 || !c.pred.empty() || c.ops[2] != L.P) return recogniseStepped(v, L, why, "the test is not a compare of two");
     // Loops while i < n: [P] with i < n or n > i; while i <= n: [!P] with i > n or n < i.
     if (lt == !L.negated) { L.iv = c.ops[0]; L.bound = c.ops[1]; }
     else { L.iv = c.ops[1]; L.bound = c.ops[0]; }
@@ -239,7 +466,7 @@ bool recognise(const std::vector<Line> &v, std::size_t back, const std::set<std:
             ivWrites++;
             bool step = l.mnem == "ADD" && l.pred.empty() && l.ops.size() == 3 && l.ops[2] == L.iv &&
                         ((l.ops[0] == "1" && l.ops[1] == L.iv) || (l.ops[1] == "1" && l.ops[0] == L.iv));
-            if (!step || L.bodyAt[k] > L.cmp) { why = "the counter is not stepped by one before the test"; return false; }
+            if (!step || L.bodyAt[k] > L.cmp) return recogniseStepped(v, L, why, "the counter is not stepped by one before the test");
         }
         if (!isNumber(L.bound) && has(writes, L.bound) && L.bodyAt[k] < L.cmp) {
             boundWrites++;
@@ -325,53 +552,12 @@ int criticalPath(const Loop &L) {
         for (std::size_t e = 0; e < L.edges.size(); e++)
             if (L.edges[e].dist == 0 && L.edges[e].to == static_cast<int>(o)) t[o] = std::max(t[o], t[static_cast<std::size_t>(L.edges[e].from)] + L.edges[e].delay);
         len = std::max(len, t[o] + L.nodes[o].lat);
+        // The sequential loop's branch waits for its predicate - the body's own, or the compare of the stepped counter - and
+        // the next turn starts six cycles after it, which the overlapped kernel never pays.
+        const std::uint64_t gate = bitOf(L.stepped ? L.P : L.iv);
+        if (L.nodes[o].writes & gate) len = std::max(len, t[o] + L.nodes[o].lat + (L.stepped ? 0 : 1) + 6);
     }
     return std::max(len, 6);
-}
-
-// The reservation table rebuilt from every instruction's cycle but the one left out - with the branch and the
-// count's step at their slot and each DP instruction's late cycles held - and whether that one fits at cycle c.
-bool fitsAt(const Loop &L, int II, const std::vector<int> &t, std::uint64_t renameMask, const std::vector<Node> &extra, int sb, std::size_t skip, int c) {
-    std::vector<Packet> mrt(static_cast<std::size_t>(II));
-    std::vector<Node> store;
-    store.reserve(2 + L.nodes.size() * 5);
-    for (int k = 0; k < 2; k++) { store.push_back(extra[static_cast<std::size_t>(k)]); add(mrt[static_cast<std::size_t>(sb)], store.back()); }
-    for (std::size_t o = 0; o < L.nodes.size(); o++) {
-        if (o == skip || t[o] < 0) continue;
-        store.push_back(L.nodes[o]);
-        store.back().writes &= ~renameMask;
-        add(mrt[static_cast<std::size_t>(t[o] % II)], store.back());
-        for (int k = 1; k <= L.nodes[o].late; k++) {
-            Node ph; ph.units = L.nodes[o].units; ph.side = L.nodes[o].side; ph.cross = L.nodes[o].cross;
-            store.push_back(ph);
-            add(mrt[static_cast<std::size_t>((t[o] + k) % II)], store.back());
-        }
-    }
-    Node x = L.nodes[skip];
-    x.writes &= ~renameMask;
-    if (!fits(mrt[static_cast<std::size_t>(c % II)], x)) return false;
-    for (int k = 1; k <= x.late; k++) {
-        Node ph; ph.units = x.units; ph.side = x.side; ph.cross = x.cross;
-        if (!fits(mrt[static_cast<std::size_t>((c + k) % II)], ph)) return false;
-    }
-    return true;
-}
-
-// An instruction that reads no renamed register - a load through a pointer, a constant - goes as late as its
-// readers allow, so the value it makes lives for fewer cycles and wants fewer copies; later in program order first.
-void sinkProducers(const Loop &L, int II, std::vector<int> &t, std::uint64_t renameMask, const std::vector<Node> &extra, int sb) {
-    for (std::size_t o = L.nodes.size(); o-- > 0;) {
-        if ((L.nodes[o].reads & renameMask) || !(L.nodes[o].writes & renameMask)) continue;
-        int hi = 1 << 30;
-        for (std::size_t e = 0; e < L.edges.size(); e++) {
-            const Edge &d = L.edges[e];
-            if (d.from != static_cast<int>(o) || d.to == static_cast<int>(o)) continue;
-            hi = std::min(hi, t[static_cast<std::size_t>(d.to)] - d.delay + d.dist * II);
-        }
-        if (hi >= (1 << 30)) continue;
-        for (int c = hi; c > t[o]; c--)
-            if (fitsAt(L, II, t, renameMask, extra, sb, o, c)) { t[o] = c; break; }
-    }
 }
 
 // One try at an initiation interval: each instruction in program order at the first cycle in the window its
@@ -387,10 +573,11 @@ bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string
     extra.reserve(2 + n * 5);
     std::set<std::string> lab;
     lab.insert(L.label + "$pipe");
-    extra.push_back(makeNode(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.C), lab));
-    extra.push_back(makeNode(make("ADD", "-1", L.C, L.C), std::set<std::string>()));
+    // The kernel's branch, on the count where there is one and on the loop's own test where the counter is stepped.
+    extra.push_back(makeNode(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.stepped ? (L.negated ? "!" + L.P : L.P) : L.C), lab));
+    if (!L.stepped) extra.push_back(makeNode(make("ADD", "-1", L.C, L.C), std::set<std::string>()));
     const int sb = ((6 % II) == 0 ? 0 : II - 6 % II);
-    for (int k = 0; k < 2; k++) { if (!fits(mrt[static_cast<std::size_t>(sb)], extra[static_cast<std::size_t>(k)])) return false; add(mrt[static_cast<std::size_t>(sb)], extra[static_cast<std::size_t>(k)]); }
+    for (std::size_t k = 0; k < extra.size(); k++) { if (!fits(mrt[static_cast<std::size_t>(sb)], extra[k])) return false; add(mrt[static_cast<std::size_t>(sb)], extra[k]); }
     for (std::size_t o = 0; o < n; o++) {
         const Node &x = L.nodes[o];
         if (x.late + 1 > II) return false;
@@ -434,7 +621,6 @@ bool scheduleAt(Loop &L, int II, std::vector<int> &t, const std::set<std::string
             return false;
         }
     }
-    sinkProducers(L, II, t, renameMask, extra, sb);
     // Two writes of one renamed register in one slot are different iterations' copies: q must tell them apart.
     for (std::size_t o = 0; o < n; o++)
         for (std::size_t p = 0; p < o; p++) {
@@ -533,7 +719,7 @@ void renameWebs(Loop &L, std::vector<std::string> &pool) {
         const std::string &r = it->first;
         bool carried = false;
         for (std::size_t w = 0; w < webs.size(); w++) if (webs[w].reg == r && webs[w].keep) carried = true;
-        if (carried || (L.liveExit & bitOf(r)) || r == L.iv || r == L.bound || r == L.C || r == L.P) webs[static_cast<std::size_t>(it->second)].keep = true;
+        if (carried || (L.liveExit & bitOf(r)) || r == L.iv || r == L.bound || r == L.C || r == L.P || L.pinned(r)) webs[static_cast<std::size_t>(it->second)].keep = true;
     }
     for (std::size_t w = 0; w < webs.size(); w++) {
         Web &x = webs[w];
@@ -633,6 +819,109 @@ void foldBodyCopies(Loop &L) {
     }
 }
 
+// A legal line, or false: the stepped guard is made of ordinary instructions and every one must have a form.
+bool emitLegal(std::vector<Line> &out, Line l, std::string &why) {
+    if (!legalForm(l)) { why = "the stepped guard has no legal form for" + l.raw; return false; }
+    out.push_back(l);
+    return true;
+}
+
+// A register of free's on the side asked for, or any; "" for none. With pair, an aligned even:odd pair's even half.
+std::string takeFree(std::vector<std::string> &free, char side, bool pair) {
+    for (int pass = 0; pass < 2; pass++)
+        for (std::size_t f = 0; f < free.size(); f++) {
+            if (pass == 0 && sideOf(free[f]) != side) continue;
+            if (!pair) { std::string r = free[f]; free.erase(free.begin() + static_cast<long>(f)); return r; }
+            int num = std::atoi(free[f].c_str() + 1);
+            if (num % 2) continue;
+            std::string hi = std::string(1, free[f][0]) + std::to_string(num + 1);
+            std::vector<std::string>::iterator ih = std::find(free.begin(), free.end(), hi);
+            if (ih == free.end()) continue;
+            std::string r = free[f];
+            free.erase(ih); free.erase(free.begin() + static_cast<long>(f));
+            return r;
+        }
+    return "";
+}
+
+// The loop's own test in one canonical shape: P = iv < n where the loop runs while iv < n, P = n < iv where it runs
+// while iv <= n; a two-word counter signed through the high word and unsigned through the low, over two scratch registers.
+bool steppedTest(const Loop &L, std::vector<Line> &out, const std::string &nlo, const std::string &nhi, const std::string &t, const std::string &tb, std::string &why) {
+    const bool less = !L.plusOne;
+    const std::string &lo = L.ivs[0];
+    const bool across = sideOf(L.P) != sideOf(lo);    // the result is made beside the counter and copied to P
+    if (!L.wide) {
+        if (!across) return emitLegal(out, make(less ? "CMPLT" : "CMPGT", lo, nlo, L.P), why);
+        if (t.empty()) { why = "the stepped test has no scratch register beside the counter"; return false; }
+        return emitLegal(out, make(less ? "CMPLT" : "CMPGT", lo, nlo, t), why) && emitLegal(out, make("MV", t, L.P), why);
+    }
+    const std::string &hi = L.ivs[1], &x = across ? tb : L.P;
+    return emitLegal(out, make("CMPEQ", hi, nhi, t), why) && emitLegal(out, make(less ? "CMPLTU" : "CMPGTU", lo, nlo, tb), why) &&
+           emitLegal(out, make("AND", t, tb, t), why) && emitLegal(out, make(less ? "CMPLT" : "CMPGT", hi, nhi, tb), why) &&
+           emitLegal(out, make("OR", t, tb, x), why) && (!across || emitLegal(out, make("MV", x, L.P), why));
+}
+
+// **The stepped loop's entry**: the step must not be negative, K = m*s and Kg = g*s must fit, n-K (the kernel's bound)
+// and n-Kg must not overflow, and turn g must exist - `iv REL n-Kg` by the loop's own test - or the loop runs as written.
+// Every check branches to the head, and the test is the loop's own over the bound n - Kg; one or two words.
+bool steppedGuard(const Loop &L, std::vector<Line> &out, const std::vector<std::string> &moved, const std::string &xt, const std::string &xtb,
+                  std::vector<std::string> free, int m, int g, std::string &why) {
+    const std::string &slo = L.steps[0], &nlo = L.bounds[0];
+    const std::string shi = L.wide ? L.steps[1] : "", nhi = L.wide ? L.bounds[1] : "";
+    const bool constant = isNumber(slo);
+    const char stepSide = constant ? sideOf(nlo) : sideOf(slo);
+    const std::string klo = takeFree(free, stepSide, true), tm = takeFree(free, stepSide, false), t2 = takeFree(free, stepSide, false), tb = takeFree(free, sideOf(nlo), false);
+    if (klo.empty() || tm.empty() || t2.empty() || tb.empty()) { why = "no free registers for the stepped guard"; return false; }
+    const std::string khi = std::string(1, klo[0]) + std::to_string(std::atoi(klo.c_str() + 1) + 1);
+    const std::string skip = L.negated ? L.P : "!" + L.P;    // the branch past the pipelined copy, taken where the loop would not go on
+    Line toHead = rebuilt("B", std::vector<std::string>(1, L.label), L.P);
+    if (!constant && !emitLegal(out, make("CMPGT", "0", L.wide ? shi : slo, L.P), why)) return false;
+    if (!constant) out.push_back(toHead);
+    // K = k*s into khi:klo, checked to fit: a 31-bit value for one word, a 47-bit step for two.
+    auto times = [&](int k) -> bool {
+        if (constant) {
+            long kk = k * std::atol(slo.c_str());
+            if (kk < 0 || kk > 0x7fffffff) { why = "the stepped guard's constant does not fit"; return false; }
+            if (kk <= 32767) out.push_back(make("MVK", std::to_string(kk), klo));
+            else { out.push_back(make("MVKL", std::to_string(kk), klo)); out.push_back(make("MVKH", std::to_string(kk), klo)); }
+            return true;
+        }
+        out.push_back(make("MVK", std::to_string(k), tm));
+        if (!emitLegal(out, make("MPY32U", slo, tm, khi + ":" + klo), why)) return false;
+        if (!L.wide) {
+            if (!emitLegal(out, make("CMPGT", "0", klo, tb), why) || !emitLegal(out, make("XOR", "1", tb, tb), why)) return false;
+            if (!emitLegal(out, make("CMPEQ", "0", khi, L.P), why) || !emitLegal(out, make("AND", L.P, tb, L.P), why)) return false;
+            out.push_back(rebuilt("B", std::vector<std::string>(1, L.label), "!" + L.P));
+            return true;
+        }
+        if (!emitLegal(out, make("MPY32", shi, tm, t2), why) || !emitLegal(out, make("ADD", t2, khi, khi), why)) return false;
+        if (!emitLegal(out, make("SHRU", shi, "15", t2), why) || !emitLegal(out, make("CMPEQ", "0", t2, L.P), why)) return false;
+        out.push_back(rebuilt("B", std::vector<std::string>(1, L.label), "!" + L.P));
+        return true;
+    };
+    // d = n - (khi:klo), into dlo (and dhi), then the overflow check: n negative and the difference not.
+    auto minus = [&](const std::string &dlo, const std::string &dhi) -> bool {
+        if (!L.wide) {
+            if (!emitLegal(out, make("SUB", nlo, klo, dlo), why)) return false;
+            if (!emitLegal(out, make("CMPGT", "0", nlo, L.P), why) || !emitLegal(out, make("CMPGT", "0", dlo, tb), why)) return false;
+        } else {
+            if (!emitLegal(out, make("CMPLTU", nlo, klo, tb), why) || !emitLegal(out, make("SUB", nlo, klo, dlo), why)) return false;
+            if (!emitLegal(out, make("SUB", nhi, khi, dhi), why) || !emitLegal(out, make("SUB", dhi, tb, dhi), why)) return false;
+            if (!emitLegal(out, make("CMPGT", "0", nhi, L.P), why) || !emitLegal(out, make("CMPGT", "0", dhi, tb), why)) return false;
+        }
+        if (!emitLegal(out, make("XOR", "1", tb, tb), why) || !emitLegal(out, make("AND", L.P, tb, L.P), why)) return false;
+        out.push_back(toHead);
+        return true;
+    };
+    if (!times(m) || !minus(moved[0], L.wide ? moved[1] : "")) return false;
+    if (g != m && !times(g)) return false;
+    if (!minus(klo, khi)) return false;
+    // The entry test over the bound n - Kg, then the branch past the copy where it fails.
+    if (!steppedTest(L, out, klo, khi, xt, xtb, why)) return false;
+    out.push_back(rebuilt("B", std::vector<std::string>(1, L.label), skip));
+    return true;
+}
+
 // The whole rewrite of one recognised loop; false, with the reason, where it is not worth it or cannot be done.
 bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::string &why) {
     // The pool of names the loop may take: caller-saved, unused in it, dead at its exit.
@@ -644,9 +933,37 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
             if (!L.used.count(r) && !(L.liveExit & bitOf(r)) && r != L.C && r != L.P) pool.push_back(r);
         }
     std::string X;
-    for (std::size_t k = 0; k < pool.size() && X.empty(); k++) if (sideOf(pool[k]) == sideOf(L.C)) X = pool[k];
-    if (X.empty()) { why = "no free register for the count"; return false; }
-    pool.erase(std::find(pool.begin(), pool.end(), X));
+    if (!L.stepped) {
+        for (std::size_t k = 0; k < pool.size() && X.empty(); k++) if (sideOf(pool[k]) == sideOf(L.C)) X = pool[k];
+        if (X.empty()) { why = "no free register for the count"; return false; }
+        pool.erase(std::find(pool.begin(), pool.end(), X));
+    }
+    // A stepped counter's kernel tests the moved bound: a fresh register per word, taking the bound's own side.
+    std::vector<std::string> moved;
+    for (std::size_t w = 0; w < L.bounds.size(); w++) {
+        std::string f;
+        for (int pass = 0; pass < 2 && f.empty(); pass++)
+            for (std::size_t k = 0; k < pool.size() && f.empty(); k++)
+                if (pass == 1 || sideOf(pool[k]) == sideOf(L.bounds[w])) { f = pool[k]; pool.erase(pool.begin() + static_cast<long>(k)); }
+        if (f.empty()) { why = "no free register for the moved bound"; return false; }
+        moved.push_back(f);
+    }
+    // The test's scratch registers, beside the counter so that only the bound crosses: taken before the renaming can.
+    std::string xt, xtb;
+    if (L.stepped && (L.wide || sideOf(L.P) != sideOf(L.ivs[0]))) {
+        xt = takeFree(pool, sideOf(L.ivs[0]), false);
+        if (L.wide) xtb = takeFree(pool, sideOf(L.ivs[0]), false);
+        if (xt.empty() || (L.wide && xtb.empty()) || sideOf(xt) != sideOf(L.ivs[0]) || (L.wide && sideOf(xtb) != sideOf(L.ivs[0]))) {
+            why = "no free register beside the counter for the stepped test"; return false;
+        }
+    }
+    for (std::size_t k = 0; k < L.testBody.size(); k++) {
+        Line &l = L.body[L.testBody[k]];
+        std::vector<std::string> ops = l.ops;
+        for (std::size_t o = 0; o + 1 < ops.size(); o++)
+            for (std::size_t w = 0; w < L.bounds.size(); w++) if (ops[o] == L.bounds[w]) ops[o] = moved[w];
+        l = rebuilt(l.mnem, ops, l.pred);
+    }
     foldBodyCopies(L);
     if (tracing() > 4) for (std::size_t o = 0; o < L.body.size(); o++) std::fprintf(stderr, "  as written%s\n", L.body[o].raw.c_str());
     renameWebs(L, pool);
@@ -677,7 +994,7 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
         for (std::size_t h = 0; h < units[u].regs.size(); h++) {
             const std::string &r = units[u].regs[h];
             if (!L.written.count(r)) ok = false;
-            if (L.predicated.count(r) || L.rmwFirst.count(r) || r == L.C || r == "A15" || r == "B15" || r == "B3" || r == "B14") { ok = false; break; }
+            if (L.predicated.count(r) || L.rmwFirst.count(r) || r == L.C || r == L.P || r == "A15" || r == "B15" || r == "B3" || r == "B14") { ok = false; break; }
         }
         if (ok) for (std::size_t h = 0; h < units[u].regs.size(); h++) renameable.insert(units[u].regs[h]);
     }
@@ -685,6 +1002,7 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
     if (tracing() > 2) { std::fprintf(stderr, "  renameable:"); for (std::set<std::string>::const_iterator it = renameable.begin(); it != renameable.end(); ++it) std::fprintf(stderr, " %s", it->c_str()); std::fprintf(stderr, "\n"); }
     std::vector<int> t;
     std::map<std::string, int> minQ;
+    std::vector<std::string> free;          // the pool less the copies: what a guard may still take
     int II = 1, S = 0, u = 1, seq = 0;
     for (int attempt = 0; attempt < 8; attempt++) {
         buildEdges(L, renameable);
@@ -721,12 +1039,12 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
                 int q = std::max((end - start) / II + 1, minQ.count(it->first) ? minQ[it->first] : 1);
                 un.q = std::max(un.q, pow2At(q));
                 if (firstWrite[k] < (1 << 30)) for (std::size_t o = 0; o <= static_cast<std::size_t>(firstWrite[k]); o++) if (L.nodes[o].reads & bit) un.carried = true;
-                if ((L.liveExit & bit) || it->first == L.iv || it->first == L.bound) un.exits = true;
+                if ((L.liveExit & bit) || it->first == L.iv || it->first == L.bound || L.pinned(it->first)) un.exits = true;
             }
             for (std::size_t x = 0; x < units.size(); x++) qMax = std::max(qMax, units[x].q);
             u = pow2At(std::max((6 + II - 1) / II, qMax));
             // The copies: the register itself, then q-1 more of its side - a pair's two halves aligned.
-            std::vector<std::string> free = pool;
+            free = pool;
             for (std::size_t x = 0; x < units.size(); x++) {
                 Unit &un = units[x];
                 un.copies.assign(un.regs.size(), std::vector<std::string>());
@@ -759,23 +1077,39 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
         }
         if (attempt == 7) { why = "no registers for the renaming"; return false; }
     }
-    if (tracing()) std::fprintf(stderr, "pipe %s: II=%d S=%d u=%d seq=%d ops=%zu\n", L.label.c_str(), II, S, u, seq, L.nodes.size());
+    // A stepped counter: the kernel's branch, at cycle u*II-6 of a round, reads the test iteration k_b made of the counter
+    // one turn on, so the bound it tests is moved back by m = 2u-2-d steps (d the turns between that test and the branch);
+    // a round is entered only when its last-started turn exists, and the loop is entered when turns 0..u+S-2 do.
+    int m = 0, g = 0;
+    if (L.stepped) {
+        int tP = 0;
+        for (std::size_t o = 0; o < L.nodes.size(); o++) if (L.nodes[o].writes & bitOf(L.P)) tP = t[o];
+        auto floorDiv = [](int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
+        int d = floorDiv(u * II - 7 - tP, II);
+        while (S - 1 + d < 0) { u *= 2; d = floorDiv(u * II - 7 - tP, II); }   // the first round's branch must see a test
+        m = 2 * u - 2 - d; g = u + S - 2;
+    }
+    if (tracing()) std::fprintf(stderr, "pipe %s: II=%d S=%d u=%d seq=%d ops=%zu%s\n", L.label.c_str(), II, S, u, seq, L.nodes.size(), L.stepped ? (L.wide ? " stepped wide" : " stepped") : "");
+    if (L.stepped) { if (!steppedGuard(L, out, moved, xt, xtb, free, m, g, why)) return false; }
     // The guard: X = (n - i [+1] - (S-1)) >> log2 u, the unrolled rounds; none, and the loop is left as written.
-    const bool crossBoth = !L.boundConst && sideOf(L.bound) != sideOf(X) && sideOf(L.iv) != sideOf(X);
-    if (L.boundConst) {
+    const bool crossBoth = !L.stepped && !L.boundConst && sideOf(L.bound) != sideOf(X) && sideOf(L.iv) != sideOf(X);
+    if (L.stepped) { }
+    else if (L.boundConst) {
         if (L.boundK >= -32768 && L.boundK <= 32767) out.push_back(make("MVK", std::to_string(L.boundK), X));
         else { out.push_back(make("MVKL", std::to_string(L.boundK), X)); out.push_back(make("MVKH", std::to_string(L.boundK), X)); }
         out.push_back(make("SUB", X, L.iv, X));
     } else if (crossBoth) { out.push_back(make("MV", L.bound, X)); out.push_back(make("SUB", X, L.iv, X)); }
     else out.push_back(make("SUB", L.bound, L.iv, X));
-    if (L.plusOne) out.push_back(make("ADD", "1", X, X));
-    if (S > 1) { if (S - 1 <= 31) out.push_back(make("SUB", X, std::to_string(S - 1), X)); else out.push_back(make("ADDK", std::to_string(1 - S), X)); }
-    int log2u = 0;
-    while ((1 << log2u) < u) log2u++;
-    if (log2u) out.push_back(make("SHR", X, std::to_string(log2u), X));
-    out.push_back(make("CMPGT", "1", X, L.P));
-    out.push_back(rebuilt("B", std::vector<std::string>(1, L.label), L.P));
-    out.push_back(make("SUB", X, "1", L.C));
+    if (!L.stepped) {
+        if (L.plusOne) out.push_back(make("ADD", "1", X, X));
+        if (S > 1) { if (S - 1 <= 31) out.push_back(make("SUB", X, std::to_string(S - 1), X)); else out.push_back(make("ADDK", std::to_string(1 - S), X)); }
+        int log2u = 0;
+        while ((1 << log2u) < u) log2u++;
+        if (log2u) out.push_back(make("SHR", X, std::to_string(log2u), X));
+        out.push_back(make("CMPGT", "1", X, L.P));
+        out.push_back(rebuilt("B", std::vector<std::string>(1, L.label), L.P));
+        out.push_back(make("SUB", X, "1", L.C));
+    }
     for (std::size_t x = 0; x < units.size(); x++)
         if (units[x].q > 1 && units[x].carried) for (std::size_t h = 0; h < units[x].regs.size(); h++) out.push_back(make("MV", units[x].regs[h], units[x].copies[h][static_cast<std::size_t>(units[x].q - 1)]));
     // The prologue, the kernel of u rounds with its branch, and the epilogue - every op of every iteration once.
@@ -793,7 +1127,10 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
         for (int s = 0; s < II; s++) {
             std::vector<std::string> p;
             for (std::size_t o = 0; o < n; o++) if (t[o] % II == s) p.push_back(spelled(L, units, unitOf, firstWrite, o, S - 1 + c - t[o] / II));
-            if (c * II + s == u * II - 6) { p.push_back(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.C).raw); p.push_back(make("ADD", "-1", L.C, L.C).raw); }
+            if (c * II + s == u * II - 6) {
+                p.push_back(rebuilt("B", std::vector<std::string>(1, L.label + "$pipe"), L.stepped ? (L.negated ? "!" + L.P : L.P) : L.C).raw);
+                if (!L.stepped) p.push_back(make("ADD", "-1", L.C, L.C).raw);
+            }
             cyc.push_back(p);
         }
     emitCycles(out, cyc);
@@ -809,7 +1146,8 @@ bool pipeline(const std::vector<Line> &v, Loop &L, std::vector<Line> &out, std::
     // The last pipelined iteration is u*q'+S-2, so its names are fixed: copied back, then the test the loop's own way.
     for (std::size_t x = 0; x < units.size(); x++)
         if (units[x].q > 1 && units[x].exits && modq(S - 2, units[x].q) != 0) for (std::size_t h = 0; h < units[x].regs.size(); h++) out.push_back(make("MV", units[x].copies[h][static_cast<std::size_t>(modq(S - 2, units[x].q))], units[x].regs[h]));
-    out.push_back(v[L.cmp]);
+    if (L.stepped) { if (!steppedTest(L, out, L.bounds[0], L.wide ? L.bounds[1] : "", xt, xtb, why)) return false; }
+    else out.push_back(v[L.cmp]);
     out.push_back(rebuilt("B", std::vector<std::string>(1, L.exitName), L.negated ? L.P : "!" + L.P));
     return true;
 }
