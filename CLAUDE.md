@@ -11680,3 +11680,51 @@ of a class's `operator=`s share one set, and `copyAssignOf` answered with the fi
 `matrix[i] = v` called `operator=(const double *)` with a `CVector<3>`; and the implicit copy
 was not declared beside any `operator=`. Both now ask for a copy (or move) by its parameter.
 With the three, the sample compiles unchanged and prints what clang prints.
+
+## The rest of the C6000 list: size, frame slots, the unwind index, the corpus, 2026-10-01
+
+**Four items on branch `c6x-matmul-sieve` after round one.** Measured on TI's C6747 simulator
+(run `1001-ti1`, 76 of 76 cpp11 and kernel runs as expected, LNK6x cycle-identical to 7.4.4).
+
+**Code size.** The Compiler++ harness object, code bytes, against cl6x built both ways - plain,
+and with `--exceptions`, since cpp11 always emits its tables:
+
+| | cpp11 -O1 | cpp11 -O2 | 744-O2 | 822-O2 | 744 -ms3 | 822 -ms3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| plain | 523,520 | 584,512 | 670,560 | 685,920 | 467,168 | 482,560 |
+| `--exceptions` | | | 814,016 | 748,768 | 559,744 | 545,600 |
+| exidx + extab | 39,940 | 39,252 | 78,564 | 89,728 | 74,036 | 84,940 |
+
+Every harness ratio is under 1.3x: -O2 0.85x and 0.87x the plain -O2 builds, 1.21x and 1.25x
+the plain `-ms3` ones, 1.04x and 1.07x the `-ms3 --exceptions` ones. **The kernels are not**:
+cpp11 -O1 is 192 / 384 / 640 / 704 / 512 / 1,184 bytes against cl6x 7.4.4 `-O2 -ms3`'s 128 /
+256 / 352 / 416 / 352 / 640, 1.45x to 1.85x. `-ms3` buys its size with 3 to 10 times the
+cycles and cpp11 has no size level; closing that is a level of its own, not a peephole. Sieve
+-O2 went 1,088 -> 992: a loop `widenFills` writes is named `$fill` and the pipeliner leaves it
+as written - it is memory-bound here, and unrolling it bought code and no cycles.
+
+**Frame-slot reuse** (the rest of B8). `leaveScope` gives back each closed local's slot -
+stored type, offset, alignment - and `declare` takes one of exactly that type before growing
+the frame; `Local::serial` replaces the offset as the identity the jump guards compare. **A freed
+slot belongs to the frame that freed it**: the first version left the list standing across
+functions, so a later function took an offset beyond its own frame, wrote outside it, and
+`divide-by-constant` hung on every target. `openFrame`/`closeFrame` now bracket the fourteen
+places a function is synthesised mid-parse, and `topLevel` clears the list. What it saves,
+against tms-opt 179c590: -O0 frames -0.70% arm64, -0.31% x86_64-linux, -0.53% x86_64-windows,
+-0.28% tms6747, and -1.13% for tms6747 at -O2; nothing grew. (The -5% measured before the fix
+was the bug.) The golden: on the hosts every changed file differs in its numbers only; on the
+C6000 at -O0, numbers and a frame access changing form once its offset falls under 124; at
+-O2, locals sharing a slot become one register candidate for the planner, so frame loads leave.
+run.sh 568/0 at -O0, -O1 and -O2; tms6747.sh 351/0 at all three.
+
+**The unwind index, and pr4.** A C6000 function that saves no B3 and has no handler, cleanup or
+`noexcept` gets no exidx entry - it calls nothing, so no unwind passes through it, and the
+linker covers it - the way cl6x 8.2.2 writes none for a leaf. The harness's index 24,416 ->
+18,240 bytes at -O2. TI's runtime unwinds it: catch-by-reference, cleanup, throw-class and
+try-in-handler print their .expected at -O1 and -O2 under both linkers. **pr4 was not adopted**:
+cl6x's compact pr4 word has pr3's encoding, one inline word either way, and differs only in the
+frame layout it describes - registers saved in pairs with holes - so taking it means cl6x's
+frame, not a smaller table. VM6747's `frameMask` reads 0x83 and 0x82 and ends the walk on 0x84.
+
+**The corpus** is triaged in `tests/c-corpus/README`: 44 + 1 invalid C++11, 13 link failures
+clang shares, `pp_predefined` environmental - no cpp11 fault.
