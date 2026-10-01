@@ -20,6 +20,8 @@ public:
     virtual void setLineSource(const Source *, const std::string &) {}
     // -O1 and -O2; a code generator with no optimizer takes 0 for either.
     virtual void setOptimize(int level) { (void)level; }
+    // -Os: the smaller code where the generator has a choice; one with none takes -O1 as it stands.
+    virtual void setOptimizeForSize(bool size) { (void)size; }
 };
 
 enum class Segment { Code, Const, ConstRelocated, Data, Bss };

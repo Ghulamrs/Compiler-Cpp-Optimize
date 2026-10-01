@@ -144,7 +144,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
 void Driver::usage(char *file) {
     std::fprintf(stderr,
         "usage: %s <file.cpp> [more.cpp ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
-        "               [-I dir] [-j n] [-arch a] [-masm=m] [-O0|-O1|-O2] [-g] [-time]\n"
+        "               [-I dir] [-j n] [-arch a] [-masm=m] [-O0|-O1|-O2|-Os] [-g] [-time]\n"
         "       with neither -S nor -c the inputs are compiled, assembled and\n"
         "         linked into a program, named by -o, or a.out - a.exe on a\n"
         "         Windows host; several inputs\n"
@@ -178,6 +178,9 @@ void Driver::usage(char *file) {
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
         "         constants forwarded, pushes paired with their pops, dead\n"
         "         instructions removed. Every spelling; -O0 is the default\n"
+        "       -Os is -O1 choosing the smaller code where the two differ:\n"
+        "         on tms6747 a division by a constant stays a call, no\n"
+        "         entry test is duplicated ahead of the frame; elsewhere -O1\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
         "       -nologo leaves out the line this compiler prints before it\n"
@@ -891,6 +894,10 @@ bool Driver::parseArguments(int argc, char **argv) {
         } else if (std::strcmp(argv[i], "-O0") == 0 || std::strcmp(argv[i], "-O1") == 0 ||
                    std::strcmp(argv[i], "-O2") == 0) {
             optimize_ = argv[i][2] - '0';
+            forSize_ = false;
+        } else if (std::strcmp(argv[i], "-Os") == 0) {
+            optimize_ = 1;
+            forSize_ = true;
         } else if (std::strcmp(argv[i], "-g") == 0) {
             debug_ = true;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
@@ -1074,6 +1081,7 @@ bool Driver::compile(const Job &job) {
         std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, syntax_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->setOptimize(level);
+        gen->setOptimizeForSize(forSize_ && level > 0);
         gen->run(program);
     } else {
         std::ofstream file(job.output);
@@ -1085,6 +1093,7 @@ bool Driver::compile(const Job &job) {
         std::unique_ptr<CodeGen> gen = backend_->codegen(file, syntax_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->setOptimize(level);
+        gen->setOptimizeForSize(forSize_ && level > 0);
         gen->run(program);
     }
     auto t4 = Clock::now();

@@ -72,11 +72,13 @@ public:
     void landingPad(int pointerSlot, int selectorSlot) override;
     bool terminateScopes() const override { return true; }
     void setOptimize(int level) override;
+    void setOptimizeForSize(bool size) override;
 
 private:
     std::ostringstream out_;    // the piece being emitted (one function at a time)
     std::string file_;          // the finished pieces, in order
     int optimize_ = 0;          // -O1 and -O2 run the body through c6xSchedule
+    bool forSize_ = false;      // -Os: the smaller code where a choice is offered - see constDivisor, earlyExit
     std::ostream &sink_;
     const Target &target_;
     const Abi &abi_;
@@ -124,6 +126,8 @@ private:
     struct Slot { int uses = 0; bool addressed = false; bool wide = false; int size = 0; int extent = 0; int align = 0; int winUses = 0; };
     std::map<int, Slot> slots_;                // by frame offset, an inlined callee's locals included
     std::map<int, std::string> regOf_;         // offset -> the register (the low one of a pair)
+    std::map<std::string, int> globalUses_;    // a global's address formed, weighted like a use - see genAddr
+    std::map<std::string, std::string> globalReg_;   // the register holding that address, filled by the prologue
     std::vector<std::string> promoted_;        // those registers, to be saved and restored
     // A push whose pop lies past a call keeps its value in a spare callee-saved register: the memory
     // it would go through is an L1D stall on the C6747. The first walk records which pushes cross a
@@ -136,6 +140,7 @@ private:
     int callCount_ = 0;
     bool leaf_ = false;                        // the first walk found no call and no loop: locals go in A16-A23
     bool hasLoop_ = false;
+    bool planHasCall_ = false;                 // the first walk met a call, so the second may add a helper call
     bool paramInFrame_ = false;                // a parameter reached through A15
     std::vector<std::string> spillPool_;
     std::vector<std::string> spillHeld_;       // per open push: its register, "" for the stack
