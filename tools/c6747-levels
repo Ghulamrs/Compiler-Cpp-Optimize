@@ -36,7 +36,7 @@ T0=$(date +%s)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bl"
-for f in runca.js c6747ca-windows.ccxml par-one.cmd bench-levels.cmd; do cp "$ROOT/tools/c6747/$f" "$WORK/bl/"; done
+for f in runca.js c6747ca-windows.ccxml par-one.cmd bench-levels.cmd start-detached.ps1; do cp "$ROOT/tools/c6747/$f" "$WORK/bl/"; done
 cp "$ROOT/tools/c6747/$MAP" "$WORK/bl/C6747.cmd"   # MAP=C6747-ddr.cmd for a program past SHRAM's 128 KB
 NAMES=""
 for p in "$DIR"/*.c "$DIR"/*.cpp; do
@@ -59,11 +59,35 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
         else echo "c6747-levels: LNK6x did not link $n -$L:"; sed 's/^/      /' "$WORK/$n.$L.lnk6x.log" | head -4; fi
     done
 done
+if [ "${RESUME:-0}" != 1 ]; then
 COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/bl.tgz" bl
 scp -q -o BatchMode=yes "$WORK/bl.tgz" "$WINDOWS:C:/cxx1/bl-$STAMP.tgz" || { echo "c6747-levels: cannot ship to $WINDOWS"; exit 1; }
 ssh -o BatchMode=yes "$WINDOWS" "mkdir C:\\cxx1\\bench-levels 2>nul & mkdir $WREMOTE && tar -C $WREMOTE --strip-components=1 -xzf C:\\cxx1\\bl-$STAMP.tgz && del C:\\cxx1\\bl-$STAMP.tgz" > /dev/null 2>&1
+fi
 printf 'c6747-levels: running in %s\n' "$WREMOTE"
-ssh -o BatchMode=yes "$WINDOWS" "set TI_COMPRESS=$TI_COMPRESS&& $WREMOTE\\bench-levels.cmd" > "$WORK/windows.log" 2>&1
+# **Detached, so a lost connection or a power cut kills no run**: the box job is started through WMI (start-detached.ps1)
+# with its own log, and polled for bench-levels.done. `STAMP=<that> RESUME=1` picks up a broken one.
+boot() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$WINDOWS" \
+    'powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.Ticks"' 2>/dev/null | tr -d '\r'; }
+launch() {   # $1: RESUME, 0 or 1
+    printf '@echo off\r\nset TI_COMPRESS=%s\r\nset RESUME=%s\r\ncall "%s\\bench-levels.cmd" > "%s\\windows.log" 2>&1\r\n' \
+        "$TI_COMPRESS" "$1" "$WREMOTE" "$WREMOTE" > "$WORK/launch.cmd"
+    scp -q -o BatchMode=yes "$WORK/launch.cmd" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/launch.cmd" &&
+    ssh -o BatchMode=yes "$WINDOWS" "powershell -NoProfile -ExecutionPolicy Bypass -File $WREMOTE\\start-detached.ps1 $WREMOTE\\launch.cmd" > /dev/null 2>&1
+}
+launch "${RESUME:-0}" || { echo "c6747-levels: cannot reach $WINDOWS"; exit 1; }
+booted=$(boot)
+# A box that restarted - a power cut - lost the job with it: started again, it keeps what was measured.
+LIMIT=${LIMIT:-7200}; waited=0
+until ssh -o BatchMode=yes -o ConnectTimeout=10 "$WINDOWS" "if exist $WREMOTE\\bench-levels.done (exit 0) else (exit 1)" 2>/dev/null; do
+    [ "$waited" -ge "$LIMIT" ] && { echo "c6747-levels: no bench-levels.done after ${LIMIT}s - rerun with STAMP=$STAMP RESUME=1"; exit 1; }
+    sleep 20; waited=$((waited + 20))
+    now=$(boot)
+    if [ -n "$now" ] && [ -n "$booted" ] && [ "$now" != "$booted" ]; then
+        echo "c6747-levels: $WINDOWS restarted - resuming $STAMP"; booted=$now; launch 1
+    fi
+done
+scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/windows.log" "$WORK/windows.log" 2>/dev/null
 mkdir -p "$WORK/back"
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.result" "$WINDOWS:C:/cxx1/bench-levels/$STAMP/*.stdout" "$WORK/back/" 2>/dev/null
 scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/bench-levels/$STAMP/obj" "$WORK/back/" 2>/dev/null
