@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
-Release seal, version 1.4, sealed 27-09-2026
+Release seal, version 1.4, sealed 01-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 165 files, seal BBC538C2
+CRC32  size  file - 165 files, seal F18C4838
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 2DF96A05      2820  examples/Makefile
@@ -84,7 +84,7 @@ B35E3402      3248  src/Operator.cpp
 951C68D5      1990  src/Source.h
 52741BC7     20117  src/Type.cpp
 9A61B671     23997  src/Type.h
-667FB5F8       334  src/Version.h
+0C29A9A2       334  src/Version.h
 AFBAF949     45010  src/backend/Arm64Darwin.cpp
 98997445      5698  src/backend/Arm64Darwin.h
 0F851578      3863  src/backend/Backend.cpp
@@ -106,9 +106,9 @@ BF4C34E3     96607  src/backend/X86_64Linux.cpp
 3F12405D       111  src/main.cpp
 F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
-857BF7D4      4403  src/optimizer/C6xModel.h
-D2A2024C     45643  src/optimizer/C6xPipe.cpp
-F88D0F3C     94380  src/optimizer/C6xSched.cpp
+09291356      4679  src/optimizer/C6xModel.h
+7567D861     75270  src/optimizer/C6xPipe.cpp
+805C093C    120634  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
 4DC6880D       381  src/optimizer/DivMagic.h
 A167EFA0      8886  src/optimizer/Inliner.cpp
@@ -169,4 +169,4 @@ C3272BD9     53071  src/parser/ParserOverload.cpp
 A98E0DE5    119608  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
-Sealed on 30-09-2026
+Sealed on 01-10-2026
