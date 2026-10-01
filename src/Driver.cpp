@@ -332,6 +332,16 @@ static int runTool(const std::string &command) {
 #endif
 }
 
+// When this cpp11 was compiled, DD-MM-YYYY HH:MM:SS as the seal date is written.
+static std::string buildStamp() {
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *d = __DATE__;   // "Oct  2 2026"
+    const int month = static_cast<int>((std::strstr(months, std::string(d, 3).c_str()) - months) / 3) + 1;
+    char out[32];
+    std::snprintf(out, sizeof out, "%02d-%02d-%s %s", std::atoi(d + 4), month, d + 7, __TIME__);
+    return out;
+}
+
 // Only where the tool was asked for by name, as Visual Studio's ml64 and link are: a tool named by
 // its path - RIDE's own masm and link - was found and ran, and its messages above are the answer.
 static void noteWindowsToolchain(const std::string &command) {
@@ -887,8 +897,8 @@ bool Driver::parseArguments(int argc, char **argv) {
                    std::strcmp(argv[i], "--version") == 0) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
-            std::printf("%s\nVersion %s, sealed %s\n", CXX1_BANNER,
-                        CXX1_VERSION, CXX1_SEAL_DATE);
+            std::printf("%s\nVersion %s, sealed %s\nBuilt %s\n", CXX1_BANNER,
+                        CXX1_VERSION, CXX1_SEAL_DATE, buildStamp().c_str());
             std::exit(0);
         } else if (std::strcmp(argv[i], "--no_compress") == 0 || std::strcmp(argv[i], "--compress") == 0) {
             asmCompress_ = argv[i];
