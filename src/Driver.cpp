@@ -897,7 +897,7 @@ bool Driver::parseArguments(int argc, char **argv) {
                    std::strcmp(argv[i], "--version") == 0) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
-            std::printf("%s\nVersion %s, sealed %s %s\nBuilt %s\n", CXX1_BANNER,
+            std::printf("%s\nVersion %s, sealed %s %s\nBuilt %s PST\n", CXX1_BANNER,
                         CXX1_VERSION, CXX1_SEAL_DATE, CXX1_SEAL_TIME, buildStamp().c_str());
             std::exit(0);
         } else if (std::strcmp(argv[i], "--no_compress") == 0 || std::strcmp(argv[i], "--compress") == 0) {
