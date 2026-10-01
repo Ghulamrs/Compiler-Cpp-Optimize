@@ -5,7 +5,8 @@ rem For each <prog>.c or .cpp here: cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4
 rem -O2 -ms3, each linked by its own linker against its own rts6740_elf_eh.lib; and cpp11's
 rem <prog>.cpp11-O1.obj and <prog>.cpp11-O2.obj, linked by 7.4.4; and any image shipped here
 rem already, <prog>.cpp11-<level>-lnk6x.out - the same object linked by LNK6x on the Mac. The
-rem objects stay in obj\ for the size table. Writes <prog>.<build>.result and .stdout; MAXRUNS caps the sessions at once.
+rem objects stay in obj\ for the size table. Writes <prog>.<build>.result and .stdout; MAXRUNS caps the sessions at once,
+rem RESUME=1 runs only what has no result yet, and bench-levels.done says the whole set is in.
 setlocal enabledelayedexpansion
 set W=%~dp0
 set W=%W:~0,-1%
@@ -18,10 +19,11 @@ set CG55=%CCS55%\tools\compiler\c6000_7.4.4
 set LINK55=-z --heap_size=0x800 --stack_size=0x800 -i"%C6747_EHLIB%" --rom_model "%W%\C6747.cmd" -lrts6740_elf_eh.lib
 set LINK74=-z --heap_size=0x800 --stack_size=0x800 -i"%C6747_EHLIB74%" --rom_model "%W%\C6747.cmd" -lrts6740_elf_eh.lib
 cd /d "%W%"
-del /q *.result *.stdout *.log 2>nul
+rem RESUME=1 keeps what an interrupted run measured - a power cut, a lost connection - and runs the rest.
+del /q bench-levels.done 2>nul
+if not "%RESUME%"=="1" del /q *.result *.stdout *.log 2>nul
+if "%RESUME%"=="1" for %%r in (*.result) do findstr /c:"timeout-or-failed" "%%r" >nul && del /q "%%r"
 if not exist obj mkdir obj
-set WANT=0
-for %%o in (*.out) do set /a WANT+=1
 for %%f in (*.c *.cpp) do (
   set N=%%~nf
   call :ti 55 744-O1 -O1 "%%f"
@@ -32,16 +34,20 @@ for %%f in (*.c *.cpp) do (
   call :ti 74 822-ms "-O2 -ms3" "%%f"
   for %%l in (O1 O2) do if exist !N!.cpp11-%%l.obj (
     "%CG55%\bin\cl6x" -mv6740 --abi=eabi !N!.cpp11-%%l.obj %LINK55% -m !N!.cpp11-%%l.map -o !N!.cpp11-%%l.out > !N!.cpp11-%%l.build.log 2>&1
-    if exist !N!.cpp11-%%l.out set /a WANT+=1
   )
 )
+rem Every image here is one run to wait for - counted once, after the builds, so a resumed set counts the same.
+set WANT=0
+for %%o in (*.out) do set /a WANT+=1
 rem Three seconds apart and no more than MAXRUNS at once: every simulator session starts its own Eclipse.
-for %%o in (*.out) do call :start %%~no
+rem One already measured - a resumed run - is not run again.
+for %%o in (*.out) do if not exist %%~no.result call :start %%~no
 :gather
 set N=0
 for %%r in (*.result) do set /a N+=1
 if !N! lss !WANT! (ping -n 11 127.0.0.1 >nul & goto gather)
 type *.result 2>nul
+echo done> bench-levels.done
 exit /b 0
 
 rem :ti <55|74> <build> <opt flags> <source>: one TI build by that toolchain, its object kept in obj\<build>\
@@ -50,7 +56,6 @@ set B=%~2
 if "%~1"=="55" (set CG=%CG55%& set LINK=%LINK55%) else (set CG=%CG74%& set LINK=%LINK74%)
 if not exist obj\%B% mkdir obj\%B%
 "%CG%\bin\cl6x" -mv6740 --abi=eabi %~3 %TI_COMPRESS% --symdebug:none -I"%CG%\include" --obj_directory=obj\%B% "%~4" %LINK% -m %N%.%B%.map -o %N%.%B%.out > %N%.%B%.build.log 2>&1
-if exist %N%.%B%.out set /a WANT+=1
 exit /b 0
 
 :start
