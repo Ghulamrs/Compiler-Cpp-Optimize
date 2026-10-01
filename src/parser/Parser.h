@@ -46,9 +46,7 @@ private:
         bool isParameter = false;
         // A by-value class parameter that arrived by address is lowered to a reference, so by its slot alone it looks like `T &t`.
         bool byValueByAddress = false;
-        // **[stmt.dcl]/3: a jump may not enter this object's scope.** Set for an
-        // automatic object with an initialiser, a constructor or a destructor - the
-        // three things a jump landing past its declaration would skip.
+        // **[stmt.dcl]/3: a jump may not enter this object's scope** - set for an automatic object with an initialiser, a constructor or a destructor, the three things a jump landing past its declaration would skip.
         bool guardsJump = false;
         // Which object this is: two locals of one function may share a frame slot once the first's scope has closed.
         int serial = 0;
