@@ -200,8 +200,7 @@ std::string Parser::synthesizeVirtualThunk(const Type *type, const VSlot &slot,
     const Type *self = types_.pointerTo(type);
     const Type *chars = types_.pointerTo(types_.get(Kind::Char));
     const Type *offType = ptrdiffType();
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
 
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
@@ -284,7 +283,7 @@ std::string Parser::synthesizeVirtualThunk(const Type *type, const VSlot &slot,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
     current_->functions.back().setInline(true);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
     return name;
 }
 

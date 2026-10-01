@@ -737,6 +737,19 @@ void Parser::leaveScope() {
     scopeStarts_.pop_back();
 }
 
+// A freed slot belongs to the frame that freed it: a function opened mid-parse starts with none, or it reuses an offset its own frame never reached.
+Parser::FrameSave Parser::openFrame() {
+    FrameSave saved{ frameSize_, std::move(freeSlots_) };
+    frameSize_ = 0;
+    freeSlots_.clear();
+    return saved;
+}
+
+void Parser::closeFrame(const FrameSave &saved) {
+    frameSize_ = saved.size;
+    freeSlots_ = saved.free;
+}
+
 int Parser::allocateFrameSlot(const Type *type, int alignAtLeast) {
     // What a reference occupies is a pointer, even though sizeof asks about
     // what it refers to. This is the one place the difference shows.

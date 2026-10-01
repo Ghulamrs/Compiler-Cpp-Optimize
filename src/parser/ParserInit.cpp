@@ -1140,8 +1140,7 @@ std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
     // Microsoft, where it names the array itself.
     const bool ms = target_.microsoftNames();
     const std::string fn = ms ? helper : "__cxx1_vec_exit_" + symbol;
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     std::vector<Param> params;
     ExprPtr first;
     if (ms) {
@@ -1167,7 +1166,7 @@ std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
                                            alignTo(frameSize_, 16), true, 0,
                                            false, 0, d.pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(fn);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 
     std::vector<ExprPtr> args;
     if (ms) {
@@ -1237,8 +1236,7 @@ void Parser::registerDestruction(const Declared &d, const std::string &symbol,
 
     // The helper: no parameters, one destructor call, file-local. Built in a
     // frame of its own, as the implicit special members are.
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
+    const FrameSave savedFrame = openFrame();
     std::vector<StmtPtr> body;
     ExprPtr addr(new Unary('&', objectAt(d, symbol, 0)));
     addr->setType(clsPtr);
@@ -1251,7 +1249,7 @@ void Parser::registerDestruction(const Declared &d, const std::string &symbol,
                                            false, 0, d.pos,
                                            std::vector<::Local>()));
     current_->functions.back().setSymbol(helper);
-    frameSize_ = savedFrame;
+    closeFrame(savedFrame);
 
     const Type *helperType = types_.functionType(types_.get(Kind::Void),
                                                  std::vector<const Type *>(),
