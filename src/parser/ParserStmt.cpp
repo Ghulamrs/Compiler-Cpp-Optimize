@@ -916,7 +916,7 @@ StmtPtr Parser::gotoLabel() {
 std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
     std::vector<JumpGuard> out;
     for (const Local &l : locals_)
-        if (l.guardsJump) out.push_back(JumpGuard{ l.name, l.offset });
+        if (l.guardsJump) out.push_back(JumpGuard{ l.name, l.serial });
     return out;
 }
 
@@ -997,7 +997,7 @@ void Parser::checkJump(const std::vector<JumpGuard> &from,
     for (const JumpGuard &g : to) {
         bool inScopeAtOrigin = false;
         for (const JumpGuard &f : from)
-            if (f.offset == g.offset) { inScopeAtOrigin = true; break; }
+            if (f.serial == g.serial) { inScopeAtOrigin = true; break; }
         if (inScopeAtOrigin) continue;
         src_.fail(pos, jump + " jumps past the initialisation of '" + g.name +
                        "', which is in scope at the label and not at " +

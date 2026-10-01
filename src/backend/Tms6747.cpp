@@ -2223,14 +2223,18 @@ void Tms6747::emitFunction(const Function &fn) {
     // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
     if (optimize_ > 0 && !backendSkipped("pro")) out_ << c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_);
     else out_ << pro.str() << c6xSchedule(early + params + body + epi.str(), optimize_);
-    // TI's index entry for every function - any return address on the stack
-    // - naming the table when there are handlers, holding the word itself
-    // when there are none.
+    // TI's index entry for a function an exception can pass through - one that calls, so saves B3 - naming the table
+    // when there are handlers, holding the word itself when there are none. A function that calls nothing gets no
+    // entry, as cl6x gives none: the linker covers the run it sits in with one EXIDX_CANTUNWIND.
     emitExceptionTable(fn);
     char word[16];
     std::snprintf(word, sizeof word, "0x%08x", unwindWord(needFrame));
-    out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
-         << (callSites().empty() && !fn.isNoexcept() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
+    bool calls = !callSites().empty() || fn.isNoexcept();
+    for (const std::string &r : savedRegs()) if (r == "B3") calls = true;
+    if (calls) anyExidx_ = true;
+    if (calls)
+        out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
+             << (callSites().empty() && !fn.isNoexcept() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
 
     file_ += out_.str();
     out_.str(std::string());
@@ -2253,7 +2257,7 @@ void Tms6747::run(const Program &program) {
     }
     // The personality routine the index entries name by number, which the
     // linker cannot otherwise see them need.
-    if (!program.functions.empty())
+    if (anyExidx_)
         file_ += "\t.global\t__c6xabi_unwind_cpp_pr3\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.exidx:.text\"\n";
     if (needsPr2_) file_ += "\t.global\t__c6xabi_unwind_cpp_pr2\n";
     if (needsUnexpected_) file_ += "\t.global\t__cxa_call_unexpected\n";
