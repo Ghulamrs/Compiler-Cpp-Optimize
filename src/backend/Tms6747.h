@@ -96,6 +96,7 @@ private:
     int frame_ = 0;                           // the locals, 8-aligned
     bool needsUnexpected_ = false;            // a noexcept function's table names __cxa_call_unexpected
     bool needsPr2_ = false;                   // a table past 64 KB names __c6xabi_unwind_cpp_pr2
+    bool anyExidx_ = false;                   // a function got an exception-index entry, so the personality is named
     std::vector<std::string> savedRegs() const;
     unsigned unwindWord(bool needFrame) const;
     std::vector<unsigned> longUnwindWords() const;

@@ -37,7 +37,9 @@ for src in tests/c-corpus/*.c; do
         continue
     fi
 
-    if ! ( ulimit -t 10; $CXX1 "$src" -o "$OUT/$base" ) >"$OUT/$base.err" 2>&1; then
+    # The driver turns a .c away by name, so the case goes in under the extension it is read as.
+    cp "$src" "$OUT/$base.cpp"
+    if ! ( ulimit -t 10; $CXX1 -Itests/c-corpus "$OUT/$base.cpp" -o "$OUT/$base" ) >"$OUT/$base.err" 2>&1; then
         refused=$((refused + 1))
         echo "refused $base: $(head -1 "$OUT/$base.err")" >> "$OUT/FAILING"
         [ -n "$only" ] && { echo "refused:"; sed 's/^/    /' "$OUT/$base.err"; }

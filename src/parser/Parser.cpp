@@ -524,6 +524,8 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.labels = labels_;
     s.gotos = gotos_;
     s.frameSize = frameSize_;
+    s.freeSlots = freeSlots_;
+    s.localSerial = localSerial_;
     s.thisOffset = thisOffset_;
     s.currentClass = currentClass_;
     s.returnType = returnType_;
@@ -580,6 +582,8 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     labels_ = s.labels;
     gotos_ = s.gotos;
     frameSize_ = s.frameSize;
+    freeSlots_ = s.freeSlots;
+    localSerial_ = s.localSerial;
     thisOffset_ = s.thisOffset;
     currentClass_ = s.currentClass;
     returnType_ = s.returnType;
@@ -637,6 +641,8 @@ void Parser::clearFunctionState() {
     labels_.clear();
     gotos_.clear();
     frameSize_ = 0;
+    freeSlots_.clear();
+    localSerial_ = 0;
     thisOffset_ = 0;
     currentClass_ = nullptr;
     returnType_ = nullptr;
@@ -717,7 +723,16 @@ int Parser::enterBlock() {
 
 void Parser::leaveBlock() { blockStack_.pop_back(); }
 
+// **A scope's frame slots are given back as it closes**, for a later local of exactly the type stored there: the
+// objects are dead ([basic.life]), nothing but a sibling scope can declare into the gap, and one type per slot is
+// what every backend's slot-keyed bookkeeping - the C6000's register planner, the hosts' promotion - already assumes.
 void Parser::leaveScope() {
+    for (std::size_t i = scopeStarts_.back(); i < locals_.size(); i++) {
+        const Local &l = locals_[i];
+        if (l.offset <= 0 || !l.staticName.empty() || l.isParameter || inParams_) continue;
+        const Type *stored = l.type->isReference() ? types_.pointerTo(l.type->referent()) : l.type;
+        freeSlots_.push_back(FreeSlot{ stored, l.offset, objectAlign(stored, target_) });
+    }
     locals_.resize(scopeStarts_.back());
     scopeStarts_.pop_back();
 }
@@ -754,9 +769,14 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos,
         if (locals_[i].name == name)
             src_.fail(pos, "'" + name + "' is declared twice in this block");
 
-    int offset = allocateFrameSlot(type, alignAtLeast);
+    int offset = 0;
+    const Type *storedType = type->isReference() ? types_.pointerTo(type->referent()) : type;
+    for (std::size_t i = freeSlots_.size(); i-- > 0 && offset == 0;)
+        if (freeSlots_[i].stored == storedType && freeSlots_[i].align >= alignAtLeast) { offset = freeSlots_[i].offset; freeSlots_.erase(freeSlots_.begin() + static_cast<long>(i)); }
+    if (offset == 0) offset = allocateFrameSlot(type, alignAtLeast);
     locals_.push_back(Local{ name, offset, type, false, std::string() });
     locals_.back().isParameter = inParams_;
+    locals_.back().serial = ++localSerial_;
     // The debug record describes the storage, which for a reference is the
     // pointer it really is. DWARF has a tag for a reference and this does not
     // use it yet.

@@ -1435,7 +1435,8 @@ void widenFills(std::vector<Line> &v) {
             }
             legal = false;
         };
-        const std::string base = labelName(v[h]), Lh = base + "$fh", Lw = base + "$fw", Lk = base + "$fw$rot", Lt = base + "$ft", exit = labelName(v[i + 1]);
+        // Each loop is named `$fill`: memory-bound on this part, so the pipeliner leaves them as written rather than unroll them.
+        const std::string base = labelName(v[h]), Lh = base + "$fh$fill", Lw = base + "$fw", Lk = base + "$fw$fill", Lt = base + "$ft$fill", exit = labelName(v[i + 1]);
         auto branch = [&](const std::string &to, const std::string &pred) { out.push_back(rebuilt("B", std::vector<std::string>(1, to), pred)); };
         if (isNumber(n)) {
             const long nk = std::atol(n.c_str());

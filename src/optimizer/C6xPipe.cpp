@@ -412,6 +412,7 @@ bool recognise(const std::vector<Line> &v, std::size_t back, const std::set<std:
     const Line &b = v[back];
     if (b.pred.empty() || labels.count(b.ops[0]) == 0) { why = "no conditional branch to a label"; return false; }
     L.label = b.ops[0];
+    if (L.label.size() > 5 && L.label.compare(L.label.size() - 5, 5, "$fill") == 0) { why = "a fill loop, memory-bound, kept as written"; return false; }
     L.P = b.pred[0] == '!' ? b.pred.substr(1) : b.pred;
     L.negated = b.pred[0] == '!';
     std::size_t h = 0; bool found = false;
