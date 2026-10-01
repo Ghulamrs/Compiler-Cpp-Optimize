@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 01-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 154 files, seal 3DBB5E97
+CRC32  size  file - 154 files, seal 5E26DA16
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 D144E4D1     23689  ide/generate.py
@@ -140,22 +140,22 @@ D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
-95439B05     36347  src/parser/Parser.cpp
-EA2824DA    117667  src/parser/Parser.h
+18ADF6BE     36682  src/parser/Parser.cpp
+D552C9BE    118287  src/parser/Parser.h
 C4D5123D    199709  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
 34A216F2    110754  src/parser/ParserExpr.cpp
-D65EE78E     33092  src/parser/ParserExprCall.cpp
+6D5A45D3     33681  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 C7F1CA7B     86117  src/parser/ParserExprNew.cpp
-A480EFCD     68251  src/parser/ParserInit.cpp
+129E55F5     69567  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
 4F6EB018     41895  src/parser/ParserOperator.cpp
-C3272BD9     53071  src/parser/ParserOverload.cpp
+7E9936D0     53095  src/parser/ParserOverload.cpp
 013A1E8F    100645  src/parser/ParserStmt.cpp
-15BBF4D9     98098  src/parser/ParserTemplate.cpp
-94D8A01E     78995  src/parser/ParserTopLevel.cpp
-50A7A0B7    121863  src/parser/ParserType.cpp
+D155BD79    102326  src/parser/ParserTemplate.cpp
+D018B2B3     79437  src/parser/ParserTopLevel.cpp
+131A0A99    121872  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
 Sealed on 02-10-2026
