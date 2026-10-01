@@ -47,7 +47,6 @@ def fromVersionHeader(macro, fallback):
 
 VERSION = fromVersionHeader("CXX1_VERSION", "1.1")
 SEAL_DATE = fromVersionHeader("CXX1_SEAL_DATE", "10-09-2026")
-SEAL_TIME = fromVersionHeader("CXX1_SEAL_TIME", "")
 NAME = fromVersionHeader("CXX1_SEAL_FILE", "cxx1-%s.dat" % VERSION)
 BANNER = fromVersionHeader("CXX1_BANNER",
                            "c2026 G. R. Akhtar - ISO C++ 11,  Compiler")
@@ -94,7 +93,7 @@ def write():
         ("".join("%s %08X" % (f, c) for f, c, _ in rows)).encode()) & 0xFFFFFFFF
     with open(os.path.join(ROOT, NAME), "w") as fh:
         fh.write(BANNER + "\n")
-        fh.write("Release seal, version %s, sealed %s\n" % (VERSION, (SEAL_DATE + " " + SEAL_TIME).strip()))
+        fh.write("Release seal, version %s, sealed %s\n" % (VERSION, SEAL_DATE))
         fh.write("Written by tools/seal; check it with `tools/seal check`.\n")
         fh.write("CRC32  size  file - %d files, seal %08X\n" % (len(rows), total))
         fh.write("-" * 66 + "\n")
