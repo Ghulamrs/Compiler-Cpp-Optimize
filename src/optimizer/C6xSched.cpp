@@ -14,6 +14,8 @@
 #include <sstream>
 #include <vector>
 
+bool skipped(const char *pass);   // CPP11_C6XSKIP, below
+
 namespace c6x {
 
 bool startsWith(const std::string &s, const char *p) { return s.compare(0, std::string(p).size(), p) == 0; }
@@ -1479,6 +1481,83 @@ void widenFills(std::vector<Line> &v) {
     v.swap(out);
 }
 
+// **An index scaled by the access width goes into the access**: `SHL I, log2(size), T` read by `ADD R, T, U`s whose U is first touched by a load or store through `*U` of that width (U dead after, or the load's own destination, R untouched between) becomes `*+R[I]`, the machine scaling a register offset itself, and the ADD goes; the SHL goes too once every reader folded.
+// I stepped before the last access, or on the other side from an R, makes the SHL `MV I, T` and the accesses `*+R[T]` - which wants every reader folded and T on each R's side.
+bool foldScaledIndex(std::vector<Line> &v, std::size_t i, const std::set<std::string> &named) {
+    const Line &l = v[i];
+    if (l.mnem != "SHL" || l.ops.size() != 3 || !isNumber(l.ops[1]) || !sideOf(l.ops[0]) || !sideOf(l.ops[2]) || l.ops[0] == l.ops[2]) return false;
+    const std::string I = l.ops[0], T = l.ops[2];
+    const long shift = std::atol(l.ops[1].c_str());
+    if (shift < 0 || shift > 3) return false;
+    struct Use { std::size_t add, access; std::string R, U; bool iWritten; };
+    std::vector<Use> uses;
+    std::vector<std::size_t> unfolded;                            // readers of T that are not such an ADD
+    bool iWritten = false, tLive = true;
+    std::size_t last = i;
+    for (std::size_t j = i + 1; j < v.size(); j++) {
+        if (isLabel(v[j]) && passThrough(v[j], named)) continue;
+        if (blockEnd(v[j])) { tLive = !deadAfter(v, j - 1, T); break; }
+        std::vector<std::string> r2, w2;
+        readsAndWrites(v[j], r2, w2);
+        if (has(w2, I)) iWritten = true;
+        if (has(w2, T)) { tLive = false; break; }                 // T written over: nothing after reads this value
+        if (!has(r2, T)) continue;
+        const Line &a = v[j];
+        const bool shape = a.pred.empty() && a.mnem == "ADD" && a.ops.size() == 3 && a.ops[2] != T && a.ops[2] != I &&
+                           ((a.ops[0] == T && sideOf(a.ops[1]) && a.ops[1] != T) || (a.ops[1] == T && sideOf(a.ops[0]) && a.ops[0] != T));
+        if (!shape) { unfolded.push_back(j); continue; }
+        Use u{ j, 0, a.ops[0] == T ? a.ops[1] : a.ops[0], a.ops[2], iWritten };
+        if (u.R == "A15" || u.R == "B15" || u.U == "A15" || u.U == "B15" || u.R == I) { unfolded.push_back(j); continue; }
+        for (std::size_t k = j + 1; k < v.size() && u.access == 0; k++) {
+            if (isLabel(v[k]) && passThrough(v[k], named)) continue;
+            if (blockEnd(v[k])) break;
+            std::vector<std::string> r3, w3;
+            readsAndWrites(v[k], r3, w3);
+            const bool access = v[k].pred.empty() && v[k].ops.size() == 2 && (isLoad(v[k].mnem) || isStore(v[k].mnem));
+            if (has(w3, u.R) || has(w3, T) || has(w3, I)) { if (!(access && isLoad(v[k].mnem) && v[k].ops[1] == u.R && !has(w3, T) && !has(w3, I))) break; }
+            if (!has(r3, u.U) && !has(w3, u.U)) continue;
+            if (!access) break;
+            const std::size_t m = isStore(v[k].mnem) ? 1 : 0;
+            if (v[k].ops[m] != "*" + u.U || accessSize(v[k].mnem) != (1L << shift)) break;
+            std::vector<std::string> data;
+            registersIn(v[k].ops[1 - m], data);
+            if (has(data, u.R) || has(data, T) || has(data, I)) break;
+            if (!(has(data, u.U) || deadAfter(v, k, u.U))) break;
+            u.access = k;
+        }
+        if (u.access == 0) { unfolded.push_back(j); continue; }
+        uses.push_back(u);
+        if (u.access > last) last = u.access;
+    }
+    if (uses.empty()) return false;
+    // Direct: I itself is the offset, so I must hold its value through the last folded access and sit on each R's side.
+    bool direct = true;
+    for (std::size_t k = 0; k < uses.size(); k++) direct = direct && !uses[k].iWritten && sideOf(I) == sideOf(uses[k].R);
+    for (std::size_t j = i + 1; j <= last && direct; j++) {        // stepped between an ADD and its access, too
+        std::vector<std::string> r2, w2;
+        if (v[j].instr) { readsAndWrites(v[j], r2, w2); if (has(w2, I)) direct = false; }
+    }
+    if (!direct) {
+        if (!unfolded.empty() || tLive) return false;
+        for (std::size_t k = 0; k < uses.size(); k++) if (sideOf(T) != sideOf(uses[k].R)) return false;
+    }
+    const std::string X = direct ? I : T;
+    std::vector<std::size_t> gone;
+    for (std::size_t k = 0; k < uses.size(); k++) {
+        const Line &u = v[uses[k].access];
+        const std::size_t m = isStore(u.mnem) ? 1 : 0;
+        std::vector<std::string> ops = u.ops;
+        ops[m] = "*+" + uses[k].R + "[" + X + "]";
+        v[uses[k].access] = rebuilt(u.mnem, ops);
+        gone.push_back(uses[k].add);
+    }
+    if (direct && unfolded.empty() && !tLive) gone.push_back(i);
+    else if (!direct) v[i] = rebuilt("MV", std::vector<std::string>{ I, T });
+    std::sort(gone.begin(), gone.end());
+    for (std::size_t k = gone.size(); k-- > 0;) v.erase(v.begin() + static_cast<long>(gone[k]));
+    return true;
+}
+
 // **Addresses folded into the access**: `ADD R, k, T` whose one reader is a load or store through `*T`, T dead
 // after, is `*+R(k)`; and `*R` followed by `ADD k, R, R` with nothing touching R between, k whole elements
 // up to 31, is `*R++` or `*R++[n]` and the ADD goes - `SUB` the same way with a minus.
@@ -1488,6 +1567,7 @@ void foldAddressing(std::vector<Line> &v) {
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
         const Line &l = v[i];
         if (!l.instr || !l.pred.empty()) continue;
+        if (!skipped("index") && foldScaledIndex(v, i, named)) { i--; continue; }
         std::vector<std::string> reads, writes;
         readsAndWrites(l, reads, writes);
         // `ADD k, R, R` whose next touch of R is an access through `*R` is that access through `*++R(k)`.
