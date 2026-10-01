@@ -1998,6 +1998,9 @@ private:
     void resolveGotos();
 
     bool staticAssertion();
+    // `V<N>` naming the class whose body is being read: steps to the `(` after it when it does.
+    bool atOwnTemplateId(const std::string &tag, const std::string &local);
+    bool ownArgsThenParen() const;
     // `using X = T;` is an alias declaration and not a using-declaration.
     void refuseAliasDeclaration();
     // `= default` and `= delete` sit where `= 0` does, and a constructor

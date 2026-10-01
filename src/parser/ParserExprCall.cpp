@@ -711,6 +711,19 @@ void Parser::checkAccessible(const Type *object, const Member &m,
     const Type *owner = m.declaredIn != nullptr ? m.declaredIn : object;
     if (insideAccessOf(owner, m.access)) return;
     if (isFriendOf(owner)) return;
+    // [class.access.base]/5, [class.protected]: a friend of a class between the object's and
+    // the declaring one names a protected member through that object - never through a base.
+    if (m.access == Access::Protected && object != nullptr && owner != object)
+        for (const Type *c = object->unqualified(); c != nullptr;) {
+            if (c != owner->unqualified() && derivesFrom(c, owner->unqualified()) && isFriendOf(c))
+                return;
+            const Type *up = nullptr;
+            for (const Type::BaseSpec &b : c->bases())
+                if (b.type->unqualified() == owner->unqualified() ||
+                    derivesFrom(b.type, owner->unqualified()))
+                    up = b.type->unqualified();
+            c = up;
+        }
     // No fallback to the class it was reached *through*.
     const char *how = m.access == Access::Private ? "private" : "protected";
     // Named by the class that declared it: saying it is private in the derived

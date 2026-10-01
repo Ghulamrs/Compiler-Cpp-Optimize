@@ -580,13 +580,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                   "'constexpr' object of a class type cannot be "
                                   "made here");
 
-        // A constructor has the class's own name and no return type, so it
-        // has to be seen before specifiers() is asked for one - the name is a
-        // registered type name by now and would be read as the type.
-        if (!tag.empty() && peek().kind == TokenKind::Ident &&
-            peek().text == local && peekAt(1).is("(")) {
-            std::size_t cpos = peek().pos;
-            at_++;
+        // A constructor has the class's own name and no return type, so it has to be seen
+        // before specifiers() is asked for one - the name is a registered type name by now
+        // and would be read as the type. `V<N>(` is the same, named with its own arguments.
+        const std::size_t namedAt = peek().pos;
+        const bool ownId = !tag.empty() && atOwnTemplateId(tag, local);
+        if (ownId || (!tag.empty() && peek().kind == TokenKind::Ident &&
+                      peek().text == local && peekAt(1).is("("))) {
+            std::size_t cpos = namedAt;
+            if (!ownId) at_++;
             const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
@@ -626,10 +628,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // `~Point();` - a destructor, recognised the same way and for the same
         // reason as a constructor: it has no return type and its name is the
         // class, so specifiers() must not be asked for one.
-        if (!tag.empty() && peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
-            peekAt(1).text == local && peekAt(2).is("(")) {
-            std::size_t dpos = peek().pos;
-            at_ += 2;
+        const std::size_t tildeAt = peek().pos;
+        bool ownDtor = false;
+        if (!tag.empty() && peek().is("~")) {
+            at_++;
+            ownDtor = atOwnTemplateId(tag, local);   // `~V<N>(`, left at the `(`
+            if (!ownDtor) at_--;
+        }
+        if (ownDtor || (!tag.empty() && peek().is("~") &&
+                        peekAt(1).kind == TokenKind::Ident &&
+                        peekAt(1).text == local && peekAt(2).is("("))) {
+            std::size_t dpos = tildeAt;
+            if (!ownDtor) at_ += 2;
             const std::size_t sigAt = functions_.size();
             declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{")) {
@@ -1613,7 +1623,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // `~X(` with no type in front, exactly as they were written in the class.
     if (!inlineOwner_.empty() &&
         ((peek().kind == TokenKind::Ident && peek().text == inlineOwnerName_ &&
-          peekAt(1).is("(")) ||
+          (peekAt(1).is("(") || ownArgsThenParen())) ||
          (peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
           peekAt(1).text == inlineOwnerName_)))
         return types_.get(Kind::Void);
@@ -2207,13 +2217,18 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             tmpl->second.isClass) {
             const std::size_t tpos = pos;
             const Type *cls = instantiateClass(tmpl->second, tpos);
-            if (!peek().is("::"))
-                src_.fail(peek().pos, "'" + cls->tag() + "' is a type here, "
-                                      "and a declaration needs a name after "
-                                      "it");
-            at_++;
-            qualifier = cls->tag();
-            name = declaredName("a member name");
+            // A held `V<N>(` or `~V<N>(` replayed: the class's own name, not a qualifier.
+            const bool own = !inlineOwner_.empty() && name == inlineOwnerName_ &&
+                             cls->unqualified()->tag() == inlineOwner_ && peek().is("(");
+            if (!own) {
+                if (!peek().is("::"))
+                    src_.fail(peek().pos, "'" + cls->tag() + "' is a type here, "
+                                          "and a declaration needs a name after "
+                                          "it");
+                at_++;
+                qualifier = cls->tag();
+                name = declaredName("a member name");
+            }
         }
     }
 
@@ -2285,3 +2300,34 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     return Declared{ name, t, pos, paramsAt, qualifier };
 }
 
+
+// **`V<N>(` and `~V<N>(` in V<N>'s own body name its constructor and destructor**:
+// the injected-class-name with its own arguments, [temp.local]/1. C++11 takes it, C++20
+// does not. Asked only of a specialization, and its arguments must make this very class.
+bool Parser::atOwnTemplateId(const std::string &tag, const std::string &local) {
+    if (peek().kind != TokenKind::Ident || peek().text != local || !peekAt(1).is("<") ||
+        tag.find('<') == std::string::npos)
+        return false;
+    auto tmpl = findTemplate(local);
+    if (tmpl == templates_.end() || !tmpl->second.isClass) return false;
+    const std::size_t save = at_;
+    at_++;
+    const Type *cls = instantiateClass(tmpl->second, peek().pos);
+    if (cls != nullptr && cls->unqualified()->tag() == tag && peek().is("(")) return true;
+    at_ = save;
+    return false;
+}
+
+// `V<...>(` ahead: a name, an argument list whose angles balance, then a parenthesis.
+bool Parser::ownArgsThenParen() const {
+    if (!peekAt(1).is("<")) return false;
+    int depth = 0;
+    for (std::size_t i = 1;; i++) {
+        const Token &t = peekAt(i);
+        if (t.kind == TokenKind::End || t.is(";") || t.is("{")) return false;
+        if (t.is("<")) depth++;
+        else if (t.is(">")) depth--;
+        else if (t.is(">>")) depth -= 2;
+        if (depth <= 0) return depth == 0 && peekAt(i + 1).is("(");
+    }
+}

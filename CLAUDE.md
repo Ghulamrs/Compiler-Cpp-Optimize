@@ -11575,3 +11575,26 @@ did not move.
 functions ending in a loop's exit branch. tms6747.sh 345/0 at -O0, -O1, -O2; 345/345 -O2 outputs assemble with
 ASM6x; emit golden 0 of 1387 changed; `make comments` 0. TI's simulator:
 `CPP11=<this tree>/cpp11.exe tools/c6747-levels`.
+
+## Two gaps a CCS 5.5 sample found, 2026-10-01
+
+**A user's CCS sample (`Mathcpp`, three headers of vector, matrix and quaternion templates)
+compiled with TI's cl6x 7.4.4 and 8.2.2 and not with cpp11**, at two places that are legal
+C++11 and that no case had:
+
+- **`V<N>(...)` and `~V<N>()` in V's own body** - the injected-class-name with its own
+  arguments, [temp.local]/1; C++11 takes it, C++20 (CWG 2237) does not. It was answered
+  "expected ')'", naming no feature. `atOwnTemplateId` recognises it in the class body by
+  instantiating the template-id and asking that it *is* the class being read; `specifiers`
+  lets a replayed `X<...>(` through as untyped, and `declarator` checks the class again.
+- **A friend of D naming B's protected member through a D** - [class.access.base]/5 with
+  [class.protected]. `checkAccessible` asked only about the declaring class; it now walks
+  from the object's class towards it and accepts a friend of any class on that path. Through
+  a `B` it is still refused, as cl6x (error #412-D) and clang refuse it.
+
+Measured: both cases agree with clang byte for byte; run 564/0, emit 1407/0 and the golden
+0 of 1399 changed, names 360/0, overload 30/0, tms6747.sh 347/0.
+
+**Not done, and next on the same sample**: a class that declares `operator=(const double *)`
+still has its implicit copy assignment ([class.copy]/17), and cpp11 offers only the declared
+one, so `matrix[i] = v` with `v` a `CVector<3>` is refused at `Matrix.h:19`.
