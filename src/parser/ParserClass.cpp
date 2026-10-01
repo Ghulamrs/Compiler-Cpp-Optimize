@@ -2387,11 +2387,25 @@ const Parser::Signature *Parser::moveConstructorOf(const Type *cls) const {
     return nullptr;
 }
 
+// **Only `X`, `X &`, `const X &` - or `X &&`, the move - make an assignment a copy**,
+// [class.copy]/17: `operator=(const double *)` is an operator of the class and not its
+// copy, which the class still has. The copy is answered before the move.
 const Parser::Signature *Parser::copyAssignOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;
     const std::vector<std::size_t> *set = overloadsOf(assignmentKey(cls->tag()));
-    return set == nullptr ? nullptr : &functions_[(*set)[0]];
+    if (set == nullptr) return nullptr;
+    const Signature *move = nullptr;
+    for (std::size_t i = 0; i < set->size(); i++) {
+        const Signature &f = functions_[(*set)[i]];
+        if (f.params.size() != 1) continue;
+        const Type *p = f.params[0];
+        const bool ref = p->isReference();
+        if ((ref ? p->pointee() : p)->unqualified() != cls->unqualified()) continue;
+        if (ref && p->isRValueReference()) { if (move == nullptr) move = &f; continue; }
+        return &f;
+    }
+    return move;
 }
 
 std::string Parser::baseConstructorSymbol(const Signature &ctor, const Type *base) {
@@ -2675,7 +2689,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
 // non-trivial even though the body leaves the vptr alone: it writes into its own.
 void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
                                        std::size_t pos) {
-    if (overloadsOf(assignmentKey(tag)) != nullptr) return;
+    if (copyAssignOf(type) != nullptr) return;
     // [class.copy]/23.
     if (moveConstructorOf(type) != nullptr) return;
 
