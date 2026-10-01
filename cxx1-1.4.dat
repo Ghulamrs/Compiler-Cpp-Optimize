@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 01-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 165 files, seal F18C4838
+CRC32  size  file - 165 files, seal 7175D83E
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 2DF96A05      2820  examples/Makefile
@@ -152,11 +152,11 @@ D5A5640B      3328  src/optimizer/OptTable.h
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 95439B05     36347  src/parser/Parser.cpp
-9597188B    117459  src/parser/Parser.h
-9BBF50AC    199014  src/parser/ParserClass.cpp
+EA2824DA    117667  src/parser/Parser.h
+C4D5123D    199709  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
 34A216F2    110754  src/parser/ParserExpr.cpp
-45675B47     32329  src/parser/ParserExprCall.cpp
+D65EE78E     33092  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 C7F1CA7B     86117  src/parser/ParserExprNew.cpp
 A480EFCD     68251  src/parser/ParserInit.cpp
@@ -166,7 +166,7 @@ C3272BD9     53071  src/parser/ParserOverload.cpp
 013A1E8F    100645  src/parser/ParserStmt.cpp
 15BBF4D9     98098  src/parser/ParserTemplate.cpp
 94D8A01E     78995  src/parser/ParserTopLevel.cpp
-A98E0DE5    119608  src/parser/ParserType.cpp
+50A7A0B7    121863  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
 Sealed on 01-10-2026
