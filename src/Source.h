@@ -37,6 +37,8 @@ public:
         int column;
     };
     Place locate(std::size_t pos) const;
+    // `file:line:col` for a note that names a second place.
+    std::string where(std::size_t pos) const;
 
     const std::vector<std::string> &files() const { return files_; }
     void setPacks(std::vector<Pack> packs) { packs_ = std::move(packs); }

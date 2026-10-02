@@ -274,6 +274,13 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
             patternOnly_ = true;
 
     at_ = decl.afterParams;
+    // **A constructor template has no type in front of its name**, so it is read the way a
+    // held `X(` is: under its owner, which the declarator takes one-shot and clears.
+    struct Owner {
+        Parser *p; std::string tag, name;
+        ~Owner() { p->inlineOwner_ = tag; p->inlineOwnerName_ = name; }
+    } owner{ this, inlineOwner_, inlineOwnerName_ };
+    if (decl.isConstructor) { inlineOwner_ = decl.ownerTag; inlineOwnerName_ = decl.ownerLocal; }
     StorageClass sc;
     Qualifiers quals;
     const Type *base = specifiers(&sc, &quals);
@@ -287,7 +294,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     if (qualifier != nullptr && !d.qualifier.empty() && d.paramsAt == 0 &&
         peek().is("(") && d.type->isStructOrUnion() &&
         !d.type->tag().empty() &&
-        overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+        hasConstructors(d.type->tag())) {
         const std::size_t save = at_;
         at_++;
         constructs = !(peek().is(")") || atDeclarationStart());
@@ -2001,7 +2008,9 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
     const TemplateDecl &mt, const std::vector<const Type *> &binding,
     const std::vector<long long> &values,
     const std::vector<TemplateArg> &args, std::size_t pos) {
-    const std::string display = specializationKey(mt.name, args);   // head<3>
+    // head<3>; a constructor's is spelled from the class's name, CMatrix<3>, and keyed apart from it.
+    const std::string display =
+        specializationKey(mt.isConstructor ? mt.ownerLocal : mt.name, args);
     const std::string key = mt.ownerTag + "::" + display;
     // Two templates of one name may each be instantiated at K = 3: the cache is per template.
     const std::string made = key + "@" + std::to_string(mt.afterParams);
@@ -2020,28 +2029,40 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
     bindTemplateParameters(mt.params, binding, values,
                            std::vector<std::vector<const Type *> >(), &undo);
 
+    // **The pattern the Itanium name is spelled from**: the member's own parameters as
+    // references to themselves, the class's already bound to its arguments above.
+    std::vector<const Type *> pattern(mt.params.size());
+    for (std::size_t i = 0; i < mt.params.size(); i++)
+        pattern[i] = types_.templateParam(static_cast<int>(i));
+    std::string patternName;
+    const Type *patternFn = readTemplateDeclaration(mt, pattern, values, &patternName);
+
     const bool wasInst = memberTemplateInst_;
     const std::string wasOf = memberTemplateOf_;
     const std::string wasName = memberTemplateName_;
     const std::vector<TemplateArg> wasArgs = memberTemplateArgs_;
+    const Type *wasPattern = memberTemplatePattern_;
     memberTemplateInst_ = true;
     memberTemplateOf_ = mt.name;
     memberTemplateName_ = display;
     memberTemplateArgs_ = args;
     memberTemplateAccess_ = mt.memberAccess;
+    memberTemplatePattern_ = patternFn;
 
     std::vector<PendingBody> one(1);
     one[0].tag = mt.ownerTag;
     one[0].start = mt.afterParams;
-    one[0].local = mt.ownerTag;
+    one[0].local = mt.ownerLocal.empty() ? mt.ownerTag : mt.ownerLocal;
     one[0].key = key;
     one[0].which = PendingBody::npos();
+    struct Restore {
+        Parser *p; bool inst; std::string of, name; std::vector<TemplateArg> args; const Type *pattern;
+        ~Restore() {
+            p->memberTemplateInst_ = inst; p->memberTemplateOf_ = of; p->memberTemplateName_ = name;
+            p->memberTemplateArgs_ = args; p->memberTemplatePattern_ = pattern;
+        }
+    } restore{ this, wasInst, wasOf, wasName, wasArgs, wasPattern };
     replayInlineBodies(one);
-
-    memberTemplateInst_ = wasInst;
-    memberTemplateOf_ = wasOf;
-    memberTemplateName_ = wasName;
-    memberTemplateArgs_ = wasArgs;
     unbindTemplateParameters(undo);
 
     // The function this replay declared under the key - the first one past `before`.
@@ -2159,6 +2180,29 @@ void Parser::instantiateViableMemberTemplates(
     for (std::size_t t = 0; t < all.size(); t++) instantiateViableMemberTemplate(all[t], argTypes, pos);
 }
 
+void Parser::instantiateViableMemberTemplatesUnder(
+    const std::string &key, const std::vector<const Type *> &argTypes, std::size_t pos) {
+    std::map<std::string, std::vector<TemplateDecl> >::const_iterator it =
+        memberTemplates_.find(key);
+    if (it == memberTemplates_.end()) return;
+    const std::vector<TemplateDecl> all = it->second;
+    for (std::size_t t = 0; t < all.size(); t++) instantiateViableMemberTemplate(all[t], argTypes, pos);
+}
+
+void Parser::instantiateConstructorTemplates(const Type *cls,
+                                             const std::vector<const Type *> &argTypes,
+                                             std::size_t pos) {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty()) return;
+    instantiateViableMemberTemplatesUnder(constructorKey(cls->unqualified()->tag()), argTypes, pos);
+}
+
+void Parser::instantiateConstructorTemplates(const Type *cls, const std::vector<ExprPtr> &args,
+                                             std::size_t pos) {
+    std::vector<const Type *> argTypes;
+    for (std::size_t i = 0; i < args.size(); i++) argTypes.push_back(args[i]->type());
+    instantiateConstructorTemplates(cls, argTypes, pos);
+}
+
 // One member template as a candidate: deduced, and instantiated where that works.
 void Parser::instantiateViableMemberTemplate(const TemplateDecl &mt,
                                              const std::vector<const Type *> &argTypes,
@@ -2189,12 +2233,22 @@ void Parser::instantiateViableMemberTemplate(const TemplateDecl &mt,
         }
         args.push_back(a);
     }
+    const bool wasBody = memberTemplateBody_;
+    memberTemplateBody_ = false;
     try {
         Trial trial(this);
-        instantiateMemberTemplate(mt, binding, values, args, pos);
+        const Signature *made = instantiateMemberTemplate(mt, binding, values, args, pos);
+        if (made != nullptr)
+            candidateSpecializations_.push_back(static_cast<std::size_t>(made - &functions_[0]));
     } catch (const SubstitutionFailure &f) {
-        // This one does not apply - unless it was a refusal, which is a fact
-        // about the compiler rather than about this candidate.
+        // This one does not apply - unless it was a refusal, which is a fact about the compiler
+        // rather than about this candidate, or **the body failed**, which [temp.deduct]/8 does not
+        // forgive: the candidate was formed, and dropping it now leaves a call to nothing.
         if (f.unsupported) src_.fail(f.pos, f.why);
+        if (memberTemplateBody_)
+            src_.fail(f.pos, f.why + " - in the instantiation of '" + mt.ownerTag + "::" +
+                                 specializationKey(mt.isConstructor ? mt.ownerLocal : mt.name, args) +
+                                 "', asked for at " + src_.where(pos));
     }
+    memberTemplateBody_ = wasBody;
 }

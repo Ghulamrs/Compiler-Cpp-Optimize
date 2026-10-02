@@ -11655,6 +11655,62 @@ blocks, two taken branches a turn - and is the CPU gap to cl6x; the L1D stalls a
 value is narrowed inside the loop (`shorts[i] = value` emits an `EXT` a turn) is not widened. A loop counting down, or
 stepped by `SUB`, is not a stepped counter. No SPLOOP: cl6x's loop buffer is what keeps its kernels off the fetch path.
 
+## A constructor that is a template, and the body error a trial was swallowing, 2026-10-02
+
+**SampleExt, the user's CCS sample, failed at the link on every target**: `Undefined symbols:
+CVector<3>::operator*<3>(CVector<3> const&) const`, from `main`. Two defects under one symptom, a
+third beside them, and all three are in `src/parser/` - a front-end fault lands on all four targets.
+
+**A constructor template was not a candidate.** `template <size_t K> CMatrix<M, N>(const
+CVector<K> &)` was recorded in `memberTemplates_` under the member name `CMatrix` and never
+consulted: the class-body scan names a member template by the last identifier before its `(`, and
+a constructor's is the class's own. It is recorded under `constructorKey(tag)` now
+(`TemplateDecl::isConstructor`, `ownerLocal` the name as the source spells it), and every road
+to a constructor set asks for it before reading the set - `resolveOverload` when the key has
+templates (direct-init, functional cast, `new`), `convertingConstructor` (copy-init, and the
+casts), `constructorViable`. Deduction reads the declaration under its owner the way a held `X(`
+is replayed - `inlineOwner_` set for the read in `readTemplateDeclaration`, which the declarator
+takes one-shot - so `CMatrix<M, N>(` with no type in front parses, and K comes out of the
+class-template argument as `V<N>` already did. The definition branch in `topLevel` keys the
+specialization under both the constructor key and `CMatrix<3,3>::CMatrix<3>`, and
+`hasConstructors(tag)` answers for a class whose only constructor is a template at the eighteen
+gates that used to ask `overloadsOf(constructorKey)`.
+
+**Both names measured, and the Itanium one is the pattern.** `_ZN2MxILm3ELm3EEC1ILm3EEERK1VIXT_EE`
+- C1 or C2 where a member writes its name, the arguments, then the parameters spelled from the
+pattern with K as `T_` - and `??$?0$02@?$Mx@$02$02@@QEAA@AEBU?$V@$02@@@Z`, `??$` then `?0`
+with the arguments. The C2 cannot be recomputed from the substituted parameters, so it is kept
+beside its C1 (`constructorC2_`) and the three base-subobject sites read it. **With the pattern
+came the end of the recorded member-template divergence**: every member template's Itanium name is
+spelled from the pattern signature now (`memberTemplatePattern_`, read as the free-template path
+reads its own), and the template-prefix - `Mx<3,3>::twice` - is registered as a substitution
+candidate, measured from `RKS2_IXT_EES6_`. Six emissions moved, all of them `S_ILi3EE` becoming
+clang's `S_IXT_EE`; `template-member.nonames` lost its arm64 line. **A candidate never chosen is
+pruned**: a member template's body is replayed as it is formed, so `S<int>(const int &)` losing to
+`S(int)` was emitted where neither oracle emits it - `pruneUnchosenCandidates` takes it back.
+
+**And the body error.** `instantiateViableMemberTemplate` wraps the whole instantiation in a
+`Trial`, body included, and every `fail` inside one is a `SubstitutionFailure` - so the error in
+`operator*<3>`'s body was caught, the candidate dropped, the signature left in the table, and the
+call emitted against a function with no body. It was never the deferred replay: a member
+template's body is replayed synchronously. `memberTemplateBody_` is set the moment the definition
+path marks the specialization defined; a failure after that is reported, with the place that asked
+- `... - in the instantiation of 'CVector<3>::operator*<3>', asked for at Math.cpp:24:23`.
+
+**The third: a cast to a class never asked for a converting constructor.** `(CMatrix<K, K>)lhs`
+and `static_cast<M>(v)` were refused as a cast between unrelated classes with no conversion
+function, template or not, and `(W)2.5` reinterpreted the bytes. [expr.static.cast]/4 makes both
+the direct-initialisation `T t(e)`: `convert` builds the temporary through `convertingConstructor`
+with explicit ones allowed, `refuseUnrelatedClassCast` accepts that road and refuses a scalar with
+none. `convertingConstructor` ranks now rather than calling any two viable constructors
+ambiguous - once `W<int>` exists, `W(const int &)` stands beside `W(const double &)` for a 2.5.
+
+Measured: SampleExt prints the reference byte for byte on x86_64-linux, x86_64-windows and vm6747.
+Five cases (`constructor-template`, `-ambiguous`, `-in-member-template`,
+`member-template-body-error`, `cast-to-class-constructor`); emit golden 6 of 1423 changed, 12
+added; run 573/0, names 367/0, overload 30/0, tms6747.sh 354/0 at -O0, -O1 and -O2. Refused by
+name: an `explicit` constructor template.
+
 ## Two gaps a CCS 5.5 sample found, 2026-10-01
 
 **A user's CCS sample (`Mathcpp`, three headers of vector, matrix and quaternion templates)

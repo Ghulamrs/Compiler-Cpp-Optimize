@@ -525,7 +525,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             }
             if (mname.empty())
                 src_.fail(mt.pos, "a member function template needs a name");
+            // **A constructor template is named by the class's own name** - `template <size_t K>
+            // CMatrix<M, N>(const CVector<K> &)` - and keyed with the other constructors.
+            if (mname == local) {
+                if (peek().is("explicit"))
+                    src_.fail(mt.pos, "an 'explicit' constructor template is not supported yet");
+                mt.isConstructor = true;
+                mname = localOf(tag);
+            }
             mt.name = mname;
+            mt.ownerLocal = local;
             mt.memberAccess = access;
             mt.ownerTag = tag;
             mt.ownerType = nullptr;    // filled at instantiation from the tag
@@ -872,7 +881,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // and no constructor could never be built. Said here rather than at the
             // first use, where the reader hears only that something is uninitialised.
             if (!memberIsFunction && d.type->isReference() &&
-                overloadsOf(constructorKey(tag)) == nullptr && !peek().is(";"))
+                !hasConstructors(tag) && !peek().is(";"))
                 src_.fail(d.pos, "'" + d.name + "' is a reference member, and a "
                                  "reference is bound where it is made - so this "
                                  "class needs a constructor with '" + d.name +
@@ -1858,7 +1867,7 @@ bool Parser::podForLayout(const Type *t) const {
     if (u->polymorphic()) return false;
     if (!u->bases().empty()) return false;
     if (!u->tag().empty()) {
-        if (overloadsOf(constructorKey(u->tag())) != nullptr) return false;
+        if (hasConstructors(u->tag())) return false;
         if (destructorOf(u) != nullptr) return false;
     }
     const std::vector<Member> &ms = u->members();

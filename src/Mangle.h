@@ -128,6 +128,14 @@ bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
                               const Type *fn, char access, bool constThis,
                               std::string *out, std::string *problem);
 
+// A constructor template specialization: C1/C2 and `??$?0`, the arguments as a template-id.
+bool itaniumConstructorTemplateName(const std::string &cls, const Type *clsType,
+                                    const Type *fn, const std::vector<TemplateArg> &args,
+                                    bool complete, std::string *out, std::string *problem);
+bool microsoftConstructorTemplateName(const std::string &cls, const Type *clsType,
+                                      const Type *fn, const std::vector<TemplateArg> &args,
+                                      char access, std::string *out, std::string *problem);
+
 // A constructor. **Itanium gives one constructor two names** - C1 complete and C2
 // base - and clang emits both, so both are emitted here though only C1 is spelled.
 // Microsoft has one, ??0, writing '@' where a member function writes its return.

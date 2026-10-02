@@ -137,7 +137,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     if (!builtArgs) parseArguments(args);
 
     const std::string key = constructorKey(plain->tag());
-    if (overloadsOf(key) != nullptr)
+    if (hasConstructors(plain->tag()))
         convertThroughConversionFunction(args, plain, true, pos);
     // **`T(t)` for a class whose constructors leave its copy trivial** is a
     // copy of bytes too: no copy constructor was declared, so resolution had
@@ -146,7 +146,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         args.size() == 1 && args[0]->type() != nullptr &&
         args[0]->type()->unqualified() == plain &&
         copyConstructorOf(plain) == nullptr && moveConstructorOf(plain) == nullptr;
-    if (overloadsOf(key) == nullptr || trivialSameClass) {
+    if (!hasConstructors(plain->tag()) || trivialSameClass) {
         // No constructor at all: `P(x)` is then a copy of another P, which is
         // a move of bytes, and `P()` is an object with nothing to set.
         if (args.size() > 1)
@@ -290,25 +290,39 @@ ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
 
 // **[over.ics.user]: the constructor that could make `to` out of `from`.**
 const Parser::Signature *Parser::convertingConstructor(const Type *to,
-                                                       const Expr &from) {
+                                                       const Expr &from,
+                                                       std::size_t pos, bool directInit) {
     const Type *plain = to->unqualified();
     if (!plain->isStructOrUnion()) return nullptr;
+    std::vector<const Type *> one(1, from.type());
+    instantiateConstructorTemplates(plain, one, pos);
     const std::vector<std::size_t> *set = overloadsOf(constructorKey(plain->tag()));
     if (set == nullptr) return nullptr;
 
+    // **Ranked, not counted**: once a constructor template has been instantiated for an int,
+    // `W(const int &)` stands beside `W(const double &)` for a 2.5, and [over.match.best] picks.
     const Signature *found = nullptr;
+    Rank foundRank = Rank::None;
+    bool ambiguous = false;
     for (std::size_t k = 0; k < set->size(); k++) {
         const Signature &c = functions_[(*set)[k]];
-        if (c.isExplicit || c.params.size() != 1) continue;
+        // Direct-initialisation - a cast - may take an explicit one, [over.match.ctor].
+        if ((c.isExplicit && !directInit) || c.params.size() != 1) continue;
         const Type *want = c.params[0];
         const Type *bare = want->isReference() ? want->pointee()->unqualified()
                                                : want->unqualified();
         if (bare == plain) continue;                 // the copy constructor
-        if (rankArgument(from, want) == Rank::None) continue;
-        if (found != nullptr) return nullptr;        // ambiguous, so neither
-        found = &c;
+        const Rank r = rankArgument(from, want);
+        if (r == Rank::None) continue;
+        if (found == nullptr) { found = &c; foundRank = r; continue; }
+        const std::vector<Rank> a(1, r), b(1, foundRank);
+        if (betterCandidate(a, b, c, *found, false, false)) {
+            found = &c; foundRank = r; ambiguous = false;
+        } else if (!betterCandidate(b, a, *found, c, false, false)) {
+            ambiguous = true;
+        }
     }
-    return found;
+    return ambiguous ? nullptr : found;
 }
 
 // **The conversion an argument needs to become the parameter's class**, or
@@ -321,7 +335,7 @@ ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos)
     if (arg->type() == nullptr) return nullptr;
     if (arg->type()->unqualified() == plain) return nullptr;
 
-    const Signature *ctor = convertingConstructor(plain, *arg);
+    const Signature *ctor = convertingConstructor(plain, *arg, pos);
     // **The other half of [over.ics.user]: a conversion function on the
     // argument's own class.** `take(const B &)` given an A with `operator B()`
     // was refused as no viable function. Copy-initialisation, so never explicit.
@@ -343,7 +357,9 @@ ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos)
 
 // Whether any constructor of `cls` takes these arguments as they stand - the
 // count and rank checks resolveOverload makes, without its refusal.
-bool Parser::constructorViable(const Type *cls, const std::vector<ExprPtr> &args) {
+bool Parser::constructorViable(const Type *cls, const std::vector<ExprPtr> &args,
+                               std::size_t pos) {
+    instantiateConstructorTemplates(cls->unqualified(), args, pos);
     const std::vector<std::size_t> *set =
         overloadsOf(constructorKey(cls->unqualified()->tag()));
     for (std::size_t k = 0; set != nullptr && k < set->size(); k++) {
@@ -371,7 +387,7 @@ bool Parser::convertThroughConversionFunction(std::vector<ExprPtr> &args,
     if (!from->unqualified()->isStructOrUnion() || from->unqualified() == plain)
         return false;
     if (publicBaseOffset(from, plain) > -1) return false;
-    if (constructorViable(plain, args)) return false;
+    if (constructorViable(plain, args, pos)) return false;
     const Signature *how = conversionFunction(from, plain, directInit);
     if (how == nullptr) return false;
     std::vector<ExprPtr> none;
@@ -1105,7 +1121,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     // built by calling one, here as much as on the stack.
     checkNotAbstract(made, pos, "the object 'new' would make");
     const bool constructed = made->isStructOrUnion() && !made->tag().empty() &&
-                             overloadsOf(constructorKey(made->tag())) != nullptr;
+                             hasConstructors(made->tag());
     std::vector<ExprPtr> ctorArgs;
     bool hasInit = false;
     ExprPtr init;

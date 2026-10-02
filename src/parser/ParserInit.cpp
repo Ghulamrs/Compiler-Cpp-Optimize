@@ -1151,7 +1151,7 @@ std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
         return first;
     };
     std::vector<StmtPtr> out;
-    if (overloadsOf(constructorKey(plain->tag())) != nullptr) {
+    if (hasConstructors(plain->tag())) {
         ExprPtr base = arrayAddress();
         ExprPtr n(new Num(count));
         n->setType(sizeT);

@@ -88,6 +88,21 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         }
     }
 
+    // **A class made by one of its converting constructors**, [over.match.ctor]: `(CMatrix<3,3>)v`
+    // and `static_cast<S>(2.5)` are direct-initialisations, so an explicit one is taken too.
+    if (e->type() != nullptr && to->unqualified()->isStructOrUnion() &&
+        e->type()->unqualified() != to->unqualified() &&
+        !(e->type()->unqualified()->isStructOrUnion() &&
+          publiclyDerivedFrom(e->type()->unqualified(), to->unqualified()))) {
+        Parser *self = const_cast<Parser *>(this);
+        if (const Signature *ctor = self->convertingConstructor(to, *e, 0, allowExplicit)) {
+            self->markUsed(ctor);
+            std::vector<ExprPtr> one;
+            one.push_back(std::move(e));
+            return self->constructTemporary(to->unqualified(), *ctor, std::move(one), false, 0);
+        }
+    }
+
     // **A class differing only in const-ness is the same object**, so there is
     // nothing here to convert: [conv.qual] changes the type and not the value,
     // and the object keeps its address and its bytes.
@@ -261,11 +276,19 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
 void Parser::refuseUnrelatedClassCast(const Expr &v, const Type *to,
                                       std::size_t pos, const char *what) {
     const Type *from = v.type();
-    if (from == nullptr || !from->unqualified()->isStructOrUnion() ||
-        !to->unqualified()->isStructOrUnion()) return;
+    if (from == nullptr || !to->unqualified()->isStructOrUnion()) return;
+    // **A scalar cast to a class has one road, a converting constructor** - without one the Cast
+    // that follows would reinterpret the bytes, which `(W)2.5` once did.
+    if (!from->unqualified()->isStructOrUnion()) {
+        if (convertingConstructor(to, v, pos, true) != nullptr) return;
+        src_.fail(pos, std::string(what) + " from '" + from->describe() + "' to '" +
+                       to->describe() + "' - no constructor of '" + to->unqualified()->describe() +
+                       "' takes one, or two take one equally well");
+    }
     if (from->unqualified() == to->unqualified()) return;
     if (publicBaseOffset(from, to) > -1 || publicBaseOffset(to, from) > -1) return;
     if (conversionFunction(from, to->unqualified(), true) != nullptr) return;
+    if (convertingConstructor(to, v, pos, true) != nullptr) return;
     src_.fail(pos, std::string(what) + " from '" + from->describe() + "' to '" +
                    to->describe() + "' - the two classes are unrelated and '" +
                    from->unqualified()->describe() + "' has no conversion "
@@ -915,6 +938,13 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
                        args.size() > 1 ? args[1]->type() : nullptr);
         if (!keys.empty()) name = keys.back();
     }
+    // **A constructor template is a candidate too**: every one under this key that
+    // deduces from the arguments is instantiated before the set is read.
+    if (memberTemplates_.count(name) != 0) {
+        std::vector<const Type *> argTypes;
+        for (std::size_t i = 0; i < args.size(); i++) argTypes.push_back(args[i]->type());
+        instantiateViableMemberTemplatesUnder(name, argTypes, pos);
+    }
     const std::vector<std::size_t> *set = overloadsOf(name);
 
     // **For an operator the candidate set is the union, not the first scope
@@ -937,6 +967,11 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     }
 
     if (set == nullptr) {
+        // Only constructor templates, and none of them deduced from these arguments.
+        if (memberTemplates_.count(name) != 0)
+            src_.fail(pos, "no constructor template of '" + name.substr(0, name.rfind("::")) +
+                           "' can be used with these " + std::to_string(args.size()) +
+                           " argument(s)");
         // **`C(...)` where C is a class** is a temporary and not a call to a
         // function nobody declared; "no prototype" sends the reader after a
         // declaration never meant to exist. Live now a class is copied by value.

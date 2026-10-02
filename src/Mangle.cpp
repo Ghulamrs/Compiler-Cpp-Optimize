@@ -241,6 +241,9 @@ public:
         if (constThis) out += "K";
         prefix(clsType, cls);
         writtenName(name, false);
+        // **The template-prefix - `Mx<3,3>::twice` - is a candidate of its own**, [mangle.substitution]:
+        // measured, `_ZNK2MxILm3ELm3EE5twiceILm3EEE1VILm3EERKS2_IXT_EES6_` writes V as S2_.
+        subs_.push_back(Sub{ nullptr, "<template-prefix>" });
         out += 'I';
         for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
         out += 'E';
@@ -272,6 +275,23 @@ public:
         out = "_ZN";
         prefix(clsType, cls);
         out += complete ? "C1E" : "C2E";
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+        if (fn->isVariadicFn()) out += "z";
+    }
+
+    // A constructor *template* specialization: `_ZN2MxILm3ELm3EEC1ILm3EEERK1VIXT_EE` - C1 or C2
+    // where a member writes its name, the arguments after it, and the parameters as the pattern.
+    void constructorTemplate(const std::string &cls, const Type *clsType, const Type *fn,
+                             const std::vector<TemplateArg> &args, bool complete) {
+        out = "_ZN";
+        prefix(clsType, cls);
+        out += complete ? "C1" : "C2";
+        subs_.push_back(Sub{ nullptr, "<template-prefix>" });
+        out += 'I';
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        out += "EE";
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
         for (const Type *p : params) type(p);
@@ -770,6 +790,21 @@ public:
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
     }
 
+    // A constructor template specialization: `??$?0$02@?$Mx@$02$02@@QEAA@AEBU?$V@$02@@@Z` -
+    // `??$` then `?0` with the arguments as the template-id, then the scope, then as `??0` goes on.
+    void constructorTemplate(const std::string &cls, const Type *clsType, const Type *fn,
+                             const std::vector<TemplateArg> &args, char access) {
+        out = "??$";
+        templateId("?0", args);
+        scopeOf(clsType, cls, clsType != nullptr ? clsType->localOwner() : std::string());
+        out += access;
+        out += "EAA@";
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
     void destructor(const std::string &cls, const Type *clsType, char access) {
         out = "??1";
         // A class written in a function body carries its owner, and the
@@ -849,6 +884,8 @@ public:
         const OperatorCode *op = findOperator(operatorSpelling(name));
         if (isConversionFunction(name)) {
             out += "?B";
+        } else if (name == "?0") {
+            out += "?0";          // a constructor's code, which takes no name back-reference
         } else if (op != nullptr) {
             out += '?';
             out += op->microsoft;
@@ -1605,6 +1642,27 @@ static void itaniumWrapLocal(const Type *clsType, std::string *out) {
                                ? owner.substr(2)
                                : std::to_string(owner.size()) + owner;
     *out = "_ZZ" + function + "E" + out->substr(2);
+}
+
+bool itaniumConstructorTemplateName(const std::string &cls, const Type *clsType,
+                                    const Type *fn, const std::vector<TemplateArg> &args,
+                                    bool complete, std::string *out, std::string *problem) {
+    Itanium m;
+    m.constructorTemplate(cls, clsType, fn, args, complete);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    itaniumWrapLocal(clsType, out);
+    return true;
+}
+
+bool microsoftConstructorTemplateName(const std::string &cls, const Type *clsType,
+                                      const Type *fn, const std::vector<TemplateArg> &args,
+                                      char access, std::string *out, std::string *problem) {
+    Microsoft m;
+    m.constructorTemplate(cls, clsType, fn, args, access);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
 }
 
 bool itaniumDestructorName(const std::string &cls, const Type *clsType,

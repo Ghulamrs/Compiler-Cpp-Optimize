@@ -377,6 +377,10 @@ private:
         std::vector<TemplateParam> classParams;
         std::vector<const Type *> classBinding;
         std::vector<long long> classValues;
+        // **A constructor template**: named by its class's own name, keyed under constructorKey(ownerTag).
+        bool isConstructor = false;
+        // The class's name as the source spells it - `CMatrix` for `CMatrix<3,3>` - which inlineOwnerName_ wants.
+        std::string ownerLocal;
     };
     std::map<std::string, TemplateDecl> templates_;
     // **Function templates overload; class templates do not.**
@@ -392,6 +396,17 @@ private:
                                           const std::string &name,
                                           const std::vector<const Type *> &argTypes,
                                           std::size_t pos);
+    // The same by the table's own key - "CMatrix<3,3>::CMatrix<3,3>" for a constructor template.
+    void instantiateViableMemberTemplatesUnder(const std::string &key,
+                                               const std::vector<const Type *> &argTypes,
+                                               std::size_t pos);
+    // Every constructor template of `cls` that deduces from these argument types,
+    // instantiated so the constructor set that is then resolved holds it.
+    void instantiateConstructorTemplates(const Type *cls,
+                                         const std::vector<const Type *> &argTypes,
+                                         std::size_t pos);
+    void instantiateConstructorTemplates(const Type *cls,
+                                         const std::vector<ExprPtr> &args, std::size_t pos);
     // Member function templates by "<ownerTag>::<member>", every one of a name (operator* twice).
     std::map<std::string, std::vector<TemplateDecl> > memberTemplates_;
     // An instantiation made, keyed by the template's own position and its arguments.
@@ -404,6 +419,15 @@ private:
     std::string memberTemplateName_;
     std::vector<TemplateArg> memberTemplateArgs_;
     Access memberTemplateAccess_ = Access::Public;
+    // The pattern signature of the specialization being replayed, which the Itanium name is spelled from.
+    const Type *memberTemplatePattern_ = nullptr;
+    // Set once the specialization's body has begun: a failure after that is the body's, not a substitution's.
+    bool memberTemplateBody_ = false;
+    // A constructor template specialization's C2 by its C1: a pattern's C2 cannot be recomputed from the substituted parameters.
+    std::map<std::string, std::string> constructorC2_;
+    // Member-template specializations made as *candidates*: one never chosen is emitted by neither oracle.
+    std::vector<std::size_t> candidateSpecializations_;
+    void pruneUnchosenCandidates(Program &program);
     bool isMemberTemplate(const Type *obj, const std::string &name) const {
         return obj != nullptr &&
                memberTemplates_.count(obj->unqualified()->tag() + "::" + name) != 0;
@@ -1004,6 +1028,12 @@ private:
     }
     static std::string constructorKey(const std::string &cls) {
         return cls + "::" + localOf(cls);
+    }
+    // Whether the class declares a constructor - a constructor *template* counts, [class.ctor]/5,
+    // though none of its specializations is in the table until something asks for one.
+    bool hasConstructors(const std::string &cls) const {
+        return overloadsOf(constructorKey(cls)) != nullptr ||
+               memberTemplates_.count(constructorKey(cls)) != 0;
     }
     void declareConstructor(const std::string &cls, std::size_t pos, Access access,
                             bool isExplicit);
@@ -1627,7 +1657,8 @@ private:
                                std::vector<ExprPtr> args, bool zeroFirst,
                                std::size_t pos);
     // **[over.ics.user]**.
-    const Signature *convertingConstructor(const Type *to, const Expr &from);
+    const Signature *convertingConstructor(const Type *to, const Expr &from,
+                                           std::size_t pos = 0, bool directInit = false);
     // The conversion function on `from` giving `to`, or - with `to` null - any
     // scalar, `bool` first. The mirror of the constructor above.
     const Signature *conversionFunction(const Type *from, const Type *to,
@@ -1646,7 +1677,8 @@ private:
     bool convertThroughConversionFunction(std::vector<ExprPtr> &args,
                                           const Type *cls, bool directInit,
                                           std::size_t pos);
-    bool constructorViable(const Type *cls, const std::vector<ExprPtr> &args);
+    bool constructorViable(const Type *cls, const std::vector<ExprPtr> &args,
+                           std::size_t pos = 0);
     void refuseUnrelatedClassCast(const Expr &v, const Type *to,
                                   std::size_t pos, const char *what);
     // **Copy-initialise a class into a slot somebody else owns**, as one

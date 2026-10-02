@@ -82,6 +82,13 @@ Source::Place Source::locate(std::size_t pos) const {
     return at;
 }
 
+std::string Source::where(std::size_t pos) const {
+    if (pos > text_.size()) pos = text_.size();
+    const Place at = locate(pos);
+    return files_[static_cast<std::size_t>(at.file)] + ":" + std::to_string(at.line) + ":" +
+           std::to_string(at.column);
+}
+
 void Source::fail(std::size_t pos, const std::string &message) const {
     // Inside a trial nothing is printed and nothing exits.
     if (trials_ > 0) {

@@ -487,14 +487,7 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
             // spells C2 differently from C1; Microsoft has one name and says
             // "subobject" with the flag instead, which `completeCall` adds.
             if (!target_.microsoftNames()) {
-                const Type *fnType =
-                    types_.functionType(types_.get(Kind::Void), ctor->params,
-                                        false);
-                std::string sub, why;
-                if (!itaniumConstructorName(base->tag(), base, fnType, false,
-                                            &sub, &why))
-                    continue;
-                symbol = sub;
+                symbol = baseConstructorSymbol(*ctor, base);
             } else {
                 symbol = ctor->symbol;
             }
@@ -2410,6 +2403,9 @@ const Parser::Signature *Parser::copyAssignOf(const Type *cls) const {
 
 std::string Parser::baseConstructorSymbol(const Signature &ctor, const Type *base) {
     if (target_.microsoftNames()) return ctor.symbol;
+    // A constructor template's C2 was spelled with its C1, from the pattern.
+    const std::map<std::string, std::string>::const_iterator tc2 = constructorC2_.find(ctor.symbol);
+    if (tc2 != constructorC2_.end()) return tc2->second;
     const Type *fnType = types_.functionType(types_.get(Kind::Void), ctor.params,
                                              false);
     std::string sub, why;
@@ -2425,7 +2421,7 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (tag.empty() || type->kind() == Kind::Union) return;
     // Asked before the copy constructor is declared, because declaring one would answer it yes.
-    const bool wroteConstructor = overloadsOf(constructorKey(tag)) != nullptr;
+    const bool wroteConstructor = hasConstructors(tag);
     // **Read now, for the same reason and at the same moment.** After the three calls
     // below, every one of these answers yes for a class that wrote nothing at all,
     // and [class.copy]/9 is a question about what the *user* declared.
@@ -2451,13 +2447,13 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size() && !work; i++)
         if (!bs[i].type->tag().empty() &&
-            overloadsOf(constructorKey(bs[i].type->tag())) != nullptr)
+            hasConstructors(bs[i].type->tag()))
             work = true;
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size() && !work; i++) {
         const Type *mc = memberClass(ms[i].type);
         if (mc != nullptr && !mc->tag().empty() &&
-            overloadsOf(constructorKey(mc->tag())) != nullptr)
+            hasConstructors(mc->tag()))
             work = true;
     }
     if (!work) return;
@@ -2850,7 +2846,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         // **A virtual base belongs to C1, not to this body.** Two things go
         // wrong when it is built here.
         if (bs[i].isVirtual) continue;
-        if (overloadsOf(constructorKey(base->tag())) == nullptr) continue;
+        if (!hasConstructors(base->tag())) continue;
         const Signature *ctor = defaultConstructorOf(base);
         if (ctor == nullptr)
             src_.fail(pos, "'" + cls + "' has no constructor of its own, and the "
@@ -3295,6 +3291,18 @@ void Parser::pruneExternalVtables(Program &program) {
     }
 }
 
+// **A candidate instantiated and never chosen has no body in clang's or cl's object**, [temp.inst]/3 -
+// a member template's is replayed as it is formed, so what was emitted for one is taken back here.
+void Parser::pruneUnchosenCandidates(Program &program) {
+    for (std::size_t k = 0; k < candidateSpecializations_.size(); k++) {
+        const Signature &f = functions_[candidateSpecializations_[k]];
+        if (f.used) continue;
+        for (std::size_t i = program.functions.size(); i-- > 0; )
+            if (program.functions[i].symbol() == f.symbol)
+                program.functions.erase(program.functions.begin() + static_cast<long>(i));
+    }
+}
+
 // **To a fixed point, because a body can be what first calls another.** Giving
 // Owner its constructor is what calls Held's, and Held's may not have been
 // wanted by anything the program wrote.
@@ -3404,7 +3412,7 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
     // so a second translation unit's copy does not build it twice.
     if (const Type *cls = memberClass(s->type))
         if (!cls->tag().empty() &&
-            overloadsOf(constructorKey(cls->tag())) != nullptr) {
+            hasConstructors(cls->tag())) {
             const std::string full = d.qualifier + "::" + d.name;
             if (s->type->isArray())
                 src_.fail(d.pos, "'" + full + "' is a static member array of '" +
@@ -3915,7 +3923,7 @@ void Parser::refuseDeletedDefaultInit(const Type *t, const std::string &name,
     while (plain->isArray()) plain = plain->pointee()->unqualified();
     if (!plain->isStructOrUnion() || plain->tag().empty()) return;
     if (!plain->bases().empty()) return;
-    if (overloadsOf(constructorKey(plain->tag())) != nullptr) return;
+    if (hasConstructors(plain->tag())) return;
 
     const std::vector<Member> &all = plain->members();
     for (std::size_t i = 0; i < all.size(); i++) {
@@ -4011,7 +4019,7 @@ StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
     // one.**
     StmtPtr made;
     if (memberClass(m.type) != nullptr && !m.type->isReference() &&
-        overloadsOf(constructorKey(memberClass(m.type)->tag())) != nullptr) {
+        hasConstructors(memberClass(m.type)->tag())) {
         std::vector<ExprPtr> one;
         one.push_back(std::move(value));
         made = constructMember(tag, type, m, thisSlot, one, pos, false);

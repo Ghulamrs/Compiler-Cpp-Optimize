@@ -244,7 +244,7 @@ void Parser::topLevel(Program &program) {
     bool constructionAhead = scalarInitAhead;
     if (peek().is("(") && d.paramsAt == 0 && d.type->isStructOrUnion() &&
         !d.type->tag().empty() &&
-        overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+        hasConstructors(d.type->tag())) {
         if (!d.qualifier.empty()) {
             // Qualified, the class answers: `S H::m(4)` defines a static member
             // only where H declares one - a member function's parameters may be
@@ -348,7 +348,7 @@ void Parser::topLevel(Program &program) {
                 const Type *plain = elem->unqualified();
                 if (d.type->isArray() && plain->isStructOrUnion() &&
                     !plain->tag().empty() &&
-                    (overloadsOf(constructorKey(plain->tag())) != nullptr ||
+                    (hasConstructors(plain->tag()) ||
                      destructorOf(plain) != nullptr))
                     arrayClass = plain;
             }
@@ -369,7 +369,7 @@ void Parser::topLevel(Program &program) {
                 // function and in declaration order; destroyed at exit in
                 // reverse. `extern S s;` alone declares and builds nothing.
                 if ((arrayClass != nullptr ||
-                     overloadsOf(constructorKey(d.type->tag())) != nullptr) &&
+                     hasConstructors(d.type->tag())) &&
                     sc != StorageExtern) {
                     const std::string gname =
                         (namespaceStack_.empty() || cLinkage_ > 0)
@@ -786,18 +786,34 @@ void Parser::topLevel(Program &program) {
             if (!declared) {
                 const Type *fnType =
                     types_.functionType(d.type, params, variadic);
+                // Itanium spells the pattern - `RK1VIXT_EE`, the parameter as T_ - and Microsoft
+                // the substituted signature, the split a free function template already makes.
+                const Type *patternFn = memberTemplatePattern_ != nullptr ? memberTemplatePattern_
+                                                                           : fnType;
                 const char code = memberTemplateAccess_ == Access::Public ? 'Q'
                                 : memberTemplateAccess_ == Access::Protected ? 'I'
                                                                              : 'A';
-                std::string sym, why;
-                const bool ok = target_.microsoftNames()
-                    ? microsoftMemberTemplateName(d.qualifier, memberOf, d.name,
-                          fnType, memberTemplateArgs_, code, constThis, &sym, &why)
-                    : itaniumMemberTemplateName(d.qualifier, memberOf, d.name,
-                          fnType, memberTemplateArgs_, constThis, &sym, &why);
+                const bool ctor = d.name == localOf(d.qualifier);
+                std::string sym, why, c2;
+                bool ok;
+                if (ctor && target_.microsoftNames())
+                    ok = microsoftConstructorTemplateName(d.qualifier, memberOf, manglingType(fnType),
+                                                          memberTemplateArgs_, code, &sym, &why);
+                else if (ctor)
+                    ok = itaniumConstructorTemplateName(d.qualifier, memberOf, patternFn,
+                                                        memberTemplateArgs_, true, &sym, &why) &&
+                         itaniumConstructorTemplateName(d.qualifier, memberOf, patternFn,
+                                                        memberTemplateArgs_, false, &c2, &why);
+                else if (target_.microsoftNames())
+                    ok = microsoftMemberTemplateName(d.qualifier, memberOf, d.name,
+                          fnType, memberTemplateArgs_, code, constThis, &sym, &why);
+                else
+                    ok = itaniumMemberTemplateName(d.qualifier, memberOf, d.name,
+                          patternFn, memberTemplateArgs_, constThis, &sym, &why);
                 if (!ok)
                     src_.fail(d.pos, "'" + key + "' cannot be given a name the "
                                      "linker can hold: " + why);
+                if (!c2.empty()) constructorC2_[sym] = c2;
                 // **Under two keys, as a free specialization is.**
                 functionIndex_[d.qualifier + "::" + d.name]
                     .push_back(functions_.size());
@@ -832,6 +848,8 @@ void Parser::topLevel(Program &program) {
             src_.fail(d.pos, "'" + key + "' is defined twice");
         // **This used to write `member->pos` into the *first* overload's entry.**
         const_cast<Signature *>(member)->defined = true;
+        // From here a failure is the body's, and a trial around this instantiation reports it.
+        if (memberTemplateInst_) memberTemplateBody_ = true;
 
         // **A static member's body gets no `this` slot**, which is the whole
         // of what makes it static once the name is settled.
@@ -1004,7 +1022,7 @@ void Parser::topLevel(Program &program) {
                     mc = mc->isStructOrUnion() ? mc->unqualified() : nullptr;
                     std::size_t ctorIndex = functions_.size();
                     if (mc != nullptr && !mc->tag().empty() &&
-                        overloadsOf(constructorKey(mc->tag())) != nullptr) {
+                        hasConstructors(mc->tag())) {
                         if (mt->isArray())
                             src_.fail(epos, "'" + entry + "()' would run '" +
                                             mc->describe() + "''s constructor "
@@ -1347,12 +1365,7 @@ void Parser::topLevel(Program &program) {
             if (!target_.microsoftNames()) {
                 std::string sub;
                 if (building) {
-                    const Type *fnType = types_.functionType(types_.get(Kind::Void),
-                                                             chosen.params,
-                                                             false);
-                    std::string why;
-                    itaniumConstructorName(base->tag(), base, fnType, false,
-                                           &sub, &why);
+                    sub = baseConstructorSymbol(chosen, base);
                 } else {
                     itaniumDestructorName(base->tag(), base, false, &sub);
                 }
@@ -1485,7 +1498,11 @@ void Parser::topLevel(Program &program) {
         !target_.microsoftNames()) {
         const Type *fnType = types_.functionType(types_.get(Kind::Void), params, false);
         std::string c2, why;
-        if (itaniumConstructorName(d.qualifier, findTypedef(d.qualifier),
+        const std::map<std::string, std::string>::const_iterator tc2 =
+            constructorC2_.find(program.functions.back().symbol());
+        if (tc2 != constructorC2_.end()) c2 = tc2->second;
+        if (!c2.empty() ||
+            itaniumConstructorName(d.qualifier, findTypedef(d.qualifier),
                                    fnType, false, &c2, &why)) {
             if (splitForVirtualBase) {
                 splitC1 = program.functions.back().symbol();
@@ -1546,6 +1563,7 @@ Program Parser::parse() {
         if (program.functions.size() == had) break;
     }
     pruneExternalVtables(program);
+    pruneUnchosenCandidates(program);
     finishDynamicInit(program);
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");

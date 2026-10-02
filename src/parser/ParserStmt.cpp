@@ -144,7 +144,7 @@ StmtPtr Parser::declarationBody() {
             const Type *plain = elem == nullptr ? nullptr : elem->unqualified();
             const bool arrayCtor = d.type->isArray() && plain != nullptr &&
                 plain->isStructOrUnion() && !plain->tag().empty() &&
-                overloadsOf(constructorKey(plain->tag())) != nullptr;
+                hasConstructors(plain->tag());
             const bool arrayDtor = d.type->isArray() && plain != nullptr &&
                 plain->isStructOrUnion() && !plain->tag().empty() &&
                 destructorOf(plain) != nullptr;
@@ -192,7 +192,7 @@ StmtPtr Parser::declarationBody() {
         }
 
         if (d.type->isStructOrUnion() && !d.type->tag().empty() &&
-            overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+            hasConstructors(d.type->tag())) {
             // [stmt.dcl]/4: a static one is built the first time control
             // passes through, under a guard, and destroyed at exit.
             if (sc == StorageStatic) {
