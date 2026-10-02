@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 02-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 154 files, seal C43F7D9B
+CRC32  size  file - 154 files, seal E25B92EF
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 D144E4D1     23689  ide/generate.py
@@ -58,7 +58,7 @@ E20D4640      3250  lib/time.h
 3F11D8A9      2826  msvc/build.cmd
 A0490168      1512  src/Abi.h
 B86FC4E8     25835  src/Ast.h
-3B571AE3     53818  src/Driver.cpp
+5D9E6E64     53832  src/Driver.cpp
 2603AB21      2999  src/Driver.h
 C8BDF6D6     19988  src/Lexer.cpp
 CDC4DEB7      2211  src/Lexer.h
@@ -141,21 +141,21 @@ D5A5640B      3328  src/optimizer/OptTable.h
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 18ADF6BE     36682  src/parser/Parser.cpp
-11CC455F    120633  src/parser/Parser.h
+8FD72CAB    120807  src/parser/Parser.h
 8481F7B6    200110  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
-34A216F2    110754  src/parser/ParserExpr.cpp
+599C457A    110824  src/parser/ParserExpr.cpp
 6D5A45D3     33681  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 FBAD82F5     87087  src/parser/ParserExprNew.cpp
-8B6952ED     69544  src/parser/ParserInit.cpp
+841D5529     69676  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
-4F6EB018     41895  src/parser/ParserOperator.cpp
-B08E98C9     55268  src/parser/ParserOverload.cpp
+DCF8FC55     42157  src/parser/ParserOperator.cpp
+3DA5640E     56628  src/parser/ParserOverload.cpp
 28A12BA3    100599  src/parser/ParserStmt.cpp
-80C1086D    105683  src/parser/ParserTemplate.cpp
+DA3B6319    105714  src/parser/ParserTemplate.cpp
 995BA821     80645  src/parser/ParserTopLevel.cpp
-FE683A3D    122319  src/parser/ParserType.cpp
+BE476DB6    122232  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
 Sealed on 02-10-2026
