@@ -25,27 +25,26 @@ Before that, every one of them came out `i` and `H`, so no cxx1 object naming
 an enumeration could link against one from another compiler. It is also what
 made a file-by-file differential against a clang build possible at all.
 
-**The half that is missing is the checking.** Underneath it is still
-`Kind::Int`, so every conversion path sees an integer:
+**The conversions are checked since 2026-10-02**, without a `Kind::Enum`: an
+enumerator has its enumeration's type ([dcl.enum]/5), an arithmetic value
+reaches an enumeration only by a cast (`checkAssignable`, and `rankArgument`
+makes it not viable), and an enumeration promotes as its underlying integer
+does ([conv.prom]/3), so `cout << Green` is `operator<<(int)` and `Green + 1`
+is an `int`:
 
 ```cpp
 enum Colour { Red, Green, Blue };
 int n = 1;
-Colour c = n;        // cxx1 accepts. C++ requires a cast.
-c = 47;              // cxx1 accepts. C++ does not.
-int m = Green;       // both accept: an enum converts to int
-sizeof(Colour)       // 4 here; implementation-defined but need not be int's size
+Colour c = n;        // refused, as C++ requires
+c = 47;              // refused
+Colour d = Colour(1);// accepted: the cast
+int m = Green;       // accepted: an enum converts to int
 ```
 
-So a program that treats an enumeration as a small set of named integers
-compiles, links and behaves correctly, and its symbols are right. A program
-that relies on the compiler *refusing* a wrong assignment still gets no help.
-
-Finishing it means a `Kind::Enum` carrying its enumerators, a conversion rule
-in both directions, and overload resolution ranking those conversions. That was
-held back deliberately rather than done half-way under time pressure: the ABI
-was what blocked a differential build, and opening the type system is its own
-round with its own risk to the suite.
+**What is still open**: underneath it is `Kind::Int`, so `c += 1` and `c++` -
+ill-formed for an unscoped enumeration - are accepted, being read as the
+integer's own operators; and `sizeof(Colour)` is int's size, which is
+implementation-defined anyway. An unnamed enumeration's enumerators stay `int`.
 
 ## `wchar_t` is not a distinct type
 

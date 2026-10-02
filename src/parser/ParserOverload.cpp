@@ -19,6 +19,8 @@ const Type *Parser::unsignedVersion(const Type *t) const {
 }
 
 const Type *Parser::promote(const Type *t) const {
+    // [conv.prom]/3: an unscoped enumeration promotes as its underlying integer does.
+    if (t->isEnumeration()) t = types_.get(t->kind());
     if (t->isInteger() && t->rank() < types_.intType()->rank())
         return types_.intType();
     // [conv.prom]/2: char32_t goes to the first of int, unsigned int that holds it.
@@ -501,6 +503,13 @@ const Type *Parser::decayedType(const Type *t) {
 // only those - every other arithmetic pairing is a conversion, which ranks
 // below. This is what makes f(int) beat f(double) for a char argument.
 static bool isPromotion(const Type *from, const Type *to) {
+    // [conv.prom]/3: an enumeration to the type its underlying integer promotes to.
+    if (from->isEnumeration() && !to->isEnumeration()) {
+        const Kind k = from->kind();
+        const bool small = k == Kind::Bool || k == Kind::Char || k == Kind::SChar ||
+                           k == Kind::UChar || k == Kind::Short || k == Kind::UShort;
+        return to->kind() == (small ? Kind::Int : k);
+    }
     if (to->kind() == Kind::Int) {
         switch (from->kind()) {
             case Kind::Bool: case Kind::Char: case Kind::SChar: case Kind::UChar:
@@ -591,6 +600,8 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // Top-level const on the parameter is not part of its type for this purpose.
     if (from->unqualified() == to->unqualified()) return Rank::Identity;
 
+    // Nothing converts to an enumeration implicitly - [conv.integral]/1 starts from one.
+    if (from->isArithmetic() && to->unqualified()->isEnumeration()) return Rank::None;
     if (from->isArithmetic() && to->isArithmetic())
         return isPromotion(from, to) ? Rank::Promotion : Rank::Conversion;
 
@@ -1074,6 +1085,16 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     // Copying ignores the const at the top.
     if (ft->unqualified() == to->unqualified()) return;
 
+    if (ft->isArithmetic() && to->unqualified()->isEnumeration()) {
+        // describe() spells an enumeration as its integer; this message is about the difference.
+        auto shown = [](const Type *t) {
+            return t->unqualified()->isEnumeration() ? "enum " + t->unqualified()->enumTag()
+                                                     : t->describe();
+        };
+        src_.fail(pos, what + " is '" + shown(to) + "' and this is '" + shown(ft) +
+                       "' - C++ converts an integer to an enumeration only with a cast, "
+                       "where C does it implicitly ([dcl.enum]/10)");
+    }
     if (ft->isArithmetic() && to->isArithmetic()) return;
     if (memberPointerToDerived(ft, to) >= 0) return;
 

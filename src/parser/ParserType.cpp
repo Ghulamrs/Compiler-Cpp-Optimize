@@ -1419,19 +1419,17 @@ const Type *Parser::enumSpecifier() {
     if (within != nullptr) prefix = within->tag() + "::";
     else if (!namespaceStack_.empty()) prefix = namespacePrefix();
 
-    // The tag names a type, as a class tag does. What it does not yet name is
-    // a *distinct* type: an enumeration is still its integer here, so the
-    // conversions C++ refuses in both directions are accepted (CONFORMANCE.md).
+    // The tag names a type, as a class tag does: its integer underneath, but an integer
+    // reaches it only by a cast (checkAssignable, rankArgument), and it promotes back.
     const Type *self = nullptr;
     if (!tag.empty()) {
         self = types_.enumType(prefix + tag,
                                underlying != nullptr ? underlying->kind() : Kind::Int);
         declareTypeName(prefix + tag, self);
     }
-    // What a based enumeration's values are: its own type, so that `sizeof(A)`
-    // and the promotions come out as the base says. An int enum stays int.
-    const Type *valueType = underlying == nullptr ? nullptr
-                          : self != nullptr ? self : underlying;
+    // [dcl.enum]/5: an enumerator has its enumeration's type once the enum is complete, so
+    // `colour c = RED` is a copy and `colour c = 1` is not. An unnamed one keeps its integer.
+    const Type *valueType = self != nullptr ? self : underlying;
     const Type *narrowAs = underlying != nullptr ? underlying : types_.intType();
 
     if (!peek().is("{")) return valueType != nullptr ? valueType : types_.intType();

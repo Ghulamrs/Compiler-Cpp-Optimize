@@ -2161,7 +2161,7 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
     // of and the number is the whole of it.
     if (const EnumConst *e = enumInClass(cls, member)) {
         ExprPtr n(new Num(e->value));
-        n->setType(types_.intType());
+        n->setType(e->type != nullptr ? e->type : types_.intType());
         return n;
     }
     src_.fail(mpos, "'" + cls->describe() + "' has no static member or "

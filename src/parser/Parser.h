@@ -2012,6 +2012,8 @@ private:
     void skipInit(const Type *type, InitCursor &c);
     long long inferredLength(const Init &in, const Type *element, std::size_t pos);
     static const StrLit *stringInitialiser(const Init &in, const Type *type);
+    // [dcl.init.string]/2: the array holds the string and its '\0', where C drops the '\0'.
+    void requireStringFits(const Type *array, const StrLit *s, std::size_t pos);
 
     void topLevel(Program &program);
     StmtPtr block();

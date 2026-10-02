@@ -771,7 +771,10 @@ ExprPtr Parser::conditional() {
     }
 
     if (ta->isArithmetic() && tb->isArithmetic()) {
-        result = usualArithmetic(ta, tb);
+        // [expr.cond]/6: two arms of one enumeration give that enumeration, not its promotion.
+        const bool oneEnum = ta->unqualified() == tb->unqualified() &&
+                             ta->unqualified()->isEnumeration();
+        result = oneEnum ? ta->unqualified() : usualArithmetic(ta, tb);
         a = convert(std::move(a), result);
         b = convert(std::move(b), result);
     } else if (ta->unqualified()->isStructOrUnion() ||

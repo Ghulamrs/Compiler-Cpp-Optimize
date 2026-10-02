@@ -66,6 +66,17 @@ const StrLit *Parser::stringInitialiser(const Init &in, const Type *type) {
     return s;
 }
 
+// The literal's own type counts its '\0' and its code units, which its text does not.
+void Parser::requireStringFits(const Type *array, const StrLit *s, std::size_t pos) {
+    const long long need = s->type()->length();
+    if (need <= array->length()) return;
+    src_.fail(pos, "the array holds " + std::to_string(array->length()) +
+                   " characters and the string needs " + std::to_string(need) +
+                   " with its terminating '\\0' - C may drop the '\\0', C++ may not "
+                   "([dcl.init.string]/2). Make the array one longer, or leave its "
+                   "length out");
+}
+
 void Parser::skipInit(const Type *type, InitCursor &c) {
     if (c.done()) return;
     Init &item = c.cur();
@@ -181,6 +192,8 @@ void Parser::initZero(const std::string &name, std::vector<InitStep> &path,
     ExprPtr z;
     if (type->isFloating()) { z.reset(new Num(0.0L)); z->setType(types_.doubleType()); }
     else                    { z.reset(new Num(0LL));  z->setType(types_.intType()); }
+    // Zero is a value of every enumeration; this store is not the program converting an int.
+    if (type->unqualified()->isEnumeration()) z->setType(type->unqualified());
     initStore(name, path, std::move(z), pos, out);
 }
 
@@ -189,10 +202,7 @@ void Parser::emitString(const std::string &name, std::vector<InitStep> &path,
                         std::vector<StmtPtr> &out) {
     long long len = type->length();
     const std::string &text = s->text();
-    if (static_cast<long long>(text.size()) > len)
-        src_.fail(pos, "'" + name + "' holds " + std::to_string(len) +
-                       " characters and the string has " +
-                       std::to_string(text.size()));
+    requireStringFits(type, s, pos);
     for (long long i = 0; i < len; i++) {
         path.push_back(InitStep{ nullptr, i });
         long long ch = i < static_cast<long long>(text.size())
@@ -610,10 +620,7 @@ void Parser::flattenFill(const Type *type, InitCursor &c, int base,
     if (const StrLit *s = stringInitialiser(item, type)) {
         c.at++;
         const std::string &text = s->text();
-        if (static_cast<long long>(text.size()) > type->length())
-            src_.fail(item.pos, "the string has " + std::to_string(text.size()) +
-                                " characters and the array holds " +
-                                std::to_string(type->length()));
+        requireStringFits(type, s, item.pos);
 
         int w = type->pointee()->size(target_);
         for (std::size_t i = 0; i < text.size(); i++)
@@ -663,10 +670,7 @@ void Parser::flattenInit(const Type *type, Init &in, int base,
     if (in.isList && in.items.empty()) return;
     if (const StrLit *s = stringInitialiser(in, type)) {
         const std::string &text = s->text();
-        if (static_cast<long long>(text.size()) > type->length())
-            src_.fail(in.pos, "the string has " + std::to_string(text.size()) +
-                              " characters and the array holds " +
-                              std::to_string(type->length()));
+        requireStringFits(type, s, in.pos);
         int w = type->pointee()->size(target_);
         for (std::size_t i = 0; i < text.size(); i++)
             out.push_back(GlobalPiece{ base + static_cast<int>(i) * w, w,

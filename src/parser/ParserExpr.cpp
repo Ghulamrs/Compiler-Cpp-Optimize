@@ -1050,7 +1050,7 @@ ExprPtr Parser::primary(Program *program) {
         if (found != nullptr) {
             at_ += took;
             ExprPtr n(new Num(found->value));
-            n->setType(types_.intType());
+            n->setType(found->type != nullptr ? found->type : types_.intType());
             return n;
         }
     }
@@ -1382,7 +1382,7 @@ ExprPtr Parser::primary(Program *program) {
 
             if (const EnumConst *e = findClassEnum(name)) {
                 ExprPtr n(new Num(e->value));
-                n->setType(types_.intType());
+                n->setType(e->type != nullptr ? e->type : types_.intType());
                 return n;
             }
         }

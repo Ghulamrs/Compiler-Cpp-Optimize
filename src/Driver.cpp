@@ -991,9 +991,9 @@ bool Driver::parseArguments(int argc, char **argv) {
         const std::size_t dot = inputs[k].find_last_of('.');
         if (dot != std::string::npos && inputs[k].substr(dot) == ".c") {
             std::fprintf(stderr,
-                "%s: %s looks like C (.c), and cxx1 compiles C++, not C - "
-                "compile it with cc1\n",
-                argv[0], inputs[k].c_str());
+                "%s: %s looks like C (.c), and %s compiles C++, not C - "
+                "compile it with c90\n",
+                argv[0], inputs[k].c_str(), program::kName);
             return false;
         }
     }
