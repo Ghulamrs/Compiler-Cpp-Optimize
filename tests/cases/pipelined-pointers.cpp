@@ -57,9 +57,16 @@ static const int counts[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64,
 int main() {
     int k, i;
     for (i = 0; i < 300; ++i) { da[i] = i * 0.5 - 20; db[i] = (i % 7) - 3; dc[i] = 0.25 * i; ib[i] = i * 11 - 500; }
+    // One statement each: tail writes the ib that scale reads, and the order a call's arguments are
+    // evaluated in is unspecified - left to right on the Itanium targets, right to left on Microsoft.
     for (k = 0; k < 17; ++k) {
         int n = counts[k];
-        printf("%d: %.2f %.2f %d %d %d\n", n, axpy(n, 1.5), sumd(n), fillb(n), scale(n), tail(n));
+        double a = axpy(n, 1.5);
+        double b = sumd(n);
+        int c = fillb(n);
+        int d = scale(n);
+        int e = tail(n);
+        printf("%d: %.2f %.2f %d %d %d\n", n, a, b, c, d, e);
     }
     return 0;
 }
