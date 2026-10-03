@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.4, sealed 02-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 154 files, seal E25B92EF
+CRC32  size  file - 154 files, seal 0BAB3892
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 D144E4D1     23689  ide/generate.py
@@ -58,8 +58,8 @@ E20D4640      3250  lib/time.h
 3F11D8A9      2826  msvc/build.cmd
 A0490168      1512  src/Abi.h
 B86FC4E8     25835  src/Ast.h
-5D9E6E64     53832  src/Driver.cpp
-2603AB21      2999  src/Driver.h
+2F6ED43C     54184  src/Driver.cpp
+90CE79A3      3406  src/Driver.h
 C8BDF6D6     19988  src/Lexer.cpp
 CDC4DEB7      2211  src/Lexer.h
 D59BC2B6     75942  src/Mangle.cpp
@@ -92,7 +92,7 @@ BF4C34E3     96607  src/backend/X86_64Linux.cpp
 7AB385B5     13384  src/backend/X86_64Linux.h
 68BFFF6C      3268  src/backend/X86_64Windows.cpp
 095D1DBC      1172  src/backend/X86_64Windows.h
-3F12405D       111  src/main.cpp
+2D5FF95D      1133  src/main.cpp
 F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
 09291356      4679  src/optimizer/C6xModel.h
@@ -158,4 +158,4 @@ DA3B6319    105714  src/parser/ParserTemplate.cpp
 BE476DB6    122232  src/parser/ParserType.cpp
 F8BEAFA2     37978  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
-Sealed on 02-10-2026
+Sealed on 03-10-2026

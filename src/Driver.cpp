@@ -1255,6 +1255,19 @@ bool Driver::runJobs() {
     return ok.load();
 }
 
+std::vector<std::string> Driver::produced() const {
+    std::vector<std::string> out;
+    if (assemblyOnly_) {
+        if (!toStdout_)
+            for (const Job &job : jobs_) out.push_back(job.output);
+    } else if (objectOnly_) {
+        out = objects_;
+    } else {
+        out.push_back(linkTo_);
+    }
+    return out;
+}
+
 int Driver::run(int argc, char **argv) {
     program_ = argv[0];
 
@@ -1277,6 +1290,7 @@ int Driver::run(int argc, char **argv) {
     // **Printed once the arguments are known to be good**, so a usage message
     // is not preceded by a banner nobody asked for, and before any work so it
     // is the first thing on the screen. `-nologo` is the way out.
+    saysDone_ = !quiet_;
     if (!quiet_) {
         std::fprintf(stderr, "%s\n", bannerLine());
         const unsigned n = threadCount();

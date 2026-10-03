@@ -7,6 +7,10 @@
 
 class Driver {
 public:
+    // After run() returned 0: whether to say so - a compile was begun and -nologo was not given.
+    bool saysDone() const { return saysDone_; }
+    // What this run made, for the line above the one that says it finished: the program, the objects or the assembly.
+    std::vector<std::string> produced() const;
     int run(int argc, char **argv);
 
 private:
@@ -83,6 +87,7 @@ private:
     static const char *bannerLine();
     void standardIncludeDirectories(const std::string &argv0);
     bool quiet_ = false;
+    bool saysDone_ = false;  // a compile was begun, and the line saying it finished is wanted
     // --compress or --no_compress, handed to asm6x for tms6747; empty is asm6x's default, compressed.
     std::string asmCompress_;
 };
