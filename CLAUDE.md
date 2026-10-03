@@ -7286,7 +7286,7 @@ find what nobody thought to write a case for.
 | four suites, three boxes | run 374/0, emit 675/0, names 226/0, overload 30/0, windows cases 371/0, names vs cl 161 agreed / 0 differed |
 | C++ Vector Exercise | **4 of 4** - main, matrix_main, quat_main, rotrix_main, each byte-identical to clang |
 | Compiler++ | **129 of 129** - its sixteen sources compiled by cxx1, linked, and the compiler they make agreeing with a clang-built one on every case in its own suite |
-| the inherited C corpus | 365 ran and agreed, 58 refused, 1 wrong, of 424 - unchanged from 2026-09-02 |
+| the inherited C corpus | 365 ran and agreed, 58 refused, 1 wrong, of 424 - unchanged from 2026-09-02 (and at 2026-09-30, 314eda4, compiled as .cpp copies) |
 
 **The corpus is the control and the other three are the experiment.** It is
 untriaged C, it gates on nothing, and this is exactly what it is for: after
@@ -10619,6 +10619,22 @@ one guard, access control routed through two helpers, and dynamic
 initialisation touching all three backends - and not one case that agreed now
 disagrees, nor one that was refused now compiles to something wrong. The single
 `wrong` is the one that was already there.
+
+**Refused whole from 2026-09-15 to 2026-09-30, and nobody noticed for two
+weeks.** ffc3b77 taught the driver to turn a `.c` away by name, and the runner
+still handed it the `.c` files - so every case read "looks like C (.c)" and the
+split was 0 / 424 / 0, a measurement of the file extension. The runner copies
+each case to a `.cpp` now, the corpus's one header beside it, because what it
+is kept for is C read as C++; retiring it was the other answer, and a control
+that has stayed still through two months of front-end work is worth more than
+the directory it takes. **Measured 2026-09-30 at 314eda4: 365, 58, 1**, and the
+compiler from just before 314eda4 - which removed the implicit `void *`
+conversion C's `malloc` idiom leans on - gives a `FAILING` identical line for
+line: the one case that writes `char *w = malloc(4);` (`assign_types.c`) is
+refused four lines above it for a string literal, so its first error did not
+move - a second refusal behind the first, which the failing set cannot see.
+`FAILING` names the
+first error line now, where it had been recording the compiler's banner.
 
 `tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
 and diffs against its `.expected`; a case with a `.error` file instead must

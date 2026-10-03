@@ -17,11 +17,16 @@
 # CLAUDE.md with no way left to reproduce it.
 #
 # Each case says what its program should exit with, in a `// expect: N` line.
+#
+# Each is compiled as a .cpp copy in $OUT: the driver turns a .c away by name
+# (cxx1 compiles C++, not C), and what this corpus measures is C read as C++.
+# Its headers are copied beside the cases, so #include "..." still finds them.
 set -u
 cd "$(dirname "$0")/.."
 CXX1="${CXX1:-./cpp11.exe}"
 OUT=tests/out-corpus
 rm -rf "$OUT"; mkdir -p "$OUT"
+cp tests/c-corpus/*.h "$OUT"/        # a case's #include "..." looks beside the copy
 
 only=${1:-}
 passed=0; refused=0; wrong=0
@@ -37,9 +42,12 @@ for src in tests/c-corpus/*.c; do
         continue
     fi
 
-    if ! ( ulimit -t 10; $CXX1 "$src" -o "$OUT/$base" ) >"$OUT/$base.err" 2>&1; then
+    cp "$src" "$OUT/$base.cpp"
+    if ! ( ulimit -t 10; $CXX1 "$OUT/$base.cpp" -o "$OUT/$base" ) >"$OUT/$base.err" 2>&1; then
         refused=$((refused + 1))
-        echo "refused $base: $(head -1 "$OUT/$base.err")" >> "$OUT/FAILING"
+        # The first line naming what went wrong, not the compiler's banner.
+        why=$(grep -m1 -E 'error|undefined reference|^ +"[^"]*", referenced' "$OUT/$base.err" || sed -n '/^©/!{p;q;}' "$OUT/$base.err")
+        echo "refused $base: $why" >> "$OUT/FAILING"
         [ -n "$only" ] && { echo "refused:"; sed 's/^/    /' "$OUT/$base.err"; }
         continue
     fi
