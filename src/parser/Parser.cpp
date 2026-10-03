@@ -82,8 +82,13 @@ bool Parser::consume(const char *s) {
 }
 
 void Parser::expect(const char *s) {
-    if (!peek().is(s))
-        src_.fail(peek().pos, std::string("expected '") + s + "'");
+    if (!peek().is(s)) {
+        // A missing ';' belongs to the statement before it: said just after its last token, as clang says it,
+        // and not at the next token - a '}' a line further down, or the next statement's first word.
+        const Token *before = at_ > 0 && at_ <= tokens_.size() ? &tokens_[at_ - 1] : 0;
+        const bool after = std::string(s) == ";" && before && before->end > before->pos;
+        src_.fail(after ? before->end : peek().pos, std::string("expected '") + s + "'");
+    }
     at_++;
 }
 

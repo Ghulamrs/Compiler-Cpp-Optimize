@@ -208,6 +208,7 @@ std::vector<Token> Lexer::tokenize() {
     };
 
     while (i < s.size()) {
+        if (!out.empty() && out.back().end == 0) out.back().end = i;
         char c = s[i];
 
         if (std::isspace(static_cast<unsigned char>(c))) { i++; continue; }
@@ -481,6 +482,7 @@ std::vector<Token> Lexer::tokenize() {
         src_.fail(i, std::string("stray '") + c + "' in program");
     }
 
+    if (!out.empty() && out.back().end == 0) out.back().end = i;
     Token end;
     end.kind = TokenKind::End;
     end.pos = s.size();

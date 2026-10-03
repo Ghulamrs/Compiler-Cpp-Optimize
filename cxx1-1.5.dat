@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 154 files, seal 9F53CC85
+CRC32  size  file - 154 files, seal B9448680
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 D144E4D1     23689  ide/generate.py
@@ -60,8 +60,8 @@ A0490168      1512  src/Abi.h
 B86FC4E8     25835  src/Ast.h
 2F6ED43C     54184  src/Driver.cpp
 90CE79A3      3406  src/Driver.h
-C8BDF6D6     19988  src/Lexer.cpp
-CDC4DEB7      2211  src/Lexer.h
+EDD4E366     20122  src/Lexer.cpp
+9F0C7D67      2448  src/Lexer.h
 D59BC2B6     75942  src/Mangle.cpp
 00DAB69B     12131  src/Mangle.h
 36FF0529       493  src/Name.h
@@ -140,7 +140,7 @@ D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
-18ADF6BE     36682  src/parser/Parser.cpp
+0A6630DB     37102  src/parser/Parser.cpp
 8FD72CAB    120807  src/parser/Parser.h
 8481F7B6    200110  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
