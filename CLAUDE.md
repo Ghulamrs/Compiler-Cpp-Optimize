@@ -10023,6 +10023,30 @@ The two loops rebuild the flow without dropping labels, where rounds does
 both: that is how the driver did it before the manager, and a label dropped
 there could change what is emitted - kept, and noted.
 
+## Version 1.5, 2026-10-03: the optimizer rounds and the constructor template
+
+**1.4 was sealed on 2026-09-18 and resealed twice on 2026-10-02 as fixes landed
+under its number; 1.5 is the number those changes earn.** What it carries, each
+with its own section above:
+
+- **The optimizer.** On x86_64 the S-rounds - the inliner, the pass manager,
+  rotated loops, xmm hoisting, widened counters, loop-line alignment, and the GOT
+  for a PIE; on arm64 the three rounds of `a64Peephole`; on the C6000 locals in
+  registers, execute packets and filled delay slots, CALLP and BNOP, pr2 unwind
+  tables past 64 KB, division by a constant, software pipelining, hoisted
+  invariants, folded addressing, cross-block landings, and the matmul/sieve
+  round. Compiler++ on TI's C6747 simulator: 0.82x CCS 7.4's cycles.
+- **A constructor that is a template** (`50c9759`): a candidate on every road to a
+  constructor, both ABIs' names measured, the body error a trial swallowed now
+  reported, and a cast to a class through its converting constructor. SampleExt
+  compiles and runs on all four targets.
+- **The Windows session's E7-E10**: c90/cpp11 named in the language refusals, a
+  string's room for its `'\0'`, an integer to an enumeration only by a cast.
+- **The success line**: the files made, by their full names, above
+  `cpp11: compilation completed successfully - 0 errors`.
+
+The seal moved from `cxx1-1.4.dat` to `cxx1-1.5.dat` by `tools/seal write`.
+
 ## Version 1.4, 2026-09-18: the cl review's nine wrong answers, from Compiler-Cppi
 
 **Six commits cherry-picked (`-x`) from Compiler-Cppi, the review of

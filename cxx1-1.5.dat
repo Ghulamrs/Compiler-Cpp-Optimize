@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
-Release seal, version 1.4, sealed 02-10-2026
+Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 154 files, seal 0BAB3892
+CRC32  size  file - 154 files, seal 9F53CC85
 ------------------------------------------------------------------
 535824C4     10265  Makefile
 D144E4D1     23689  ide/generate.py
@@ -73,7 +73,7 @@ B35E3402      3248  src/Operator.cpp
 DB52131F      2097  src/Source.h
 52741BC7     20117  src/Type.cpp
 9A61B671     23997  src/Type.h
-7873CEAE       334  src/Version.h
+DA6FC84C       334  src/Version.h
 AFBAF949     45010  src/backend/Arm64Darwin.cpp
 98997445      5698  src/backend/Arm64Darwin.h
 0F851578      3863  src/backend/Backend.cpp

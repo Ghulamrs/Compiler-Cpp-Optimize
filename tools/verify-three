@@ -50,7 +50,7 @@ COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
     --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
     --exclude '* [0-9]' --exclude '* [0-9].*' \
     src tests lib include tools docs msvc ide examples \
-    Makefile CLAUDE.md README.md README.1ST cxx1-1.4.dat cxx1.sln build \
+    Makefile CLAUDE.md README.md README.1ST cxx1-1.5.dat cxx1.sln build \
     2>/dev/null
 
 # **The Linux build goes through `./build`, which caps it.** That script runs
