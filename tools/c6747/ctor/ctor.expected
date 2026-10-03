@@ -1,0 +1,12 @@
+construct first 10
+construct second 20
+construct third 30
+main: first 10 second 20 third 30
+construct once 7
+lazy: 7
+lazy again: 7
+main returns
+destroy once
+destroy third
+destroy second
+destroy first
