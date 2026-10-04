@@ -1,0 +1,4 @@
+pencil   120    60.00
+notebook  28    63.00
+ruler      0     0.00
+total          123.00

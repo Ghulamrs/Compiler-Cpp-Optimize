@@ -1,0 +1,11 @@
+adventure ok functions 25 instructions 1904 fingerprint 1732262721
+bank ok functions 47 instructions 2872 fingerprint 3615549865
+containers ok functions 41 instructions 3314 fingerprint 2773337963
+geometry ok functions 51 instructions 5553 fingerprint 401700605
+matrix ok functions 20 instructions 3666 fingerprint 4077517793
+parser ok functions 24 instructions 2888 fingerprint 2999049458
+shapes ok functions 56 instructions 3143 fingerprint 213138600
+simulation ok functions 30 instructions 3203 fingerprint 3886091875
+sorting ok functions 27 instructions 4207 fingerprint 3745108344
+strings ok functions 38 instructions 4073 fingerprint 2372892286
+rounds 1 files 10

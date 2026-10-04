@@ -1,0 +1,4 @@
+e      2.71828
+tau    not in the table
+pi again: refused, one entry per name
+held 12 of 12, 3 refused

@@ -1,0 +1,4 @@
+circle area   7.07  perimeter   9.42
+rect   area  12.00  perimeter  14.00
+rect   area   6.25  perimeter  10.00
+largest: rect

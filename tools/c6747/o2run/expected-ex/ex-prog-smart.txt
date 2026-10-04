@@ -1,0 +1,8 @@
+Counter(1) made
+first is 3
+first holds something: no
+second is 3
+Counter(100) made
+Counter(3) let go
+second is now 100
+Counter(100) let go

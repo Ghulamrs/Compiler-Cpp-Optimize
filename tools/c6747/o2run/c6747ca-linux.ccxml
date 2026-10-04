@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<configurations XML_version="1.2" id="configurations_0">
+<configuration XML_version="1.2" id="configuration_0" description="Simulates the C674x core (C64x+ core with floating point extensions), cache system, EMIFB, Shared RAM, Timers(2), EDMA3CC, EDMA3TC and McASP models. Does not support EMIF2.5, HPI, EMAC, MMC/SD, I2C, SPI, UART, USB. This configuration is cycle accurate and hence suitable for device level applications development and benchmarking. &#xA; Note on other configurations for this processor: &#xA; * There is a corresponding faster configuration (C6747 Device Functional Simulator) in the &quot;General Setup&quot;, that can be used for applications development and understanding the system behavior, but doesn't support cycle accuracy. &#xA; * There is a CPU only configuration as well (C674x CPU Cycle Accurate Simulator) in the &quot;General Setup&quot; which is even faster than the device functional simulator, that can be used for core level algorithms development and benchmarking.">
+	  <instance XML_version="1.2" href="connections/tisim_connection.xml" id="C6747 Device Cycle Accurate Simulator, Little Endian" xml="tisim_connection.xml" xmlpath="connections/"/>
+    <connection XML_version="1.2" id="C6747 Device Cycle Accurate Simulator, Little Endian">
+      <instance XML_version="1.2" href="drivers/tisim_c674x_unsup.xml" id="drivers" xml="tisim_c674x_unsup.xml" xmlpath="drivers/"/>
+      <drivers XML_version="1.2" id="drivers" />
+      <platform XML_version="1.2" id="platform_0">
+        <cpu HW_revision="" XML_version="1.2" desc="TMS320C64X+_0" description="" id="device_0" isa="TMS320C64XP">
+          <property Type="filepathfield" Value="drivers/tisim_c674x_unsup.xml" id="dataFile"/>
+	      <property Type="filepathfield" Value="/home/ec2-user/ti/ccsv5/ccs_base/simulation/unsup/cp_2011_12/env/ccs/import/tisim_c6xxx_joule.gel" id="GEL File"/>
+          <property Type="stringfield" Value="C6747" id="Device" />
+		  <property Type="stringfield" Value="Cycle Accurate" id="Simulator Type" />
+		  <property Type="stringfield" Value="300" id="CPU Clock(MHz)" />
+	  	  <property Type="stringfield" Value="133" id="EMIF Clock(MHz)" />
+          <property Type="stringfield" Value="Little Endian" id="Endianness"/>
+        </cpu>
+      </platform>
+    </connection>
+  </configuration>
+</configurations>
