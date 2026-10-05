@@ -1500,6 +1500,7 @@ bool foldScaledIndex(std::vector<Line> &v, std::size_t i, const std::set<std::st
         std::vector<std::string> r2, w2;
         readsAndWrites(v[j], r2, w2);
         if (has(w2, I)) iWritten = true;
+        if (has(r2, T) && has(w2, T)) { unfolded.push_back(j); tLive = false; break; }   // reads T, then ends it
         if (has(w2, T)) { tLive = false; break; }                 // T written over: nothing after reads this value
         if (!has(r2, T)) continue;
         const Line &a = v[j];

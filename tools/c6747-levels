@@ -6,7 +6,7 @@
 #
 # Eight builds of each program run at once there (tools/c6747/bench-levels.cmd, each run
 # capped at 30 minutes): cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4) at -O1, -O2 and
-# -O2 -ms3, each with its own linker and rts6740_elf_eh.lib; and cpp11 -O1 and -O2, compiled
+# -O2 -ms3, each with its own linker and rts6740_elf_eh.lib; and cpp11 -O1, -O2 and -Os, compiled
 # here, assembled by ASM6x and linked by 7.4.4 - and, where LNK6x is built beside this tree and
 # the box's 7.4.4 library is in $TILIB, the same objects linked by LNK6x here, `cpp11-O1-lnk6x`
 # and `cpp11-O2-lnk6x`, so cpp11 + ASM6x + LNK6x is timed as one toolchain). The table is
@@ -47,7 +47,7 @@ for p in "$DIR"/*.c "$DIR"/*.cpp; do
     [ -f "$DIR/$n.expected" ] && cp "$DIR/$n.expected" "$WORK/bl/"
     NAMES="$NAMES $n"
     cp "$p" "$WORK/$n.cpp"
-    for L in O1 O2; do
+    for L in O1 O2 Os; do
         if "$CPP11" -arch tms6747 -nologo -$L -S "$WORK/$n.cpp" -o "$WORK/$n.$L.s" > "$WORK/$n.$L.log" 2>&1 &&
            "$ASM6X" $ASM6X_FLAGS "$WORK/$n.$L.s" -o "$WORK/bl/$n.cpp11-$L.obj" >> "$WORK/$n.$L.log" 2>&1; then :
         else echo "c6747-levels: cpp11 -$L did not build $n:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; continue; fi
@@ -110,8 +110,8 @@ for i in range(shnum):
 print(total)
 PY
 }
-BUILDS="744-O1 744-O2 744-ms 822-O1 822-O2 822-ms cpp11-O1 cpp11-O2"
-[ -f "$WORK/bl/$(echo $NAMES | awk '{print $1}').cpp11-O2-lnk6x.out" ] && BUILDS="$BUILDS cpp11-O1-lnk6x cpp11-O2-lnk6x"
+BUILDS="744-O1 744-O2 744-ms 822-O1 822-O2 822-ms cpp11-O1 cpp11-O2 cpp11-Os"
+[ -f "$WORK/bl/$(echo $NAMES | awk '{print $1}').cpp11-O2-lnk6x.out" ] && BUILDS="$BUILDS cpp11-O1-lnk6x cpp11-O2-lnk6x cpp11-Os-lnk6x"
 pass=0; fail=0
 echo
 echo "cycles (cycle.Total, TI's C6747 cycle-accurate simulator, Windows box):"
@@ -132,15 +132,18 @@ for n in $NAMES; do
     printf '   %s\n' "${v:-all expected}"
 done
 echo
-echo "cpp11 over cl6x, cycles at the same level (and cpp11 -O2 over each -O2):"
-printf '%-8s %10s %10s %10s %10s\n' program "O1/744-O1" "O1/822-O1" "O2/744-O2" "O2/822-O2"
+echo "cpp11 over cl6x, cycles at the same level (-Os against -O2 -ms3):"
+printf '%-8s %10s %10s %10s %10s %10s %10s\n' program "O1/744-O1" "O1/822-O1" "O2/744-O2" "O2/822-O2" "Os/744-ms" "Os/822-ms"
 ratio() { case "$1$2" in ""|*[!0-9]*) echo -;; *) echo "scale=2; $1 / $2" | bc;; esac; }
 for n in $NAMES; do
     a=$(field "$WORK/back/$n.cpp11-O1.result" count); b=$(field "$WORK/back/$n.cpp11-O2.result" count)
-    printf '%-8s %10s %10s %10s %10s\n' "$n" "$(ratio "$a" "$(field "$WORK/back/$n.744-O1.result" count)")" \
+    c=$(field "$WORK/back/$n.cpp11-Os.result" count)
+    printf '%-8s %10s %10s %10s %10s %10s %10s\n' "$n" "$(ratio "$a" "$(field "$WORK/back/$n.744-O1.result" count)")" \
         "$(ratio "$a" "$(field "$WORK/back/$n.822-O1.result" count)")" \
         "$(ratio "$b" "$(field "$WORK/back/$n.744-O2.result" count)")" \
-        "$(ratio "$b" "$(field "$WORK/back/$n.822-O2.result" count)")"
+        "$(ratio "$b" "$(field "$WORK/back/$n.822-O2.result" count)")" \
+        "$(ratio "$c" "$(field "$WORK/back/$n.744-ms.result" count)")" \
+        "$(ratio "$c" "$(field "$WORK/back/$n.822-ms.result" count)")"
 done
 echo
 echo "code bytes of the program's own object (executable sections):"
