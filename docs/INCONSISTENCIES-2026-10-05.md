@@ -5,6 +5,34 @@ is not included; none of the items below is in code that branch touches except a
 The findings are those of `docs/O2-REPORT-2026-10-04.md`, "Findings, 04/05-10-2026", C1-C7 and
 T1-T14. This is a report and no source was changed.
 
+## State at the close of 05-10-2026, after the corrections
+
+Added after the fixes; the analysis below is kept as it was written. Two of its diagnoses were
+wrong and are corrected here: **C2 is not ASM6x's** - TI's asm6x 8.2.2 and 7.4.4 write the same
+word for `DPSP` as ASM6x does, and the "02140138" probe had been assembled from other source - and
+cpp11's default branch, called `gcc-scheme` throughout, was renamed `main` that evening.
+
+| # | outcome | where | how it was proved |
+|---|---|---|---|
+| C1 | **fixed** for the C6000: a thrown pointer caught as a pointer is the pointer; VM6747's runtime matches rts6740 | cpp11 `b4c60d1`, VM6747 `55852d0` | `throw-pointer`, `throw-class-pointer-ms` print their `.expected` on both CCS 5.5 simulators; host emissions byte-identical |
+| C1 remainder | **open**: a pointer thrown as a derived class and caught as a pointer to a base at a non-zero offset reaches the handler unadjusted on TI (`1 0` where clang and the emulator print `2 4`) | - | measured on both simulators; no case yet, so the emulator cannot hide it |
+| C2 | **fixed**: `DPSP` has 3 delay slots on the C674x; cpp11's backend and scheduler, c90's backend and VM6747 all said 1 | cpp11 `9a26122`, VM6747 `b7e1484` | `narrowing-allowed` right on both simulators; every SP/DP instruction's delay measured with NOPs 1-9 - only DPSP's was wrong |
+| C3 | TI's runtime formats infinity `+inf` - documented, not ours | - | - |
+| C4 | **not reproduced**: `printf`, `cout`, `endl`, `putchar`, `fputs` all write CRLF on Windows, byte-identical to cl's build of the same program; last night's LF was the harness's capture of Compiler++'s output | - | probe on the Windows box |
+| C5 | **fixed**: the assembly is written in binary mode, byte-identical on every host | cpp11 `1dd4174` | Windows cases 565/0, names vs cl 237/0 |
+| C6 | **fixed**: the Makefile builds in Pakistan time | cpp11 `1dd4174` | the Linux box (UTC) stamps 19:06 PKT |
+| C7 | not a defect | - | - |
+| T1 | **process closed**: releases are built from fresh clones of the default branches (RIDE `packaging/release.sh`, `release.cmd`), and refuse when `verify_seals.py` fails | RIDE-4.7 `8756333` | the check reports today's unsealed changes; the Windows box has no Python, so there it warns |
+| T2 | **fixed**: `lnk6x --version` | LNK6x `342110f` | on the Mac and the Windows box |
+| T3 | open, large: VM6747 has no loop buffer | - | - |
+| T4 | wider than written: the emulator hid a delay-slot error that both compilers shared, not an assembler fault; the per-release check against TI's tools is being built | - | - |
+| T5 | documented: the emulator supplies `argv[0]`, DSS does not | - | - |
+| T6 | **fixed**: vm6747's output in binary mode on Windows | VM6747 `ef123be` | `61-0A-62-0A` on the Windows box, where the old build wrote CRLF |
+| T7-T11 | TI-side or the boxes; documented, workarounds kept | - | - |
+| T12 | done 05-10 (the seals cover source code only) | - | - |
+| T13 | done 05-10 | - | - |
+| T14 | **fixed**: `UsedUserAreasWarning=no`; the per-user areas are deliberate | RIDE-4.7 `8756333` | the box's installer build has no warning |
+
 **How each was checked.** The job had thirty minutes, so: two items were settled by a run
 (C2 by one assembler probe on the Windows box; C1's shape by compiling the case here and reading
 the lowering), nine by reading code or the tree, and the rest are taken from the record and say
