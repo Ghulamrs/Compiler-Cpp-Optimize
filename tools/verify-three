@@ -106,6 +106,10 @@ if [ "$WHICH" = all ] || [ "$WHICH" = c6747 ]; then
         t=$(date +%s); rc=0
         echo "=== c6747 (CCS 7.4 on VM6747, CCS 5.5 simulator on $WINDOWS and $LINUX) ==="
         C6747_AFTER=${LINUXPID:-} "$ROOT/tools/c6747-three" || rc=1
+        # The release check the emulator cannot fool: a sample run on TI's own
+        # C6747 simulator and compared with .expected, where C1 and C2 hid.
+        echo "--- release-check ---"
+        "$ROOT/tools/c6747/release-check" || rc=1
         echo "c6747 leg: $(( $(date +%s) - t ))s, $([ $rc -eq 0 ] && echo passed || echo FAILED)"
         exit $rc
     ) > "$LEGS/c6747.log" 2>&1 &
