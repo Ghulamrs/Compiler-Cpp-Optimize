@@ -25,6 +25,7 @@ public:
     Kind wcharType() const override { return Kind::UShort; }   // 16-bit and unsigned: TI, measured
     bool resumeTakesException() const override { return false; }   // __cxa_end_cleanup(), measured from cl6x
     bool hasGetExceptionPtr() const override { return false; }     // not in rts6740_elf_eh.lib
+    bool beginCatchReturnsObject() const override { return true; } // the object's address for a pointer too, measured on TI's simulator
     int stackAlign() const override { return 8; }
     bool loadsUnaligned() const override { return false; }   // LDW faults; no LDNW is emitted
     bool microsoftNames() const override { return false; }

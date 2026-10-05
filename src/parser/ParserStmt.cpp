@@ -1409,10 +1409,17 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     copyBlock->setUnwindCleanup();
                     steps.push_back(StmtPtr(copyBlock));
                 } else if (caught->unqualified()->isPointer()) {
-                    // **A pointer caught is the pointer __cxa_begin_catch
-                    // hands back**, converted to the handler's type: the
-                    // runtimes return the value, not the object's address.
-                    ExprPtr from(new Cast(caught, std::move(fromPtr)));
+                    // **A pointer caught is the pointer __cxa_begin_catch hands back** on the Itanium
+                    // runtimes - the value, adjusted to the base; TI's returns the exception object's
+                    // address, where the adjusted value lies, so there it is read once more (C1).
+                    ExprPtr from;
+                    if (target_.beginCatchReturnsObject()) {
+                        ExprPtr asObj(new Cast(types_.pointerTo(caught), std::move(fromPtr)));
+                        asObj->setType(types_.pointerTo(caught));
+                        from.reset(new Unary('*', std::move(asObj)));
+                    } else {
+                        from.reset(new Cast(caught, std::move(fromPtr)));
+                    }
                     from->setType(caught);
                     ExprPtr to(Var::local(caughtName, slot));
                     to->setType(caught);

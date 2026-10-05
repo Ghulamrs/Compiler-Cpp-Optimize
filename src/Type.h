@@ -529,6 +529,8 @@ public:
     virtual bool resumeTakesException() const { return true; }
     // **Whether `__cxa_get_exception_ptr` exists** - TI's runtime copies from what `__cxa_begin_catch` returns.
     virtual bool hasGetExceptionPtr() const { return true; }
+    // **What `__cxa_begin_catch` returns for a thrown pointer**: the pointer's value on the hosts, the exception object's address on TI's runtime.
+    virtual bool beginCatchReturnsObject() const { return false; }
 
     virtual const char *name() const = 0;
 };
