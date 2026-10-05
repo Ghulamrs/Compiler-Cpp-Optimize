@@ -4,9 +4,12 @@
 // not A's, and the adjustment is the base's offset. `struct D : A, B` thrown
 // as `D *`, caught as `B *`, with `A *`, `D *`, `const B *` and a null beside it.
 extern "C" int printf(const char *, ...);
-struct A { int a; A(int v) : a(v) {} };
-struct B { int b; B(int v) : b(v) {} };
-struct D : A, B { int d; D(int v) : A(v), B(v + 1), d(v + 2) {} };
+struct A { int a; A(int v); };
+struct B { int b; B(int v); };
+struct D : A, B { int d; D(int v); };
+A::A(int v) : a(v) {}                 // out of line: inline, clang emits C2 alone on
+B::B(int v) : b(v) {}                 // x86_64-linux and names.sh reports emission
+D::D(int v) : A(v), B(v + 1), d(v + 2) {}
 static D dobj(1);
 int asB() {
     try { throw &dobj; }
