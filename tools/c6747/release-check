@@ -40,6 +40,9 @@ T0=$(date +%s)
 # The sample: name | source | expected. Chosen to cover the two defects and the
 # instruction forms a delay-slot or encoding error would show -
 #   throw-pointer, throw-class-pointer-ms  the two C1 cases (pointer catch, EH)
+#   throw-pointer-base-adjust              C1b: a pointer caught as a base at an offset, held
+#                                          against TI's MEASURED answer - rts6740 does not
+#                                          adjust it (docs/CONFORMANCE.md) - not clang's
 #   narrowing-allowed                      the C2 case: DPSP/DPINT/INTDP/INTSP
 #   runtime-shapes                         double arithmetic: SUBDP, MPYDP, the DP compares
 #   float-literal-exact                    SP and DP compares (CMPGTSP, CMPGTDP)
@@ -49,6 +52,7 @@ T0=$(date +%s)
 SAMPLE="
 throw-pointer|tests/cases/throw-pointer.cpp|tests/cases/throw-pointer.expected
 throw-class-pointer-ms|tests/cases/throw-class-pointer-ms.cpp|tests/cases/throw-class-pointer-ms.expected
+throw-pointer-base-adjust|tests/cases/throw-pointer-base-adjust.cpp|tools/c6747/programs/throw-pointer-base-adjust.ti.expected
 narrowing-allowed|tests/cases/narrowing-allowed.cpp|tests/cases/narrowing-allowed.expected
 runtime-shapes|tests/cases/runtime-shapes.cpp|tests/cases/runtime-shapes.expected
 float-literal-exact|tests/cases/float-literal-exact.cpp|tests/cases/float-literal-exact.expected

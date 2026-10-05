@@ -618,3 +618,21 @@ slots of the frame for the pad to pass them again. clang emits `_ZdlPvid`
 there. Nor are the elements of a `new T[n]` built before the element whose
 constructor threw destroyed: the storage is freed and the built elements
 are not, where clang's `__cxa_vec_new` destroys them last first.
+
+## On tms6747 a thrown pointer caught as a pointer to a base at an offset is not adjusted
+
+[except.handle]/3 with [conv.ptr]/3: `struct D : A, B` thrown as `D *` and
+caught as `B *` hands the handler a pointer to the B subobject, four bytes
+on. TI's rts6740 matches the handler - the public base is found - and hands
+the pointer over unadjusted, so `p->b` reads A's member. Measured 2026-10-05
+on TI's CCS 5.5 C6747 cycle-accurate simulator with cl6x 7.4.4's *own* build
+of `tests/cases/throw-pointer-base-adjust.cpp`: `B* 1 0` where clang prints
+`B* 2 4`; cpp11+ASM6x's build prints the same `B* 1 0`, and cl6x's `_ZTI1D`
+is word for word cpp11's (`__vmi_class_type_info`, flags 0, two bases, A at
+`2`, B at `1026`), so nothing in the type_info is ours to mend. A base at
+offset 0 (`A *`, `D *`) and a null are right. cpp11 cannot refuse it: the
+thrown type is dynamic and a `catch (B *)` is ordinary. VM6747's runtime does
+what rts6740 does (VM6747 fix-c1b), so the case carries a `.notarget` for
+this target and `tools/c6747/release-check` holds TI's measured answer
+(`tools/c6747/programs/throw-pointer-base-adjust.ti.expected`), which will
+say so if either runtime ever changes.
