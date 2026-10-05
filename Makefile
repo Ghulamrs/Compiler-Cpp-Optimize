@@ -42,6 +42,9 @@ endif
 INCDIR   = $(CURDIR)/lib
 # The C++ headers, which wrap the C ones above rather than replacing them.
 CXXINCDIR = $(CURDIR)/include
+# "Built ... PST" is __DATE__ and __TIME__, which are the build host's local time: Pakistan's,
+# whichever host builds - the Linux box keeps UTC, and its stamps were five hours early (C6).
+export TZ := Asia/Karachi
 # -pthread and not -lpthread: it sets the flags std::thread needs at compile
 # time as well as naming the library, and getting only the library gives a
 # binary that links and then misbehaves when it runs its threads.

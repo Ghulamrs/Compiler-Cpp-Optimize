@@ -1101,7 +1101,8 @@ bool Driver::compile(const Job &job) {
         gen->setOptimizeForSize(forSize_ && level > 0);
         gen->run(program);
     } else {
-        std::ofstream file(job.output);
+        // Binary, so the assembly is byte-identical on every host: text mode wrote CRLF on Windows (C5).
+        std::ofstream file(job.output, std::ios::binary);
         if (!file) {
             std::fprintf(stderr, "%s: cannot write %s\n", program_.c_str(),
                          job.output.c_str());
