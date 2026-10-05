@@ -5,6 +5,7 @@
 #include "C6xSched.h"
 #include "C6xModel.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
