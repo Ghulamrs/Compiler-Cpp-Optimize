@@ -87,6 +87,51 @@ So the number is not 379/424, which is what this file used to be quoted at in
 CLAUDE.md with nothing left in the tree able to reproduce it. The runners that
 produced it were deleted with the fork.
 
+What the split is on 2026-10-01, case by case
+----------------------------------------------
+
+    365 ran and agreed, 58 refused, 1 wrong, of 424
+
+The same three numbers, and this time every one of the 59 was asked of
+`clang++ -x c++ -std=c++11 -pedantic-errors`, compiled, linked and run. The
+2026-09-02 buckets above add up to 53, not 59; this list is complete. **None
+is a fault of cpp11**:
+
+| class | cases | clang |
+| --- | --- | --- |
+| invalid C++11: a string literal given to a `char *` | 44 | refuses |
+| invalid C++11: `, ## __VA_ARGS__`, a GNU extension | 1 | refuses |
+| a libc function declared without `extern "C"`, so its name is mangled | 13 | compiles, then fails to link |
+| `pp_predefined`, which expects `__linux__` and `__x86_64__` | 1 | exits 3 on this Mac, as cpp11 does |
+
+String literal (44):
+  assign_types, bf_compound, bf_full_width, bf_mixed_members, bf_neighbours,
+  bf_sizes, bf_straddle, bf_truncates, bf_types, bf_union, bf_unnamed,
+  ce_sizeof_relations, cm_mixed, cm_not_in_arguments, cond_as_argument,
+  cond_char_pointer, cond_usual_conversions, fm_side_effect_twice,
+  fm_stringify, fp_printf, fp_printf_deep, fp_printf_many, fp_printf_mixed,
+  out_switch, pd_abstract_declarators, pd_malloc_block, pp_line_and_file,
+  pp_macro_not_in_literals, qs_const_in_expressions, qs_static_in_loop,
+  qs_static_scope, qs_static_two_functions, st_adjacent, st_index, st_puts,
+  st_terminator, st_walk, toolkit, up_libc, up_pointers_and_arrays, va_basic,
+  va_expanded, va_only, va_stringify
+
+GNU comma (1): va_empty_swallows_comma - cpp11 refuses it a step later, at the
+string literal the same line passes to `printf(char *fmt, ...)`.
+
+Link (13):
+  fp_nan_ordering, lg_shortcircuit_and, lg_shortcircuit_nested,
+  lg_shortcircuit_or, lg_shortcircuit_runs, out_digits, out_factorial,
+  out_fizzbuzz, out_hello, out_triangle, pd_matrix_through_function,
+  st_escape, vd_forward
+
+`pp_include` was refused until 2026-10-01 for a reason of the runner's: the
+driver turns a `.c` away by name, so corpus.sh compiled nothing at all until it
+copied each case to `.cpp`, and the copy then lost the directory its
+`#include "..."` reads from - `-Itests/c-corpus` puts it back, and the case
+agrees. `tests/out-corpus/FAILING` also records the first line past cpp11's
+banner now, where it recorded the banner.
+
 Asking clang about one of them
 ------------------------------
 

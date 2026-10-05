@@ -195,6 +195,7 @@ void Parser::topLevel(Program &program) {
     blockStack_.push_back(0);
     enterScope();
     frameSize_ = 0;
+    freeSlots_.clear();
     Declared d = declarator(base);
 
     // **A `constexpr` function was refused by name until 7.5b**: accepting it as an

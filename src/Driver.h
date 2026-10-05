@@ -30,6 +30,7 @@ private:
     bool assemblyOnly_ = false;
     bool debug_ = false;
     int optimize_ = 0;
+    bool forSize_ = false;      // -Os: -O1, the smaller code chosen where a backend offers the choice
     bool objectOnly_ = false;
     unsigned threads_ = 0;
     // **Which assembler the Windows target is written for.**

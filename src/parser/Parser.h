@@ -46,11 +46,14 @@ private:
         bool isParameter = false;
         // A by-value class parameter that arrived by address is lowered to a reference, so by its slot alone it looks like `T &t`.
         bool byValueByAddress = false;
-        // **[stmt.dcl]/3: a jump may not enter this object's scope.** Set for an
-        // automatic object with an initialiser, a constructor or a destructor - the
-        // three things a jump landing past its declaration would skip.
+        // **[stmt.dcl]/3: a jump may not enter this object's scope** - set for an automatic object with an initialiser, a constructor or a destructor, the three things a jump landing past its declaration would skip.
         bool guardsJump = false;
+        // Which object this is: two locals of one function may share a frame slot once the first's scope has closed.
+        int serial = 0;
     };
+
+    // A frame slot a closed scope gave back, for a later local of exactly that stored type: `FreeSlot`, in `freeSlots_`.
+    struct FreeSlot { const Type *stored; int offset; int align; };
 
     struct GlobalSym {
         std::string name;
@@ -924,6 +927,8 @@ private:
 
     bool atFunctionBody_ = false;
     int frameSize_ = 0;
+    std::vector<FreeSlot> freeSlots_;    // slots closed scopes gave back - see leaveScope
+    int localSerial_ = 0;
     const Type *returnType_ = nullptr;
     // Set while a lambda's body is read to find its return type: a `return`
     // writes the type of its operand here, the first one deciding, and is
@@ -962,10 +967,10 @@ private:
         long long count = 0;   // an array of this many `cls`, destroyed last first; 0 for one object
     };
 
-    // One automatic object a jump may not land past - see Local::guardsJump. The frame
-    // slot is the identity, since no two objects of one function share one and a name
-    // can be declared again in an inner block; the name is for the message.
-    struct JumpGuard { std::string name; int offset; };
+    // One automatic object a jump may not land past - see Local::guardsJump. Its serial is
+    // the identity - a slot may be shared by two objects whose scopes do not overlap, and
+    // a name can be declared again in an inner block; the name is for the message.
+    struct JumpGuard { std::string name; int serial; };
     std::vector<JumpGuard> jumpGuards() const;
     void checkJump(const std::vector<JumpGuard> &from,
                    const std::vector<JumpGuard> &to, std::size_t pos,
@@ -1184,6 +1189,8 @@ private:
         std::vector<int> blocks, blockStack;
         std::vector<LabelDef> labels, gotos;
         int frameSize = 0, thisOffset = 0;
+        std::vector<FreeSlot> freeSlots;
+        int localSerial = 0;
         const Type *currentClass = nullptr;
         const Type *returnType = nullptr;
         const Type **deducingReturn = nullptr;
@@ -1549,6 +1556,10 @@ private:
     int declare(const std::string &name, const Type *type, std::size_t pos,
                 int alignAtLeast = 0);
     int allocateFrameSlot(const Type *type, int alignAtLeast = 0);
+    // A synthesised function's own frame, opened mid-function: size 0 and no free slot, the caller's put back by closeFrame.
+    struct FrameSave { int size; std::vector<FreeSlot> free; };
+    FrameSave openFrame();
+    void closeFrame(const FrameSave &saved);
     int alignasSpecifier();
     void refuseWeakAlignas(int asked, const Type *t, std::size_t pos);
     void declareStaticLocal(const std::string &name, const Type *type,

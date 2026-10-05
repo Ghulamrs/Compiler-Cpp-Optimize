@@ -478,7 +478,7 @@ static bool backendSkipped(const char *what) {
 }
 std::string Tms6747::earlyExit(const Function &fn) {
     const Block *blk = dynamic_cast<const Block *>(&fn.body());
-    if (optimize_ <= 0 || backendSkipped("early") || fn.isVariadic() || sretSlot_ != 0 || fn.params().size() > 6 || blk == nullptr || blk->body().empty()) return std::string();
+    if (optimize_ <= 0 || forSize_ || backendSkipped("early") || fn.isVariadic() || sretSlot_ != 0 || fn.params().size() > 6 || blk == nullptr || blk->body().empty()) return std::string();
     if (fn.returns()->isFloating() || fn.returns()->isStructOrUnion() || isWide(fn.returns()) || inPair(fn.returns())) return std::string();
     const Expr *cond = nullptr, *value = nullptr;
     const Stmt &first = *blk->body()[0];
@@ -493,7 +493,9 @@ std::string Tms6747::earlyExit(const Function &fn) {
     // Every parameter is copied to A16-A21 first: the walker's scratch registers include A6 and A8, where
     // the third and fifth arrive. The copies come back where the test fails; the unread ones are dropped.
     std::map<int, std::string> saved = regOf_;
+    std::map<std::string, std::string> savedGlobals = globalReg_;   // filled by the prologue, which this runs ahead of
     regOf_.clear();
+    globalReg_.clear();
     const std::size_t seq = pushSeq_;
     pushSeq_ = 1u << 20;                                   // any push goes to the stack, below B15
     std::ostringstream keep;
@@ -515,6 +517,7 @@ std::string Tms6747::earlyExit(const Function &fn) {
     keep.swap(out_);
     pushSeq_ = seq;
     regOf_ = saved;
+    globalReg_ = savedGlobals;
     return text;
 }
 
@@ -639,7 +642,11 @@ void Tms6747::genAddr(const Expr &e) {
             localAddr(v->offset(), "A4", t ? t->size(target_) : 4, t ? t->align(target_) : 4);
             return;
         }
-        movSym("A4", v->symbol());  // a global, or a function
+        // A global, or a function: its address goes through the register the planner gave it, if any.
+        if (planning_) globalUses_[v->symbol()] += 2 << (loopDepth_ > 4 ? 12 : 3 * loopDepth_);
+        const std::map<std::string, std::string>::const_iterator g = globalReg_.find(v->symbol());
+        if (g != globalReg_.end()) out_ << "\tMV\t" << g->second << ", A4\n";
+        else movSym("A4", v->symbol());
         return;
     }
     if (const StrLit *s = dynamic_cast<const StrLit *>(&e)) {
@@ -966,15 +973,24 @@ void Tms6747::planRegisters(const Function &fn) {
             seq++;
         }
     }
-    std::vector<std::pair<int, int> > order;                 // (-uses, offset; -1 - level for a push slot)
+    // A global's address formed twice or more is a candidate too - MVKL/MVKH per use against one pair in the prologue and a copy the scheduler folds into the access - weighted at two words a use, above.
+    // At -O1 only: -O2's loop passes hoist the pair themselves, and a callee-saved register taken here is one the pipeliner cannot rename into - matmul's inner loop lost its schedule, 158 k to 352 k cycles.
+    std::vector<std::string> globals;
+    if (optimize_ == 1)
+        for (std::map<std::string, int>::const_iterator it = globalUses_.begin(); it != globalUses_.end(); ++it)
+            if (it->second >= 4) globals.push_back(it->first);
+    std::vector<std::pair<int, int> > order;   // (-uses, key): a slot's offset, -1 - level for a push, -1000 - i for a global
     for (std::map<int, Slot>::const_iterator it = slots_.begin(); it != slots_.end(); ++it)
         if (!it->second.addressed && it->second.uses >= 2) order.push_back(std::make_pair(-it->second.uses, it->first));
     for (std::size_t d = 0; d < demand.size(); d++) order.push_back(std::make_pair(-demand[d].uses, -1 - static_cast<int>(d)));
+    for (std::size_t g = 0; g < globals.size(); g++) order.push_back(std::make_pair(-globalUses_[globals[g]], -1000 - static_cast<int>(g)));
     std::sort(order.begin(), order.end());
     spillPool_.clear();
+    globalReg_.clear();
+    const Slot narrow;
     for (std::size_t k = 0; k < order.size(); k++) {
-        const bool pushSlot = order[k].second < 0;
-        const Slot &s = pushSlot ? demand[static_cast<std::size_t>(-1 - order[k].second)] : slots_[order[k].second];
+        const bool globalSlot = order[k].second <= -1000, pushSlot = !globalSlot && order[k].second < 0;
+        const Slot &s = globalSlot ? narrow : pushSlot ? demand[static_cast<std::size_t>(-1 - order[k].second)] : slots_[order[k].second];
         for (std::size_t q = 0; q < 8; q++) {
             const char *r = kRegs[q];
             if (!free[r]) continue;
@@ -984,7 +1000,8 @@ void Tms6747::planRegisters(const Function &fn) {
             if (pushSlot) { spillPool_.push_back(r); if (s.wide) { free[hi] = false; spillPool_.push_back(hi); } break; }
             promoted_.push_back(r);
             if (s.wide) { free[hi] = false; promoted_.push_back(hi); }
-            regOf_[order[k].second] = r;
+            if (globalSlot) globalReg_[globals[static_cast<std::size_t>(-1000 - order[k].second)]] = r;
+            else regOf_[order[k].second] = r;
             break;
         }
     }
@@ -1279,6 +1296,9 @@ bool Tms6747::constDivisor(const Binary &n, long long &d) const {
     unsigned u;
     if (!low32(n.rhs(), target_, u)) return false;
     d = ot->isSigned(target_) ? static_cast<long long>(static_cast<int>(u)) : static_cast<long long>(u);
+    // -Os keeps the helper call for anything but a power of two - nine words of magic multiply against three, cl6x -ms3's trade too - in a function that calls anyway: in one that does not, the call would cost the frame, B3 and the callee-saved set.
+    const unsigned long long a = d < 0 ? 0ull - static_cast<unsigned long long>(d) : static_cast<unsigned long long>(d);
+    if (forSize_ && planHasCall_ && !planning_ && (a & (a - 1)) != 0) return false;
     return d != 0;
 }
 
@@ -1719,6 +1739,7 @@ void Tms6747::genArg(const Call &n, std::size_t i) {
     else n.args()[i]->accept(*this);
 }
 
+void Tms6747::setOptimizeForSize(bool size) { forSize_ = size; }
 void Tms6747::setOptimize(int level) {
     optimize_ = level;
     if (level <= 0 || costs_) return;
@@ -2133,18 +2154,22 @@ void Tms6747::emitFunction(const Function &fn) {
     // walked once to learn the locals, the text dropped, and again with the chosen ones in registers.
     slots_.clear();
     regOf_.clear();
+    globalUses_.clear();
+    globalReg_.clear();
     promoted_.clear();
     spillPool_.clear();
     spillUsed_.clear();
     pushCrossesCall_.clear();
     pushEvents_.clear();
     leaf_ = false;
+    planHasCall_ = false;
     paramInFrame_ = false;
     relayout_ = false;
     saveBytes_ = kSaveBytes;
     if (optimize_ > 0) {
         planning_ = true;
         walkBody(fn);
+        planHasCall_ = hasCall_;
         planParams(fn);
         planLocals(fn);
         planning_ = false;
@@ -2206,6 +2231,9 @@ void Tms6747::emitFunction(const Function &fn) {
         }
         spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
     }
+    // The globals the planner gave a register: their addresses formed once, here, for the whole body.
+    for (std::map<std::string, std::string>::const_iterator g = globalReg_.begin(); g != globalReg_.end(); ++g)
+        movSym(g->second.c_str(), g->first);
 
     pro.swap(out_);
     // The prologue holds no padding, and the frame is decided after the body.
@@ -2223,14 +2251,18 @@ void Tms6747::emitFunction(const Function &fn) {
     // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
     if (optimize_ > 0 && !backendSkipped("pro")) out_ << c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_);
     else out_ << pro.str() << c6xSchedule(early + params + body + epi.str(), optimize_);
-    // TI's index entry for every function - any return address on the stack
-    // - naming the table when there are handlers, holding the word itself
-    // when there are none.
+    // TI's index entry for a function an exception can pass through - one that calls, so saves B3 - naming the table
+    // when there are handlers, holding the word itself when there are none. A function that calls nothing gets no
+    // entry, as cl6x gives none: the linker covers the run it sits in with one EXIDX_CANTUNWIND.
     emitExceptionTable(fn);
     char word[16];
     std::snprintf(word, sizeof word, "0x%08x", unwindWord(needFrame));
-    out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
-         << (callSites().empty() && !fn.isNoexcept() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
+    bool calls = !callSites().empty() || fn.isNoexcept();
+    for (const std::string &r : savedRegs()) if (r == "B3") calls = true;
+    if (calls) anyExidx_ = true;
+    if (calls)
+        out_ << "\t.sect\t\".c6xabi.exidx:.text\"\n\t.align\t4\n\t.ulong\t$EXIDX_FUNC(" << fn.symbol() << ")\n\t.ulong\t"
+             << (callSites().empty() && !fn.isNoexcept() ? std::string(word) : "$EXIDX_EXTAB(\"__c6xabi_extab$" + fn.symbol() + "\")") << "\n\t.text\n";
 
     file_ += out_.str();
     out_.str(std::string());
@@ -2253,7 +2285,7 @@ void Tms6747::run(const Program &program) {
     }
     // The personality routine the index entries name by number, which the
     // linker cannot otherwise see them need.
-    if (!program.functions.empty())
+    if (anyExidx_)
         file_ += "\t.global\t__c6xabi_unwind_cpp_pr3\n\t.symdepend\t\"__c6xabi_unwind_cpp_pr3\", \".c6xabi.exidx:.text\"\n";
     if (needsPr2_) file_ += "\t.global\t__c6xabi_unwind_cpp_pr2\n";
     if (needsUnexpected_) file_ += "\t.global\t__cxa_call_unexpected\n";

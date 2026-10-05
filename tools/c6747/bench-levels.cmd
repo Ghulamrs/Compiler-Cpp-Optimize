@@ -3,7 +3,7 @@ rem bench-levels.cmd - the kernels on the Windows box against both CCS toolchain
 rem every run at once on the C6747 cycle-accurate simulator, each stopped at 30 minutes.
 rem For each <prog>.c or .cpp here: cl6x 7.4.4 (CCS 5.5) and cl6x 8.2.2 (CCS 7.4) at -O1, -O2 and
 rem -O2 -ms3, each linked by its own linker against its own rts6740_elf_eh.lib; and cpp11's
-rem <prog>.cpp11-O1.obj and <prog>.cpp11-O2.obj, linked by 7.4.4; and any image shipped here
+rem <prog>.cpp11-O1.obj, -O2.obj and -Os.obj, linked by 7.4.4; and any image shipped here
 rem already, <prog>.cpp11-<level>-lnk6x.out - the same object linked by LNK6x on the Mac. The
 rem objects stay in obj\ for the size table. Writes <prog>.<build>.result and .stdout; MAXRUNS caps the sessions at once,
 rem RESUME=1 runs only what has no result yet, and bench-levels.done says the whole set is in.
@@ -32,7 +32,7 @@ for %%f in (*.c *.cpp) do (
   call :ti 74 822-O1 -O1 "%%f"
   call :ti 74 822-O2 -O2 "%%f"
   call :ti 74 822-ms "-O2 -ms3" "%%f"
-  for %%l in (O1 O2) do if exist !N!.cpp11-%%l.obj (
+  for %%l in (O1 O2 Os) do if exist !N!.cpp11-%%l.obj (
     "%CG55%\bin\cl6x" -mv6740 --abi=eabi !N!.cpp11-%%l.obj %LINK55% -m !N!.cpp11-%%l.map -o !N!.cpp11-%%l.out > !N!.cpp11-%%l.build.log 2>&1
   )
 )
