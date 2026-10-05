@@ -1,0 +1,2 @@
+x86_64-linux  clang zeroes `Colour arr[3] = {}` with a call to memset where cxx1 writes the elements out, which is the answer a compiler that ships no runtime has to give - the same difference const-uninitialised-ok.nonames records; every other name agrees
+x86_64-windows  the same memset, called by clang and not by cxx1

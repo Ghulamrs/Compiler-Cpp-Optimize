@@ -1,7 +1,7 @@
 // What the refusal of `char s[3] = "abc"` must leave alone: an array exactly
 // one longer than the string, one with its length taken from the string, one
 // longer still (zero-filled), and each of those at file scope and as a member.
-#include <stdio.h>
+extern "C" int printf(const char *, ...);
 
 struct Name { char text[4]; int n; };
 char g1[4] = "abc";
