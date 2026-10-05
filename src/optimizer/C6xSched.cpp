@@ -34,9 +34,9 @@ int delaySlots(const std::string &m) {
     if (m == "ADDDP" || m == "SUBDP") return 6;
     if (m == "INTDP" || m == "INTDPU") return 4;
     if (startsWith(m, "CMP") && (endsWith(m, "DP") || endsWith(m, "SP"))) return 1;
-    if (m == "SPDP" || m == "DPSP") return 1;
+    if (m == "SPDP") return 1;
     if (m == "MPYSP" || m == "ADDSP" || m == "SUBSP") return 3;
-    if (m == "INTSP" || m == "INTSPU" || m == "SPTRUNC" || m == "DPTRUNC" || m == "SPINT" || m == "DPINT") return 3;
+    if (m == "INTSP" || m == "INTSPU" || m == "SPTRUNC" || m == "DPTRUNC" || m == "SPINT" || m == "DPINT" || m == "DPSP") return 3;
     if (startsWith(m, "MPY")) return 3;
     if (endsWith(m, "DP")) return 9;
     if (endsWith(m, "SP")) return 3;

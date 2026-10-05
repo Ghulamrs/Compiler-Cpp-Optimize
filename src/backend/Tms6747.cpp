@@ -1833,7 +1833,7 @@ void Tms6747::visit(const Cast &n) {
     if (fromF && toF) {
         // float <-> double; long double is double here.
         bool fromD = isDouble(from), toD = isDouble(to);
-        if (fromD && !toD) out_ << "\tDPSP\tA5:A4, A4\n\tNOP\t1\n";
+        if (fromD && !toD) out_ << "\tDPSP\tA5:A4, A4\n\tNOP\t3\n";   // 3 on the C674x, measured on TI's simulator; the C67x's 1 is a silent 0
         if (!fromD && toD) out_ << "\tSPDP\tA4, A5:A4\n\tNOP\t1\n";
         return;
     }

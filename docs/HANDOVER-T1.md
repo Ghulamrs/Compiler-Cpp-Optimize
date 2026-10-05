@@ -15,7 +15,7 @@ is a barrier, and a label needs no wait - a jump arrives with nothing in
 flight, and the fall-through path is scheduled as the sequence it is. The
 latencies are the emulator's, taken from the -O0 backend's own NOP counts:
 LD* 4, MPY* 3, MPYSP/ADDSP/SUBSP 3, ADDDP/SUBDP 6, MPYDP 9, INTSP 3, INTDP 4,
-SPTRUNC/DPTRUNC 3, the FP compares and SPDP/DPSP 1, B 5.
+SPTRUNC/DPTRUNC/DPSP 3, the FP compares and SPDP 1, B 5 (DPSP was 1 here until 2026-10-05: the C674x has 3, measured on TI's simulator).
 
 **The passes**, in order: `MVKL v; MVKH v` of a constant in sixteen signed
 bits becomes `MVK v`; a local's address built and used once becomes
