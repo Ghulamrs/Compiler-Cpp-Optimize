@@ -2123,14 +2123,9 @@ std::string foldBranchNops(const std::string &text, bool near) {
         bool member = startsWith(lines[i], "||");
         Line l = parse(member ? lines[i].substr(2) : lines[i]);
         if (!l.instr || l.mnem != "B" || l.ops.size() != 1) continue;
-        if (sideOf(l.ops[0]) ? sideOf(l.ops[0]) != 'B' : !near) continue;
+        if (sideOf(l.ops[0]) && sideOf(l.ops[0]) != 'B') continue;
         std::size_t j = i + 1;
         while (j < lines.size() && startsWith(lines[j], "||")) j++;
-        if (j >= lines.size()) continue;
-        Line nop = parse(lines[j]);
-        if (!nop.instr || nop.mnem != "NOP" || nop.ops.size() != 1 || !nop.pred.empty()) continue;
-        int n = std::atoi(nop.ops[0].c_str()), k = std::min(n, 5);
-        if (k <= 0) continue;
         // The side is named: an unnamed BNOP asks for .S1 first where B asks for .S2, and an
         // assembler moves one instruction at most to make room. .S2 where the packet allows it.
         std::string unit = ".S2";
@@ -2145,7 +2140,15 @@ std::string foldBranchNops(const std::string &text, bool near) {
             bool taken[2][4] = { { false, false, false, false }, { false, false, false, false } };
             if (!assignUnits(members, 0, taken)) unit = ".S1";
         }
-        std::string raw = "\t" + (l.pred.empty() ? std::string() : "[" + l.pred + "]\t") + "BNOP\t" + unit + "\t" + l.ops[0] + ", " + std::to_string(k);
+        const std::string pred = l.pred.empty() ? std::string() : "[" + l.pred + "]\t";
+        Line nop = j < lines.size() ? parse(lines[j]) : Line();
+        const int n = nop.instr && nop.mnem == "NOP" && nop.ops.size() == 1 && nop.pred.empty() ? std::atoi(nop.ops[0].c_str()) : 0, k = std::min(n, 5);
+        if (k <= 0 || (!sideOf(l.ops[0]) && !near)) {
+            // No NOP to fold, or past BNOP's reach: a label branch sharing its packet still takes the side the packet leaves it.
+            if (!sideOf(l.ops[0]) && (member || (i + 1 < lines.size() && startsWith(lines[i + 1], "||")))) lines[i] = (member ? "||" : "") + ("\t" + pred + "B\t" + unit + "\t" + l.ops[0]);
+            continue;
+        }
+        std::string raw = "\t" + pred + "BNOP\t" + unit + "\t" + l.ops[0] + ", " + std::to_string(k);
         lines[i] = (member ? "||" : "") + raw;
         if (n > k) lines[j] = "\tNOP\t" + std::to_string(n - k);
         else lines.erase(lines.begin() + static_cast<long>(j));
