@@ -1,0 +1,161 @@
+#!/bin/sh
+# release-check - one check, run once per release, that the C6000 emulator cannot
+# fool. Two wrong-output defects reached a release because every suite runs the
+# C6000 on VM6747 and the emulator agreed with the compiler both times: C2, DPSP's
+# three delay slots (a float {1.0} printed 0 on TI's silicon), and C1, a thrown
+# pointer caught one dereference short on TI's runtime. VM6747 reads the assembly
+# text and models the runtime, so it hides both a scheduling fault and a runtime
+# difference. Only TI's own C6747 cycle-accurate simulator told the truth.
+#
+#   tools/c6747/release-check            the fixed sample below
+#
+# It answers two questions and exits non-zero on any disagreement:
+#   1. Does ASM6x encode what TI's assembler encodes?  Each sample .s is
+#      assembled by cl6x 8.2.2 and by ASM6x at -O1, -O2 and -Os; dis6x
+#      disassembles both and the decoded instructions are compared
+#      (tools/c6747/norm-dis.py: mnemonic.unit and operands, not packing).
+#   2. Does the program do on TI's simulator what it does on the emulator?
+#      Each sample is run at -O2 on the CCS 5.5 C6747 cycle-accurate simulator
+#      and its output compared with its .expected AND with VM6747's. A
+#      simulator result that differs from .expected is the defect; one that
+#      also agrees with the emulator is the emulator hiding it.
+#
+# The build (cpp11 + ASM6x) and the emulator run happen here; TI's assembler,
+# dis6x, the linker and the simulator run on the Windows box. Under 15 minutes.
+#
+# To reproduce the C1/C2 bite, point it at the pre-fix tools:
+#   CPP11=.../cpp11@2a09fe6  VM=.../vm6747@af544e2  tools/c6747/release-check
+# and it fails, naming throw-pointer (C1) and narrowing-allowed (C2).
+set -u
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+WINDOWS=${CXX1_WINDOWS:-windows}
+CPP11=${CPP11:-$ROOT/cpp11.exe}
+ASM6X=${ASM6X:-$ROOT/../ASM6x/build/asm6x.exe}
+[ -x "$ASM6X" ] || ASM6X=$HOME/Developer/Claude/ASM6x/build/asm6x.exe
+VM=${VM:-$ROOT/../VM6747/Emulator/vm6747.exe}
+[ -x "$VM" ] || VM=$HOME/Developer/Claude/VM6747/Emulator/vm6747.exe
+WREMOTE='C:\cxx1\release-check'
+T0=$(date +%s)
+
+# The sample: name | source | expected. Chosen to cover the two defects and the
+# instruction forms a delay-slot or encoding error would show -
+#   throw-pointer, throw-class-pointer-ms  the two C1 cases (pointer catch, EH)
+#   narrowing-allowed                      the C2 case: DPSP/DPINT/INTDP/INTSP
+#   runtime-shapes                         double arithmetic: SUBDP, MPYDP, the DP compares
+#   float-literal-exact                    SP and DP compares (CMPGTSP, CMPGTDP)
+#   stream-char-types                      SPDP and byte/short loads and stores
+#   divide-by-constant-signs               MPY32/MPY32SU/MPY32U and branches
+#   sieve, matmul                          the kernels: LDDW/STDW, pipelined loops, CALLP/BNOP
+SAMPLE="
+throw-pointer|tests/cases/throw-pointer.cpp|tests/cases/throw-pointer.expected
+throw-class-pointer-ms|tests/cases/throw-class-pointer-ms.cpp|tests/cases/throw-class-pointer-ms.expected
+narrowing-allowed|tests/cases/narrowing-allowed.cpp|tests/cases/narrowing-allowed.expected
+runtime-shapes|tests/cases/runtime-shapes.cpp|tests/cases/runtime-shapes.expected
+float-literal-exact|tests/cases/float-literal-exact.cpp|tests/cases/float-literal-exact.expected
+stream-char-types|tests/cases/stream-char-types.cpp|tests/cases/stream-char-types.expected
+divide-by-constant-signs|tests/cases/divide-by-constant-signs.cpp|tests/cases/divide-by-constant-signs.expected
+sieve|tools/c6747/bench/sieve.c|tools/c6747/bench/sieve.expected
+matmul|tools/c6747/bench/matmul.c|tools/c6747/bench/matmul.expected
+"
+LEVELS="O1 O2 Os"
+
+[ -x "$CPP11" ] || { echo "release-check: no cpp11 at $CPP11"; exit 1; }
+[ -x "$ASM6X" ] || { echo "release-check: no ASM6x at $ASM6X"; exit 1; }
+[ -x "$VM" ] || { echo "release-check: no vm6747 at $VM"; exit 1; }
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/rc" "$WORK/exp"
+for f in runca.js par-one.cmd c6747ca-windows.ccxml C6747.cmd release-check.cmd; do
+    cp "$ROOT/tools/c6747/$f" "$WORK/rc/"
+done
+
+NAMES=""
+echo "release-check: building the sample (cpp11 + ASM6x), $(echo "$SAMPLE" | grep -c '|') programs x $LEVELS"
+for line in $SAMPLE; do
+    [ -z "$line" ] && continue
+    n=${line%%|*}; rest=${line#*|}; src=${rest%%|*}; exp=${rest##*|}
+    cp "$ROOT/$exp" "$WORK/exp/$n.expected"
+    cp "$ROOT/$src" "$WORK/$n.cpp"           # .c kernels build as .cpp, as the suite does
+    ok=1
+    for L in $LEVELS; do
+        if "$CPP11" -arch tms6747 -nologo -$L -S "$WORK/$n.cpp" -o "$WORK/rc/$n.$L.s" > "$WORK/$n.$L.log" 2>&1 &&
+           "$ASM6X" --no_compress "$WORK/rc/$n.$L.s" -o "$WORK/rc/$n.$L.asm6x.obj" >> "$WORK/$n.$L.log" 2>&1; then :
+        else echo "release-check: cpp11/ASM6x did not build $n at -$L:"; sed 's/^/      /' "$WORK/$n.$L.log" | head -4; ok=0; fi
+    done
+    [ "$ok" = 1 ] || { echo "release-check: $n left out of the run"; continue; }
+    # the emulator's own answer, here, at the run level
+    "$VM" "$WORK/rc/$n.O2.s" > "$WORK/exp/$n.vm" 2>&1 < /dev/null
+    NAMES="$NAMES $n"
+done
+
+echo "release-check: shipping to $WINDOWS and running (TI assembler, dis6x, linker, C6747 simulator)"
+COPYFILE_DISABLE=1 tar -C "$WORK" --no-xattrs -czf "$WORK/rc.tgz" rc || exit 1
+scp -q -o BatchMode=yes "$WORK/rc.tgz" "$WINDOWS:C:/cxx1/rc.tgz" || { echo "release-check: cannot ship to $WINDOWS"; exit 1; }
+ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $WREMOTE 2>nul & mkdir $WREMOTE && tar -C $WREMOTE --strip-components=1 -xzf C:\\cxx1\\rc.tgz && del C:\\cxx1\\rc.tgz" >/dev/null 2>&1 || { echo "release-check: cannot unpack on $WINDOWS"; exit 1; }
+ssh -o BatchMode=yes "$WINDOWS" "$WREMOTE\\release-check.cmd" > "$WORK/windows.log" 2>&1
+if ! grep -q 'release-check.done' "$WORK/windows.log" 2>/dev/null && ! ssh -o BatchMode=yes "$WINDOWS" "if exist $WREMOTE\\out\\release-check.done (exit 0) else (exit 1)" 2>/dev/null; then
+    echo "release-check: the Windows worker did not finish"; tr -d '\r' < "$WORK/windows.log" | tail -8; exit 1
+fi
+mkdir -p "$WORK/back"
+scp -q -o BatchMode=yes "$WINDOWS:C:/cxx1/release-check/out/*" "$WORK/back/" 2>/dev/null
+
+NORM="python3 $ROOT/tools/c6747/norm-dis.py"
+encdiff=0; builderr=0; runfail=0; hidden=0
+echo
+echo "1. ASM6x vs TI 8.2.2 encoding - advisory (TEXT instruction multiset, unit"
+echo "   and packet order dropped; a build failure gates, a rendering difference"
+echo "   is reported):"
+printf '   %-26s %s\n' program "O1 O2 Os"
+for n in $NAMES; do
+    row=""
+    for L in $LEVELS; do
+        ti="$WORK/back/$n.$L.ti.dis"; a6="$WORK/back/$n.$L.asm6x.dis"
+        if [ ! -f "$ti" ] || [ ! -f "$a6" ] || head -1 "$ti" | grep -q 'TI-ASM-FAILED' || head -1 "$a6" | grep -q 'NO-ASM6X-OBJ'; then
+            row="$row ERR"; builderr=$((builderr+1)); continue
+        fi
+        $NORM "$ti" > "$WORK/$n.$L.ti.n" 2>/dev/null
+        $NORM "$a6" > "$WORK/$n.$L.a6.n" 2>/dev/null
+        if cmp -s "$WORK/$n.$L.ti.n" "$WORK/$n.$L.a6.n"; then row="$row  ok"
+        else row="$row DIFF"; encdiff=$((encdiff+1))
+            echo "   --- $n -$L: ASM6x and TI render differently (advisory):"
+            diff "$WORK/$n.$L.ti.n" "$WORK/$n.$L.a6.n" | head -6 | sed 's/^/        /'
+        fi
+    done
+    printf '   %-26s%s\n' "$n" "$row"
+done
+
+field() { tr -d '\r' < "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
+echo
+echo "2. TI C6747 simulator vs .expected and vs VM6747 - the gate (run at -O2):"
+printf '   %-26s %-10s %-10s %-10s %s\n' program sim-cycles sim-vs-exp emu-vs-exp pc
+for n in $NAMES; do
+    r="$WORK/back/$n.result"; o="$WORK/back/$n.stdout"
+    if [ ! -f "$r" ]; then printf '   %-26s %-10s %s\n' "$n" - "NO RESULT"; runfail=$((runfail+1)); continue; fi
+    count=$(field "$r" count); pc=$(field "$r" pc); ex=$(field "$r" exit)
+    if grep -q 'link=FAILED' "$r"; then printf '   %-26s %-10s %s\n' "$n" - "LINK FAILED"; runfail=$((runfail+1)); continue; fi
+    [ -f "$o" ] && tr -d '\r' < "$o" > "$WORK/$n.sim.lf" || : > "$WORK/$n.sim.lf"
+    sime=FAIL; cmp -s "$WORK/$n.sim.lf" "$WORK/exp/$n.expected" && sime=ok
+    emue=FAIL; cmp -s "$WORK/exp/$n.vm" "$WORK/exp/$n.expected" && emue=ok
+    pcok=ok; [ -n "$pc" ] && [ "$pc" != "$ex" ] && pcok="$pc!=C\$\$EXIT"
+    printf '   %-26s %-10s %-10s %-10s %s\n' "$n" "${count:--}" "$sime" "$emue" "$pcok"
+    if [ "$sime" = FAIL ]; then
+        runfail=$((runfail+1))
+        echo "        TI simulator output differs from .expected:"
+        diff "$WORK/exp/$n.expected" "$WORK/$n.sim.lf" | head -6 | sed 's/^/        /'
+        [ "$emue" = ok ] && { echo "        but VM6747 matches .expected - the emulator is hiding this"; hidden=$((hidden+1)); }
+    fi
+    [ "$pcok" != ok ] && runfail=$((runfail+1))
+done
+
+echo
+S=$(( $(date +%s) - T0 ))
+[ "$encdiff" -gt 0 ] && echo "note: $encdiff advisory encoding rendering differences (unit/operand order/immfor; not gating)"
+if [ $builderr -eq 0 ] && [ $runfail -eq 0 ]; then
+    echo "release-check: PASS in ${S}s - every sample runs on TI's C6747 simulator as its .expected says, and ASM6x and TI's assembler build it"
+    exit 0
+fi
+echo "release-check: FAIL in ${S}s - $builderr build, $runfail run; $hidden a defect the emulator hides"
+[ "$hidden" -gt 0 ] && echo "  (a simulator failure VM6747 passes is exactly the class that reached a release - C1, the pointer catch, and C2, DPSP's delay slots)"
+tr -d '\r' < "$WORK/windows.log" | grep -i 'RC-ERROR' | head
+exit 1

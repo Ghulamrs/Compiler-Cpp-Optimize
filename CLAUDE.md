@@ -11899,3 +11899,41 @@ the Compiler++ harness object is **520,192 bytes at -O1 and 519,680 at -Os** aga
 program of a thousand functions is mostly the code between them. The next size work, if any, is
 the three items the handover names - a called-once static inlined at -Os, `ZERO` for 0.0, B3 kept
 in B9 round a leaf's helper call - and none of them was small enough to take in this round.
+
+## A release check the emulator cannot fool, 2026-10-05
+
+**Two wrong-output defects reached a release because every suite runs the C6000
+on VM6747 and the emulator agreed with the compiler both times.** C2: DPSP has
+three delay slots on the C674x, which cpp11, c90 and VM6747 all modelled as one,
+so `float f = {1.0}` printed 0 on TI's silicon while the suite passed. C1: a
+thrown pointer was caught one dereference short on TI's `rts6740`, and VM6747's
+runtime did what cpp11 expected. In both only TI's own C6747 cycle-accurate
+simulator told the truth, because VM6747 reads the assembly text (hiding an
+assembler's encoding) and models the runtime (hiding a runtime difference).
+
+`tools/c6747/release-check` is the per-release answer, run once from the Mac:
+`tools/c6747/release-check`, under 15 minutes (40s observed). It builds a fixed
+sample with cpp11 + ASM6x at -O1/-O2/-Os and, on the Windows box, answers two
+questions. **The gate** is the TI simulator: each sample runs at -O2 on the CCS
+5.5 C6747 cycle-accurate simulator and its output is compared with its
+`.expected` *and* with VM6747's - a simulator result that fails `.expected`
+while the emulator passes it is exactly the class C1 and C2 were. **Advisory**
+beside it: TI's assembler (cl6x 8.2.2) and ASM6x each assemble every `.s`, and
+`dis6x` disassembles both; `tools/c6747/norm-dis.py` reduces the TEXT section to
+the multiset of instructions (mnemonic base and operands, unit and packet order
+dropped) and they are compared. A build failure gates; a rendering difference -
+`ADD 1,B10,B10` against `ADD B10,0x1,B10`, a commutative-operand or hex/decimal
+rendering of the identical word - is reported, not gated, because ASM6x and TI
+legitimately differ there. The sample: `throw-pointer` and
+`throw-class-pointer-ms` (C1, the pointer catch under EH), `narrowing-allowed`
+(C2, DPSP/DPINT/INTDP/INTSP), `runtime-shapes` and `float-literal-exact` (the DP
+and SP compares, SUBDP, MPYDP), `stream-char-types` (SPDP and byte/short
+memory), `divide-by-constant-signs` (MPY32/MPY32SU and branches), and the
+kernels `sieve` and `matmul` (LDDW/STDW, pipelined loops, CALLP/BNOP).
+
+**Proved to bite.** Pointed at the pre-fix tools -
+`CPP11=.../cpp11@2a09fe6 VM=.../vm6747@af544e2 tools/c6747/release-check` - it
+exits non-zero in 39s, with `throw-pointer` printing `int* -2147437996` for
+`int* 42` (C1) and `narrowing-allowed` printing `1 0 ... 0 1` for `1 1 ... 1 1`
+(C2), each a failure VM6747 passes; at today's heads it exits 0 in 38s. It is
+the last line of `tools/verify-three`'s c6747 leg.
