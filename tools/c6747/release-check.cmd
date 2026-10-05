@@ -60,6 +60,8 @@ for %%p in (*.out) do if not exist %%~np.result call :start %%~np
 set DONE=0
 for %%r in (*.result) do set /a DONE+=1
 if !DONE! lss !WANT! (ping -n 11 127.0.0.1 >nul & goto gather)
+rem A DSS session that never started - some started together fail (T8) - is run again, alone.
+for %%r in (*.result) do findstr /c:"count=" %%r >nul || (del %%r & call "%W%\par-one.cmd" %%~nr)
 copy /y *.result out\ >nul 2>&1
 copy /y *.stdout out\ >nul 2>&1
 echo done> out\release-check.done

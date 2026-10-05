@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 set W=%~dp0
 set W=%W:~0,-1%
 if "%CGT74%"=="" set CGT74=C:\ti\ccsv7\tools\compiler\ti-cgt-c6000_8.2.2
-if "%VM6747%"=="" set VM6747=C:\Users\GRA\source\RIDE-4.5\bin\vm6747.exe
+if "%VM6747%"=="" set VM6747=C:\Users\GRA\source\RIDE-4.7\bin\vm6747.exe
 set BOX=windows-ccs74-vm
 if not exist "%CGT74%\bin\cl6x.exe" (echo RESULT %BOX% - no cl6x at %CGT74% & exit /b 1)
 if not exist "%VM6747%" (echo RESULT %BOX% - no vm6747 at %VM6747% & exit /b 1)
@@ -21,8 +21,9 @@ del /q "!O!.*" 2>nul
 if exist "!O!-asm" rmdir /s /q "!O!-asm"
 mkdir "!O!-asm"
 rem -n stops at assembly; --symdebug:none keeps the debug directives vm6747 does not read out of it.
-rem Not -O2: at -O2 cl6x sets main's A4 in RET's delay slots and vm6747 reports exit 1 (2026-09-28).
-"%CGT74%\bin\cl6x" -mv6740 --abi=eabi -n %TI_COMPRESS% --symdebug:none -I"%CGT74%\include" --asm_directory="!O!-asm" "%~f1" > "!O!.build.log" 2>&1
+rem -O2 since 2026-10-05, when vm6747 learned the SPLOOP buffer (VM6747 ff64492); set CCS74_OPT to choose another, e.g. -O1.
+if not defined CCS74_OPT set CCS74_OPT=-O2
+"%CGT74%\bin\cl6x" -mv6740 --abi=eabi -n %CCS74_OPT% %TI_COMPRESS% --symdebug:none -I"%CGT74%\include" --asm_directory="!O!-asm" "%~f1" > "!O!.build.log" 2>&1
 if errorlevel 1 (
   echo BOX %BOX% !N! build=FAILED> "!O!.result"
   type "!O!.result"

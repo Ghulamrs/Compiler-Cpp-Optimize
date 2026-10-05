@@ -138,6 +138,8 @@ for n in $NAMES; do
     if [ ! -f "$r" ]; then printf '   %-26s %-10s %s\n' "$n" - "NO RESULT"; runfail=$((runfail+1)); continue; fi
     count=$(field "$r" count); pc=$(field "$r" pc); ex=$(field "$r" exit)
     if grep -q 'link=FAILED' "$r"; then printf '   %-26s %-10s %s\n' "$n" - "LINK FAILED"; runfail=$((runfail+1)); continue; fi
+    # No cycle count: the simulator never ran the program, which says nothing about the program (T8).
+    if [ -z "$count" ]; then printf '   %-26s %-10s %s\n' "$n" - "SIMULATOR DID NOT RUN"; runfail=$((runfail+1)); continue; fi
     [ -f "$o" ] && tr -d '\r' < "$o" > "$WORK/$n.sim.lf" || : > "$WORK/$n.sim.lf"
     sime=FAIL; cmp -s "$WORK/$n.sim.lf" "$WORK/exp/$n.expected" && sime=ok
     emue=FAIL; cmp -s "$WORK/exp/$n.vm" "$WORK/exp/$n.expected" && emue=ok
