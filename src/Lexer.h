@@ -33,8 +33,7 @@ struct Token {
     bool isChar = false;
     std::string text;
     std::size_t pos = 0;
-    // Just past the token's last character in the source, 0 for a token the parser made itself: what a missing ';'
-    // is reported against, the end of the statement that wants it rather than the token after.
+    // Just past the token's last character (0 for a token the parser made): where a missing ';' is reported, the end of the statement that wants it rather than the token after.
     std::size_t end = 0;
 
     bool is(const char *s) const {

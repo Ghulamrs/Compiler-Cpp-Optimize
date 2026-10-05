@@ -499,9 +499,7 @@ const Type *Parser::decayedType(const Type *t) {
     return t;
 }
 
-// The integral and floating promotions, [conv.prom] and [conv.fpprom], and
-// only those - every other arithmetic pairing is a conversion, which ranks
-// below. This is what makes f(int) beat f(double) for a char argument.
+// The integral and floating promotions, [conv.prom] and [conv.fpprom], and only those - every other arithmetic pairing is a conversion, which ranks below; it is what makes f(int) beat f(double) for a char argument.
 static bool isPromotion(const Type *from, const Type *to) {
     // [conv.prom]/3: an enumeration to the type its underlying integer promotes to.
     if (from->isEnumeration() && !to->isEnumeration()) {

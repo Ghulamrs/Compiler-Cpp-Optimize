@@ -1,7 +1,7 @@
 // What refusing int-to-enumeration must leave working: an enumerator into its
 // own enumeration, a cast either way, an enumeration into an int, overloads
 // that tell the two apart, promotion in arithmetic, a switch, and zeroing.
-#include <stdio.h>
+extern "C" int printf(const char *, ...);
 
 enum Colour { Red, Green, Blue };
 enum Small : unsigned char { Lo = 1, Hi = 200 };
@@ -32,7 +32,7 @@ int main(void) {
     Small s = Hi;
     printf("%d %d %d %d %d\n", c, d, e, m, s);
     printf("%d %d %d\n", which(Red), which(Red + 1), which(m));
-    printf("%d %d %d\n", wide(Blue), pick(Green), pick(s));
+    printf("%d %d %d %d\n", wide(Blue), pick(Green), pick(s), pick(2.5));
     printf("%s %s %s\n", name(c), name(next(c)), name(next(next(c))));
     Colour arr[3] = {};
     Pixel p = {};
