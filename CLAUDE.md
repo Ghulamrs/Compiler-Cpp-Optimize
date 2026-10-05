@@ -11728,3 +11728,73 @@ frame, not a smaller table. VM6747's `frameMask` reads 0x83 and 0x82 and ends th
 
 **The corpus** is triaged in `tests/c-corpus/README`: 44 + 1 invalid C++11, 13 link failures
 clang shares, `pp_predefined` environmental - no cpp11 fault.
+
+## The C6000 size level landed, and the gates at the merge with gcc-scheme 0407df9, 2026-10-05
+
+**Branch `c6x-size-final`: gcc-scheme 0407df9 plus the `c6x-matmul-sieve` work** - frame slots
+given back as a scope closes, a freed slot belonging to the frame that freed it, `$fill` loops kept
+from the pipeliner, an exidx entry only for a function an exception can pass through, the corpus
+triaged, and `-Os` for tms6747 (the handover of 2026-10-02 and the section above say what each is)
+- ending in a merge commit. What this round added is the gates, two defects they found, and the
+measurements on TI's simulator with an -Os column.
+
+**Two defects, both in the C6000 scheduler, both found by the gates and neither by the kernels.**
+`foldScaledIndex` tested a write to T before a read of it, so `ADD A16, A6, A6` - a store's own
+address formed from the same scaled index - ended the scan as "T written over" and the SHL was
+removed with every folded reader: eight cases wrong on the emulator at -O1 and -Os, two at -O2
+(`assign-beside-other-operator`, `lambda-capture-by-value`). An instruction that reads T and writes
+it is an unfolded reader now, and the SHL stays. And ASM6x refused sixteen -O1/-Os outputs over one
+prologue packet, `STW || MVKH g, B12 || MV B4, A10 || [!A1] B end` - the global's address
+materialised beside the entry test: it puts the crossed MV on .S1 and moves one instruction at
+most, so the unnamed B found both .S units taken. `foldBranchNops` names a packeted label branch's
+side from the packet's own unit assignment whether or not a NOP follows it, `B .S2 label` or .S1,
+as it already did for a BNOP. Neither changes a kernel's cycles.
+
+**The gates, on the final tree.** Mac: run.sh 580/0, names.sh 369/0, overload.sh 31/0, `make
+comments` 0; tms6747.sh 356/0 at -O0, -O1, -O2 and -Os on vm6747; every -O1, -O2 and -Os output of
+the suite assembles with ASM6x, 356 of 356 at each level. The emit golden, recorded at gcc-scheme
+0407df9: **457 of 1443 files changed**, and every one of them is frame-slot reuse - 147 on the
+three hosts, where the only lines that move are frame displacements, frame sizes and the unwind
+words that encode them (checked mechanically, normalising those alone leaves no difference); 310
+on tms6747, the same offsets, a frame access taking the short form once its offset falls under
+124, and the exidx entries of functions that call nothing leaving. verify-three: see the handover.
+
+**TI's C6747 cycle-accurate simulator, `tools/c6747-levels` with its new -Os column** (run
+1005-173724 on the Windows box, 72 of 72 runs printing their `.expected`; LNK6x's images take the
+cycles of the 7.4.4-linked ones on every kernel at every level). cycle.Total:
+
+| kernel | 744-O2 | 744 -ms3 | 822-O2 | 822 -ms3 | cpp11 -O1 | cpp11 -O2 | cpp11 -Os | O2/822-O2 | Os/822-ms3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fib | 5,568,464 | 19,001,086 | 5,568,115 | 19,000,781 | 4,273,094 | 4,273,094 | 7,925,221 | .76 | .41 |
+| hash | 6,009,087 | 18,241,125 | 6,014,015 | 60,048,607 | 9,023,182 | 6,807,670 | 9,023,182 | 1.13 | .15 |
+| isort | 5,312,299 | 6,139,729 | 5,309,586 | 6,329,124 | 6,158,024 | 5,956,804 | 6,170,768 | 1.12 | .97 |
+| matmul | 1,294,024 | 1,330,220 | 982,933 | 1,488,552 | 1,591,212 | 980,582 | 1,591,212 | .99 | 1.06 |
+| sieve | 2,999,335 | 3,283,781 | 2,577,500 | 3,282,414 | 3,737,076 | 3,117,562 | 3,737,076 | 1.20 | 1.13 |
+| virt | 3,269,953 | 9,009,835 | 3,268,908 | 9,129,360 | 3,632,077 | 3,631,729 | 3,632,077 | 1.11 | .39 |
+
+Code bytes of the program's own object:
+
+| kernel | 744-O2 | 744 -ms3 | 822-O2 | 822 -ms3 | cpp11 -O1 | cpp11 -O2 | cpp11 -Os | Os/744-ms3 | Os/822-ms3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fib | 128 | 128 | 160 | 128 | 192 | 192 | 160 | 1.25 | 1.25 |
+| hash | 352 | 256 | 384 | 288 | 384 | 768 | 384 | 1.50 | 1.33 |
+| isort | 480 | 352 | 640 | 384 | 544 | 1,056 | 512 | 1.45 | 1.33 |
+| matmul | 1,152 | 416 | 1,280 | 448 | 672 | 1,280 | 672 | 1.62 | 1.50 |
+| sieve | 416 | 352 | 544 | 320 | 480 | 992 | 480 | 1.36 | 1.50 |
+| virt | 672 | 640 | 704 | 640 | 1,184 | 1,248 | 1,184 | 1.85 | 1.85 |
+| total | 3,200 | 2,144 | 3,712 | 2,208 | 3,456 | 5,536 | 3,392 | 1.58 | 1.54 |
+
+**Where that leaves the 1.3x goal against CCS 7.4.** Speed: met at -O2 on every kernel (0.76x to
+1.20x), and -Os runs the `-ms3` builds' programs in 0.15x to 1.13x of their cycles - cl6x's size
+setting costs it three to ten times the cycles on fib, hash and virt. Size: **not met** on the
+kernels - -Os is 1.25x to 1.85x `-ms3`, 1.54x in total - for the reasons the 2026-10-02 handover
+gives kernel by kernel (fib's `__c6xabi_call_stub`, hash's return address in B9, isort's and
+matmul's un-inlined `rnd()` and `MVK 0; INTDP` for 0.0, sieve's 64-bit `j`, virt's unwind pads
+and stubs, which cl6x has none of without `--exceptions`). On the real program the goal is met:
+the Compiler++ harness object is **520,192 bytes at -O1 and 519,680 at -Os** against CCS 7.4's
+550,752 at -O1 (0.94x), 482,400 at `-O2 -ms3` (1.08x) and 685,728 at -O2 (cpp11 -O2 584,288,
+0.85x); the frame slots and the exidx rule took it from 527,808 and 588,864 at 0407df9. -Os buys
+512 bytes over -O1 there: the kernels are where the helper call and the entry test show, and a
+program of a thousand functions is mostly the code between them. The next size work, if any, is
+the three items the handover names - a called-once static inlined at -Os, `ZERO` for 0.0, B3 kept
+in B9 round a leaf's helper call - and none of them was small enough to take in this round.
