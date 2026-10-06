@@ -37,10 +37,10 @@ find_tool() {
 ASM6X=$(find_tool "${ASM6X:-}" ../ASM6x/build/asm6x.exe "$(command -v asm6x 2>/dev/null)")
 LNK6X=$(find_tool "${LNK6X:-}" ../LNK6x/build/lnk6x.exe "$(command -v lnk6x 2>/dev/null)")
 VMSIM=$(find_tool "${VMSIM:-}" ../VM6747-sim/vm6747.exe "$(command -v vm6747sim 2>/dev/null)")
-# TI's runtime is TI's and not in any repository: the exception-handling build of rts6740.
-TIRTS="${TIRTS:-${C6747_EHLIB:-$HOME/c6747-lib}}"
-# RTSLIB names the run-time library in TIRTS: TI's until RTS6x passes the suite (TIRTS=../RTS6x/build RTSLIB=rts6x.lib).
-RTSLIB="${RTSLIB:-rts6740_elf_eh.lib}"
+# The run-time library: RTS6x's, built beside this tree, since it passed the suite whole (M5, 2026-10-07);
+# TI's exception-handling rts6740 as RTSLIB=rts6740_elf_eh.lib, TIRTS its directory (default ~/c6747-lib).
+RTSLIB="${RTSLIB:-rts6x.lib}"
+if [ "$RTSLIB" = rts6x.lib ]; then TIRTS="${TIRTS:-../RTS6x/build}"; else TIRTS="${TIRTS:-${C6747_EHLIB:-$HOME/c6747-lib}}"; fi
 CXX1_FLAGS="${CXX1_FLAGS:-}"   # -O1 or -O2 runs the corpus through the C6000 optimizer
 OUT=tests/out-tms6747
 # One case by name, or all of them; a worker is handed the name it was asked for after --one.
@@ -87,7 +87,7 @@ one() {
         verdict=fail
     fi
     if [ "$SIM" = 1 ]; then
-        if grep -q "^$base[[:space:]]" tests/tms6747-sim.txt; then
+        if [ "$RTSLIB" != rts6x.lib ] && grep -q "^$base[[:space:]]" tests/tms6747-sim.txt; then
             [ "$verdict" = pass ] && verdict=simskip
         elif ! { "$ASM6X" "$OUT/$base.s" -o "$OUT/$base.obj" &&
                  { [ -z "$parts" ] || "$ASM6X" "$parts" -o "$OUT/$base.part.obj"; } &&

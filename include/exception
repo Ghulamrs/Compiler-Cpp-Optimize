@@ -22,8 +22,10 @@
 // C6000 keeps a self-contained class: the emulator that runs the suite has
 // no C++ runtime library to take one from.
 //
-// What is NOT here is the rest of [exception]: `terminate`, `set_terminate`,
-// `uncaught_exception`, `exception_ptr`, `current_exception`, `nested_exception`.
+// `terminate`, `set_terminate`, `get_terminate` and `uncaught_exception` are declared off
+// Windows, defined by libc++abi, libstdc++ or RTS6x; MSVC's CRT spells them its own way.
+// What is NOT here is the rest of [exception]: `exception_ptr`, `current_exception`,
+// `nested_exception`, and the C++03 `unexpected` family.
 //
 // **`what()` is virtual and const, and returns a pointer the caller does not
 // own.** [exception]/8 says the string is valid until the object is destroyed
@@ -76,6 +78,14 @@ public:
     virtual ~exception();
     virtual const char *what() const;
 };
+#endif
+
+#if !defined(_WIN32)
+typedef void (*terminate_handler)();
+terminate_handler set_terminate(terminate_handler) throw();
+terminate_handler get_terminate() throw();
+void terminate();
+bool uncaught_exception() throw();
 #endif
 
 }  // namespace std
