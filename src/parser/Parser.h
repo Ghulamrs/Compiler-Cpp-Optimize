@@ -432,6 +432,9 @@ private:
     // Member-template specializations made as *candidates*: one never chosen is emitted by neither oracle.
     std::vector<std::size_t> candidateSpecializations_;
     void pruneUnchosenCandidates(Program &program);
+    // Inline functions the program wrote, emitted where defined and dropped at the end unless odr-used.
+    std::set<std::string> discardableInline_;
+    void pruneUnusedInline(Program &program);
     bool isMemberTemplate(const Type *obj, const std::string &name) const {
         return obj != nullptr &&
                memberTemplates_.count(obj->unqualified()->tag() + "::" + name) != 0;
