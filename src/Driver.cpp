@@ -29,7 +29,10 @@
 
 #include <unistd.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
 #include <cerrno>
 #include <glob.h>
 #include <spawn.h>
@@ -523,6 +526,42 @@ std::string Driver::tiLinker() const {
     return "lnk6x";
 }
 
+// The per-job folders the temporaries sit in, removed once their files are.
+static std::vector<std::string> &temporaryFolders() {
+    static std::vector<std::string> folders;
+    return folders;
+}
+
+static void removeFolders() {
+    std::vector<std::string> &folders = temporaryFolders();
+#ifdef _WIN32
+    for (const std::string &d : folders) _rmdir(d.c_str());
+#else
+    for (const std::string &d : folders) rmdir(d.c_str());
+#endif
+    folders.clear();
+}
+
+// **A temporary named after its source**, in a folder of its own: the assembler records its input's
+// name in the object, so isalpha.cpp assembles as isalpha.s and two builds give the same bytes.
+std::string Driver::temporaryName(int index, const std::string &source) {
+    std::string stem = source;
+    std::size_t slash = stem.find_last_of(hostIsWindows() ? "/\\" : "/");
+    if (slash != std::string::npos) stem = stem.substr(slash + 1);
+    std::size_t dot = stem.rfind('.');
+    if (dot != std::string::npos) stem = stem.substr(0, dot);
+    std::string name = temporaryName(index);
+    if (stem.empty()) return name;
+    std::string folder = name.substr(0, name.size() - 2);
+#ifdef _WIN32
+    if (_mkdir(folder.c_str()) != 0) return name;
+#else
+    if (mkdir(folder.c_str(), 0700) != 0) return name;
+#endif
+    temporaryFolders().push_back(folder);
+    return folder + (hostIsWindows() ? "\\" : "/") + stem + ".s";
+}
+
 std::string Driver::temporaryName(int index) {
     const char *dir = std::getenv("TMPDIR");
     if (dir == nullptr || dir[0] == '\0') dir = std::getenv("TEMP");
@@ -545,6 +584,7 @@ void Driver::removeTemporaries() {
     std::vector<std::string> &names = temporaryNames();
     for (const std::string &t : names) std::remove(t.c_str());
     names.clear();
+    removeFolders();
     temporaries_.clear();
 }
 
@@ -1054,7 +1094,7 @@ bool Driver::parseArguments(int argc, char **argv) {
                 : (hostIsWindows() && !targetIsTi() ? "a.exe" : "a.out");
 
     for (std::size_t i = 0; i < inputs.size(); i++) {
-        std::string temp = temporaryName(static_cast<int>(i));
+        std::string temp = temporaryName(static_cast<int>(i), inputs[i]);
         temporaries_.push_back(temp);
         temporaryNames().push_back(temp);
         jobs_.push_back(Job{ inputs[i], temp });
@@ -1314,6 +1354,7 @@ int Driver::run(int argc, char **argv) {
         std::vector<std::string> &names = temporaryNames();
         for (const std::string &t : names) std::remove(t.c_str());
         names.clear();
+        removeFolders();
     });
 
     if (!runJobs()) { removeTemporaries(); return 1; }

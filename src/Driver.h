@@ -68,6 +68,7 @@ private:
     static std::string assemblyNameFor(const std::string &source);
     std::string objectNameFor(const std::string &source) const;
     static std::string temporaryName(int index);
+    static std::string temporaryName(int index, const std::string &source);
     static const char *hostCompiler();
     static const char *hostAssembler(Syntax syntax);
     // The assembler for the GNU spelling of x86_64-windows, which is a
