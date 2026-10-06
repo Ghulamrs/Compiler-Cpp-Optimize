@@ -402,7 +402,16 @@ std::string Preprocessor::expandText(const std::string &s, std::vector<std::stri
         std::string name = s.substr(start, i - start);
 
         if (name == "__LINE__") { out += std::to_string(lineNo); continue; }
-        if (name == "__FILE__") { out += "\"" + files_[fileIndex] + "\""; continue; }
+        if (name == "__FILE__") {
+            // A Windows path is full of backslashes: escape them, and any quote, for the literal.
+            out += '"';
+            for (char f : files_[fileIndex]) {
+                if (f == '\\' || f == '"') out += '\\';
+                out += f;
+            }
+            out += '"';
+            continue;
+        }
 
         auto it = macros_.find(name);
         if (it == macros_.end()) { out += name; continue; }
