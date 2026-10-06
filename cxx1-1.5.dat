@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 151 files, seal 42F1A563
+CRC32  size  file - 151 files, seal 3CB71FAE
 ------------------------------------------------------------------
 7F3ECECE      4553  include/algorithm
 24D34375       483  include/cassert
@@ -14,7 +14,7 @@ D1864FE6       122  include/cfloat
 76EDF3B6      1566  include/cstdio
 5B948597       840  include/cstdlib
 873774AC       938  include/cstring
-60ED3F29      3502  include/exception
+D6AE2373      3888  include/exception
 3E53C566      3557  include/fstream
 F7084316      1678  include/initializer_list
 61D67355      1232  include/iomanip
@@ -40,7 +40,7 @@ EC518216      2297  lib/errno.h
 778F08AB       674  lib/fcntl.h
 F5629A85      3674  lib/float.h
 591A360E      1281  lib/io.h
-22311474      2944  lib/limits.h
+B9F968AD      3061  lib/limits.h
 D632BE21      2638  lib/locale.h
 CAFE9E5B      3766  lib/math.h
 4E74448F       731  lib/memory.h
@@ -50,16 +50,16 @@ CAFE9E5B      3766  lib/math.h
 3B8B75BC      2473  lib/stddef.h
 92687B87      2514  lib/stdint.h
 09257F7B      7235  lib/stdio.h
-686250E2      2360  lib/stdlib.h
+1BD77A72      2712  lib/stdlib.h
 412080F6      2457  lib/string.h
 E20D4640      3250  lib/time.h
 A0490168      1512  src/Abi.h
 B86FC4E8     25835  src/Ast.h
-6CFA149E     54797  src/Driver.cpp
-79F77418      3509  src/Driver.h
+EF67C8CB     56369  src/Driver.cpp
+64B3FAE0      3585  src/Driver.h
 EDD4E366     20122  src/Lexer.cpp
 6A3509E1      2414  src/Lexer.h
-D59BC2B6     75942  src/Mangle.cpp
+12E1E2AF     76091  src/Mangle.cpp
 00DAB69B     12131  src/Mangle.h
 36FF0529       493  src/Name.h
 B35E3402      3248  src/Operator.cpp
@@ -81,7 +81,7 @@ F0D14C0C     44838  src/backend/Masm.cpp
 2A677CA7      6688  src/backend/Masm.h
 FDB7487B     15645  src/backend/Spelling.cpp
 D7404BF3     11389  src/backend/Spelling.h
-E73DDCEA    114159  src/backend/Tms6747.cpp
+0AE51D27    115188  src/backend/Tms6747.cpp
 F1468BF4     14775  src/backend/Tms6747.h
 52F98EDD     18387  src/backend/Walker.cpp
 CA0A1EDB      9599  src/backend/Walker.h
@@ -94,7 +94,7 @@ F61AC3DE     32331  src/optimizer/A64Peep.cpp
 B9884ADD       727  src/optimizer/A64Peep.h
 09291356      4679  src/optimizer/C6xModel.h
 2B17FBA4     75424  src/optimizer/C6xPipe.cpp
-6B1825BC    126339  src/optimizer/C6xSched.cpp
+2BF0D6C8    126697  src/optimizer/C6xSched.cpp
 ABDD76E8       405  src/optimizer/C6xSched.h
 4DC6880D       381  src/optimizer/DivMagic.h
 A167EFA0      8886  src/optimizer/Inliner.cpp
@@ -137,22 +137,22 @@ D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
-86B8CCE6     38883  src/parser/Parser.cpp
-27D79FEF    121733  src/parser/Parser.h
-E3167124    200158  src/parser/ParserClass.cpp
+4F4196A6     41147  src/parser/Parser.cpp
+FEEE0774    124561  src/parser/Parser.h
+70D785AA    209590  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
-FD1082A9    110873  src/parser/ParserExpr.cpp
-6D5A45D3     33681  src/parser/ParserExprCall.cpp
+76DA0C9D    115686  src/parser/ParserExpr.cpp
+7AC84168     37231  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 FBAD82F5     87087  src/parser/ParserExprNew.cpp
-96920F57     69648  src/parser/ParserInit.cpp
+763D77DD     72711  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
-DCF8FC55     42157  src/parser/ParserOperator.cpp
-45C9D7D6     56620  src/parser/ParserOverload.cpp
-2FC7BC1B    101058  src/parser/ParserStmt.cpp
-DA3B6319    105714  src/parser/ParserTemplate.cpp
-97DE041A     81464  src/parser/ParserTopLevel.cpp
-BE476DB6    122232  src/parser/ParserType.cpp
+D423B8EB     42099  src/parser/ParserOperator.cpp
+F35E67AF     57624  src/parser/ParserOverload.cpp
+E77D30F0    104274  src/parser/ParserStmt.cpp
+88DE5C38    107255  src/parser/ParserTemplate.cpp
+A7D70263     83648  src/parser/ParserTopLevel.cpp
+3555BAB4    123366  src/parser/ParserType.cpp
 96A8CE61     37964  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
-Sealed on 06-10-2026
+Sealed on 07-10-2026
