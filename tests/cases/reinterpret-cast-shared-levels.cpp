@@ -20,7 +20,8 @@ int main() {
     unsigned cells[3] = { 11, 22, 33 };
     const char *const *w = reinterpret_cast<const char *const *>(cells);
     printf("%u %u\n", word(w), wordNoTop(w));
-    int *ptrs[2] = { 0, 0 };
+    int *ptrs[2];
+    ptrs[0] = ptrs[1] = 0;
     printf("%d %d\n", fromPtrConst(ptrs) == reinterpret_cast<const unsigned *>(ptrs),
            fromPlain(reinterpret_cast<char **>(ptrs)) == reinterpret_cast<const int *>(ptrs));
     char text[] = "abc";

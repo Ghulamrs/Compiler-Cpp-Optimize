@@ -39,6 +39,11 @@ struct Below : Shielded {
 
 int main() {
     Hidden h;
+    // Each base built on its own as well, so both compilers emit its complete-object form.
+    A whole;
+    Pad pad;
+    Shielded shield;
+    printf("%d %d %d\n", whole.a, pad.p, takesRef(*reinterpret_cast<A *>(&shield)));
     printf("%d %d %d %d %d %d %d\n", h.self()->a, h.viaInit(), h.viaArg(), h.viaAssign(),
            h.viaRef(), h.viaConstRef(), peek(h));
     Second s;

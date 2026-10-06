@@ -1,0 +1,1 @@
+cl, as clang for this ABI, writes a second base class descriptor for A reached through a private base, ??_R1A@?0A@EN@A@@8 with attributes 0x4d, where cxx1 uses the public one for every path - the Microsoft RTTI of a non-public base is not written yet; CLAUDE.md, "A non-public base is accessible where [class.access.base]/4 says".
