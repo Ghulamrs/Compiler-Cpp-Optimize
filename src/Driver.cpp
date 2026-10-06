@@ -1291,7 +1291,8 @@ int Driver::run(int argc, char **argv) {
         else if (std::strcmp(argv[i], "-D") == 0) i++;
         else if (std::strcmp(argv[i], "-U") == 0) i++;
         else if (std::strcmp(argv[i], "-S") == 0) sawS = true;
-        else if (argv[i][0] != '-') inputs++;
+        else if (argv[i][0] != '-')
+            inputs += std::strpbrk(argv[i], "*?") != nullptr ? 2 : 1;  // a pattern is a set
     }
     toStdout_ = (sawS && inputs == 1 && !sawO);
 
