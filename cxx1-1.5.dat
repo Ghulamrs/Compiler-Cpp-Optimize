@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 151 files, seal 6AE689E6
+CRC32  size  file - 151 files, seal 42F1A563
 ------------------------------------------------------------------
 7F3ECECE      4553  include/algorithm
 24D34375       483  include/cassert
@@ -46,7 +46,7 @@ CAFE9E5B      3766  lib/math.h
 4E74448F       731  lib/memory.h
 5042D62B      6272  lib/setjmp.h
 2879523C      1896  lib/signal.h
-909595E2      3322  lib/stdarg.h
+074DE174      3530  lib/stdarg.h
 3B8B75BC      2473  lib/stddef.h
 92687B87      2514  lib/stdint.h
 09257F7B      7235  lib/stdio.h
@@ -137,11 +137,11 @@ D5A5640B      3328  src/optimizer/OptTable.h
 225FA5B2     29040  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
-D864B216     38869  src/parser/Parser.cpp
-F45563E5    121582  src/parser/Parser.h
-FABECCA9    199966  src/parser/ParserClass.cpp
+86B8CCE6     38883  src/parser/Parser.cpp
+27D79FEF    121733  src/parser/Parser.h
+E3167124    200158  src/parser/ParserClass.cpp
 79566CDA     15233  src/parser/ParserConst.cpp
-599C457A    110824  src/parser/ParserExpr.cpp
+FD1082A9    110873  src/parser/ParserExpr.cpp
 6D5A45D3     33681  src/parser/ParserExprCall.cpp
 00432DF7     28628  src/parser/ParserExprLambda.cpp
 FBAD82F5     87087  src/parser/ParserExprNew.cpp
@@ -151,7 +151,7 @@ DCF8FC55     42157  src/parser/ParserOperator.cpp
 45C9D7D6     56620  src/parser/ParserOverload.cpp
 2FC7BC1B    101058  src/parser/ParserStmt.cpp
 DA3B6319    105714  src/parser/ParserTemplate.cpp
-BC08E315     80669  src/parser/ParserTopLevel.cpp
+97DE041A     81464  src/parser/ParserTopLevel.cpp
 BE476DB6    122232  src/parser/ParserType.cpp
 96A8CE61     37964  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
