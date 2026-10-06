@@ -2298,7 +2298,25 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         if (destructor) name = "~" + name;
     }
 
-    const Type *t = arraySuffix(base, pos);
+    // `int D::modes_[Count]`: the bound after a class's declarator-id is in its scope.
+    const Type *declaredIn = qualifier.empty() ? nullptr : findTypedef(qualifier);
+    const Type *t;
+    if (patternOnly_ && !qualifier.empty() && peek().is("[")) {
+        // `C<T>::arr[Count]` read as a pattern: the class has no members to fold the
+        // bound from, and only the name is asked - its own definition reads it again.
+        while (consume("[")) {
+            for (int depth = 1; depth > 0; at_++) {
+                if (peek().kind == TokenKind::End) src_.fail(peek().pos, "expected ']'");
+                if (peek().is("[")) depth++;
+                else if (peek().is("]")) depth--;
+            }
+        }
+        t = types_.arrayOf(base, -1);
+    } else {
+        const StaticMemberScope scope(this, declaredIn != nullptr && declaredIn->isStructOrUnion() &&
+                                            peek().is("[") ? declaredIn : nullptr);
+        t = arraySuffix(base, pos);
+    }
 
     std::size_t paramsAt = 0;
     if (insideParens && peek().is("(")) {

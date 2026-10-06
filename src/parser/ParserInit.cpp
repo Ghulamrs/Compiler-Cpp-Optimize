@@ -1351,7 +1351,12 @@ void Parser::dynamicInitialise(Declared &d, const std::string &symbol,
     if (d.type->isConst() && !peek().is("=") && !peek().is("(") &&
         !peek().is("{"))
         requireConstInitialised(d.type, d.name, d.pos);
+    // A static member's constructor arguments keep its class's scope.
+    const Type *scope = currentClass_;
+    const bool scopeStatic = inStaticMember_;
     const FunctionState outer = enterInitFunction();
+    currentClass_ = scope;
+    inStaticMember_ = scopeStatic;
     std::vector<StmtPtr> built = d.type->isArray()
         ? buildStaticArrayConstruction(d, symbol, helper)
         : buildStaticConstruction(d, symbol, helper);

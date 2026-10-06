@@ -323,8 +323,8 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
 // the body. Nothing inside is looked at - that is what "no instantiation"
 // means. Answers whether a body was there.
 bool Parser::skipTemplatedDefinition(bool *sawInit, bool *sawParen) {
-    bool body = false;
-    int depth = 0;
+    bool body = false, initialiser = false;
+    int depth = 0, parens = 0;
     if (sawInit != nullptr) *sawInit = false;
     if (sawParen != nullptr) *sawParen = false;
     for (;;) {
@@ -333,9 +333,13 @@ bool Parser::skipTemplatedDefinition(bool *sawInit, bool *sawParen) {
         // **An `=` at depth zero is an initialiser**, so what is being skipped is a definition even
         // though it has no braces - `template <class T> const R C<T>::k = R();` - and a `(` is a
         // parameter list or a construction; neither, and no braces, is `T Tm<T>::st;`, a definition.
+        if (depth == 0 && peek().is("(")) parens++;
+        if (depth == 0 && peek().is(")")) parens--;
+        if (depth == 0 && parens == 0 && peek().is("=")) initialiser = true;
         if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
         if (sawParen != nullptr && depth == 0 && peek().is("(")) *sawParen = true;
-        if (peek().is("{")) { depth++; body = true; at_++; continue; }
+        // Braces after that `=` are a list, `C<T>::arr[2] = { 1, 2 };`, and no body.
+        if (peek().is("{")) { depth++; body = body || !initialiser; at_++; continue; }
         if (peek().is("}")) {
             at_++;
             if (--depth == 0) { consume(";"); return body; }
