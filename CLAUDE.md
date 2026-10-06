@@ -12383,3 +12383,27 @@ one instantiating `C<int>` and the other using `C<int>::m`, link and run. Case
 targets, where the unused `m`s and `neverBuilt`'s constructor are gone; the Windows
 `.nonames` is the `$guard` difference already recorded. Emit golden 0 of 1514
 changed - no existing case had a template static it did not use.
+
+## A remake removed, and liveness that still said the register was free, 2026-10-07
+
+**`hi = limb + 2 < 8 ? p[limb + 2] : 0` crashed on the C6000 at -O1 and up**, loading from 0x14 -
+found by RTS6x's `DecimalBinary::toBinary64`, which padded the array and read unconditionally
+round it. `numberValues` (C6xSched) found the arm's `SUBAW A15, 24, A16` - p's address - already
+in A16 and removed it; three lines on it renamed the arm's reload of `limb` to free a register,
+and `renameFirst` asked `deadAfter` whether A16 was free. At the arm's `[!A1] B` that reads the
+liveness computed before the pass, when the removed SUBAW still wrote A16 on the fall-through
+path - so A16, now holding the address the arm reads, was given to `limb`, and `LDW *+A16[A17]`
+read through `limb` as an address. **A pass that removes a definition or adds a copy extends a
+register's life, and every later question about it must be asked of liveness recomputed**: a `stale` flag
+set by each removal, copy and rename, and `computeLiveness` before the next rename looks for one.
+
+Found by bisecting with `CPP11_C6XSKIP` (only `vn` passed) and `CPP11_C6XTRACE`, from RTS6x's
+earlier text recovered out of the session that wrote it - the shape needs the loops that fill
+`p` before it, and a one-loop reduction did not reproduce. `ternary-index-after-remake.cpp`
+fails on vm6747 and vm6747sim at -O1, -O2 and -Os on the compiler before.
+
+**And a 64-bit shift by a constant is the pair moved or spliced** at -O1 and up, through
+`shiftPairLeft`/`shiftPairRight`, which bit-fields already used - where it had gone through
+`wideBinary`'s branch on the count, about twelve instructions and a taken branch for `u << 32`.
+The count is read through `low32`, as a division's divisor is, and taken `& 63` as before.
+`wide-shift-constant.cpp` holds each count across the word boundary, signed and unsigned.

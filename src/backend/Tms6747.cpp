@@ -1189,6 +1189,8 @@ bool Tms6747::immediateBinary(const Binary &n) {
     return true;
 }
 
+static bool low32(const Expr &e, const Target &t, unsigned &v);
+
 void Tms6747::visit(const Binary &n) {
     if (n.op() == BinOp::LAnd || n.op() == BinOp::LOr) {
         int id = nextLabel();
@@ -1224,6 +1226,14 @@ void Tms6747::visit(const Binary &n) {
         return;
     }
     if (optimize_ > 0 && !ot->isFloating() && !isWide(ot) && immediateBinary(n)) return;
+    // A 64-bit shift by a constant is the pair moved or spliced in place, not wideBinary's branch on the count.
+    unsigned count;
+    if (optimize_ > 0 && isWide(ot) && (n.op() == BinOp::Shl || n.op() == BinOp::Shr) && low32(n.rhs(), target_, count)) {
+        n.lhs().accept(*this);      // A5:A4 = lhs
+        if (n.op() == BinOp::Shl) shiftPairLeft(static_cast<int>(count & 63));
+        else shiftPairRight(static_cast<int>(count & 63), ot->isSigned(target_));
+        return;
+    }
     n.lhs().accept(*this);          // A4 = lhs
     pushValue(ot);
     n.rhs().accept(*this);          // A4 = rhs

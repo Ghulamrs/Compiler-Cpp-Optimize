@@ -763,6 +763,7 @@ void numberValues(std::vector<Line> &v) {
     long next = 1, stores = 0;
     std::size_t runStart = 0;
     auto reset = [&](std::size_t at) { val.clear(); made.clear(); defAt.clear(); next++; stores++; runStart = at; };
+    bool stale = false;                     // a removal or copy outlived the liveness: recompute before renaming
     // The number's register was overwritten before the remake: the line that made it is given a fresh
     // register - one dead there and untouched up to here - its readers up to the next write of the old
     // register renamed with it, and the remake becomes a copy. `a[j]` read twice with `a[j]` in the way.
@@ -773,6 +774,7 @@ void numberValues(std::vector<Line> &v) {
             readsAndWrites(v[k], r, w);
             if (has(w, D) && v[k].pred.empty()) { end = k; break; }
         }
+        if (stale) { computeLiveness(v); stale = false; }
         for (int n = 16; n < 32; n++) {
             const std::string F = "A" + std::to_string(n);
             bool ok = deadAfter(v, p, F);
@@ -807,6 +809,7 @@ void numberValues(std::vector<Line> &v) {
             }
             if (!ok) continue;
             for (std::size_t c = 0; c < changed.size(); c++) v[where[c]] = changed[c];
+            stale = true;
             return F;
         }
         return std::string();
@@ -846,7 +849,7 @@ void numberValues(std::vector<Line> &v) {
             const std::string dst = writes[0];
             if (l.mnem == "MV" && sideOf(l.ops[0])) {                           // a copy carries the number
                 const long n = numberOf(l.ops[0]);
-                if (val.count(dst) && val[dst] == n) { l = parse(""); continue; }   // a copy back of what it holds
+                if (val.count(dst) && val[dst] == n) { l = parse(""); stale = true; continue; }   // a copy back of what it holds
                 val[dst] = n;
                 continue;
             }
@@ -867,9 +870,9 @@ void numberValues(std::vector<Line> &v) {
                 }
             }
             if (!holder.empty()) {
-                if (holder == dst) { l = parse(""); continue; }   // gone: no operands left to read
+                if (holder == dst) { l = parse(""); stale = true; continue; }   // gone: no operands left to read
                 Line r = make("MV", holder, dst);
-                if (crossings(r) <= 1) { l = r; val[dst] = number; continue; }
+                if (crossings(r) <= 1) { l = r; val[dst] = number; stale = true; continue; }
             }
             val[dst] = number;
             defAt[number] = i;
