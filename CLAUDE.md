@@ -12007,3 +12007,32 @@ is handed, which is what vprintf and every v-function is. cpp11 refused it; ever
 generator's `va_arg` reads the list alone, so the refusal protected nothing. RTS6x's
 `Formatter`, a class reading `printf`'s arguments, found it. `va-arg-in-callee.cpp`
 passes a list by pointer and by value, in the two forms portable to all three hosts.
+
+## An array of a class sized by its list, and the same list at static storage, 2026-10-06
+
+**`const Row rows[] = { Row("a"), Row("b") };` aborted the compiler** with
+`std::length_error: vector`, on every target and level - found by RTS6x, whose
+tables are arrays of a class. The class-array list path sized its vector of
+element initialisers from `d.type->length()`, and an array of unknown bound
+answers -1; the scalar path deduces the length from the list, this one never
+did. `constructLocalArrayFromList` now reads the list first when the bound is
+missing - the vector growing as elements arrive, nested rows rounding up -
+gives the array its length, and only then declares it, through a callback the
+caller supplies. `T a[] = {}` is refused by name, as clang refuses an array of
+no elements under `-pedantic-errors`.
+
+**The same list at static storage was refused by name, and is built now.** A
+file-scope array or a `static` local of a class with a constructor took no
+initialiser at all ("each element gets the default constructor"). The list
+path is the one a local uses, handed the global's symbol: `objectAt` reaches
+element i of a global as `*(T *)((char *)&g + i*size)`, the add in bytes, and
+the construction runs in the init function or under the static local's guard,
+the destruction registered by the class's loop as before. A static data member
+that is such an array stays refused, at its own line.
+
+`array-of-class-list-length.cpp` runs it under the ledger - deduced and given
+lengths, const and not, a nested row list, a class with a destructor, one with
+a written copy constructor (its value read modulo 100, elision being allowed),
+file scope and a static local - built 18, gone 18 against clang;
+`array-of-class-list-empty-refused.cpp` is the empty list. The emit golden
+read 0 of 1462 changed.

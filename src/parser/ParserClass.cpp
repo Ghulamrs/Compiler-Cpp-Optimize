@@ -2016,10 +2016,14 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
 // `S a[3] = { S(1), {2, 3}, x };` - [dcl.init.aggr]/2: each element copy-initialised from its
 // initialiser, in order, nested braces for each dimension or elided; the rest value-initialised,
 // as from `{}`. What each one becomes is what `S s = ...;` would make of it.
-StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
+StmtPtr Parser::constructLocalArrayFromList(Declared &d, int offset,
+                                            const std::function<int()> &declareLate,
+                                            const std::string &symbol) {
+    // `S a[] = {...}` takes its length from the list: read first, declared after.
+    const bool unbounded = d.type->length() < 0;
     long long total = 1;
     const Type *elem = d.type;
-    while (elem->isArray()) { total *= elem->length(); elem = elem->pointee(); }
+    while (elem->isArray()) { total *= elem->length() < 0 ? 0 : elem->length(); elem = elem->pointee(); }
     const Type *plain = elem->unqualified();
     const int size = plain->size(target_);
 
@@ -2042,6 +2046,7 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
         long long flat = 1;
         const Type *e = t;
         while (e->isArray()) { flat *= e->length(); e = e->pointee(); }
+        if (t->length() < 0) flat = LLONG_MAX;
         const Type *sub = t->pointee();
         long long subFlat = 1;
         for (const Type *u = sub; u->isArray(); u = u->pointee()) subFlat *= u->length();
@@ -2060,6 +2065,8 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
                 readList(sub, base + at);
                 at += subFlat;
             } else {
+                if (static_cast<std::size_t>(base + at) >= inits.size())
+                    inits.resize(static_cast<std::size_t>(base + at + 1));
                 Init &one = inits[static_cast<std::size_t>(base + at)];
                 one.given = true;
                 std::vector<Temporary> before;
@@ -2097,6 +2104,18 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
         expect("}");
     };
     readList(d.type, 0);
+    if (unbounded) {
+        long long rowFlat = 1;
+        for (const Type *u = d.type->pointee(); u->isArray(); u = u->pointee()) rowFlat *= u->length();
+        const long long rows = (static_cast<long long>(inits.size()) + rowFlat - 1) / rowFlat;
+        if (rows == 0)
+            src_.fail(d.pos, "'" + d.name + "' takes its length from an empty list, and an "
+                             "array of no elements is not C++");
+        d.type = types_.arrayOf(d.type->pointee(), rows);
+        total = rows * rowFlat;
+        inits.resize(static_cast<std::size_t>(total));
+        offset = declareLate();
+    }
 
     // Each element in turn, as the object `S e = init;` - its temporaries gone before the next.
     Declared one = d;
@@ -2107,7 +2126,8 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
         firstDefault = i - 1;
     for (long long i = 0; i < firstDefault; i++) {
         Init &e = inits[static_cast<std::size_t>(i)];
-        const int at = offset - static_cast<int>(i * size);
+        const int at = symbol.empty() ? offset - static_cast<int>(i * size)
+                                      : static_cast<int>(i * size);
         const bool empty = e.args.empty();
         pendingTemps_.insert(pendingTemps_.end(), e.temps.begin(), e.temps.end());
         // **A trivially copyable class is copied, not constructed** - there is no copy
@@ -2115,8 +2135,7 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
         if (e.args.size() == 1 && !e.braced && !e.direct && copyConstructorOf(plain) == nullptr &&
             moveConstructorOf(plain) == nullptr && e.args[0]->type() != nullptr &&
             e.args[0]->type()->unqualified() == plain) {
-            ExprPtr dst(Var::local(d.name, at));
-            dst->setType(plain);
+            ExprPtr dst = objectAt(one, symbol, at);
             ExprPtr store(new Assign(std::move(dst), std::move(e.args[0])));
             store->setType(plain);
             all.push_back(StmtPtr(new ExprStmt(std::move(store))));
@@ -2130,7 +2149,7 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
                                      plain->describe() + "' taking it is 'explicit' - write '" +
                                      plain->localName() + "(...)' in the list, which asks for it by name");
             }
-            all.push_back(constructObject(one, std::string(), at, std::move(e.args), copyInit, empty));
+            all.push_back(constructObject(one, symbol, at, std::move(e.args), copyInit, empty));
         }
         flushTemporaries(all);
     }
@@ -2144,7 +2163,9 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
         if (ctor->implicit) {
             // value-initialisation zeroes first where nobody wrote the constructor: one by one
             for (long long i = firstDefault; i < total; i++)
-                all.push_back(constructObject(one, std::string(), offset - static_cast<int>(i * size),
+                all.push_back(constructObject(one, symbol, symbol.empty()
+                                                  ? offset - static_cast<int>(i * size)
+                                                  : static_cast<int>(i * size),
                                               std::vector<ExprPtr>(), true, true));
         } else {
             markUsed(ctor);
@@ -2152,8 +2173,9 @@ StmtPtr Parser::constructLocalArrayFromList(const Declared &d, int offset) {
             std::vector<ExprPtr> defaults;
             applyDefaults(chosen, defaults, d.pos);
             const int indexSlot = allocateFrameSlot(types_.intType());
-            ExprPtr first(Var::local(d.name, offset - static_cast<int>(firstDefault * size)));
-            first->setType(plain);
+            ExprPtr first = objectAt(one, symbol, symbol.empty()
+                ? offset - static_cast<int>(firstDefault * size)
+                : static_cast<int>(firstDefault * size));
             ExprPtr start(new Unary('&', std::move(first)));
             start->setType(types_.pointerTo(plain));
             std::vector<ExprPtr> args;

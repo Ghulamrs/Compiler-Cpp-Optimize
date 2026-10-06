@@ -1096,7 +1096,23 @@ ExprPtr Parser::objectAt(const Declared &d, const std::string &symbol, int offse
     if (!symbol.empty()) v->setSymbol(symbol);
     ExprPtr e(v);
     e->setType(d.type);
-    return e;
+    if (symbol.empty() || offset == 0) return e;
+    // An element of a global array: `*(T *)((char *)&g + offset)`, the add in bytes.
+    const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+    const Type *ptr = types_.pointerTo(d.type);
+    ExprPtr addr(new Unary('&', std::move(e)));
+    addr->setType(ptr);
+    ExprPtr asChars(new Cast(chars, std::move(addr)));
+    asChars->setType(chars);
+    ExprPtr step(new Num(static_cast<long long>(offset)));
+    step->setType(types_.get(Kind::LongLong));
+    ExprPtr moved(new Binary(BinOp::Add, std::move(asChars), std::move(step)));
+    moved->setType(chars);
+    ExprPtr back(new Cast(ptr, std::move(moved)));
+    back->setType(ptr);
+    ExprPtr there(new Unary('*', std::move(back)));
+    there->setType(d.type);
+    return there;
 }
 
 // `??__F<scoped>@YAXXZ`, cl's name for the function atexit is handed for one
@@ -1132,19 +1148,36 @@ std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
 // **An array of a class with static storage duration**: built by the class's
 // loop before main, destroyed last first at exit by a helper calling the
 // other loop - __cxa_atexit with the array on Itanium, atexit on Microsoft.
-std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
+std::vector<StmtPtr> Parser::buildStaticArrayConstruction(Declared &d,
                                                           const std::string &symbol,
                                                           const std::string &helper) {
     const Type *elem = d.type;
-    long long count = 1;
-    while (elem->isArray()) { count *= elem->length(); elem = elem->pointee(); }
+    while (elem->isArray()) elem = elem->pointee();
     const Type *plain = elem->unqualified();
     const Type *ptr = types_.pointerTo(plain);
     const Type *sizeT = types_.get(target_.sizeType());
-    if (peek().is("(") || peek().is("=") || peek().is("{"))
-        src_.fail(d.pos, "an initialiser for an array of '" + plain->describe() +
-                         "' is not supported yet - each element gets the "
-                         "default constructor");
+    if (peek().is("("))
+        src_.fail(d.pos, "an array is initialised from a braced list - "
+                         "write '" + d.name + "[...] = { ... }'");
+    const bool listed = peek().is("{") || (peek().is("=") && peekAt(1).is("{"));
+    if (peek().is("=") && !listed)
+        src_.fail(d.pos, "an array of '" + plain->describe() + "' is "
+                         "initialised from a braced list, '= { ... }'");
+    if (listed && !hasConstructors(plain->tag()))
+        src_.fail(d.pos, "a braced list for an array of '" + plain->describe() +
+                         "', a class with a destructor and no constructor, is "
+                         "not supported yet");
+    if (!listed && d.type->length() < 0)
+        src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
+                         "to take one from");
+    // `S g[] = {...}`: each element copy-initialised from its initialiser, as a local's are.
+    std::vector<StmtPtr> out;
+    if (listed) {
+        consume("=");
+        out.push_back(constructLocalArrayFromList(d, 0, [] { return 0; }, symbol));
+    }
+    long long count = 1;
+    for (const Type *t = d.type; t->isArray(); t = t->pointee()) count *= t->length();
 
     // The array's address, which is its first element's.
     auto arrayAddress = [&]() {
@@ -1154,8 +1187,7 @@ std::vector<StmtPtr> Parser::buildStaticArrayConstruction(const Declared &d,
         first->setType(ptr);
         return first;
     };
-    std::vector<StmtPtr> out;
-    if (hasConstructors(plain->tag())) {
+    if (!listed && hasConstructors(plain->tag())) {
         ExprPtr base = arrayAddress();
         ExprPtr n(new Num(count));
         n->setType(sizeT);
@@ -1292,7 +1324,7 @@ void Parser::registerDestruction(const Declared &d, const std::string &symbol,
 // A file-scope object with a constructor, or a static data member of one,
 // built inside the init function. `once` is a template's static member: a
 // weak guard beside it keeps a second unit's copy from building it again.
-void Parser::dynamicInitialise(const Declared &d, const std::string &symbol,
+void Parser::dynamicInitialise(Declared &d, const std::string &symbol,
                                const std::string &helper, bool once) {
     if (d.type->isConst() && !peek().is("=") && !peek().is("(") &&
         !peek().is("{"))
@@ -1489,7 +1521,7 @@ std::string Parser::uniqueStaticSymbol(const std::string &name) {
 
 // The Microsoft helper for a static local is scoped to its function -
 // `??__Floc@?1??f@@YAHXZ@YAXXZ` - with an undecorated owner written ?name@@9.
-void Parser::staticLocalWithConstructor(const Declared &d,
+void Parser::staticLocalWithConstructor(Declared &d,
                                         std::vector<StmtPtr> &inits) {
     const std::string symbol = uniqueStaticSymbol(d.name);
     std::string helper;

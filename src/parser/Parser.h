@@ -6,6 +6,7 @@
 #include "../Mangle.h"
 #include "../Type.h"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -1134,7 +1135,7 @@ private:
                            ExprPtr count, std::size_t pos);
     // The bytes before an array from `new T[n]` that hold n, for delete[].
     int arrayCookie(const Type *elem) const;
-    std::vector<StmtPtr> buildStaticArrayConstruction(const Declared &d,
+    std::vector<StmtPtr> buildStaticArrayConstruction(Declared &d,
                                                       const std::string &symbol,
                                                       const std::string &helper);
     // The name a base subobject's constructor is called by: Itanium's C2
@@ -1327,13 +1328,13 @@ private:
     std::string atexitHelperName(const std::string &object) const;
     ExprPtr functionAddress(const std::string &symbol, const Type *fnType);
     // A file-scope object with a constructor, and a static data member of one.
-    void dynamicInitialise(const Declared &d, const std::string &symbol,
+    void dynamicInitialise(Declared &d, const std::string &symbol,
                            const std::string &helper, bool once);
     // [stmt.dcl]/4.
     StmtPtr guardOnce(const std::string &symbol, std::vector<StmtPtr> body);
     // Where guardSlots_ stood when the init function's frame was entered.
     std::size_t initGuardMark_ = 0;
-    void staticLocalWithConstructor(const Declared &d,
+    void staticLocalWithConstructor(Declared &d,
                                     std::vector<StmtPtr> &inits);
     std::string uniqueStaticSymbol(const std::string &name);
     // A reference with static storage duration: bound statically where the
@@ -1397,7 +1398,9 @@ private:
     // from its initialiser, the rest value-initialised. Apart from constructLocal, which builds a
     // single object and names the class through d.type, which for an array is the array.
     StmtPtr constructLocalArray(const Declared &d, int offset, int indexSlot);
-    StmtPtr constructLocalArrayFromList(const Declared &d, int offset);
+    StmtPtr constructLocalArrayFromList(Declared &d, int offset,
+                                        const std::function<int()> &declareLate,
+                                        const std::string &symbol = std::string());
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
     // `forceOwner` names the class a *qualified* call reached - `b.Base::f()`
