@@ -84,7 +84,7 @@ one() {
             sed 's/^/      /' "$OUT/$base.ti.log" | head -3
             verdict=fail
         else
-            { ( ulimit -t 20; "$VMSIM" --run "$OUT/$base.ti.out" ) > "$OUT/$base.sim.out" 2>&1 < /dev/null; } 2>/dev/null || true
+            { ( ulimit -t 20 2>/dev/null; "$VMSIM" --run "$OUT/$base.ti.out" ) > "$OUT/$base.sim.out" 2>&1 < /dev/null; } 2>/dev/null || true
             if ! diff -q "tests/cases/$base.expected" "$OUT/$base.sim.out" >/dev/null; then
                 echo "FAIL $base (vm6747sim):"
                 diff "tests/cases/$base.expected" "$OUT/$base.sim.out" | sed 's/^/      /' | head -8
