@@ -11973,3 +11973,30 @@ PATH, the runtime in `$TIRTS` (default `~/c6747-lib`); a missing one stops the r
 writing `+inf` - with the reason beside each. c90's suite has the same leg, and holds the exit
 status too, through vm6747sim's `--main-status`: TI's boot calls `exit(1)` whatever `main`
 returned.
+
+## A file of data alone, and `extern "C"` written without braces, 2026-10-06
+
+**Found by RTS6x, our own C6747 run-time**, which is written in C++ and compiled by
+cpp11, and needs both shapes at once: a table of FILE, the type-information objects.
+
+**A translation unit that defines no function was refused**, "the file defines no
+functions" - inherited from Compiler-C. [basic.link] asks no function of a
+translation unit, and an empty one is valid C++ too. The refusal is gone; all four
+code generators emit a data-only file and an empty one, and each target's assembler
+takes them (ml64 included, on the Windows box).
+
+**[dcl.link]/7: a declaration written straight after `extern "C"`, with no braces,
+is treated as if it said `extern`**, for its linkage and for whether it defines. So
+`extern "C" const char v[] = "x";` is external, where cpp11 had made it internal (a
+const at namespace scope), and `extern "C" int u;` only declares, where cpp11 had
+defined it. `static` or a second `extern` there is refused, as clang refuses it.
+`directLinkage_` marks the one declaration; inside braces nothing changes.
+
+**And [dcl.link]/4, found by the names suite on the new case:** a language linkage
+names only what has external linkage, so an internal function or variable inside
+`extern "C"` is an ordinary C++ name - `_ZL2sfi`, `?sf@@YAHH@Z`. cpp11 wrote it plain.
+
+`data-only-translation-unit.cpp` is the first case built from two files: run.sh and
+tms6747.sh build `<case>.part.cpp` into `<case>`'s program, and emit.sh and names.sh
+take the part as a file of its own, which is the data-only check on all four targets.
+Emit golden recorded with the compiler before the change: **0 of 1450 files changed**.

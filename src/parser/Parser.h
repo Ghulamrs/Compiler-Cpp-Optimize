@@ -1868,9 +1868,11 @@ private:
                        const std::vector<const Type *> &params, bool variadic,
                        std::size_t pos);
 
-    // How deep inside 'extern "C"' the parser currently is. Zero means C++
-    // linkage, which is what a name has unless someone says otherwise.
+    // How deep inside 'extern "C"' the parser is - zero is C++ linkage, unless someone says otherwise -
+    // and whether the declaration being read is the one written straight after `extern "C"`, no
+    // braces, which [dcl.link]/7 reads as if it said `extern`.
     int cLinkage_ = 0;
+    bool directLinkage_ = false;
     bool linkageSpecification();
     std::string functionSymbol(const std::string &name, const Type *returns,
                                const std::vector<const Type *> &params,

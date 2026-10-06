@@ -47,6 +47,8 @@ if [ "${1:-}" = --one ]; then only=$2; else only="${1:-}"; fi
 # output, so that the cases run at once: JOBS of them, the machine's processors by default.
 one() {
     base=$1; src=tests/cases/$base.cpp
+    # `<case>.part.cpp` is the second translation unit of <case>, built into its program, not a case.
+    case "$base" in *.part) return ;; esac
     if [ -f "tests/cases/$base.notarget" ] && grep -q "^tms6747[[:space:]]" "tests/cases/$base.notarget"; then
         echo "  skip $base for tms6747: $(grep "^tms6747[[:space:]]" "tests/cases/$base.notarget" | sed 's/^tms6747[[:space:]]*//')"
         echo notarget > "$OUT/$base.verdict"; return
@@ -60,13 +62,21 @@ one() {
         echo fail > "$OUT/$base.verdict"
         return
     fi
+    parts=""
+    if [ -f "tests/cases/$base.part.cpp" ]; then
+        if ! ( ulimit -t 10; "$CXX1" -S -arch tms6747 -nologo $CXX1_FLAGS "tests/cases/$base.part.cpp" -o "$OUT/$base.part.s" < /dev/null ) 2>>"$OUT/$base.err"; then
+            echo "FAIL $base: cpp11 refused its .part.cpp"; sed 's/^/      /' "$OUT/$base.err" | head -3
+            echo fail > "$OUT/$base.verdict"; return
+        fi
+        parts="$OUT/$base.part.s"
+    fi
     if [ -n "$CYCLES" ]; then
-        { "$VM" -c "$OUT/$base.s" > "$OUT/$base.raw" 2>&1 < /dev/null; } 2>/dev/null || true
+        { "$VM" -c "$OUT/$base.s" $parts > "$OUT/$base.raw" 2>&1 < /dev/null; } 2>/dev/null || true
         # The program's last line may have no newline, so the count is cut out exactly as written.
         grep -o 'CYCLES count=[0-9]* packets=[0-9]* natives=[0-9]*' "$OUT/$base.raw" | sed 's/^CYCLES //' > "$OUT/$base.cycles"
         perl -0pe 's/CYCLES count=\d+ packets=\d+ natives=\d+\n//' "$OUT/$base.raw" > "$OUT/$base.out"
     else
-        { "$VM" "$OUT/$base.s" > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
+        { "$VM" "$OUT/$base.s" $parts > "$OUT/$base.out" 2>&1 < /dev/null; } 2>/dev/null || true
     fi
     verdict=pass
     if ! diff -q "tests/cases/$base.expected" "$OUT/$base.out" >/dev/null; then
@@ -78,7 +88,8 @@ one() {
         if grep -q "^$base[[:space:]]" tests/tms6747-sim.txt; then
             [ "$verdict" = pass ] && verdict=simskip
         elif ! { "$ASM6X" "$OUT/$base.s" -o "$OUT/$base.obj" &&
-                 "$LNK6X" -mv6740 --abi=eabi -i "$TIRTS" "$OUT/link.cmd" "$OUT/$base.obj" \
+                 { [ -z "$parts" ] || "$ASM6X" "$parts" -o "$OUT/$base.part.obj"; } &&
+                 "$LNK6X" -mv6740 --abi=eabi -i "$TIRTS" "$OUT/link.cmd" "$OUT/$base.obj" ${parts:+"$OUT/$base.part.obj"} \
                      -l rts6740_elf_eh.lib -o "$OUT/$base.ti.out"; } > "$OUT/$base.ti.log" 2>&1 < /dev/null; then
             echo "FAIL $base (vm6747sim): asm6x or lnk6x refused it"
             sed 's/^/      /' "$OUT/$base.ti.log" | head -3

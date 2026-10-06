@@ -30,6 +30,9 @@ esac
 # every line it would have printed goes to $OUT/<case>.report, and pass, fail or skip to .verdict.
 one() {
   base=$1; src=tests/cases/$base.cpp
+  # `<case>.part.cpp` is the second translation unit of <case>, built into its program, not a case.
+  case "$base" in *.part) return ;; esac
+  part=""; [ -f "tests/cases/$base.part.cpp" ] && part="tests/cases/$base.part.cpp"
   if [ -f "tests/cases/$base.notarget" ] && grep -q "^$HOST\b" "tests/cases/$base.notarget"; then
     echo "  skip $base for $HOST: $(grep "^$HOST\b" "tests/cases/$base.notarget" | sed "s/^$HOST[[:space:]]*//")"
     return
@@ -50,7 +53,7 @@ one() {
     return
   fi
 
-  if ! cxx1 "$src" -o "$OUT/$base" 2>"$OUT/$base.err"; then
+  if ! cxx1 "$src" $part -o "$OUT/$base" 2>"$OUT/$base.err"; then
     echo "FAIL $base: did not compile"
     sed 's/^/      /' "$OUT/$base.err"
     echo fail > "$OUT/$base.verdict"

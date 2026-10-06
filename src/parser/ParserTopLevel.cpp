@@ -31,7 +31,9 @@ bool Parser::linkageSpecification() {
         }
         at_++;
     } else {
+        directLinkage_ = true;
         topLevel(*current_);
+        directLinkage_ = false;
     }
 
     if (c) cLinkage_--;
@@ -146,6 +148,9 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
+    // Taken before anything nested can read it: `extern "C" extern "C" int x;` sets it again.
+    const bool direct = directLinkage_;
+    directLinkage_ = false;
     if (linkageSpecification()) return;
     if (templateDeclaration()) return;
 
@@ -153,6 +158,15 @@ void Parser::topLevel(Program &program) {
     Qualifiers quals;
     std::size_t scPos = peek().pos;
     const Type *base = specifiers(&sc, &quals);
+    // [dcl.link]/7: linkage, and whether this defines, are what `extern` would give - so
+    // `extern "C" int u;` declares and `extern "C" const int k = 5;` is external. No storage class.
+    if (direct) {
+        if (sc == StorageStatic || sc == StorageExtern)
+            src_.fail(scPos, std::string("a declaration written straight after 'extern \"C\"' takes no storage "
+                             "class - [dcl.link]/7 already makes it '") + (sc == StorageStatic ? "extern', and 'static' contradicts it"
+                             : "extern', and saying it twice is refused"));
+        if (sc == StorageNone) sc = StorageExtern;
+    }
 
     if (peek().is(";")) { at_++; return; }
 
@@ -238,7 +252,7 @@ void Parser::topLevel(Program &program) {
     if (peek().is("(") && d.paramsAt == 0 && d.qualifier.empty() &&
         !d.type->isStructOrUnion() && !d.type->isArray() &&
         !d.type->isReference() && !d.type->isFunction() &&
-        sc != StorageExtern && !constexprFunction && !inlineFunction) {
+        (sc != StorageExtern || direct) && !constexprFunction && !inlineFunction) {
         scalarInitAhead = atParenInitialiser();
     }
 
@@ -1566,7 +1580,5 @@ Program Parser::parse() {
     pruneExternalVtables(program);
     pruneUnchosenCandidates(program);
     finishDynamicInit(program);
-    if (program.functions.empty())
-        src_.fail(0, "the file defines no functions");
     return program;
 }

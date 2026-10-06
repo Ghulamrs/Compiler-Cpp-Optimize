@@ -871,13 +871,13 @@ ExprPtr Parser::defaultPromote(ExprPtr e) {
     return e;
 }
 
-// The name the linker is given: `main` keeps its own by the rule that makes it
-// findable at all, anything inside extern "C" because that is what the linkage
-// specification asked for, and everything else is mangled in the target's ABI.
+// The name the linker is given: `main` keeps its own, extern "C" keeps a name with external
+// linkage as written ([dcl.link]/4 - an internal one is a C++ name there too, `_ZL2sfi`), and
+// everything else is mangled in the target's ABI.
 std::string Parser::functionSymbol(const std::string &name, const Type *returns,
                                    const std::vector<const Type *> &params,
                                    bool variadic, bool internal, std::size_t pos) {
-    if (cLinkage_ > 0 || name == "main") return name;
+    if ((cLinkage_ > 0 && !internal) || name == "main") return name;
     const Type *fn = types_.functionType(returns, params, variadic);
     std::string out, why;
     bool ok = target_.microsoftNames()

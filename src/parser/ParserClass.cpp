@@ -3661,7 +3661,9 @@ std::string Parser::memberSymbol(const std::string &cls, const std::string &name
 // keeps the name it was written with.
 std::string Parser::dataSymbol(const std::string &name, const Type *type,
                                bool isStatic, std::size_t pos) {
-    if (cLinkage_ > 0) return name;
+    // [dcl.link]/4: extern "C" names a variable with external linkage only; an internal one
+    // is spelled as any internal C++ name is - `_ZL2sv`, or as written on Microsoft.
+    if (cLinkage_ > 0 && !isStatic) return name;
     if (!target_.microsoftNames()) return itaniumDataName(name, isStatic);
     // Microsoft mangles a variable only where something outside could name it.
     // An internal one keeps what it was written with - measured against clang,
