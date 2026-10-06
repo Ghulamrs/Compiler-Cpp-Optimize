@@ -1044,10 +1044,11 @@ private:
 
     // An argument that is not a plain builtin can be named again by index.
     void argument(const Type *t) {
-        // **An enumeration takes a slot though its kind is `Kind::Int`** - it
-        // is spelled `W4Colour@@` rather than `H`, and a repeat is the digit:
-        // `d(Colour, Colour)` is `W4Colour@@0@Z`, measured.
-        if (microsoftBuiltin(t->kind()) == nullptr || t->isEnumeration()) {
+        // **An enumeration takes a slot though its kind is `Kind::Int`**, and so does a builtin of
+        // more than one letter: `d(Colour, Colour)` is `W4Colour@@0@Z` and `a(long long, long long)`
+        // `?a@@YAX_J0@Z` - `_J`, `_K`, `_N`, `_W`, `$$T` each a slot, measured with clang for this ABI.
+        const char *builtin = microsoftBuiltin(t->kind());
+        if (builtin == nullptr || builtin[1] != '\0' || t->isEnumeration()) {
             for (std::size_t i = 0; i < args_.size(); i++)
                 if (args_[i] == t) { out += static_cast<char>('0' + i); return; }
             // **A type takes its slot after it is spelled, not before.**
