@@ -1,0 +1,40 @@
+variant        built simEXIT sim=exp ccsRan ccsEXIT ccs=exp sim=ccs exit=  ratio sim/ccs cycle.CPU (median min max)
+c11-O2           365     354     334    363     359     335     362   358  0.9942 0.8856 1.0000 (n=354)
+c11-Os           365     353     334    263     260     247     262   261  0.9940 0.8851 1.0000 (n=258)
+ti744-O2         274     273     260    274     273     261     273   274  0.9951 0.9491 1.0000 (n=273)
+
+vm6747sim output != CCS output:
+  include-streams                    c11-O2        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    c11-Os        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    ti744-O2      sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+
+exit disagreements (one reached C$$EXIT, the other not):
+  exception-table-large              c11-O2        simExit=none ccsExit=C$$EXIT sim=98110 ccs=102684
+  exception-table-large              c11-Os        simExit=none ccsExit=C$$EXIT sim=98134 ccs=102707
+  local-beside-try                   c11-O2        simExit=none ccsExit=C$$EXIT sim=3273 ccs=3929
+  local-beside-try                   c11-Os        simExit=none ccsExit=C$$EXIT sim=3296 ccs=3951
+  throw-class                        c11-O2        simExit=none ccsExit=C$$EXIT sim=2198 ccs=2614
+  throw-pointer                      c11-O2        simExit=none ccsExit=C$$EXIT sim=3284 ccs=3703
+  throw-temporary                    c11-O2        simExit=none ccsExit=C$$EXIT sim=3476 ccs=4208
+
+CCS (the TI oracle) output != .expected, by variant:
+  c11-O2         28: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer throw-temporary try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  c11-Os         16: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe
+  ti744-O2       13: bool by-value by-value-destructor catch-copy-throws float-literal-exact float-literal-tens narrowing-allowed operator-compound small-class-return stack-probe stream-number-stops string-at template-nontype-numeric
+
+CCS not run (no RESULT):
+  c11-O2          2: stdexcept temporary-unwind
+  c11-Os        102: arith fib floats hash hello isort matmul sieve stdexcept stdin-gets stream-base-manipulators stream-char-types stream-long-long stream-number-stops string-at string-room stringize-whitespace tagnames template-angle template-angle-split template-class template-const-argument template-container template-deduction template-default-argument template-dependent-base template-enumerator template-explicit template-function template-id-qualified-and-deduced template-id-qualifier template-in-namespace template-initializer-list-ctor template-member template-member-not-instantiated template-name-shadowed template-nested template-nested-angle template-nontype template-nontype-expr template-nontype-numeric template-nontype-overload template-out-of-line template-overload template-partial template-sfinae template-static-data-member template-static-data-member-ctor template-static-member-no-init template-two-of-a-name template-variadic template-variadic-into-args template-variadic-peel temporary-in-short-circuit temporary-of-template temporary-unwind throw-class throw-class-pointer-ms throw-multiple-bases throw-out-of-handler throw-pointer throw-temporary thunk try-body-local try-catch try-catch-value try-in-handler try-in-try-body tuple two-try-same-type typeid typeid-ms typename-dependent-member unary-operator unsigned-from-double user-conversion using-declaration using-declaration-chain value-init-empty-braces value-init-fundamental value-init-implicit-ctor value-init-temporary vector-range-insert vector-value-init virt virtual virtual-base-construction-vtable virtual-base-diamond virtual-base-dispatch virtual-base-initialiser virtual-base-member virtual-base-of-virtual-base virtual-base-second-base virtual-base-vbtable virtual-dtor virtual-dtor-through-virtual-base virtual-inline volatile-object vtable-implicit-dtor wchar-distinct wchar-targets wstring
+
+build failures, by variant:
+  c11-O2          1: structs
+  c11-Os          1: structs
+  ti744-O2       92: alignas-alignof array-member-dimensions array-of-class-list bitfield-layout bool-result callable-members-and-braces char16-char32 class-temporary const-uninitialised-ok constexpr constexpr-call-floating constexpr-double constexpr-function constructor-template constructor-template-in-member-template decltype default-arg-declares digraphs direct-init-scalar dtor-throws-unwinding dynamic-init enum-base enum-conversions explicit explicit-conversion-function explicit-destructor-call global-constructor handler-exit-end-catch implicit-move init-list-as-argument initializer-list-construction integer-literal-types lambda lambda-after-destructible lambda-capture lambda-capture-by-reference lambda-capture-by-value lambda-capture-default-this lambda-capture-this lambda-capture-this-const lambda-class-scope-names lambda-default-capture lambda-keeps-try-state lambda-mutable lambda-nested-capture lambda-return-through-try lambda-returning-lambda lambda-static-local lifetime-ledger local-class-template-arg local-class-two-functions local-in-handler local-try-states lookup-order member-init-class member-initialiser member-pointer-models move-constructor move-only nested-parse-state ...
+
+ratio outliers (outside 0.95..1.02):
+  align-loops                        ti744-O2      0.9491  sim=50397 ccs=53098
+  divide-by-constant                 c11-Os        0.8989  sim=3778387 ccs=4203534
+  include-streams                    c11-O2        0.8856  sim=55857 ccs=63074
+  include-streams                    c11-Os        0.8851  sim=58912 ccs=66556
+  pipelined-stepped                  c11-Os        0.9492  sim=397849 ccs=419135
+  virt                               c11-O2        0.9436  sim=1004523 ccs=1064562

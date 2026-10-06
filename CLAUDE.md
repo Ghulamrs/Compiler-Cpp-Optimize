@@ -11937,3 +11937,22 @@ exits non-zero in 39s, with `throw-pointer` printing `int* -2147437996` for
 `int* 42` (C1) and `narrowing-allowed` printing `1 0 ... 0 1` for `1 1 ... 1 1`
 (C2), each a failure VM6747 passes; at today's heads it exits 0 in 38s. It is
 the last line of `tools/verify-three`'s c6747 leg.
+
+## An 8-byte value saved in one word, and the release test that found it, 2026-10-06
+
+**At -O0, `a[i % 8] = x` for a double or a `long long` stored garbage in the high word on TI's
+C6747.** `visit(const Assign &)` saved the value with `push()` and restored it with `pop("A4")`,
+one word each, around the address computation. When that computation calls a helper (`i / 8`,
+`i % 8` are `__c6xabi_divi` and `_remi`), TI's helper clobbers A5. It saves and restores with
+`pushValue`/`popValue` now, which are `push`/`pop` for anything narrower. The emit golden moved
+in 65 tms6747 files, every changed line a `STW`/`LDW` pair becoming `STDW`/`LDDW`; -O1 and up
+never reached the path. `assign-wide-through-call.cpp` is the case.
+
+**The suite could not see it, and that is the point of recording it.** tests/tms6747.sh runs
+the assembly on the VM6747 emulator, whose runtime helpers are native and leave A5 alone - the
+class of C1 and C2. It was found by RIDE 5.0's release test (docs/ride50-test-2026-10-06): every
+corpus program built by the installed cpp11 + asm6x + lnk6x and run on vm6747sim *and* on CCS
+5.5's cycle-accurate simulator, the two agreeing, `.expected` disagreeing. The same run found
+lnk6x composing the C++ unwind index before `.c6xabi.extab` was placed when the link map names
+neither section - RIDE's own map does not - so every throwing program was broken on TI's
+machine; fixed in LNK6x the same day.

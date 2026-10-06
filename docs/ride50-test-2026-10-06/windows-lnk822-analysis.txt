@@ -1,0 +1,32 @@
+variant        built simEXIT sim=exp ccsRan ccsEXIT ccs=exp sim=ccs exit=  ratio sim/ccs cycle.CPU (median min max)
+lnk822-O2        365     341     336    364     347     337     363   358  0.9933 0.8819 1.0000 (n=341)
+tilink822-O2     365     364     362    365     364     363     364   365  0.9936 0.8819 1.0000 (n=364)
+
+vm6747sim output != CCS output:
+  include-streams                    lnk822-O2     sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    tilink822-O2  sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+
+exit disagreements (one reached C$$EXIT, the other not):
+  condition-declaration-unwind       lnk822-O2     simExit=none ccsExit=C$$EXIT sim=4976 ccs=5192
+  dtor-throws-unwinding              lnk822-O2     simExit=none ccsExit=C$$EXIT sim=3400 ccs=3605
+  handler-exit-ms                    lnk822-O2     simExit=none ccsExit=C$$EXIT sim=2348 ccs=7577
+  noexcept-local-terminates          lnk822-O2     simExit=none ccsExit=C$$EXIT sim=4760 ccs=4975
+  noexcept-terminates-callee         lnk822-O2     simExit=none ccsExit=C$$EXIT sim=6683 ccs=6915
+  throw-class-pointer-ms             lnk822-O2     simExit=none ccsExit=C$$EXIT sim=1972 ccs=2214
+
+CCS (the TI oracle) output != .expected, by variant:
+  lnk822-O2      27: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe stdexcept string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  tilink822-O2    2: stack-probe template-nontype-numeric
+
+CCS not run (no RESULT):
+  lnk822-O2       1: temporary-unwind
+
+build failures, by variant:
+  lnk822-O2       1: structs
+  tilink822-O2    1: structs
+
+ratio outliers (outside 0.95..1.02):
+  include-streams                    lnk822-O2     0.8819  sim=53721 ccs=60918
+  include-streams                    tilink822-O2  0.8819  sim=53721 ccs=60918
+  virt                               lnk822-O2     0.9436  sim=1004400 ccs=1064440
+  virt                               tilink822-O2  0.9436  sim=1004400 ccs=1064440

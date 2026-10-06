@@ -1077,21 +1077,22 @@ void Tms6747::visit(const Assign &n) {
         store(n.type(), frameOperand(disp, accessSize(n.type())));
         return;
     }
+    // A double or a 64-bit value is saved whole: the address may call a helper, and TI's clobber A5.
     if (target != nullptr && regCandidate(*target)) {
-        push();
+        pushValue(n.type());
         plainAccess_ = true;
         genAddr(n.target());
         plainAccess_ = false;
         out_ << "\tMV\tA4, A6\n";
-        pop("A4");
+        popValue(n.type(), "A4");
         store(n.type(), "*A6");
         return;
     }
-    push();                         // save the value
+    pushValue(n.type());            // save the value, both words of a double
     if (bf) bitFieldUnitAddr(*bf);  // A4 = the unit's address
     else    genAddr(n.target());    // A4 = address
     out_ << "\tMV\tA4, A6\n";        // A6 = address
-    pop("A4");                       // A4 = value again
+    popValue(n.type(), "A4");        // A4 (and A5) = value again
     if (bf) { bitFieldInsert(*bf); return; }
     if (n.type()->isStructOrUnion()) {
         copyBlock(n.type()->size(target_), "A4", "A6", n.type()->align(target_), n.type()->align(target_) >= 8);

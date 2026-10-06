@@ -1,0 +1,94 @@
+variant        built simEXIT sim=exp ccsRan ccsEXIT ccs=exp sim=ccs exit=  ratio sim/ccs cycle.CPU (median min max)
+c11-O0           365     353     333    363     357     334     362   359  0.9953 0.8695 1.0000 (n=353)
+c11-O1           365     353     334    363     358     335     362   358  0.9942 0.8851 1.0000 (n=353)
+c11-O2           365     354     334    363     359     335     362   358  0.9942 0.8856 1.0000 (n=354)
+c11-Os           365     353     334    363     358     335     362   358  0.9942 0.8851 1.0000 (n=353)
+ti822-O2         284     283     268    284     283     270     282   284  0.9946 0.9460 1.0000 (n=283)
+ti744-O2         274     273     260    274     273     261     273   274  0.9951 0.9491 1.0000 (n=273)
+lnk822-O2        365     341     336    364     347     337     363   358  0.9933 0.8819 1.0000 (n=341)
+tilink822-O2     365     364     362    365     364     363     364   365  0.9936 0.8819 1.0000 (n=364)
+
+vm6747sim output != CCS output:
+  by-value-tails                     ti822-O2      sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    c11-O0        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    c11-O1        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    c11-O2        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    c11-Os        sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    ti822-O2      sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    ti744-O2      sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    lnk822-O2     sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+  include-streams                    tilink822-O2  sim=differ ccs=ok     simExit=C$$EXIT ccsExit=C$$EXIT
+
+exit disagreements (one reached C$$EXIT, the other not):
+  exception-table-large              c11-O1        simExit=none ccsExit=C$$EXIT sim=98134 ccs=102707
+  exception-table-large              c11-O2        simExit=none ccsExit=C$$EXIT sim=98110 ccs=102684
+  exception-table-large              c11-Os        simExit=none ccsExit=C$$EXIT sim=98134 ccs=102707
+  local-beside-try                   c11-O0        simExit=none ccsExit=C$$EXIT sim=3378 ccs=4114
+  local-beside-try                   c11-O1        simExit=none ccsExit=C$$EXIT sim=3296 ccs=3951
+  local-beside-try                   c11-O2        simExit=none ccsExit=C$$EXIT sim=3273 ccs=3929
+  local-beside-try                   c11-Os        simExit=none ccsExit=C$$EXIT sim=3296 ccs=3951
+  throw-class                        c11-O0        simExit=none ccsExit=C$$EXIT sim=2453 ccs=2868
+  throw-class                        c11-O1        simExit=none ccsExit=C$$EXIT sim=2228 ccs=2644
+  throw-class                        c11-O2        simExit=none ccsExit=C$$EXIT sim=2198 ccs=2614
+  throw-class                        c11-Os        simExit=none ccsExit=C$$EXIT sim=2228 ccs=2644
+  throw-pointer                      c11-O0        simExit=none ccsExit=C$$EXIT sim=3219 ccs=3635
+  throw-pointer                      c11-O1        simExit=none ccsExit=C$$EXIT sim=3281 ccs=3700
+  throw-pointer                      c11-O2        simExit=none ccsExit=C$$EXIT sim=3284 ccs=3703
+  throw-pointer                      c11-Os        simExit=none ccsExit=C$$EXIT sim=3281 ccs=3700
+  throw-temporary                    c11-O0        simExit=none ccsExit=C$$EXIT sim=3751 ccs=4480
+  throw-temporary                    c11-O1        simExit=none ccsExit=C$$EXIT sim=3478 ccs=4208
+  throw-temporary                    c11-O2        simExit=none ccsExit=C$$EXIT sim=3476 ccs=4208
+  throw-temporary                    c11-Os        simExit=none ccsExit=C$$EXIT sim=3478 ccs=4208
+  condition-declaration-unwind       lnk822-O2     simExit=none ccsExit=C$$EXIT sim=4976 ccs=5192
+  dtor-throws-unwinding              lnk822-O2     simExit=none ccsExit=C$$EXIT sim=3400 ccs=3605
+  handler-exit-ms                    lnk822-O2     simExit=none ccsExit=C$$EXIT sim=2348 ccs=7577
+  noexcept-local-terminates          lnk822-O2     simExit=none ccsExit=C$$EXIT sim=4760 ccs=4975
+  noexcept-terminates-callee         lnk822-O2     simExit=none ccsExit=C$$EXIT sim=6683 ccs=6915
+  throw-class-pointer-ms             lnk822-O2     simExit=none ccsExit=C$$EXIT sim=1972 ccs=2214
+
+CCS (the TI oracle) output != .expected, by variant:
+  c11-O0         29: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms hoisted-invariants lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer throw-temporary try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  c11-O1         28: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer throw-temporary try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  c11-O2         28: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer throw-temporary try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  c11-Os         28: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try local-beside-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer throw-temporary try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  ti822-O2       14: bool by-value by-value-destructor catch-copy-throws float-literal-exact handler-exit-end-catch local-in-handler narrowing-allowed operator-compound small-class-return stack-probe stream-number-stops template-nontype-numeric throw-out-of-handler
+  ti744-O2       13: bool by-value by-value-destructor catch-copy-throws float-literal-exact float-literal-tens narrowing-allowed operator-compound small-class-return stack-probe stream-number-stops string-at template-nontype-numeric
+  lnk822-O2      27: catch-by-reference catch-copy-throws cleanup condition-declaration-unwind dtor-throws-unwinding exception-table-large handler-exit-ms lambda-keeps-try-state lambda-return-through-try new-class-array-placement noexcept-local-terminates noexcept-terminates noexcept-terminates-callee rethrow stack-probe stdexcept string-at template-nontype-numeric throw-class throw-class-pointer-ms throw-multiple-bases throw-pointer try-catch try-catch-value try-in-handler try-in-try-body two-try-same-type
+  tilink822-O2    2: stack-probe template-nontype-numeric
+
+CCS not run (no RESULT):
+  c11-O0          2: stdexcept temporary-unwind
+  c11-O1          2: stdexcept temporary-unwind
+  c11-O2          2: stdexcept temporary-unwind
+  c11-Os          2: stdexcept temporary-unwind
+  lnk822-O2       1: temporary-unwind
+
+build failures, by variant:
+  c11-O0          1: structs
+  c11-O1          1: structs
+  c11-O2          1: structs
+  c11-Os          1: structs
+  ti822-O2       82: alignas-alignof array-of-class-list bitfield-layout bool-result callable-members-and-braces char16-char32 class-temporary const-uninitialised-ok constexpr constexpr-call-floating constexpr-double constexpr-function constructor-template constructor-template-in-member-template decltype default-arg-declares digraphs direct-init-scalar dtor-throws-unwinding enum-base enum-conversions explicit explicit-conversion-function global-constructor implicit-move init-list-as-argument initializer-list-construction integer-literal-types lambda lambda-after-destructible lambda-capture lambda-capture-by-reference lambda-capture-by-value lambda-capture-default-this lambda-capture-this lambda-capture-this-const lambda-class-scope-names lambda-default-capture lambda-keeps-try-state lambda-mutable lambda-nested-capture lambda-return-through-try lambda-returning-lambda lambda-static-local local-class-template-arg local-class-two-functions lookup-order member-init-class member-initialiser member-pointer-models move-constructor move-only nested-parse-state noexcept noexcept-local-terminates noexcept-terminates noexcept-terminates-callee preprocessor-has-checks range-for range-for-class ...
+  ti744-O2       92: alignas-alignof array-member-dimensions array-of-class-list bitfield-layout bool-result callable-members-and-braces char16-char32 class-temporary const-uninitialised-ok constexpr constexpr-call-floating constexpr-double constexpr-function constructor-template constructor-template-in-member-template decltype default-arg-declares digraphs direct-init-scalar dtor-throws-unwinding dynamic-init enum-base enum-conversions explicit explicit-conversion-function explicit-destructor-call global-constructor handler-exit-end-catch implicit-move init-list-as-argument initializer-list-construction integer-literal-types lambda lambda-after-destructible lambda-capture lambda-capture-by-reference lambda-capture-by-value lambda-capture-default-this lambda-capture-this lambda-capture-this-const lambda-class-scope-names lambda-default-capture lambda-keeps-try-state lambda-mutable lambda-nested-capture lambda-return-through-try lambda-returning-lambda lambda-static-local lifetime-ledger local-class-template-arg local-class-two-functions local-in-handler local-try-states lookup-order member-init-class member-initialiser member-pointer-models move-constructor move-only nested-parse-state ...
+  lnk822-O2       1: structs
+  tilink822-O2    1: structs
+
+ratio outliers (outside 0.95..1.02):
+  align-loops                        ti822-O2      0.9460  sim=47339 ccs=50043
+  align-loops                        ti744-O2      0.9491  sim=50397 ccs=53098
+  divide-by-constant                 c11-Os        0.8989  sim=3778387 ccs=4203534
+  include-streams                    c11-O0        0.8695  sim=101220 ccs=116417
+  include-streams                    c11-O1        0.8851  sim=58912 ccs=66556
+  include-streams                    c11-O2        0.8856  sim=55857 ccs=63074
+  include-streams                    c11-Os        0.8851  sim=58912 ccs=66556
+  include-streams                    ti822-O2      0.9462  sim=107365 ccs=113475
+  pipelined-stepped                  c11-Os        0.9492  sim=397849 ccs=419135
+  isort                              c11-O1        0.9213  sim=1963180 ccs=2130806
+  isort                              c11-Os        0.9207  sim=1973678 ccs=2143704
+  virt                               c11-O1        0.9436  sim=1004574 ccs=1064613
+  virt                               c11-O2        0.9436  sim=1004523 ccs=1064562
+  virt                               c11-Os        0.9436  sim=1004574 ccs=1064613
+  include-streams                    lnk822-O2     0.8819  sim=53721 ccs=60918
+  include-streams                    tilink822-O2  0.8819  sim=53721 ccs=60918
+  virt                               lnk822-O2     0.9436  sim=1004400 ccs=1064440
+  virt                               tilink822-O2  0.9436  sim=1004400 ccs=1064440
