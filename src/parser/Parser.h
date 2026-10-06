@@ -1794,6 +1794,16 @@ private:
     bool inUnnamedNamespace_ = false;
     // **The body being read belongs to a static member.**
     bool inStaticMember_ = false;
+    // A static member's definition is read in its class's scope, as a static
+    // member function's body is - [class.static.data]/2; put back on the way out.
+    struct StaticMemberScope {
+        Parser *p; const Type *cls; bool wasStatic;
+        StaticMemberScope(Parser *parser, const Type *owner)
+            : p(parser), cls(parser->currentClass_), wasStatic(parser->inStaticMember_) {
+            if (owner != nullptr) { p->currentClass_ = owner; p->inStaticMember_ = true; }
+        }
+        ~StaticMemberScope() { p->currentClass_ = cls; p->inStaticMember_ = wasStatic; }
+    };
     // Whether a declaration here has internal linkage: written `static`, or
     // inside an unnamed namespace, which says the same thing about a name.
     bool internalLinkage(StorageClass sc) const {

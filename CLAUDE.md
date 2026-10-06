@@ -12257,3 +12257,42 @@ clang emits `__cxa_guard_abort` from a landing pad and cxx1 no pad, recorded in
 initialiser with a side effect run once, recursion, a dynamic const, a constant one); every
 call is its own statement, the order of arguments being unspecified. Emit golden 0 of 1494
 changed, 12 added across the three rounds of this day's work.
+
+## A static member's definition is read in its class's scope, 2026-10-06
+
+**`int D::modes_[D::Count] = { Text, Text };` was "'Text' was not declared"**,
+found by RTS6x. [class.static.data]/2 puts the initialiser of a static data
+member's definition in the scope of its class - a name in it is looked up as
+in a member function: members, enumerators, nested types and typedefs, static
+members and functions, a base's - and the array bound written after the
+declarator-id is in that scope too. cxx1 read both at namespace scope. **Where
+a global of the same name existed it was a silent wrong value**: with `const
+int Text = 7;` at file scope, `{ Text, Text }` laid down 7 where clang lays
+down the member's 16384, and a bound `[Count]` found a global `Count`.
+
+`StaticMemberScope` (Parser.h) sets `currentClass_` and `inStaticMember_` for
+the definition - so the class lookups the R1 order already has answer at step
+two, a member beats a global, private names are reachable as [class.access]
+allows, and an unqualified non-static member is refused for want of an
+object. `defineStaticMember` takes it for the whole definition, the
+declarator for a bound after a class-qualified name, and `dynamicInitialise`
+carries it into the init function, whose state is otherwise cleared - so a
+constructor's arguments, `Box P::b(Seed + scale);`, see the class too.
+
+**Two neighbours of the template form came with it.** A class template's static
+member *array* defined out of line, `template <class T> int TC<T>::arr[5] =
+{ 5, 6 };`, failed to link: `skipTemplatedDefinition` read the braces of the
+list as a function body, so the definition was filed as a member function
+nothing called. Braces after a depth-0 `=` outside any parentheses are a list
+now. And the pattern read of `TC<T>::arr[Count]` has a class with no members to
+fold the bound from, so a bound after a qualified name is stepped over there -
+only the name is asked, and the replay for `TC<int>` reads it in scope.
+
+`static-member-init-scope.cpp` holds all of it - array and scalar, braces and
+`=`, enumerators, a static const, `sizeof` of a nested type and typedef, a
+base's members, a static member function, private members, a constructor's
+arguments, a class in a namespace defined outside it, a class template's scalar
+and array - against a global `Count` and `Text` that must lose; it fails on the
+compiler before. Emit golden 0 of 1506 changed, 4 added. **Found and not
+mended:** `sizeof(S::m)` with parentheses, naming a *static* member, is read as
+a type and refused ("'S' has no member type called 'm'"); `sizeof S::m` works.

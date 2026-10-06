@@ -3409,6 +3409,7 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
     if (s == nullptr)
         src_.fail(d.pos, "'" + d.qualifier + "' declares no static member '" +
                          d.name + "'");
+    const StaticMemberScope scope(this, owner);
     if (s->type->unqualified() != d.type->unqualified() ||
         s->type->isConst() != d.type->isConst())
         src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' was declared '" +
