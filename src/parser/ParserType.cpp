@@ -108,19 +108,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         classInstantiationOf_.clear();
     }
 
-    if (within != nullptr && !tag.empty()) {
-        if (!defining) {
-            if (const Type *had = findTypedef(tag))
-                if (had->isStructOrUnion()) return had;
-        }
-        tag = within->tag() + "::" + tag;
+    // [basic.lookup.elab]/2: `struct tm *` finds a visible `tm` first; only `struct X;` or a
+    // name found nowhere declares one, and that one in the namespace, never the class.
+    const bool forwardOnly = !defining && peek().is(";");
+    bool introduced = false;
+    if (!tag.empty() && !defining && !forwardOnly && specializationOf.empty()) {
+        if (const Type *had = findTypedef(tag))
+            if (had->isStructOrUnion() && had->localName() == local) return had;
+        introduced = true;
     }
+    if (within != nullptr && !tag.empty() && !introduced)
+        tag = within->tag() + "::" + tag;
 
     // **[class.local]: a class defined in a function body belongs to that function**,
     // so its tag carries the function's name, with a counter where two overloads
     // write the same one. A specialization is not local even where a function asked.
     bool inNamespace = false;
-    if (within == nullptr && !tag.empty() && !namespaceStack_.empty() &&
+    if ((within == nullptr || introduced) && !tag.empty() && !namespaceStack_.empty() &&
         currentFunction_.empty() && specializationOf.empty()) {
         local = tag;
         tag = namespacePrefix() + tag;
@@ -156,7 +160,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // namespaces, and there is no enclosing type to point at - a namespace is
     // not a Type, which is the whole reason its scopes ride in the tag.
     if (inNamespace) { type->setLocalName(local); type->setInNamespace(); }
-    if (within != nullptr && !local.empty()) {
+    if (within != nullptr && !introduced && !local.empty()) {
         type->setLocalName(local);
         type->setEnclosing(within);
     }

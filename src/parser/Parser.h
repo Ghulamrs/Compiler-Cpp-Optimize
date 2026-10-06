@@ -1569,6 +1569,8 @@ private:
                             std::size_t pos, const std::string &symbol);
     void requireAssignable(const Expr &e, std::size_t pos, const char *what);
     const Local *findLocal(const std::string &name) const;
+    bool localHidesType() const;
+    bool atTemporaryMemberAccess() const;
     void enterScope();
     void leaveScope();
 

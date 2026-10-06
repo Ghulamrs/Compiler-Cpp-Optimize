@@ -377,6 +377,7 @@ bool Parser::atTypeName() const {
     if (peek().is("::") && peekAt(1).kind == TokenKind::Ident)
         return findGlobalTypedef(peekAt(1).text) != nullptr;
     if (peek().kind != TokenKind::Ident) return false;
+    if (localHidesType()) return false;
     // `Box<int> b;` declares a variable, so the name has to answer yes here -
     // but only with a `<` after it, since the bare name is not a type.
     auto tmpl = templates_.find(peek().text);
@@ -426,7 +427,36 @@ std::size_t Parser::qualifiedTypeEndPastArgs() const {
     }
 }
 
+// [stmt.ambig]/1: `T(x).f();` cannot be a declaration - no declarator goes on with `.` or `->`
+// after its `)` - so it is a temporary of T and a member call. True when that is what is here.
+bool Parser::atTemporaryMemberAccess() const {
+    if (peek().kind != TokenKind::Ident) return false;
+    std::size_t k = 0;
+    if (peekAt(1).is("::")) k = qualifiedTypeEndPastArgs();
+    else if (localHidesType()) return false;
+    else if (peekAt(1).is("<") && isClassTemplate(peek().text)) {
+        int depth = 0;
+        for (k = 1;; k++) {
+            const Token &t = peekAt(k);
+            if (t.kind == TokenKind::End || t.is(";")) return false;
+            if (t.is("<")) depth++;
+            else if (t.is(">")) { if (--depth == 0) { k++; break; } }
+            else if (t.is(">>")) { depth -= 2; if (depth <= 0) { k++; break; } }
+        }
+    } else if (findTypedef(peek().text) != nullptr) k = 1;
+    if (k == 0 || !peekAt(k).is("(")) return false;
+    int depth = 0;
+    for (;; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End) return false;
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if (t.is(")") || t.is("]") || t.is("}")) { if (--depth == 0) break; }
+    }
+    return peekAt(k + 1).is(".") || peekAt(k + 1).is("->");
+}
+
 bool Parser::atDeclarationStart() const {
+    if (atTemporaryMemberAccess()) return false;
     // **`Counter::total = 1;` is a statement, not a declaration**, though it opens
     // with a name that names a type: a declaration spelled `C::something` needs a
     // nested class, so a class name before '::' always begins an expression here.
@@ -825,6 +855,13 @@ void Parser::declareStaticLocal(const std::string &name, const Type *type,
             src_.fail(pos, "'" + name + "' is declared twice in this block");
     locals_.push_back(Local{ name, 0, type, false, symbol });
     fnVars_.push_back(::Local{ name, type, 0, false, symbol, currentBlock() });
+}
+
+// [basic.scope.hiding]/2: `void f(tm *tm)` - in the body the parameter hides the class, so `tm`
+// is an object there; a name before `::` still looks at types only, [basic.lookup.qual]/1.
+bool Parser::localHidesType() const {
+    if (peekAt(1).is("::") || localTypes_.count(peek().text) != 0) return false;
+    return findLocal(peek().text) != nullptr;
 }
 
 const Parser::Local *Parser::findLocal(const std::string &name) const {

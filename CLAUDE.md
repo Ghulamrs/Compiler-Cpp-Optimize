@@ -12128,3 +12128,41 @@ with two `__int64`, two `bool` or two `wchar_t` parameters named a symbol cl
 never defines; found by the names suite on the RTS6x division case. Eighteen
 x86_64-windows goldens changed, every changed line a symbol name -
 `std::basic_string::grow`'s two `size_t`s among them.
+
+## `T(x).f();`, an elaborated `struct tm` in a namespace, and a parameter named `tm`, 2026-10-06
+
+**Three front-end gaps RTS6x found**, our C runtime written in C++ - each legal C++11,
+each answered with a message about something else, and none target-specific.
+
+**`T(x).f();` was read as a declaration of x.** [stmt.ambig]/1 makes a statement that
+*can* be a declaration one, and nothing after a declarator's `)` is `.` or `->` - so
+this one cannot be, and it is a temporary of T and a member call.
+`rts6x::Stream(stream).clear();` was "no function called 'rts6x::Stream::Stream' takes
+these 0 argument(s)", and with two arguments "expected ')'". `atTemporaryMemberAccess`
+is asked first in `atDeclarationStart`: a type - plain, qualified or a class
+template-id - then a balanced `( ... )`, then `.` or `->`. `[` after the `)` is left a
+declaration (`T(x)[3];` declares an array), as are `T(x);`, `T (y) = z;` and
+`T(*p)(int);`, which the case holds beside the five expression shapes.
+
+**`struct tm *` inside `namespace rts6x { ... }` declared `rts6x::tm`.**
+[basic.lookup.elab]/2: an elaborated name is looked up first and only declared where
+nothing is found - and then in the nearest enclosing namespace, not the class.
+`structOrUnionSpecifier` prefixed the namespace on every mention that was not a
+definition, so `void Calendar::breakDown(time_t, struct tm *)` written inside the
+namespace block named a second `tm` and matched no declaration; a class body looked up
+but, finding nothing, made the name a *member* (`n::C::Later`). Now a mention that is
+not a definition and not `struct X;` asks `findTypedef` and takes a class whose own name
+it is; a name found nowhere is introduced at namespace scope. The names suite holds the
+second half: `Calendar::later(struct Later *)` mangles with `rts6x::Later`, as clang's.
+
+**`void f(tm *tm)` could not use its parameter.** [basic.scope.hiding]/2: in the body
+the parameter hides the class, so `tm->tm_sec` at the start of a statement was
+"expected a name" - `atTypeName` said type - and, worse and silent, `sizeof(tm)` was the
+struct's size where it is a pointer's: 66 where clang printed 18. `localHidesType` makes
+`atTypeName` answer no for a name a local declares, unless `::` follows ([basic.lookup.qual]/1
+looks at types only there) or it is a local class. `struct tm` still names the type,
+and a global object hiding a class is still not done - `docs/CONFORMANCE.md` says so.
+
+Cases `temporary-member-call` (its `.nonames` the x86_64-linux C2-only difference, Box's
+constructor having to be inline), `elaborated-type-lookup`, `parameter-hides-type`; each
+fails on the compiler before. Emit golden 0 of 1482 changed, 12 added.
