@@ -45,7 +45,9 @@ typedef char *va_list;
 
 #else
 
-typedef struct {
+/* Tagged with the name clang and gcc give the built-in, so a function taking a va_list mangles
+ * as theirs does - _Z5totaliPA1_13__va_list_tag - where an unnamed struct has no name at all. */
+typedef struct __va_list_tag {
     unsigned int gp_offset;
     unsigned int fp_offset;
     void *overflow_arg_area;
