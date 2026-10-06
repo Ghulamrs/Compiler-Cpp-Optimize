@@ -12222,3 +12222,38 @@ Cases `private-base-conversion` (return, initialisation, argument, assignment, r
 const reference, a friend, a private base at an offset, a protected base from a derived
 class's members, two C-style casts), `private-base-conversion-refused`,
 `private-base-member-further-refused`.
+
+**Found by the names suite and not mended: the Microsoft RTTI of a non-public base.** clang
+and cl write a second base class descriptor for A reached through a private base,
+`??_R1A@?0A@EN@A@@8` with attributes 0x4d, and cxx1 writes the public one for every path, so
+a `dynamic_cast` on x86_64-windows can reach a base the program may not; the case's
+`.nonames` and `.nocl` say so. Emit golden 0 of 1494 changed.
+
+## A static local whose initialiser is not a constant, 2026-10-06
+
+**`static int calls = k * 10;` was refused** - "expected a constant initialiser" - found
+writing RTS6x. [stmt.dcl]/4 initialises such an object the first time control passes through
+its declaration, and the machinery for that was already here: a static local of a class with
+a constructor has been built under the ABI's guard since "Dynamic initialisation" landed. A
+scalar never reached it, because the static branch of the declaration path handed every
+initialiser to `flattenInit`, which can only lay down constants.
+
+**The question is the one file scope already asks.** `staticallyInitialisable` decides it -
+an integer that folds, a floating value `foldFloating` answers, a pointer `foldAddress` can
+spell, a braced list - and what is left goes through `emitInit` into a statement list wrapped
+in `guardOnce`: `__cxa_guard_acquire` and `_release` on the Itanium targets,
+`_Init_thread_header` and `_footer` on Windows, the guard named `<symbol>.guard` or
+`<symbol>$guard` as a class's is. A constant initialiser is still data with no guard and no
+call (`static int c = 6 * 7;` measured in the x86_64-linux assembly), a dynamic `const` one is
+kept out of `.rodata` since the guarded store writes it, and `constexpr` still demands a
+constant. A class with no constructor initialised from a call or another object now takes
+the same road. A static *reference* was already bound under the guard and is unchanged.
+
+**What it does not do, as for the class case:** release the guard if the initialiser throws -
+clang emits `__cxa_guard_abort` from a landing pad and cxx1 no pad, recorded in
+`docs/CONFORMANCE.md` - and the names are cxx1's own, `_ZL7countedi.calls` where clang writes
+`_ZZL7countediE5calls`; both are in the case's `.nonames` and `.nocl`. Case
+`static-local-dynamic-init` (int, double, a pointer, a reference, a class by value, an
+initialiser with a side effect run once, recursion, a dynamic const, a constant one); every
+call is its own statement, the order of arguments being unspecified. Emit golden 0 of 1494
+changed, 12 added across the three rounds of this day's work.

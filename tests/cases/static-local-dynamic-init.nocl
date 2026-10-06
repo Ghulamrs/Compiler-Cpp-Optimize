@@ -1,0 +1,1 @@
+The static locals and their guards: cxx1 spells a static local `?counted@@YAHH@Z.calls` and its guard with $guard where cl writes ?calls@?1??counted@@YAHH@Z@4HA and ?$TSS0@?1??counted@@YAHH@Z@4HA - docs/CONFORMANCE.md, "A static local keeps its own name in the object file", as static-local-constructor.nocl records. File-local symbols, nothing links against them.

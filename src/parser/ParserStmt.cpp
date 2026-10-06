@@ -370,14 +370,22 @@ StmtPtr Parser::declarationBody() {
             const bool early = d.type->isComplete() && initialiserNames(d.name);
             if (early) declareStaticLocal(d.name, d.type, d.pos, symbol);
             const std::size_t mine = locals_.size() - 1;
+            Init dynamic;
             if (parenInit || consume("=") || atBracedInitialiser(d.name)) {
                 Init in = parenInit ? parenthesisedInitialiser(d)
                                     : parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
                                             inferredLength(in, d.type->pointee(), d.pos));
-                flattenInit(d.type, in, 0, pieces);
-                hasInit = true;
+                // [stmt.dcl]/4: one that is not a constant expression is initialised the
+                // first time control passes, under the guard a constructor gets; a constant
+                // stays data, and `constexpr` keeps its demand for one.
+                if (quals.isConstexpr || staticallyInitialisable(d.type, in)) {
+                    flattenInit(d.type, in, 0, pieces);
+                    hasInit = true;
+                } else {
+                    dynamic = std::move(in);
+                }
             } else if (d.type->isArray() && d.type->length() < 0) {
                 src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
                                  "to take one from");
@@ -385,10 +393,19 @@ StmtPtr Parser::declarationBody() {
             const std::size_t at = early ? mine : locals_.size();
             if (!early) declareStaticLocal(d.name, d.type, d.pos, symbol);
             locals_[at].isConst = d.type->isConst();
+            // Not `isConst` where the guarded store writes it: it cannot live in .rodata.
             current_->globals.push_back(Global{ symbol, symbol, d.type,
                                                 std::move(pieces), hasInit, true,
-                                                locals_[at].isConst });
+                                                locals_[at].isConst &&
+                                                    dynamic.value == nullptr });
             current_->globals.back().align = quals.alignAs;
+            if (dynamic.value != nullptr) {
+                std::vector<StmtPtr> body;
+                std::vector<InitStep> path;
+                emitInit(d.name, path, d.type, dynamic, body);
+                flushTemporaries(body);
+                inits.push_back(guardOnce(symbol, std::move(body)));
+            }
             continue;
         }
 
