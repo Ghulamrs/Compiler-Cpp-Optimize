@@ -8,7 +8,8 @@
 // wall time is the run's own, so a slot running slower than its box's rate shows at once. The
 // count is 32 bits and wraps at 4,294,967,296 - a run is sized to stay under it.
 // rc is n/a because TI's startup ignores what main returns and calls exit(1), and
-// breakpoints set from DSS did not stop this simulator (2026-09-28), so it is not read.
+// breakpoints set from DSS did not stop this simulator (2026-09-28), so it is not read. a4 is A4 at
+// the stop: RTS6x's C$$EXIT holds the status there, so for its images it is what main returned.
 importPackage(Packages.com.ti.debug.engine.scripting);
 importPackage(Packages.com.ti.ccstudio.scripting.environment);
 importPackage(Packages.java.lang);
@@ -38,10 +39,12 @@ session.target.run();
 var count = session.clock.read();
 session.endCIOLogging();
 var pc = session.expression.evaluate("PC");
+var a4 = session.expression.evaluate("A4");
 var exitAt = -1;
 try { exitAt = session.symbol.getAddress("C$$EXIT"); } catch (e) { }
 print("RESULT event=" + session.clock.getEventName(ev) + " count=" + count
       + " pc=0x" + Long.toHexString(pc) + " exit=0x" + Long.toHexString(exitAt) + " rc=n/a"
+      + " a4=" + a4
       + " wall_ms=" + (System.currentTimeMillis() - t0));
 session.target.disconnect();
 session.terminate();

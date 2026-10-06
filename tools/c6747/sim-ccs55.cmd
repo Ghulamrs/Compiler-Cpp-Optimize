@@ -51,6 +51,6 @@ set R=
 set OUTF=%~3
 for /f "tokens=1,*" %%a in ('call "%CCS55%\ccs_base\scripting\bin\dss.bat" "%WF%/runca.js" "%WF%/c6747ca-windows.ccxml" "!OUTF:\=/!" "%WF%/out/%1.%2.stdout" 0 2^>^&1 ^| findstr /b RESULT') do set R=%%b
 if "!R!"=="" set STATUS=1
-echo BOX %2 %1 build=ok !R!> "%W%\out\%1.%2.result"
+(echo BOX %2 %1 build=ok !R!)> "%W%\out\%1.%2.result"
 type "%W%\out\%1.%2.result"
 exit /b 0

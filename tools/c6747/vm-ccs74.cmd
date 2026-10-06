@@ -33,7 +33,7 @@ if errorlevel 1 (
 )
 "%VM6747%" "!O!-asm" > "!O!.stdout" 2>&1 < nul
 set RC=!errorlevel!
-echo BOX %BOX% !N! build=ok event=none count=- rc=!RC!> "!O!.result"
+(echo BOX %BOX% !N! build=ok event=none count=- rc=!RC!)> "!O!.result"
 type "!O!.result"
 shift
 goto next

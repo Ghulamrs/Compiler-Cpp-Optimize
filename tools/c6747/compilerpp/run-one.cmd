@@ -15,5 +15,5 @@ if not exist ws mkdir ws 2>nul
 findstr /b RESULT %1.%2.log > %1.%2.r 2>nul
 set R=
 set /p R=< %1.%2.r
-if "%R%"=="" (echo BUILD windows-%1 file=%2 build=ok timeout-or-failed> %1.%2.result) else (echo BUILD windows-%1 file=%2 build=ok %R:RESULT =%> %1.%2.result)
+if "%R%"=="" ((echo BUILD windows-%1 file=%2 build=ok timeout-or-failed)> %1.%2.result) else ((echo BUILD windows-%1 file=%2 build=ok %R:RESULT =%)> %1.%2.result)
 del %1.%2.r 2>nul

@@ -32,7 +32,7 @@ rem Timed unsampled - a halt costs cycles, so a profiled run is not the count - 
 rem and cpp11, run again under prof.js for where the cycles went.
 set R=
 for /f "tokens=1,*" %%a in ('call C:\ti\ccsv5\ccs_base\scripting\bin\dss.bat "%WF%/runca.js" "%WF%/c6747ca-windows.ccxml" "%WF%/%1.out" "%WF%/%1.cio" 0 86400000 2^>^&1 ^| findstr /b RESULT') do set R=%%b
-echo BUILD windows-%1 build=ok %R%> %1.result
+(echo BUILD windows-%1 build=ok %R%)> %1.result
 type %1.result
 if "%1"=="ccs74" exit /b 0
 call C:\ti\ccsv5\ccs_base\scripting\bin\dss.bat "%WF%/prof.js" "%WF%/c6747ca-windows.ccxml" "%WF%/%1.out" "%WF%/%1.prof.cio" 500 > %1.prof 2>&1

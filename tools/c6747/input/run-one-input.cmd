@@ -37,5 +37,5 @@ if "%ARGS%"=="" set DD=
 findstr /b RESULT %TAG%.log > %TAG%.r 2>nul
 set R=
 set /p R=< %TAG%.r
-if "%R%"=="" (echo RUN %TAG% timeout-or-failed> %TAG%.result) else (echo RUN %TAG% %R:RESULT =%> %TAG%.result)
+if "%R%"=="" ((echo RUN %TAG% timeout-or-failed)> %TAG%.result) else ((echo RUN %TAG% %R:RESULT =%)> %TAG%.result)
 del %TAG%.r 2>nul
