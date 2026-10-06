@@ -12166,3 +12166,23 @@ and a global object hiding a class is still not done - `docs/CONFORMANCE.md` say
 Cases `temporary-member-call` (its `.nonames` the x86_64-linux C2-only difference, Box's
 constructor having to be inline), `elaborated-type-lookup`, `parameter-hides-type`; each
 fails on the compiler before. Emit golden 0 of 1482 changed, 12 added.
+
+## `reinterpret_cast` and the levels two pointers share, 2026-10-06
+
+**`reinterpret_cast<const unsigned *>(w)` of a `const char *const *const w` was refused as
+taking a const off**, found writing RTS6x. The walk that decides it started at the *operand*:
+the pointer value's own top-level const - a parameter declared `const` - was compared against
+the target's unqualified prvalue and lost. That const belongs to the value and goes nowhere.
+
+**[expr.const.cast]/8 asks about the levels the two types share, from the pointee down**, and
+asks two things, both measured against clang: no level drops a const (`const char *const *`
+to `const char **` is refused at the first pointee), and a level that *adds* one has const at
+every shared level above it, which is what a qualification conversion needs - so `char **` to
+`const char **` is refused too, the reason it is not an implicit conversion either. cpp11 had
+only the first; the second now has a message of its own. Where the target stops being a
+pointer the walk stops: `char **` and `int *const *` both go to `const unsigned *`. A
+reference cast starts at the object, whose const *is* the first shared level.
+
+Cases `reinterpret-cast-shared-levels` (top-level const on the operand, a const pointee over
+one level, every level gaining const, a reference), `reinterpret-cast-adds-const-refused`,
+`reinterpret-cast-inner-const-refused`; `reinterpret-cast-drops-const-refused` still refuses.

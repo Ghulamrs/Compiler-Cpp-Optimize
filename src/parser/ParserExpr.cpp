@@ -386,15 +386,30 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
     ExprPtr v = expr();
     expect(")");
 
-    auto keepsQualifiers = [&](const Type *from, const Type *want) {
-        for (;;) {
-            if (from->isConst() && !want->isConst()) return false;
+    // [expr.const.cast]/8 from the pointee down: no shared level drops a const, and one
+    // that adds a const has const at every level above it, as a qualification conversion
+    // would. A pointer's own top level is its value's and is never asked about.
+    auto castsAwayConst = [&](const Type *from, const Type *want) -> const char * {
+        for (bool constAbove = true;;) {
+            if (from->isConst() && !want->isConst())
+                return "would take the const off - 'const_cast' is what does that, and the "
+                       "two are written separately on purpose";
+            if (want->isConst() && !from->isConst() && !constAbove)
+                return "adds a const beneath a level with none, which is a way to take one "
+                       "off - it is refused for the reason 'char **' does not become "
+                       "'const char **'";
+            constAbove = constAbove && want->isConst();
             from = from->unqualified();
             want = want->unqualified();
-            if (!from->isPointer() || !want->isPointer()) return true;
+            if (!from->isPointer() || !want->isPointer()) return nullptr;
             from = from->pointee();
             want = want->pointee();
         }
+    };
+    auto refuseIf = [&](const Type *was, const char *why) {
+        if (why)
+            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
+                           was->describe() + "' " + why);
     };
 
     // A reference reinterpretation is the same bits under another name - the
@@ -406,11 +421,7 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
             src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' needs "
                            "an object to reinterpret, and this is a value with "
                            "no address of its own");
-        if (!keepsQualifiers(v->type(), to->referent()))
-            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
-                           v->type()->describe() + "' would take the const "
-                           "off - 'const_cast' is what does that, and the two "
-                           "are written separately on purpose");
+        refuseIf(v->type(), castsAwayConst(v->type(), to->referent()));
         v->setType(to->referent());
         return v;
     }
@@ -420,11 +431,9 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
 
     const bool fromPointer = from->isPointer() || from->isNullPtr();
     if (to->isPointer() && fromPointer) {
-        if (!keepsQualifiers(from, to))
-            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
-                           from->describe() + "' would take the const off - "
-                           "'const_cast' is what does that, and the two are "
-                           "written separately on purpose");
+        if (from->isPointer())
+            refuseIf(from, castsAwayConst(from->unqualified()->pointee(),
+                                          to->unqualified()->pointee()));
     } else if (to->isInteger() && fromPointer) {
         // Measured: clang refuses a cast to an integer too small to hold the
         // pointer rather than truncating it quietly.
