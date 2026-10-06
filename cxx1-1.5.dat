@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 151 files, seal AC38D91C
+CRC32  size  file - 151 files, seal 6AE689E6
 ------------------------------------------------------------------
 7F3ECECE      4553  include/algorithm
 24D34375       483  include/cassert
@@ -64,7 +64,7 @@ D59BC2B6     75942  src/Mangle.cpp
 36FF0529       493  src/Name.h
 B35E3402      3248  src/Operator.cpp
 5E9A1F82      1033  src/Operator.h
-6E163DBE     50510  src/Preprocessor.cpp
+CEC153AE     50780  src/Preprocessor.cpp
 235DA1A0      3801  src/Preprocessor.h
 4CF2DB86      4458  src/Source.cpp
 DB52131F      2097  src/Source.h
