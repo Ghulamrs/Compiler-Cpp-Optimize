@@ -573,7 +573,8 @@ bool forwardPairMoves(std::vector<Line> &v) {
             if (b.mnem == "MV" && b.ops.size() == 2 && b.pred.empty() && b.ops[0] == T && b.ops[1] == H) break;
             if (touches(b, four)) { j = v.size(); break; }
         }
-        if (j >= v.size()) continue;
+        // Stopped at a block's end, not at the partner copy: the label there is no copy to remove.
+        if (j >= v.size() || blockEnd(v[j])) continue;
         const std::string from = pairOf(std::min(L, H), std::max(L, H)), to = pairOf(std::min(S, T), std::max(S, T));
         if (from.empty() || to.empty()) continue;
         std::size_t r = j + 1;

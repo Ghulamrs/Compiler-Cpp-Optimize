@@ -292,9 +292,9 @@ SFINAE and variadic packs. What is left:
 - **a braced default argument** — `src/parser/ParserClass.cpp:4019`,
   `src/parser/ParserTopLevel.cpp:705`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:1124`
-- **an initialiser for an array of a class with static storage duration** - a
-  local one takes a braced list since 2026-09-27; at file scope, as a `static`
-  local or a static member it is still refused. `src/parser/ParserInit.cpp:1116`
+- **a static data member that is an array of a class with a constructor** - a
+  local, a `static` local and a file-scope array take a braced list (since
+  2026-10-06 for the last two). `src/parser/ParserClass.cpp`
 - **a braced list for an array of a class with a destructor and no
   constructor** - `src/parser/ParserStmt.cpp`
 - **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:645`
@@ -591,10 +591,6 @@ which is the only oracle this document has.
 ### `src/parser/ParserExpr.cpp`
 
 - '<...>' is virtual but has no slot in '<...>'s own vtable - a function of a base after the first is not supported here yet - `src/parser/ParserExpr.cpp:2162`
-
-### `src/parser/ParserInit.cpp`
-
-- an initialiser for an array of '<...>' is not supported yet - each element gets the default constructor - `src/parser/ParserInit.cpp:1116`
 
 ### `src/parser/ParserStmt.cpp`
 

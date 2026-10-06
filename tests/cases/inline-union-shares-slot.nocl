@@ -1,0 +1,1 @@
+cl, like clang, emits only the members a unit uses, and cxx1 emits the two this file never calls, `?of@FloatBits@@SA_KN@Z` and `?toDouble@FloatBits@@SAN_K@Z` - the divergence inline-union-shares-slot.nonames records. Every other name agrees.

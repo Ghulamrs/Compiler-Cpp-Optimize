@@ -1,0 +1,3 @@
+x86_64-linux  `_ZN9FloatBits2ofEd` and `_ZN9FloatBits8toDoubleEy`, the two members nothing calls: a written class emits its inline members where clang emits only those used - the divergence docs/CONFORMANCE.md records for inline members. The case cannot call them: the two calls more would spend the C6000 inliner's unit budget, and the shape it holds needs both members walked in place. Every other name agrees.
+x86_64-windows  the same two, `?of@FloatBits@@SA_KN@Z` and `?toDouble@FloatBits@@SAN_K@Z`.
+arm64-darwin  the same two, under the leading underscore.

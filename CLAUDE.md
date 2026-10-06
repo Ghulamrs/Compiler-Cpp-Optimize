@@ -12045,3 +12045,86 @@ for their names, the divergence recorded under static locals), and
 (`int a[] = { sizeof(a) };`, ill-formed) still says "'a' was not declared"
 rather than naming the incomplete type, and a self-reference after a template
 argument comma at depth 0 (`T v = f<A, v>();`) ends the scan early.
+
+## An array of a class sized by its list, and the same list at static storage, 2026-10-06
+
+**`const Row rows[] = { Row("a"), Row("b") };` aborted the compiler** with
+`std::length_error: vector`, on every target and level - found by RTS6x, whose
+tables are arrays of a class. The class-array list path sized its vector of
+element initialisers from `d.type->length()`, and an array of unknown bound
+answers -1; the scalar path deduces the length from the list, this one never
+did. `constructLocalArrayFromList` now reads the list first when the bound is
+missing - the vector growing as elements arrive, nested rows rounding up -
+gives the array its length, and only then declares it, through a callback the
+caller supplies. `T a[] = {}` is refused by name, as clang refuses an array of
+no elements under `-pedantic-errors`.
+
+**The same list at static storage was refused by name, and is built now.** A
+file-scope array or a `static` local of a class with a constructor took no
+initialiser at all ("each element gets the default constructor"). The list
+path is the one a local uses, handed the global's symbol: `objectAt` reaches
+element i of a global as `*(T *)((char *)&g + i*size)`, the add in bytes, and
+the construction runs in the init function or under the static local's guard,
+the destruction registered by the class's loop as before. A static data member
+that is such an array stays refused, at its own line.
+
+`array-of-class-list-length.cpp` runs it under the ledger - deduced and given
+lengths, const and not, a nested row list, a class with a destructor, one with
+a written copy constructor (its value read modulo 100, elision being allowed),
+file scope and a static local - built 18, gone 18 against clang;
+`array-of-class-list-empty-refused.cpp` is the empty list. The emit golden
+read 0 of 1462 changed.
+
+## Two inlined callees on one frame key, and the member access that never asked, 2026-10-06
+
+**`toFloat(of(x))` stopped the C6000 code generator at -O2** with "frame slot
+24 of roundTrip was reached by the second walk and not the first" - found by
+RTS6x's `__c6xabi_divf`, whose `FloatBits` is four one-line members over a
+union each. Both calls are walked in place, one after the other, at the same
+`inlineBase_`, so `of`'s union `x` and `toFloat`'s 8-byte parameter `u` share
+a frame key. That is meant to be safe - neither instance reads before it
+writes - but only while the two agree about what the key is: `u` was a
+scalar, so the planning walk gave the key A18, and `x.f` reached the same key
+through `frameSlot`'s member branch, which counted it for the layout and
+never told the planner. On the second walk the member access asked for the
+key's place in a frame that had not laid it out.
+
+**A slot reached through a member is marked addressed now**, the planner's
+existing "left in memory" - the same rule a local whose address is formed
+already follows. Nothing else changes: a struct or union local was never a
+register candidate, so the mark matters only where a scalar of another
+inlined instance shares its key. It needs both calls walked in place, and
+with more call sites in the unit the inliner's budget is spent and they stay
+calls, which is why `inline-union-shares-slot.cpp` is one function and `main`. RTS6x had
+rewritten the source into named steps to get past it. The -O2 golden
+(`emit.sh --o2`, recorded from d4944b1) read 0 of 367 changed.
+
+## A pair copy that stopped at a label took the label for its partner, 2026-10-06
+
+**RTS6x's signed 64-bit division left `L$...divideExxRx$end1` referenced and
+undefined at -O2**, and lnk6x refused the library. The branch sat in a
+parallel packet, which looked like the cause and was not: `forwardPairMoves`'
+second half takes `MV S, L` and looks forward for its partner `MV S^1, L^1`
+to join the two into one pair read. The loop stops at a block's end - a label
+or a branch - and only the "something touched the four registers" exit marked
+the search failed, so a search that ran into `if (v < 0) m = 0ull - m;`'s end
+label left `j` pointing at the label, and the label was erased as the partner
+copy. `blockEnd(v[j])` is now a failed search too. `CPP11_C6XSKIP=pairmv` is
+what found it, one pass at a time.
+
+**The -O0 `?:` form the report also named was not reproduced**: at -O0 the
+end label is written and assembles, and at -O1 and up the function folds to
+straight-line code. `wide-value-across-label.cpp` holds the RTS6x shape and
+`?:` over `long long`, `unsigned long long` and `double`, both arms each, and
+fails on vm6747 at -O2 on the compiler before the fix.
+
+## A Microsoft builtin of two letters takes an argument slot, 2026-10-06
+
+**`void a(long long, long long)` is `?a@@YAX_J0@Z`**, measured with clang for
+the Microsoft ABI, and cxx1 wrote `?a@@YAX_J_J@Z`. The argument table takes
+every type whose spelling is longer than one letter - `_J`, `_K`, `_N`, `_W`,
+`_S`, `_U`, `$$T` - where cxx1 took none of the builtins. So any function
+with two `__int64`, two `bool` or two `wchar_t` parameters named a symbol cl
+never defines; found by the names suite on the RTS6x division case. Eighteen
+x86_64-windows goldens changed, every changed line a symbol name -
+`std::basic_string::grow`'s two `size_t`s among them.

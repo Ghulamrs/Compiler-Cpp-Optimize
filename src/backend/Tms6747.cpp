@@ -334,6 +334,13 @@ bool Tms6747::frameSlot(const Expr &e, int &disp) {
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
         if (m->isBitField() || !frameSlot(m->object(), disp)) return false;
         disp += m->offset();
+        // A slot reached by a member is no scalar: an inlined callee's scalar at the same key
+        // would otherwise take a register that this access never consults.
+        if (planning_) {
+            const Expr *root = &m->object();
+            while (const MemberAccess *in = dynamic_cast<const MemberAccess *>(root)) root = &in->object();
+            if (const Var *v = dynamic_cast<const Var *>(root)) slots_[localBase_ + v->offset()].addressed = true;
+        }
         return true;
     }
     return false;

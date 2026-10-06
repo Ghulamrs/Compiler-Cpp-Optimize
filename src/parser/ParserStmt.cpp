@@ -167,11 +167,22 @@ StmtPtr Parser::declarationBody() {
                     src_.fail(d.pos, "a braced list for an array of '" + plain->describe() +
                                      "', a class with a destructor and no constructor, is "
                                      "not supported yet");
-                int off = declare(d.name, d.type, d.pos, quals.alignAs);
-                locals_.back().guardsJump = true;
+                if (d.type->length() < 0 && !listed)
+                    src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
+                                     "to take one from");
+                const auto declareIt = [&]() {
+                    const int at = declare(d.name, d.type, d.pos, quals.alignAs);
+                    locals_.back().guardsJump = true;
+                    return at;
+                };
+                // An array of no length is declared once its list has given it one.
+                const bool late = d.type->length() < 0;
+                int off = late ? 0 : declareIt();
                 if (listed) {
                     consume("=");
-                    inits.push_back(constructLocalArrayFromList(d, off));
+                    StmtPtr built = constructLocalArrayFromList(d, off, declareIt);
+                    if (late) off = findLocal(d.name)->offset;
+                    inits.push_back(std::move(built));
                 } else if (arrayCtor) {
                     int indexSlot = allocateFrameSlot(types_.intType());
                     inits.push_back(constructLocalArray(d, off, indexSlot));
