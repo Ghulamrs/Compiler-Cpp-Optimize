@@ -935,14 +935,16 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
         if (peekAt(typeEnd).is("(")) {
-            std::string q = peek().text;
-            for (std::size_t k = 1; k + 1 <= typeEnd - 1; k += 2)
-                q += "::" + peekAt(k + 1).text;
-            const Type *named = findTypedef(q);
+            const Type *named = qualifiedTypeAt(typeEnd);
+            const std::size_t qpos = peek().pos;
             if (named != nullptr && named->isStructOrUnion()) {
-                const std::size_t qpos = peek().pos;
                 at_ += typeEnd + 1;                 // the name and the '('
                 return classTemporary(named, qpos);
+            }
+            // **`S::T(3)` - [expr.type.conv] through a member typedef**, as `T(3)` is unqualified.
+            if (named != nullptr) {
+                at_ += typeEnd;
+                return functionalCast(named, qpos);
             }
         }
     }
@@ -1420,15 +1422,26 @@ ExprPtr Parser::primary(Program *program) {
                            "(...)' calls a constructor here, and a plain "
                            "struct is built by naming its members");
         // `S::x` reached here found no static member, enumerator or function: say which it was.
-        if (const Type *cls = peek().is("::") && peekAt(1).kind == TokenKind::Ident
-                                  ? findTypedef(name) : nullptr)
+        // The class is the longest prefix naming one, `n::S::nope` reaching S through n.
+        std::size_t k = 0;
+        const Type *cls = findTypedef(name);
+        for (std::string q = name; peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident &&
+                                   peekAt(k + 2).is("::"); k += 2) {
+            q += "::" + peekAt(k + 1).text;
+            const Type *next = findTypedef(q);
+            if (next == nullptr && cls != nullptr && cls->isStructOrUnion())
+                next = lookupInClass(cls, peekAt(k + 1).text);
+            if (next == nullptr && cls != nullptr) break;
+            cls = next;                        // a namespace leaves it null for the next step
+        }
+        if (cls != nullptr && peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident)
             if (cls->isStructOrUnion()) {
-                const std::string member = peekAt(1).text;
+                const std::string member = peekAt(k + 1).text;
                 if (cls->findMember(member) != nullptr)
-                    src_.fail(peekAt(1).pos, "'" + member + "' is a non-static data member "
+                    src_.fail(peekAt(k + 1).pos, "'" + member + "' is a non-static data member "
                               "of '" + cls->tag() + "' and needs an object here - only "
                               "sizeof and decltype may name it with none");
-                src_.fail(peekAt(1).pos, "'" + cls->tag() + "' has no member called '" +
+                src_.fail(peekAt(k + 1).pos, "'" + cls->tag() + "' has no member called '" +
                                          member + "'");
             }
         src_.fail(pos, "'" + name + "' was not declared");
@@ -1487,6 +1500,20 @@ const Type *Parser::decltypeSpecifier() {
         if (declared != nullptr) {
             at_ += 2;
             return declared;
+        }
+    }
+    // `decltype(S::r)` for a static member answers what the class declared - `int &` for a reference.
+    if (namePath && peekAt(1).is("::")) {
+        std::string q = peek().text;
+        for (std::size_t k = 1; peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident;
+             k += 2) {
+            const Type *cls = findTypedef(q);
+            if (cls != nullptr && cls->isStructOrUnion() && peekAt(k + 2).is(")"))
+                if (const Type::StaticMember *sm = cls->findStaticMember(peekAt(k + 1).text)) {
+                    at_ += k + 3;
+                    return sm->type;
+                }
+            q += "::" + peekAt(k + 1).text;
         }
     }
 

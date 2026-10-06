@@ -413,6 +413,18 @@ std::size_t Parser::qualifiedTypeEnd() const {
     return typeEnd;
 }
 
+const Type *Parser::qualifiedTypeAt(std::size_t end) const {
+    std::string q = peek().text;
+    const Type *cur = findTypedef(q);
+    for (std::size_t k = 1; k + 1 < end; k += 2) {
+        q += "::" + peekAt(k + 1).text;
+        if (const Type *t = findTypedef(q)) cur = t;
+        else cur = cur != nullptr && cur->isStructOrUnion()
+                       ? lookupInClass(cur, peekAt(k + 1).text) : nullptr;
+    }
+    return cur;
+}
+
 std::size_t Parser::qualifiedTypeEndPastArgs() const {
     std::size_t after = qualifiedTypeEnd();
     if (after == 0 || !peekAt(after).is("<")) return after;

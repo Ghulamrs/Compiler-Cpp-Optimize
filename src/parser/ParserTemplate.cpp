@@ -973,11 +973,16 @@ void Parser::instantiatePending() {
                 done.resize(d.outOfLine.size(), false);
                 for (std::size_t k = 0; k < d.outOfLine.size(); k++) {
                     if (done[k] || specializations_[i].fromPartial) continue;
-                    // A static data member has no function to be "used", so it
-                    // is replayed with the specialization rather than on a call.
-                    if (!d.outOfLine[k].isData &&
-                        !memberIsUsed(specializations_[i].key + "::" +
-                                      d.outOfLine[k].member)) continue;
+                    // **A static data member is defined only where an evaluated
+                    // expression named it**, [temp.inst]/3, as clang emits it.
+                    if (d.outOfLine[k].isData) {
+                        const Type *spec = findTypedef(specializations_[i].key);
+                        const Type::StaticMember *sm =
+                            spec != nullptr ? spec->findStaticMember(d.outOfLine[k].member)
+                                            : nullptr;
+                        if (sm != nullptr && !usedStaticMembers_.count(sm->symbol)) continue;
+                    } else if (!memberIsUsed(specializations_[i].key + "::" +
+                                             d.outOfLine[k].member)) continue;
                     done[k] = true;
                     outsideNow.push_back(k);
                 }
@@ -2133,6 +2138,12 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
     const std::size_t mpos = peek().pos;
     const std::string member = declaredName("a member name");
     const std::string key = cls->tag() + "::" + member;
+    // **`C<int>::T(3)` and `C<int>::Nested(1)`** - a member type, cast to or built as a temporary.
+    if (peek().is("(") && overloadsOf(key) == nullptr)
+        if (const Type *named = lookupInClass(cls, member)) {
+            if (named->isStructOrUnion()) { at_++; return classTemporary(named, mpos); }
+            return functionalCast(named, mpos);
+        }
     if (peek().is("(")) {
         at_++;
         std::vector<ExprPtr> callArgs;

@@ -1384,6 +1384,9 @@ private:
         bool dknown = false;  long double dvalue = 0;
     };
     std::map<std::string, StaticConst> staticConsts_;
+    // The static data members an evaluated expression named, by symbol: a class template's
+    // is defined only where one of these says so - [temp.inst]/3.
+    std::set<std::string> usedStaticMembers_;
     const StaticConst *findStaticConst(const std::string &symbol) const {
         std::map<std::string, StaticConst>::const_iterator i =
             staticConsts_.find(symbol);
@@ -1853,6 +1856,8 @@ private:
     // scope does not beat a member.
     const EnumConst *findClassEnum(const std::string &name) const;
     std::size_t qualifiedTypeEnd() const;
+    // The type the chain qualifiedTypeEnd measured reaches, a member typedef included.
+    const Type *qualifiedTypeAt(std::size_t end) const;
     std::vector<std::string> lookupKeys(const std::string &name,
                                         const Type *left,
                                         const Type *right) const;

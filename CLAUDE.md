@@ -12324,3 +12324,62 @@ changed. **Found and left:** `S::T(3)`, a functional cast through a member typed
 "'S' was not declared"; `sizeof(n::S::nope)` says "'n' was not declared"; and a
 static *reference* member cannot be defined - `int &S::r = g;` is "'S::r' is 'int &' and
 this is 'int'".
+
+## `S::T(3)`, and a namespace in front of a member the class lacks, 2026-10-07
+
+**A functional cast through a qualified name stopped at its last component.**
+[expr.type.conv] takes any simple-type-specifier, and `S::T(3)` with T a member
+typedef was answered "'S' has no member called 'T'": the qualified-temporary branch
+of `primary` built `S::T` by string and accepted only a class. `qualifiedTypeAt`
+walks the chain the way `qualifiedTypeEnd` measures it - `findTypedef` on the
+joined name, `lookupInClass` past a class - and a non-class goes to
+`functionalCast`; `templateIdMember` asks the same of `C<int>::T(3)` and
+`C<int>::Box(6)` before the static-member-function road. Case
+`qualified-functional-cast`, with a `.nonames` for the C1 of an inline constructor.
+
+**`sizeof(n::S::nope)` said "'n' was not declared"**, where `sizeof(S::nope)` said
+the class had no such member. The fallback that names the missing member took the
+first token as the class; it walks the chain now, namespaces included, to the
+longest prefix naming a class. Cases `qualified-member-namespace-nope-refused` and
+`-needs-object-refused`, clang's column in both.
+
+**Found and not mended:** `S::In::In(int x) {}` written inside the `namespace n`
+block that declared S is "'S' has no member type called 'In'"; written outside it as
+`n::S::In::In` it compiles.
+
+## A static reference member, 2026-10-07
+
+**[class.static.data] allows `static int &r;`, and its definition `int &S::r = g;`
+was refused** as binding an `int &` to an `int`: `defineStaticMember` treated the
+member as an object initialised by a value. It is a slot holding an address, as a
+reference at namespace scope is, and it takes that road - `bindStaticReference`
+inside the init function, so a global's address goes into the image and anything
+else is bound before main. `staticMemberRef` hands back `useReference` of it, which
+covers `S::r`, `s.r`, `p->r` and the bare `r` in a member function at once, and
+`decltype(S::r)` answers the declared `int &` - the static-member walk is asked
+before the expression is parsed, since every mention is lowered to a dereference.
+
+**A temporary keeps the namespace-scope refusal**: `const int &S::cr = 7;` is
+refused by the same message `const int &g = 7;` meets, the temporary wanting static
+storage of its own ([class.temporary]/5). clang accepts both. Cases
+`static-reference-member` (global, element, a function's result, through an object,
+a template's) and `static-reference-member-temporary-refused`.
+
+## A class template's static data member is defined where it is used, 2026-10-07
+
+**[temp.inst]/3: the definition of a static data member is instantiated only if it
+is used**, and cpp11 replayed every out-of-line definition with its specialization -
+`C<int> c;` defined `C<int>::m` and every other static of C, and ran the
+constructor of an unused class-typed one. `staticMemberRef` is the one road every
+use takes, so an evaluated mention records the symbol in `usedStaticMembers_`, and
+`instantiatePending` replays a data member's definition only once its symbol is
+there; its fixed point picks up a member first named by a body or an initialiser
+replayed later. An operand of `sizeof` or `decltype` does not count.
+
+**Linking is unchanged by construction**: the object is weak in every unit, so a
+unit that uses it defines it and a unit that does not owes nothing. Two units,
+one instantiating `C<int>` and the other using `C<int>::m`, link and run. Case
+`template-static-member-on-use`: thirteen names agree with clang on both Itanium
+targets, where the unused `m`s and `neverBuilt`'s constructor are gone; the Windows
+`.nonames` is the `$guard` difference already recorded. Emit golden 0 of 1514
+changed - no existing case had a template static it did not use.

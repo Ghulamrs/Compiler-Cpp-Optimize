@@ -3450,6 +3450,22 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
 
     std::vector<GlobalPiece> pieces;
     bool hasInit = false, stored = false;
+    // **A static reference member is a slot holding an address**, bound as one at
+    // namespace scope is: a global's address in the image, anything else before main.
+    if (s->type->isReference()) {
+        Declared m = d;
+        m.name = d.qualifier + "::" + d.name;
+        m.type = s->type;
+        const FunctionState outer = enterInitFunction();
+        bindStaticReference(m, s->symbol, pieces, hasInit, &dynInit_);
+        leaveInitFunction(outer);
+        expect(";");
+        program.globals.push_back(Global{ m.name, s->symbol,
+                                          types_.pointerTo(s->type->referent()),
+                                          std::move(pieces), hasInit, false, false });
+        program.globals.back().isInline = owner->isSpecialization();
+        return;
+    }
     if (consume("=") || atBracedInitialiser(d.name)) {
         Init in = parseInitialiser();
         // Read while the initialiser tree is still in scope, as the
@@ -3545,11 +3561,12 @@ ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
         n->setType(s.type);
         return n;
     }
+    if (unevaluated_ == 0) usedStaticMembers_.insert(s.symbol);
     Var *v = Var::global(cls + "::" + s.name);
     v->setSymbol(s.symbol);
     ExprPtr n(v);
     n->setType(s.type);
-    return n;
+    return useReference(std::move(n));      // a reference member is read through its slot
 }
 
 // A member function declaration, keyed under "Class::name" in the one table
