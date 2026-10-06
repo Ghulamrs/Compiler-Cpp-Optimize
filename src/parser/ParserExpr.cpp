@@ -702,9 +702,8 @@ ExprPtr Parser::primary(Program *program) {
     if (peek().is("__builtin_va_arg")) {
         std::size_t pos = peek().pos;
         at_++;
-        if (!variadicBody_)
-            src_.fail(pos, "va_arg is only allowed in a function declared "
-                           "with '...'");
+        // Any function may read a va_list it was handed - vprintf is that - and only va_start
+        // needs the variadic frame (C 7.15.1): every code generator's va_arg reads the list alone.
         expect("(");
         ExprPtr list = decay(assign());
         if (!list->type()->isPointer())

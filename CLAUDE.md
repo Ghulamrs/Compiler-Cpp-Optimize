@@ -12000,3 +12000,10 @@ names only what has external linkage, so an internal function or variable inside
 tms6747.sh build `<case>.part.cpp` into `<case>`'s program, and emit.sh and names.sh
 take the part as a file of its own, which is the data-only check on all four targets.
 Emit golden recorded with the compiler before the change: **0 of 1450 files changed**.
+
+**`va_arg` outside a variadic function, 2026-10-06, the same day.** C 7.15.1 ties only
+`va_start` to a function declared with `...`; `va_arg` applies to any `va_list` a function
+is handed, which is what vprintf and every v-function is. cpp11 refused it; every code
+generator's `va_arg` reads the list alone, so the refusal protected nothing. RTS6x's
+`Formatter`, a class reading `printf`'s arguments, found it. `va-arg-in-callee.cpp`
+passes a list by pointer and by value, in the two forms portable to all three hosts.
