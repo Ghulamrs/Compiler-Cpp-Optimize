@@ -1479,6 +1479,12 @@ private:
                         Access access = Access::Private) const;
     // **Accessibility asked from a named class rather than from the one being parsed.**
     bool accessibleFrom(const Type *from, const Type *owner, Access a) const;
+    // Where `base` sits in `derived` along a path accessible here, [class.access.base]/4; -1 if none.
+    int accessibleBaseOffset(const Type *derived, const Type *base) const;
+    // Whether code here may step from `d` to a base it names with access `how`.
+    bool baseStepAccessible(const Type *d, Access how) const;
+    // [class.access.base]/5: a member declared in `decl` with `own` access, named in `n`.
+    bool memberReachable(const Type *n, const Type *decl, Access own) const;
     // A name that is a *capture of the lambda around this one*.
     ExprPtr outerCaptureAccess(const std::string &name);
     // **One closure type per lambda written, however often it is read.** 7.1 reads an

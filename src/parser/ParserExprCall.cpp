@@ -713,6 +713,62 @@ bool Parser::accessibleFrom(const Type *from, const Type *owner,
     return a == Access::Protected && derivesFrom(from->unqualified(), want);
 }
 
+// [class.access.base]/4: each step down is accessible where its base is public, or the code
+// is a member or friend of the class that names it, or - a protected base - a member of a
+// class derived from that one. A chain of accessible steps is an accessible base, (d).
+bool Parser::baseStepAccessible(const Type *d, Access how) const {
+    if (how == Access::Public) return true;
+    if (insideAccessOf(d, Access::Private) || isFriendOf(d)) return true;
+    return how == Access::Protected && insideAccessOf(d, Access::Protected);
+}
+
+int Parser::accessibleBaseOffset(const Type *derived, const Type *base) const {
+    if (derived == nullptr || base == nullptr) return -1;
+    const Type *d = derived->unqualified();
+    if (d == base->unqualified()) return 0;
+    const std::vector<Type::BaseSpec> &bases = d->bases();
+    for (std::size_t i = 0; i < bases.size(); i++) {
+        if (!baseStepAccessible(d, bases[i].access)) continue;
+        const int deeper = accessibleBaseOffset(bases[i].type, base);
+        if (deeper >= 0) return bases[i].offset + deeper;
+    }
+    return -1;
+}
+
+// What a member declared in `decl` with `own` access is as a member of `cls` - the
+// least restrictive path, a private one going no further; false where it is not one.
+static bool accessAsMemberOf(const Type *cls, const Type *decl, Access own, Access *out) {
+    if (cls == decl) { *out = own; return true; }
+    bool found = false;
+    for (const Type::BaseSpec &b : cls->bases()) {
+        const Type *bt = b.type->unqualified();
+        if (!b.direct || (bt != decl && !derivesFrom(bt, decl))) continue;
+        Access inB;
+        if (!accessAsMemberOf(bt, decl, own, &inB) || inB == Access::Private) continue;
+        const Access here = inB > b.access ? inB : b.access;
+        if (!found || here < *out) *out = here;
+        found = true;
+    }
+    return found;
+}
+
+// [class.access.base]/5: a member named in `n` is accessible as a member of `n` (a)-(c), or
+// through a base of `n` accessible here in which it is accessible, (d).
+bool Parser::memberReachable(const Type *n, const Type *decl, Access own) const {
+    Access a;
+    if (accessAsMemberOf(n, decl, own, &a)) {
+        if (a == Access::Public) return true;
+        if (insideAccessOf(n, Access::Private) || isFriendOf(n)) return true;
+        if (a == Access::Protected && insideAccessOf(n, Access::Protected)) return true;
+    }
+    for (const Type::BaseSpec &b : n->bases()) {
+        const Type *bt = b.type->unqualified();
+        if (!b.direct || (bt != decl && !derivesFrom(bt, decl))) continue;
+        if (baseStepAccessible(n, b.access) && memberReachable(bt, decl, own)) return true;
+    }
+    return false;
+}
+
 void Parser::checkAccessible(const Type *object, const Member &m,
                              std::size_t pos) const {
     if (m.access == Access::Public) return;
@@ -722,6 +778,15 @@ void Parser::checkAccessible(const Type *object, const Member &m,
     const Type *owner = m.declaredIn != nullptr ? m.declaredIn : object;
     if (insideAccessOf(owner, m.access)) return;
     if (isFriendOf(owner)) return;
+    // **A member of a non-public base** carries the path's access in `m.access`, which says
+    // nothing about the classes on the way; the walk asks [class.access.base]/5 of each.
+    const Member *own = nullptr;
+    if (m.declaredIn != nullptr)
+        for (const Member &o : m.declaredIn->unqualified()->members())
+            if (o.name == m.name && o.declaredIn == nullptr) own = &o;
+    if (own != nullptr && object != nullptr &&
+        memberReachable(object->unqualified(), m.declaredIn->unqualified(), own->access))
+        return;
     // [class.access.base]/5, [class.protected]: a friend of a class between the object's and
     // the declaring one names a protected member through that object - never through a base.
     if (m.access == Access::Protected && object != nullptr && owner != object)
@@ -736,6 +801,10 @@ void Parser::checkAccessible(const Type *object, const Member &m,
             c = up;
         }
     // No fallback to the class it was reached *through*.
+    if (own != nullptr && own->access < m.access && object != nullptr)
+        src_.fail(pos, "'" + m.name + "' is a member of '" + owner->describe() + "' that '" +
+                       object->unqualified()->describe() + "' reaches through a base not "
+                       "accessible here - [class.access.base]/5");
     const char *how = m.access == Access::Private ? "private" : "protected";
     // Named by the class that declared it: saying it is private in the derived
     // class sends the reader to a class whose source does not mention it.

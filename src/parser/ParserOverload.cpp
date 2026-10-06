@@ -55,6 +55,7 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
 int publicBaseOffset(const Type *derived, const Type *base);
 
 static bool publiclyDerivedFrom(const Type *derived, const Type *base);
+static int anyBaseOffset(const Type *derived, const Type *base);
 
 ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() == to) return e;
@@ -80,7 +81,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
         to->unqualified()->isStructOrUnion() &&
         e->type()->unqualified() != to->unqualified() &&
-        !publiclyDerivedFrom(e->type()->unqualified(), to->unqualified())) {
+        anyBaseOffset(e->type()->unqualified(), to->unqualified()) < 0) {
         Parser *self = const_cast<Parser *>(this);
         if (const Signature *how = self->conversionFunction(e->type(), to, allowExplicit)) {
             const Type *object = e->type();
@@ -95,7 +96,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() != nullptr && to->unqualified()->isStructOrUnion() &&
         e->type()->unqualified() != to->unqualified() &&
         !(e->type()->unqualified()->isStructOrUnion() &&
-          publiclyDerivedFrom(e->type()->unqualified(), to->unqualified()))) {
+          anyBaseOffset(e->type()->unqualified(), to->unqualified()) >= 0)) {
         Parser *self = const_cast<Parser *>(this);
         if (const Signature *ctor = self->convertingConstructor(to, *e, 0, allowExplicit)) {
             self->markUsed(ctor);
@@ -143,7 +144,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     // not caution: a null pointer converts to one, and `(char *)0 + 4` is not null.
     if (to->isPointer() && e->type()->isPointer() &&
         to->pointee()->isStructOrUnion() && e->type()->pointee()->isStructOrUnion()) {
-        const int off = publicBaseOffset(e->type()->pointee(), to->pointee());
+        const int off = anyBaseOffset(e->type()->pointee(), to->pointee());
         // **A virtual base is not at a constant offset from the derived
         // pointer**, so the walk forward is a number read out of the vtable
         // rather than one written here.
@@ -333,6 +334,19 @@ int publicBaseOffset(const Type *derived, const Type *base) {
         if (bases[i].access != Access::Public) continue;
         int deeper = publicBaseOffset(bases[i].type, b);
         if (deeper >= 0) return bases[i].offset + deeper;
+    }
+    return -1;
+}
+
+// Every base, whatever its access: where a conversion lands once it has been allowed -
+// access is asked where it is checked, and a cast ignores it, [expr.cast]/4.
+static int anyBaseOffset(const Type *derived, const Type *base) {
+    if (derived == nullptr || base == nullptr) return -1;
+    const Type *d = derived->unqualified();
+    if (d == base->unqualified()) return 0;
+    for (const Type::BaseSpec &b : d->bases()) {
+        const int deeper = anyBaseOffset(b.type, base);
+        if (deeper >= 0) return b.offset + deeper;
     }
     return -1;
 }
@@ -544,7 +558,7 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // a derived-to-base Conversion, which is what makes `f(Base &)` lose to `f(Derived &)` for
         // a Derived rather than tie with it.
         if (want->unqualified() != given->unqualified() &&
-            publicBaseOffset(given, want) > -1 &&
+            accessibleBaseOffset(given, want) > -1 &&
             isLvalue(arg) && !param->isRValueReference()) {
             if (!want->isConst() && given->isConst()) return Rank::None;
             return Rank::Conversion;
@@ -609,7 +623,8 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // Derived * to Base * is a pointer conversion, which ranks below a
         // promotion - so f(Base *) loses to f(Derived *) for a Derived *,
         // which is what [over.ics.rank] asks for.
-        if (publiclyDerivedFrom(from->pointee(), to->pointee()) &&
+        if (from->pointee()->unqualified() != to->pointee()->unqualified() &&
+            accessibleBaseOffset(from->pointee(), to->pointee()) >= 0 &&
             (to->pointee()->isConst() || !from->pointee()->isConst()))
             return Rank::Conversion;
         if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
@@ -1125,7 +1140,8 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (qualificationConvertible(ft, to)) return;
         // Derived * converts to Base *, the base being at offset 0, so the
         // value is unchanged and only the type moves.
-        if (publiclyDerivedFrom(ft->pointee(), to->pointee()) &&
+        if (ft->pointee()->unqualified() != to->pointee()->unqualified() &&
+            accessibleBaseOffset(ft->pointee(), to->pointee()) >= 0 &&
             (to->pointee()->isConst() || !ft->pointee()->isConst()))
             return;
         // [conv.ptr]/2: an object pointer converts to void * implicitly, keeping its const;
@@ -1145,6 +1161,9 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (ft->pointee()->unqualified() == to->pointee()->unqualified())
             refuse(" - the const would be dropped, and then the thing it "
                    "protects could be written through");
+        if (anyBaseOffset(ft->pointee(), to->pointee()) > -1)
+            refuse(" - the base is not accessible here, [class.access.base]/4: a private one only "
+                   "inside the class and its friends");
         refuse(" - a cast says you meant it");
     }
     if (to->isPointer() && ft->isInteger()) {

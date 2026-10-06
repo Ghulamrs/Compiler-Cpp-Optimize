@@ -12186,3 +12186,39 @@ reference cast starts at the object, whose const *is* the first shared level.
 Cases `reinterpret-cast-shared-levels` (top-level const on the operand, a const pointee over
 one level, every level gaining const, a reference), `reinterpret-cast-adds-const-refused`,
 `reinterpret-cast-inner-const-refused`; `reinterpret-cast-drops-const-refused` still refuses.
+
+## A non-public base is accessible where [class.access.base]/4 says, 2026-10-06
+
+**`struct Hidden : private A { A *self() { return this; } };` was refused** - "a cast says
+you meant it" - and so was every derived-to-base conversion through a private or protected
+base, inside the class or not. Found writing RTS6x. Every conversion path asked
+`publicBaseOffset`, which skips any base that is not public, so a non-public base was not a
+base at all: the ranking gave it no rank, `requireConvertible` refused it, and a C-style
+cast, which ignores access ([expr.cast]/4), moved the pointer by nothing - a private base not
+at offset 0 was reached at the wrong address.
+
+**Two offsets now, and which one a site asks is the whole fix.** `accessibleBaseOffset` walks
+the bases a step at a time and takes a step where [class.access.base]/4 allows it from the
+code being parsed: a public base always; any base inside a member or friend of the class that
+names it; a protected base inside a member of a class derived from that one - the same
+`insideAccessOf` and `isFriendOf` member access already asks, through `baseStepAccessible`.
+The ranking, the implicit-conversion check and a reference's direct binding ask it.
+`anyBaseOffset` walks every base and answers where the conversion *lands*: `convert` asks it
+once a conversion has been allowed, so the cast and the accessible conversion both move to
+the right subobject. Outside, `A *p = &h;` is still refused, now saying the base is not
+accessible here, as clang does.
+
+**Writing the case found the member half, and it was older.** `struct H : private A { int f()
+{ return a; } };` was refused - "'a' is private in 'struct A'" about a member A declares
+public. A member copied down carries one access for the whole path, so inside H the check
+asked about A with H's private access and said no. `memberReachable` is [class.access.base]/5
+as written: the member's access as a member of the class it is named in, found by walking
+direct bases from the class that declared it (a private step going no further), checked as
+any member's would be, or else through a base accessible here in which it is reachable. A
+private member of a base is still refused (`private-base-member-refused`), and so is a member
+of a private base named from a class derived from it, with a message saying which.
+
+Cases `private-base-conversion` (return, initialisation, argument, assignment, reference,
+const reference, a friend, a private base at an offset, a protected base from a derived
+class's members, two C-style casts), `private-base-conversion-refused`,
+`private-base-member-further-refused`.

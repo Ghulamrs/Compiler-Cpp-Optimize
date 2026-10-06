@@ -1528,7 +1528,7 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     // which the reference then *is*.
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         it->unqualified() != referent->unqualified() &&
-        publicBaseOffset(it, referent) > -1 && !ref->isRValueReference()) {
+        accessibleBaseOffset(it, referent) > -1 && !ref->isRValueReference()) {
         if (it->isConst() && !referent->isConst())
             src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
                            it->describe() + "' - a reference that can write "
