@@ -3315,6 +3315,116 @@ void Parser::pruneUnchosenCandidates(Program &program) {
     }
 }
 
+namespace {
+
+// Every symbol a body names: a call, and a variable or function used as a value.
+class SymbolsNamed final : public Visitor {
+public:
+    std::vector<std::string> *out;
+    explicit SymbolsNamed(std::vector<std::string> *o) : out(o) {}
+    void visit(const Num &) override {}
+    void visit(const Var &n) override { out->push_back(n.symbol()); }
+    void visit(const StrLit &) override {}
+    void visit(const Goto &) override {}
+    void visit(const Break &) override {}
+    void visit(const Continue &) override {}
+    void visit(const FuncletLeave &) override {}
+    void visit(const Call &n) override {
+        out->push_back(n.symbol());
+        if (n.callee() != nullptr) n.callee()->accept(*this);
+        for (const ExprPtr &a : n.args()) a->accept(*this);
+    }
+    void visit(const VaStart &n) override { n.list().accept(*this); }
+    void visit(const VaArg &n) override { n.list().accept(*this); }
+    void visit(const Assign &n) override { n.target().accept(*this); n.value().accept(*this); }
+    void visit(const Unary &n) override { n.operand().accept(*this); }
+    void visit(const Binary &n) override { n.lhs().accept(*this); n.rhs().accept(*this); }
+    void visit(const Postfix &n) override { n.target().accept(*this); }
+    void visit(const Cast &n) override { n.value().accept(*this); }
+    void visit(const Comma &n) override { n.left().accept(*this); n.right().accept(*this); }
+    void visit(const Conditional &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this); n.elseArm().accept(*this);
+    }
+    void visit(const MemberAccess &n) override { n.object().accept(*this); }
+    void visit(const ExprStmt &n) override { n.expr().accept(*this); }
+    void visit(const Return &n) override { if (n.hasValue()) n.value().accept(*this); }
+    void visit(const Block &n) override { for (const StmtPtr &s : n.body()) s->accept(*this); }
+    void visit(const If &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this);
+        if (n.elseArm() != nullptr) n.elseArm()->accept(*this);
+    }
+    void visit(const While &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const DoWhile &n) override { n.body().accept(*this); n.cond().accept(*this); }
+    void visit(const For &n) override {
+        if (n.init() != nullptr) n.init()->accept(*this);
+        if (n.cond() != nullptr) n.cond()->accept(*this);
+        if (n.step() != nullptr) n.step()->accept(*this);
+        n.body().accept(*this);
+    }
+    void visit(const Switch &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const Case &n) override { n.body().accept(*this); }
+    void visit(const Label &n) override { n.body().accept(*this); }
+    void visit(const Try &n) override {
+        for (const StmtPtr &s : n.body()) s->accept(*this);
+        if (n.hasPad()) n.pad().accept(*this);
+        if (n.cleanup() != nullptr) n.cleanup()->accept(*this);
+        for (const MsHandler &h : n.handlers())
+            if (h.body != nullptr) h.body->accept(*this);
+    }
+};
+
+}
+
+// **An inline function nothing here odr-uses is not emitted** - [basic.def.odr]/3, and what clang, g++
+// and cl do: its body may name what no library defines. Reached from every other function and every
+// global's data; a symbol is dropped only if it was held, and nothing reachable names it or its alias.
+void Parser::pruneUnusedInline(Program &program) {
+    if (discardableInline_.empty()) return;
+    for (std::size_t i = 0; i < functions_.size(); i++)
+        if (functions_[i].fromTemplate) discardableInline_.erase(functions_[i].symbol);
+    std::map<std::string, std::size_t> bySymbol;
+    for (std::size_t i = 0; i < program.functions.size(); i++) {
+        bySymbol[program.functions[i].symbol()] = i;
+        if (!program.functions[i].alias().empty()) bySymbol[program.functions[i].alias()] = i;
+    }
+    std::vector<bool> reached(program.functions.size(), false);
+    std::vector<std::string> named;
+    named.push_back(program.initFunction);
+    for (const Global &g : program.globals) {
+        named.push_back(g.prefixWord);
+        for (const GlobalPiece &p : g.init) named.push_back(p.symbol);
+    }
+    for (const MicrosoftThrow &t : program.msThrows) {
+        named.push_back(t.destructor);
+        for (const MicrosoftThrow::Catchable &c : t.catchables) named.push_back(c.copyCtor);
+    }
+    std::vector<std::size_t> work;
+    for (std::size_t i = 0; i < program.functions.size(); i++)
+        if (discardableInline_.count(program.functions[i].symbol()) == 0) {
+            reached[i] = true;
+            work.push_back(i);
+        }
+    for (;;) {
+        for (const std::string &s : named) {
+            const std::map<std::string, std::size_t>::const_iterator f = bySymbol.find(s);
+            if (f != bySymbol.end() && !reached[f->second]) {
+                reached[f->second] = true;
+                work.push_back(f->second);
+            }
+        }
+        named.clear();
+        if (work.empty()) break;
+        const std::size_t i = work.back();
+        work.pop_back();
+        SymbolsNamed collect(&named);
+        program.functions[i].body().accept(collect);
+    }
+    std::vector<Function> kept;
+    for (std::size_t i = 0; i < program.functions.size(); i++)
+        if (reached[i]) kept.push_back(std::move(program.functions[i]));
+    program.functions.swap(kept);
+}
+
 // **To a fixed point, because a body can be what first calls another.** Giving
 // Owner its constructor is what calls Held's, and Held's may not have been
 // wanted by anything the program wrote.

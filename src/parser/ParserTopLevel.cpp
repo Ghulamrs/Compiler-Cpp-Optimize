@@ -1525,6 +1525,11 @@ void Parser::topLevel(Program &program) {
     // inline, so its definition may appear in several translation units.
     program.functions.back().setInline((replayingInline_ || inlineFunction) &&
                                         !internal);
+    // **[basic.def.odr]/3: an inline function need be defined only where it is odr-used**; a template's
+    // members have a gate of their own, so only what the program wrote out is held for pruning.
+    const std::size_t definedAt = program.functions.size() - 1;
+    const bool discardable = (replayingInline_ || inlineFunction) &&
+        (memberOf == nullptr || !memberOf->unqualified()->isSpecialization());
     functionHasPads_ = false;
     functionTypes_.clear();
     functionHasTry_ = false;
@@ -1589,6 +1594,8 @@ void Parser::topLevel(Program &program) {
     if (!splitD1.empty())
         synthesizeCompleteDtor(memberOf, splitD1, splitD2,
                                program.functions.back().isInline(), d.pos);
+    for (std::size_t i = definedAt; discardable && i < program.functions.size(); i++)
+        discardableInline_.insert(program.functions[i].symbol());
 }
 
 Program Parser::parse() {
@@ -1606,5 +1613,6 @@ Program Parser::parse() {
     pruneExternalVtables(program);
     pruneUnchosenCandidates(program);
     finishDynamicInit(program);
+    pruneUnusedInline(program);
     return program;
 }

@@ -1,0 +1,1 @@
+cl names a closure by a hash of the file, `<lambda_...>`, where cxx1 writes `$_N`; nothing links against a closure's call operator, and the shape lambda-class-scope-names.nocl records. Every name the program declares agrees.

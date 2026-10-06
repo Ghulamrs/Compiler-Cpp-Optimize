@@ -12383,3 +12383,52 @@ one instantiating `C<int>` and the other using `C<int>::m`, link and run. Case
 targets, where the unused `m`s and `neverBuilt`'s constructor are gone; the Windows
 `.nonames` is the `$guard` difference already recorded. Emit golden 0 of 1514
 changed - no existing case had a template static it did not use.
+
+## A member holding a function pointer, and an inline function nobody uses, 2026-10-07
+
+**`compare_(a, b)` inside a member function was "'compare_' was not declared - a
+prototype must come first"** where `compare_` is a data member holding a function
+pointer; `(*compare_)(a, b)` worked. [class.mfct.non-static]/3 makes the bare name
+`(*this).compare_`, and calling what it holds is an ordinary call. `primary` decides
+whether `name(` is a call through an object with `callsThroughObject`, and asked only
+a local or a global: a member went to the free-function table. It asks the class now -
+`findMember` on `currentClass_` and on the class a lambda's `[this]` reaches - and a
+static data member that holds something callable is no longer stepped over at a `(`.
+Being a member, it hides a namespace-scope function of the same name, as
+[basic.lookup.unqual] says. `member-holding-function-pointer.cpp`: the bare name,
+`this->`, `.` and `->`, a static member, a class object with `operator()`, a member
+hiding `::pick`, an inherited member, a lambda through `[this]`, and a captured local.
+
+**Found beside it and not mended:** a reference to a function as a data member,
+`int (&r)(int, int);`, is refused in the mem-initialiser - "'r' is neither a member of
+'S' nor a direct base of it".
+
+**An inline function was emitted in every unit that defined it**, used or not, so a
+header's inline wrapper over a function the program never links - RTS6x's are over
+`strcmp` and its neighbours - left an undefined symbol in every unit that included
+it. [basic.def.odr]/3 asks for the definition only where it is odr-used; clang, g++
+and cl emit nothing for an unused namespace-scope inline, an unused inline member
+defined in its class, or an unused `static inline` - measured with clang for both
+Itanium and Microsoft. `pruneUnusedInline`, last in `parse()`, keeps every function
+the program did not write inline as a root, and walks from them and from every
+global's data (vtables included), the Microsoft throw records and the initialiser
+function; an inline function, or a `static inline` one, that nothing reached is
+dropped, its C2 or D2 alias counting as its name. A class template's members have
+their own on-use gate and are not held, nor is anything `fromTemplate`.
+
+**What the golden said, and every change was read.** At -O0, 144 of 1526 files
+changed, 12 added: every change a deletion of `<string>`, `<stdexcept>` and stream
+inlines no case calls (`std::to_string`, the exception constructors, the
+manipulators), the only lines *added* being x86_64-linux's
+`DW.ref.__gxx_personality_v0` block, which follows the first function with a
+landing pad and moves when an earlier one goes. At tms6747 -O2, 34 of 383 changed:
+the same deletions, and four files whose inlining moved - the C6000 inliner's unit
+budget is a share of the unit's size, so a smaller unit inlines differently
+(`template-container` now calls `Vec<Item>::Vec()` where it had inlined it).
+
+**Still emitted, and why:** a polymorphic class whose virtual functions are all
+inline gets its vtable at completion whether or not anything constructs one, and
+the vtable names its virtuals - so they stay, where clang emits none of the three.
+`unused-inline-not-emitted.cpp` is a two-file case: both units define inline
+functions over `never_linked`, which nothing defines, and the program links.
+`tools/windows/run-cases.cmd` builds a case's `.part.cpp` into it now, as run.sh does.

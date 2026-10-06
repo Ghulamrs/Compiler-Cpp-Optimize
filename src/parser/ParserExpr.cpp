@@ -1181,11 +1181,24 @@ ExprPtr Parser::primary(Program *program) {
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
         // A name that holds something callable rather than naming a function:
         // a function pointer, or an object whose `(` is [over.call].
-        const Type *callee = held != nullptr && held->isReference()
-                           ? held->referent() : held;
-        bool callsThroughObject =
-            callee != nullptr && (callee->isFunctionPointer() ||
-                                  callee->unqualified()->isStructOrUnion());
+        auto callable = [](const Type *t) {
+            if (t != nullptr && t->isReference()) t = t->referent();
+            return t != nullptr && (t->isFunctionPointer() ||
+                                    t->unqualified()->isStructOrUnion());
+        };
+        bool callsThroughObject = callable(held);
+        // **A data member holding something callable, called by its bare name**: [class.mfct.non-static]
+        // makes `compare_(a, b)` `(*this).compare_(a, b)`, an ordinary call through what it holds, and
+        // [basic.lookup.unqual] lets the member hide a namespace-scope function of that name.
+        if (!callsThroughObject && l == nullptr && peekAt(1).is("(") && currentClass_ != nullptr) {
+            ExprPtr outer = capturedThisPointer();
+            const Type *roots[2] = { currentClass_,
+                                     outer != nullptr ? outer->type()->pointee() : nullptr };
+            for (const Type *root : roots)
+                if (root != nullptr && !callsThroughObject)
+                    if (const Member *m = root->findMember(name))
+                        callsThroughObject = callable(m->type);
+        }
 
         // **An unqualified static member, inside a member function, the class's
         // own body, or a lambda written in either** - `static const int n = 8;`
@@ -1195,10 +1208,12 @@ ExprPtr Parser::primary(Program *program) {
                                      : classStack_.empty() ? nullptr : classStack_.back(),
             lambdaScope() };
         for (const Type *staticScope : staticScopes) {
-            if (l != nullptr || g != nullptr || staticScope == nullptr ||
-                peekAt(1).is("("))
+            if (l != nullptr || g != nullptr || staticScope == nullptr)
                 break;
-            if (const Type::StaticMember *s = staticScope->findStaticMember(name)) {
+            const Type::StaticMember *s = staticScope->findStaticMember(name);
+            // Called, it is reached here only when it holds what is called.
+            if (s != nullptr && peekAt(1).is("(") && !callable(s->type)) break;
+            if (s != nullptr) {
                 at_++;
                 return staticMemberRef(staticScope, *s, staticScope->tag(), pos);
             }

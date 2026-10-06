@@ -62,8 +62,11 @@ if exist %ROOT%\tests\cases\%NAME%.notarget (
         exit /b 0
     )
 )
+rem  A case's second translation unit, <case>.part.cpp, goes into its program - as run.sh does.
+set PART=
+if exist %ROOT%\tests\cases\%NAME%.part.cpp set PART=%ROOT%\tests\cases\%NAME%.part.cpp
 if "%~2"==".expected" (
-    %ROOT%\cxx1-msvc.exe %CXX1_CASES_FLAGS% %ROOT%\tests\cases\%NAME%.cpp -o %ROOT%\winout\%NAME%.exe >%ROOT%\winout\%NAME%.build 2>&1
+    %ROOT%\cxx1-msvc.exe %CXX1_CASES_FLAGS% %ROOT%\tests\cases\%NAME%.cpp %PART% -o %ROOT%\winout\%NAME%.exe >%ROOT%\winout\%NAME%.build 2>&1
     if errorlevel 1 (echo COMPILE-FAILED %NAME%& exit /b 0)
     %ROOT%\winout\%NAME%.exe > %ROOT%\winout\%NAME%.out 2>&1 < nul
     exit /b 0
