@@ -1061,6 +1061,8 @@ ExprPtr Parser::primary(Program *program) {
             n->setType(found->type != nullptr ? found->type : types_.intType());
             return n;
         }
+        if (unevaluated_ > 0)
+            if (ExprPtr m = unevaluatedMember()) return m;
     }
 
     // **`S::f(...)` - a static member function, called with no object.** The
@@ -1340,6 +1342,8 @@ ExprPtr Parser::primary(Program *program) {
                 // nothing: `x` inside a derived class reached a private member of its base where
                 // `this->x` and `d.x` were both refused.
                 checkAccessible(currentClass_, *m, pos);
+                if (self == nullptr && unevaluated_ > 0)
+                    return memberWithoutObject(currentClass_, *m, pos);
                 if (self == nullptr)
                     src_.fail(pos, "'" + name + "' is a member and there is no "
                                    "object here to read it from");
@@ -1415,6 +1419,18 @@ ExprPtr Parser::primary(Program *program) {
                            "that is not supported yet - '" + name +
                            "(...)' calls a constructor here, and a plain "
                            "struct is built by naming its members");
+        // `S::x` reached here found no static member, enumerator or function: say which it was.
+        if (const Type *cls = peek().is("::") && peekAt(1).kind == TokenKind::Ident
+                                  ? findTypedef(name) : nullptr)
+            if (cls->isStructOrUnion()) {
+                const std::string member = peekAt(1).text;
+                if (cls->findMember(member) != nullptr)
+                    src_.fail(peekAt(1).pos, "'" + member + "' is a non-static data member "
+                              "of '" + cls->tag() + "' and needs an object here - only "
+                              "sizeof and decltype may name it with none");
+                src_.fail(peekAt(1).pos, "'" + cls->tag() + "' has no member called '" +
+                                         member + "'");
+            }
         src_.fail(pos, "'" + name + "' was not declared");
     }
 
@@ -1428,8 +1444,20 @@ bool Parser::atNamePath() const {
     if (peek().kind != TokenKind::Ident) return false;
     std::size_t k = 1;
     for (;;) {
+        // `S::m` and `C<int>::m` are id-expressions too: a class template's arguments are stepped over.
+        if (peekAt(k).is("<") && isClassTemplate(peekAt(k - 1).text)) {
+            int depth = 0;
+            for (;; k++) {
+                const Token &t = peekAt(k);
+                if (t.kind == TokenKind::End || t.is(";")) return false;
+                if (t.is("<")) depth++;
+                else if (t.is(">")) { if (--depth == 0) { k++; break; } }
+                else if (t.is(">>")) { depth -= 2; if (depth <= 0) { k++; break; } }
+            }
+            if (!peekAt(k).is("::")) return false;
+        }
         if (peekAt(k).is(")")) return true;
-        if (!peekAt(k).is(".") && !peekAt(k).is("->")) return false;
+        if (!peekAt(k).is(".") && !peekAt(k).is("->") && !peekAt(k).is("::")) return false;
         if (peekAt(k + 1).kind != TokenKind::Ident) return false;
         k += 2;
     }
@@ -1465,6 +1493,7 @@ const Type *Parser::decltypeSpecifier() {
     // Unevaluated: [dcl.type.simple]/4. The operand is read for its type and
     // nothing in it happens, so nothing it registered may outlive the read.
     Discarded held(this);
+    Unevaluated unevaluated(this);
     ExprPtr e = expr();
     expect(")");
     const Type *t = e->type();
@@ -2276,6 +2305,7 @@ ExprPtr Parser::unary() {
         mayThrow_ = 0;
         // Unevaluated: what it accumulates goes back. [expr.unary.noexcept]/2
         Discarded held(this);
+        Unevaluated unevaluated(this);
         (void) expr();
         const bool quiet = mayThrow_ == 0;
         mayThrow_ = outer;
@@ -2303,9 +2333,8 @@ ExprPtr Parser::unary() {
     if (peek().is("sizeof")) {
         at_++;
         const Type *measured = nullptr;
-        if (peek().is("(") && [this] {
-                std::size_t save = at_; at_++; bool t = atTypeName(); at_ = save; return t;
-            }()) {
+        // [expr.sizeof]/1 with [dcl.ambig.res]/2: `sizeof(S::m)` is a type-id only if it can be one.
+        if (peek().is("(") && parenHoldsTypeId()) {
             at_++;
             StorageClass sc;
             measured = specifiers(&sc);
@@ -2315,6 +2344,7 @@ ExprPtr Parser::unary() {
             // Unevaluated: [expr.sizeof]/1. A call in here registers a result
             // slot for destruction and no object is ever built in it.
             Discarded held(this);
+            Unevaluated unevaluated(this);
             ExprPtr operand = unary();
             if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(operand.get()))
                 if (m->isBitField())

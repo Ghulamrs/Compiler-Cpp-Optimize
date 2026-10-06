@@ -12295,4 +12295,32 @@ arguments, a class in a namespace defined outside it, a class template's scalar
 and array - against a global `Count` and `Text` that must lose; it fails on the
 compiler before. Emit golden 0 of 1506 changed, 4 added. **Found and not
 mended:** `sizeof(S::m)` with parentheses, naming a *static* member, is read as
-a type and refused ("'S' has no member type called 'm'"); `sizeof S::m` works.
+a type and refused ("'S' has no member type called 'm'"); `sizeof S::m` works. Mended
+the same day - the next section.
+
+## `sizeof(S::m)`, and a parenthesis that holds a type only if one can be read there, 2026-10-06
+
+**`sizeof(S::m)` for a static data member was "'S' has no member type called 'm'"**, while
+`sizeof S::m` worked. [dcl.ambig.res]/2: the parenthesised operand is a type-id only if it
+can be one, and sizeof decided on the first token - `atTypeName()` answers yes for `S` - and
+then insisted. `parenHoldsTypeId` is the C-style cast's existing `Trial` lifted into a helper
+both now call: read a type-id, ask for `)`, rewind; a refusal naming a feature still reports.
+
+**And the non-static half, which was refused by name.** [expr.prim.general]/13 lets an
+unevaluated operand name a non-static data member with no object - `sizeof(S::x)`,
+`sizeof(Outer::Inner::y)`, `sizeof(C<double>::x)`, `sizeof(buf)` in a static member
+function. `unevaluated_` counts the sizeof, decltype and noexcept operands (and travels in
+`FunctionState`, so a replay inside one starts at 0); there `memberWithoutObject` answers
+`*(T *)0`, an lvalue of the member's type at no address, never emitted. Access is checked
+and a bit-field refused as through an object. Outside, `S::x` says it needs an object,
+where it said "'S' was not declared"; a name the class lacks says so.
+
+**`decltype(S::m)` was `int &`**: `atNamePath` knew `.` and `->` and not `::`, so the
+qualified id-expression took the lvalue answer. It takes `::` and steps over a class
+template's arguments now. Case `sizeof-qualified-member` (all of the above beside
+`sizeof(S::Nested)`, `sizeof(S::Typedef)`, `sizeof(n::S)` and the casts `(S::m) + 1` and
+`(S::Typedef)70000`), and `qualified-member-needs-object-refused`. Emit golden 0 of 1510
+changed. **Found and left:** `S::T(3)`, a functional cast through a member typedef, is
+"'S' was not declared"; `sizeof(n::S::nope)` says "'n' was not declared"; and a
+static *reference* member cannot be defined - `int &S::r = g;` is "'S::r' is 'int &' and
+this is 'int'".

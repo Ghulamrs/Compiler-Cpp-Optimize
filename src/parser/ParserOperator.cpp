@@ -9,39 +9,41 @@
 #include <climits>
 #include <cstring>
 
+// Answers with at_ where it was. A refusal that names a feature is an answer and is
+// reported; any other failure only says this parenthesis does not hold a type-id.
+bool Parser::parenHoldsTypeId() {
+    const std::size_t save = at_;
+    at_++;
+    bool typeId = false;
+    if (atTypeName()) {
+        try {
+            Trial trial(this);
+            StorageClass psc;
+            const Type *pt = specifiers(&psc);
+            declarator(pt, true);
+            typeId = peek().is(")");
+        } catch (const SubstitutionFailure &f) {
+            if (f.unsupported) src_.fail(f.pos, f.why);
+            typeId = false;
+        }
+    }
+    at_ = save;
+    return typeId;
+}
+
 ExprPtr Parser::castExpr() {
-    if (peek().is("(")) {
-        std::size_t save = at_;
+    // **`(T(2.5) == ...)` is not a cast to a function type**, and `(S::m) + 1` no cast at all.
+    if (peek().is("(") && parenHoldsTypeId()) {
         const std::size_t openPos = peek().pos;
         at_++;
-        if (atTypeName()) {
-            // **`(T(2.5) == ...)` is not a cast to a function type.**
-            bool isCast = false;
-            try {
-                Trial trial(this);
-                StorageClass psc;
-                const Type *pt = specifiers(&psc);
-                declarator(pt, true);
-                isCast = peek().is(")");
-            } catch (const SubstitutionFailure &f) {
-                // **A refusal that names a feature is an answer, not a no.**
-                // The trial is asking whether this parenthesis holds a
-                // type-id.
-                if (f.unsupported) src_.fail(f.pos, f.why);
-                isCast = false;
-            }
-            if (isCast) {
-                StorageClass sc;
-                const Type *to = specifiers(&sc);
-                to = declarator(to, true).type;
-                expect(")");
-                ExprPtr v = decay(castExpr());
-                if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
-                refuseUnrelatedClassCast(*v, to, openPos, "a cast");
-                return convert(std::move(v), to, true);   // a cast allows explicit
-            }
-        }
-        at_ = save;
+        StorageClass sc;
+        const Type *to = specifiers(&sc);
+        to = declarator(to, true).type;
+        expect(")");
+        ExprPtr v = decay(castExpr());
+        if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
+        refuseUnrelatedClassCast(*v, to, openPos, "a cast");
+        return convert(std::move(v), to, true);   // a cast allows explicit
     }
     return unary();
 }

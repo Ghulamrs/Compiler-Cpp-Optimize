@@ -343,9 +343,6 @@ declaration order. What is left is the shapes where one object is many:
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
   `src/parser/ParserOverload.cpp:945`
-- **naming a non-static data member with no object**, `sizeof(S::m)` —
-  [expr.sizeof]/2. Told apart from a name the class does not have at all.
-  `src/parser/ParserType.cpp:32`
 
 ## `new` and `delete`
 

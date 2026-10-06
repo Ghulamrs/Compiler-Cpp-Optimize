@@ -25,14 +25,11 @@ const Type *Parser::memberTypeWalk(const Type *t) {
         }
         if (!t->isStructOrUnion()) break;
         const Type *found = lookupInClass(t, member);
-        // **C++11 lets `sizeof(S::m)` name a non-static data member with no object** -
-        // [expr.sizeof]/2 - so say which of the two this is: a member that exists and is not a type
-        // reads differently from a name the class does not have at all.
+        // A member that exists and is not a type reads differently from a name the class lacks.
+        // Inside sizeof or decltype this only tells parenHoldsTypeId the operand is an expression.
         if (found == nullptr && t->findMember(member) != nullptr)
-            src_.fail(peekAt(1).pos, "naming the non-static data member '" +
-                                     member + "' without an object is C++11 "
-                                     "and is not supported yet - 'sizeof' an "
-                                     "object of the class, or its type");
+            src_.fail(peekAt(1).pos, "'" + member + "' is a data member of '" + t->tag() +
+                                     "', not a type");
         // A static data member reached through a template's argument list,
         // `Box<int>::count`, is the refusal EXCLUSIONS names - not a missing
         // type (the cl review's A23); a typedef for the instantiation reaches it.

@@ -2173,6 +2173,8 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
         n->setType(e->type != nullptr ? e->type : types_.intType());
         return n;
     }
+    if (unevaluated_ > 0)
+        if (const Member *m = cls->findMember(member)) return memberWithoutObject(cls, *m, mpos);
     src_.fail(mpos, "'" + cls->describe() + "' has no static member or "
                     "enumerator called '" + member + "'");
 }

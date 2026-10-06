@@ -3492,6 +3492,46 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
     program.globals.back().isInline = owner->isSpecialization();
 }
 
+// [expr.prim.general]/13: nothing reads it, so an lvalue of the member's type at no
+// address answers every question sizeof and decltype may ask - `*(T *)0`, never emitted.
+ExprPtr Parser::memberWithoutObject(const Type *cls, const Member &m, std::size_t pos) {
+    checkAccessible(cls, m, pos);
+    if (m.width != 0)
+        src_.fail(pos, "sizeof cannot be applied to '" + m.name + "', which is a bit-field");
+    const Type *t = m.type->isReference() ? m.type->referent() : m.type;
+    ExprPtr zero(new Num(0LL));
+    zero->setType(types_.intType());
+    ExprPtr ptr(new Cast(types_.pointerTo(t), std::move(zero)));
+    ptr->setType(types_.pointerTo(t));
+    ExprPtr deref(new Unary('*', std::move(ptr)));
+    deref->setType(t);
+    return deref;
+}
+
+// `S::x`, `Outer::Inner::y`, `n::S::q`: the longest prefix naming a class that has
+// the data member wins, as the static member walk in primary() takes it.
+ExprPtr Parser::unevaluatedMember() {
+    std::string q = peek().text;
+    const Type *owner = nullptr;
+    const Member *found = nullptr;
+    std::size_t consumed = 0;
+    for (std::size_t k = 1; peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident;
+         k += 2) {
+        if (const Type *cls = findTypedef(q))
+            if (cls->isStructOrUnion())
+                if (const Member *m = cls->findMember(peekAt(k + 1).text)) {
+                    owner = cls;
+                    found = m;
+                    consumed = k + 2;
+                }
+        q += "::" + peekAt(k + 1).text;
+    }
+    if (found == nullptr || peekAt(consumed).is("(")) return nullptr;
+    const std::size_t pos = peekAt(consumed - 1).pos;
+    at_ += consumed;
+    return memberWithoutObject(owner, *found, pos);
+}
+
 // Naming a static member, however it was reached. A folded one is its value
 // and has no storage at all; every other is the one global the class named.
 ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,

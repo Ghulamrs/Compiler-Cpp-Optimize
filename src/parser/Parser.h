@@ -937,6 +937,8 @@ private:
     const Type **deducingReturn_ = nullptr;
     std::string functionName_;
     std::vector<std::string> staticSymbols_;
+    // Above 0 inside sizeof, decltype, noexcept: [expr.prim.general]/13 lets `S::x` go without an object.
+    int unevaluated_ = 0;
 
     std::vector<Signature> functions_;
     // One name, every function declared under it. C had one; C++ has a set,
@@ -1195,6 +1197,7 @@ private:
         const Type *currentClass = nullptr;
         const Type *returnType = nullptr;
         const Type **deducingReturn = nullptr;
+        int unevaluated = 0;
         int lambdaCount = 0;
         bool atFunctionBody = false;
         std::vector<Alive> alive;
@@ -1238,6 +1241,14 @@ private:
         ~Discarded() { p->pendingTemps_ = temps; p->alive_ = alive; }
         Discarded(const Discarded &) = delete;
         Discarded &operator=(const Discarded &) = delete;
+    };
+
+    struct Unevaluated {
+        Parser *p;
+        explicit Unevaluated(Parser *pp) : p(pp) { p->unevaluated_++; }
+        ~Unevaluated() { p->unevaluated_--; }
+        Unevaluated(const Unevaluated &) = delete;
+        Unevaluated &operator=(const Unevaluated &) = delete;
     };
 
     FunctionState captureFunctionState() const;
@@ -1380,6 +1391,9 @@ private:
     }
     ExprPtr staticMemberRef(const Type *owner, const Type::StaticMember &s,
                             const std::string &cls, std::size_t pos);
+    // `S::x` for a non-static data member, in an unevaluated operand: an lvalue of its type.
+    ExprPtr memberWithoutObject(const Type *cls, const Member &m, std::size_t pos);
+    ExprPtr unevaluatedMember();
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
                        Access access, bool inUnion, bool isVirtual,
                        bool isStatic = false, bool isPure = false);
@@ -2121,6 +2135,8 @@ private:
     ExprPtr add();
     ExprPtr mul();
     ExprPtr castExpr();
+    // At a `(`: does a type-id run from here to a `)`? [dcl.ambig.res]/2 - `(S::m)` naming a data member does not.
+    bool parenHoldsTypeId();
     // `a .* p` and `p ->* q` - [expr.mptr.oper], which sits between a cast and
     // a multiplication. What it builds is the object's address plus the
     // offset the member pointer holds, read as the member's type.
