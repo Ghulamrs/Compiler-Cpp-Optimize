@@ -420,11 +420,19 @@ void Parser::topLevel(Program &program) {
                             scoped += parts[i] + "@";
                         helper = atexitHelperName(scoped);
                     }
+                    // In scope in its own initialiser - `S s(&s);` - [basic.scope.pdecl]/1.
+                    const bool early = prev == nullptr && initialiserNames(d.name);
+                    if (early) {
+                        globalIndex_[gname] = globals_.size();
+                        globals_.push_back(GlobalSym{ gname, symbol, d.type,
+                                                      d.type->isConst(), true,
+                                                      true, false, 0 });
+                    }
                     dynamicInitialise(d, symbol, helper, false);
                     if (prev != nullptr) {
                         prev->emitted = true;
                         prev->hasInit = true;
-                    } else {
+                    } else if (!early) {
                         globalIndex_[gname] = globals_.size();
                         globals_.push_back(GlobalSym{ gname, symbol, d.type,
                                                       d.type->isConst(), true,
@@ -454,6 +462,22 @@ void Parser::topLevel(Program &program) {
             bool constantDoubleKnown = false;
             long double constantDoubleValue = 0;
             Init dynamicScalar;
+            // **[basic.scope.pdecl]/1: the name is declared before its initialiser** -
+            // `void *p = &p;` - so a first declaration naming itself registers here.
+            const std::string selfKey = (namespaceStack_.empty() || cLinkage_ > 0)
+                                      ? d.name : namespacePrefix() + d.name;
+            bool registered = false;
+            std::size_t early = 0;
+            if (d.type->isComplete() && findGlobalToUpdate(selfKey) == nullptr &&
+                initialiserNames(d.name)) {
+                const bool c = d.type->isConst();
+                const bool hidden = sc == StorageStatic || (c && sc != StorageExtern);
+                early = globals_.size();
+                registered = true;
+                globalIndex_[selfKey] = early;
+                globals_.push_back(GlobalSym{ selfKey, dataSymbol(selfKey, d.type, hidden, d.pos),
+                                              d.type, c, false, false, false, 0 });
+            }
             if (scalarInitAhead || consume("=") || atBracedInitialiser(d.name)) {
                 Init in = scalarInitAhead ? parenthesisedInitialiser(d)
                                           : parseInitialiser();
@@ -504,7 +528,8 @@ void Parser::topLevel(Program &program) {
             const std::string gname =
                 (namespaceStack_.empty() || cLinkage_ > 0)
                     ? d.name : namespacePrefix() + d.name;
-            if (GlobalSym *prev = findGlobalToUpdate(gname)) {
+            GlobalSym *prev = registered ? nullptr : findGlobalToUpdate(gname);
+            if (prev != nullptr) {
                 const Type *both = composite(prev->type, d.type);
                 if (both == nullptr)
                     src_.fail(d.pos, "'" + d.name + "' was already declared as '" +
@@ -545,7 +570,7 @@ void Parser::topLevel(Program &program) {
             // A variable declared in a namespace is keyed and mangled by its qualified
             // name, the same as a function. `extern "C"` does not reach into one, so a
             // name with C linkage keeps what it was written with - `gname` above.
-            globalIndex_[gname] = globals_.size();
+            globalIndex_[gname] = registered ? early : globals_.size();
             bool objectIsConst = d.type->isConst();
             // A const object at namespace scope has internal linkage of its own -
             // [basic.link]/3 - which is why a header may define one and C, where it
@@ -555,12 +580,13 @@ void Parser::topLevel(Program &program) {
             refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
             const bool dynamic = dynamicScalar.value != nullptr;
-            globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
-                                          sc != StorageExtern || hasInit || dynamic,
-                                          hasInit || dynamic,
-                                          constantKnown, constantValue });
-            globals_.back().isConstantDouble = constantDoubleKnown;
-            globals_.back().constantDouble = constantDoubleValue;
+            GlobalSym made{ gname, symbol, d.type, objectIsConst,
+                            sc != StorageExtern || hasInit || dynamic,
+                            hasInit || dynamic, constantKnown, constantValue };
+            made.isConstantDouble = constantDoubleKnown;
+            made.constantDouble = constantDoubleValue;
+            if (registered) globals_[early] = made;
+            else globals_.push_back(made);
             if (dynamic) dynamicInitialiseScalar(gname, d.type, dynamicScalar);
             if (sc != StorageExtern || hasInit || dynamic) {
                 program.globals.push_back(Global{ gname, symbol, d.type,

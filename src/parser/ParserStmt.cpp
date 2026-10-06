@@ -199,10 +199,12 @@ StmtPtr Parser::declarationBody() {
                 staticLocalWithConstructor(d, inits);
                 continue;
             }
+            const bool early = initialiserNames(d.name);
+            int off = early ? declare(d.name, d.type, d.pos, quals.alignAs) : 0;
+            const std::size_t mine = locals_.size() - 1;
             CtorInit ci = readConstructorInitialiser(d);
-
-            int off = declare(d.name, d.type, d.pos, quals.alignAs);
-            locals_.back().guardsJump = true;
+            if (!early) off = declare(d.name, d.type, d.pos, quals.alignAs);
+            locals_[early ? mine : locals_.size() - 1].guardsJump = true;
 
             // The backing array and the list object, before the constructor
             // that reads them - a list-init only.
@@ -243,6 +245,9 @@ StmtPtr Parser::declarationBody() {
         // already emit. A parameter list begins with a type name and this does not.
         if (peek().is("(") && d.type->isStructOrUnion() && sc != StorageStatic) {
             if (atParenInitialiser()) {
+                const bool early = initialiserNames(d.name);
+                int off = early ? declare(d.name, d.type, d.pos, quals.alignAs) : 0;
+                const std::size_t mine = locals_.size() - 1;
                 at_++;                        // the '('
                 std::vector<ExprPtr> args;
                 parseArguments(args);
@@ -253,8 +258,8 @@ StmtPtr Parser::declarationBody() {
                                      d.type->describe() + "' - and this gives " +
                                      std::to_string(args.size()) + " arguments");
                 checkAssignable(*args[0], d.type, d.pos, "'" + d.name + "'");
-                const int off = declare(d.name, d.type, d.pos, quals.alignAs);
-                locals_.back().guardsJump = true;
+                if (!early) off = declare(d.name, d.type, d.pos, quals.alignAs);
+                locals_[early ? mine : locals_.size() - 1].guardsJump = true;
                 ExprPtr target(Var::local(d.name, off));
                 target->setType(d.type);
                 ExprPtr store(new Assign(std::move(target), std::move(args[0])));
@@ -297,8 +302,10 @@ StmtPtr Parser::declarationBody() {
                 std::vector<GlobalPiece> pieces;
                 bool hasInit = false;
                 std::vector<StmtPtr> body;
+                const bool early = initialiserNames(d.name);
+                if (early) declareStaticLocal(d.name, d.type, d.pos, symbol);
                 bindStaticReference(d, symbol, pieces, hasInit, &body);
-                declareStaticLocal(d.name, d.type, d.pos, symbol);
+                if (!early) declareStaticLocal(d.name, d.type, d.pos, symbol);
                 current_->globals.push_back(Global{ symbol, symbol,
                                                     types_.pointerTo(d.type->referent()),
                                                     std::move(pieces), hasInit,
@@ -312,10 +319,13 @@ StmtPtr Parser::declarationBody() {
                                  "initialised here - there is no later "
                                  "assignment that would bind it, only one that "
                                  "writes through it");
+            const bool early = initialiserNames(d.name);
+            int off = early ? declare(d.name, d.type, d.pos, quals.alignAs) : 0;
+            const std::size_t mine = locals_.size() - 1;
             at_++;
             ExprPtr init = assign();
-            int off = declare(d.name, d.type, d.pos, quals.alignAs);
-            locals_.back().guardsJump = true;
+            if (!early) off = declare(d.name, d.type, d.pos, quals.alignAs);
+            locals_[early ? mine : locals_.size() - 1].guardsJump = true;
             const Type *slot = types_.pointerTo(d.type->referent());
             ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
                                          "'" + d.name + "'");
@@ -345,6 +355,10 @@ StmtPtr Parser::declarationBody() {
             const std::string symbol = uniqueStaticSymbol(d.name);
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
+            // In scope in its own initialiser, as an automatic one is.
+            const bool early = d.type->isComplete() && initialiserNames(d.name);
+            if (early) declareStaticLocal(d.name, d.type, d.pos, symbol);
+            const std::size_t mine = locals_.size() - 1;
             if (parenInit || consume("=") || atBracedInitialiser(d.name)) {
                 Init in = parenInit ? parenthesisedInitialiser(d)
                                     : parseInitialiser();
@@ -357,16 +371,22 @@ StmtPtr Parser::declarationBody() {
                 src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
                                  "to take one from");
             }
-            declareStaticLocal(d.name, d.type, d.pos, symbol);
-            locals_.back().isConst = d.type->isConst();
+            const std::size_t at = early ? mine : locals_.size();
+            if (!early) declareStaticLocal(d.name, d.type, d.pos, symbol);
+            locals_[at].isConst = d.type->isConst();
             current_->globals.push_back(Global{ symbol, symbol, d.type,
                                                 std::move(pieces), hasInit, true,
-                                                locals_.back().isConst });
+                                                locals_[at].isConst });
             current_->globals.back().align = quals.alignAs;
             continue;
         }
 
         bool hasInit = parenInit || peek().is("=") || atBracedInitialiser(d.name);
+        // **[basic.scope.pdecl]/1: the name is declared before its initialiser**,
+        // so `void *q = &q;` takes its own address - and an outer `q` is hidden.
+        const bool early = hasInit && d.type->isComplete() && initialiserNames(d.name);
+        int off = early ? declare(d.name, d.type, d.pos, quals.alignAs) : 0;
+        std::size_t mine = locals_.size() - 1;
         Init in;
         if (hasInit) {
             if (parenInit) {
@@ -384,22 +404,25 @@ StmtPtr Parser::declarationBody() {
         }
 
         if (!hasInit) refuseDeletedDefaultInit(d.type, d.name, d.pos);
-        const int off = declare(d.name, d.type, d.pos, quals.alignAs);
-        locals_.back().isConst = d.type->isConst();
-        locals_.back().isRegister = (sc == StorageRegister);
+        if (!early) {
+            off = declare(d.name, d.type, d.pos, quals.alignAs);
+            mine = locals_.size() - 1;
+        }
+        locals_[mine].isConst = d.type->isConst();
+        locals_[mine].isRegister = (sc == StorageRegister);
         // An initialiser to skip, or a destructor that would run on what was
         // never built: either makes this a declaration no jump may land past.
-        locals_.back().guardsJump = hasInit || destructorOf(d.type) != nullptr;
+        locals_[mine].guardsJump = hasInit || destructorOf(d.type) != nullptr;
         if (hasInit) {
             long long value = 0;
             long double dvalue = 0;
             if (constantInitialiser(d.type, in, &value)) {
-                locals_.back().isConstantValue = true;
-                locals_.back().constantValue = value;
+                locals_[mine].isConstantValue = true;
+                locals_[mine].constantValue = value;
             } else if (constantFloatingInitialiser(d.type, in, &dvalue)) {
                 // A const floating local reads back the same way a global does.
-                locals_.back().isConstantDouble = true;
-                locals_.back().constantDouble = dvalue;
+                locals_[mine].isConstantDouble = true;
+                locals_[mine].constantDouble = dvalue;
             } else if (quals.isConstexpr) {
                 src_.fail(d.pos, "'" + d.name + "' is 'constexpr', so its value "
                                  "has to be known while this is compiled, and "

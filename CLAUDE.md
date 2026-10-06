@@ -12007,3 +12007,41 @@ is handed, which is what vprintf and every v-function is. cpp11 refused it; ever
 generator's `va_arg` reads the list alone, so the refusal protected nothing. RTS6x's
 `Formatter`, a class reading `printf`'s arguments, found it. `va-arg-in-callee.cpp`
 passes a list by pointer and by value, in the two forms portable to all three hosts.
+
+## A name is in scope in its own initialiser, 2026-10-06
+
+**`void *p = &p;` was "'p' was not declared"**, at file scope, as a local, as a
+static local, in `extern "C"` - found compiling `extern "C" { void *__dso_handle
+= &__dso_handle; }`. [basic.scope.pdecl]/1 puts the point of declaration right
+after the complete declarator and *before* the initialiser, so `int y =
+sizeof(y);` and `S s(&s);` are ordinary C++11. Every declaration path here
+registered the name after reading the initialiser. A static data member defined
+out of line was already right: its name was declared in the class.
+
+**The refusal hid a silent wrong answer beside it.** `int x = 5; int f() { int x
+= (x = 3) + 1; return x; }` compiled, and the `x = 3` wrote the *global*: the
+old compiler printed `4 3` where clang prints `4 5`. A name not yet declared is
+looked up outward, and outward found the one it should have been hidden by.
+
+**The name is registered first only where the initialiser names it.**
+`initialiserNames` scans the tokens of the initialiser ahead - to a depth-0 `,`
+or `;`, or the bracket that closes a `(` or `{` form - for the name not after
+`.`, `->` or `::`. Registering first everywhere would allocate the variable's
+slot before its initialiser's temporaries and move every frame in the tree;
+gated, the emit golden reads **0 of 1462 changed**, 8 added. The paths: a plain
+scalar or POD local, a class with constructors, `X q(p)` with none, a reference,
+a static local of each kind, a file-scope scalar or aggregate, and a file-scope
+object with a constructor (pre-registered in `globals_`, the slot overwritten
+once the definition is complete). An `auto` variable that names itself is
+refused by name - [dcl.spec.auto]/3, which clang refuses too: it has no type
+until the initialiser has given it one.
+
+Cases: `point-of-declaration.cpp` (file scope, `extern "C"`, a static member, a
+class built from its own address at file scope and locally, two declarators,
+`sizeof` of itself, a condition, the shadowing one),
+`point-of-declaration-static.cpp` (static locals, with a `.nonames` and `.nocl`
+for their names, the divergence recorded under static locals), and
+`point-of-declaration-auto-refused`. **Left:** an array sized by its initialiser
+(`int a[] = { sizeof(a) };`, ill-formed) still says "'a' was not declared"
+rather than naming the incomplete type, and a self-reference after a template
+argument comma at depth 0 (`T v = f<A, v>();`) ends the scan early.

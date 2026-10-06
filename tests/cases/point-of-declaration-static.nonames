@@ -1,0 +1,3 @@
+x86_64-linux  cxx1 names a static local `staticLocal.s` where Itanium spells it _ZZ11staticLocalvE1s, and the guard of `k` its own way where clang writes _ZGVZ11staticLocalvE1k - docs/CONFORMANCE.md, "A static local keeps its own name in the object file". And clang names __cxa_guard_abort and _Unwind_Resume for the landing pad that releases the guard if the constructor throws, which cxx1 does not emit - recorded there too
+x86_64-windows  the same static locals and guard, which clang spells ?s@?1??staticLocal@@YAHXZ@4PEAXEA and ?$TSS0@?1??staticLocal@@YAHXZ@4HA - the divergence above
+arm64-darwin  the static locals s and z, spelled `staticLocal.s` where clang writes __ZZ11staticLocalvE1s - the divergence above

@@ -1959,6 +1959,8 @@ private:
     bool constantFloatingInitialiser(const Type *t, const Init &in,
                                      long double *out) const;
     bool foldFloating(const Expr &e, long double *out) const;
+    // Does the initialiser ahead name `name`? Only then is it registered first ([basic.scope.pdecl]/1).
+    bool initialiserNames(const std::string &name) const;
 
     // **A `constexpr` function, kept so that fold() can run it.** [dcl.constexpr] in
     // C++11 lets the body be one return statement, which makes evaluating a call an

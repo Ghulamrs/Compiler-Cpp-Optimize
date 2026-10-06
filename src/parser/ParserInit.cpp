@@ -52,6 +52,28 @@ bool Parser::atBracedInitialiser(const std::string &name) {
     return true;
 }
 
+// From an `=`, `(` or `{` to the end of its initialiser: a depth-0 `,` or `;`, the
+// bracket that closes a `(` or `{` form, or the `)` that ends a condition.
+bool Parser::initialiserNames(const std::string &name) const {
+    const Token &first = peek();
+    const bool bracketed = first.is("(") || first.is("{");
+    if (!bracketed && !first.is("=")) return false;
+    int depth = 0;
+    for (std::size_t k = 0; ; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End) return false;
+        if (t.is("(") || t.is("[") || t.is("{")) { depth++; continue; }
+        if (t.is(")") || t.is("]") || t.is("}")) {
+            if (--depth < 0 || (bracketed && depth == 0)) return false;
+            continue;
+        }
+        if (depth == 0 && (t.is(",") || t.is(";"))) return false;
+        if (t.kind != TokenKind::Ident || t.text != name) continue;
+        const Token &before = peekAt(k - 1);
+        if (!before.is(".") && !before.is("->") && !before.is("::")) return true;
+    }
+}
+
 const StrLit *Parser::stringInitialiser(const Init &in, const Type *type) {
     if (in.isList || !type->isArray()) return nullptr;
     const StrLit *s = dynamic_cast<const StrLit *>(in.value.get());
@@ -1499,11 +1521,14 @@ void Parser::staticLocalWithConstructor(const Declared &d,
                 ? currentFunction_ : "?" + currentFunction_ + "@@9";
         helper = atexitHelperName(d.name + "@?1?" + owner);
     }
+    const bool early = initialiserNames(d.name);
+    if (early) declareStaticLocal(d.name, d.type, d.pos, symbol);
+    const std::size_t mine = locals_.size() - 1;
     std::vector<StmtPtr> body = d.type->isArray()
         ? buildStaticArrayConstruction(d, symbol, helper)
         : buildStaticConstruction(d, symbol, helper);
-    declareStaticLocal(d.name, d.type, d.pos, symbol);
-    locals_.back().isConst = d.type->isConst();
+    if (!early) declareStaticLocal(d.name, d.type, d.pos, symbol);
+    locals_[early ? mine : locals_.size() - 1].isConst = d.type->isConst();
     // Not `isConst`: the constructor writes it, so it cannot live in .rodata.
     current_->globals.push_back(Global{ symbol, symbol, d.type,
                                         std::vector<GlobalPiece>(), false,

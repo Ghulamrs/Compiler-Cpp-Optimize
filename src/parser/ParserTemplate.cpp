@@ -1063,6 +1063,11 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
         src_.fail(pos, "'" + name + "' is declared 'auto' and has no "
                        "initialiser, so there is nothing to deduce its type "
                        "from");
+    // [dcl.spec.auto]/3: in scope there, it has no type until the initialiser gives one.
+    if (initialiserNames(name))
+        src_.fail(pos, "'" + name + "' is declared 'auto' and names itself in its "
+                       "own initialiser - its type is what that initialiser "
+                       "decides, so there is none yet to use");
 
     const std::size_t resume = at_;
     if (paren) at_++;
