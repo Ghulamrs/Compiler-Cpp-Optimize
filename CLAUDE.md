@@ -11956,3 +11956,20 @@ corpus program built by the installed cpp11 + asm6x + lnk6x and run on vm6747sim
 lnk6x composing the C++ unwind index before `.c6xabi.extab` was placed when the link map names
 neither section - RIDE's own map does not - so every throwing program was broken on TI's
 machine; fixed in LNK6x the same day.
+
+## The tms6747 suite runs on vm6747sim as well, 2026-10-06
+
+**Each case of `tests/tms6747.sh` now runs twice**: its assembly on the VM6747 emulator as
+before, and as a TI program - asm6x, lnk6x against TI's `rts6740_elf_eh.lib` - on vm6747sim,
+the machine-code simulator. Both must print the `.expected`. The emulator reads the text and
+models the runtime, so an encoding fault in the assembler or a difference in TI's own runtime
+cannot show there; C1, C2 and D2 all passed it. Run against the cpp11 of `3daf518`, the new
+leg fails `hoisted-invariants` and `assign-wide-through-call` at -O0, which is D2.
+
+The tools are found beside this tree (`../ASM6x/build`, `../LNK6x/build`, `../VM6747-sim`) or on
+PATH, the runtime in `$TIRTS` (default `~/c6747-lib`); a missing one stops the run unless
+`SIM=0`, which says the leg was left out. The map is RIDE's flat one with a 1 MB stack.
+`tests/tms6747-sim.txt` names the cases the leg cannot run - file I/O (G1) and TI's printf
+writing `+inf` - with the reason beside each. c90's suite has the same leg, and holds the exit
+status too, through vm6747sim's `--main-status`: TI's boot calls `exit(1)` whatever `main`
+returned.
