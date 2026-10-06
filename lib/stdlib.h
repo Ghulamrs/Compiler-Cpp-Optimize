@@ -18,6 +18,16 @@ extern "C" {
 
 #include <stddef.h>
 
+// C90 7.10: the two exit statuses everywhere, and RAND_MAX as each platform's own library has it -
+// glibc's and Darwin's 2147483647, Microsoft's and the C6000's (RTS6x's, and TI's ABI) 32767.
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+#if defined(_WIN32) || defined(__TMS320C6X__)
+#define RAND_MAX 32767
+#else
+#define RAND_MAX 2147483647
+#endif
+
 void *malloc(size_t);
 void *calloc(size_t, size_t);
 void *realloc(void *, size_t);

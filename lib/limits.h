@@ -44,9 +44,10 @@ extern "C" {
 #define INT_MAX     2147483647
 #define UINT_MAX    4294967295U
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__TMS320C6X__)
 
-// LLP64: long is four bytes here and nowhere else this compiler targets.
+// A four-byte long: Windows' LLP64, and the C6000's ILP32 (SPRAB89B 2.1) - which had the 64-bit
+// values here until RTS6x's strtol tested them (2026-10-06).
 #define LONG_MIN    (-LONG_MAX - 1)
 #define LONG_MAX    2147483647L
 #define ULONG_MAX   4294967295UL
