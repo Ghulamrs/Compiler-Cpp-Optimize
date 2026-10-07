@@ -12812,3 +12812,14 @@ already had a run in the function gets no second: that code counts as the line b
 breakpoint binds. Measured with m10.py on a three-line loop: cl /Zi and ours both stop on it; c90
 steps 5, 6, 7, 5, 6, 7 as cl does, cpp11 5, 6, 5, 6 (it keeps no line for the closing brace).
 tests/m10 compares are unchanged; cases and emit golden unchanged.
+
+
+## M10 W5: a function's entry is named by its `{` line, as cl names it, 2026-10-08
+
+**cdb's step into a call stops on the callee's first instruction**, and reports the line that address
+belongs to. cl gives that address the line of the `{`; ours gave it the declarator's line, so with the
+brace on a line of its own the stack said `twice stepped.c:1` where cl's said `:2`. On x86_64-windows
+the entry line is now the first `{` outside parentheses after the function's position
+(`Walker::openingBrace`); other targets keep theirs, so their DWARF is unchanged. Measured with
+m10.py step on stepped.c (RIDE's session program): cl 11, 2, 3, 4 and ours 11, 2, 3, 4. RIDE's F6
+now steps once more from such a stop, to the first line, for cl's programs and ours alike.
