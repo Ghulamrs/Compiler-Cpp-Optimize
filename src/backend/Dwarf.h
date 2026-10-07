@@ -23,6 +23,15 @@ struct DwarfFunction {
     const std::vector<Local> *locals;
 
     std::vector<DwarfBlock> blocks;
+
+    // For CodeView (CodeView.h), and spelled as a table names them: the symbol,
+    // the labels after the prologue and after the last instruction, whether the
+    // code is a COMDAT, and the frame slot's displacement from RBP (rbp + bias - offset).
+    std::string symbol;
+    std::string prologEnd;
+    std::string codeEnd;
+    bool mergeable = false;
+    int frameBias = 0;
 };
 
 struct DwarfGlobal {

@@ -1,4 +1,5 @@
 #include "X86_64Linux.h"
+#include "CodeView.h"
 
 #include "../Mangle.h"
 #include "../Source.h"
@@ -1574,6 +1575,11 @@ void X86_64Linux::emit(const Function &fn) {
         d.external = !fn.isStatic();
         d.returns = fn.returns();
         d.locals = &fn.locals();
+        d.symbol = a_->labelText(fn.symbol());
+        // CoffSpelling's own labels round the code - see its prologue and functionEnd.
+        d.prologEnd = "\"$LNprolog$" + fn.symbol() + "\"";
+        d.codeEnd = "\"$LNend$" + fn.symbol() + "\"";
+        d.mergeable = fn.isInline();
         dwarfFns_.push_back(d);
         resetBlocks(fn.blocks());
         a_->defLabel(d.begin);
@@ -1642,6 +1648,7 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
 
         dwarfFns_.back().blocks = blocks();
+        dwarfFns_.back().frameBias = frameSize_ + outgoing_;
     }
 
     if (depth_ != 0 || tempDepth_ != 0) {
@@ -2334,7 +2341,8 @@ void X86_64Linux::run(const Program &program) {
     if (const Source *src = lineSource()) {
         const std::vector<std::string> &names = src->files();
         for (std::size_t i = 0; i < names.size(); i++)
-            a_->fileEntry(static_cast<int>(i) + 1, names[i]);
+            a_->fileEntry(static_cast<int>(i) + 1, target_.microsoftNames()
+                                                       ? codeViewPath(compDir(), names[i]) : names[i]);
     }
 
     emitData(program);
@@ -2356,8 +2364,14 @@ void X86_64Linux::run(const Program &program) {
             dg.external = !g.isStatic;
             dwarfGlobals_.push_back(dg);
         }
-        writeDwarf(out_, kElfDwarf, target_, lineSource()->files().front(),
-                   compDir(), dwarfFns_, dwarfGlobals_);
+        // **Microsoft's tools read CodeView and nothing else**: link.exe drops DWARF from a COFF object.
+        if (target_.microsoftNames())
+            writeCodeView(out_, target_, CodeViewLanguage::Cpp,
+                          codeViewPath(compDir(), lineSource()->files().front() + ".obj"),
+                          dwarfFns_, dwarfGlobals_);
+        else
+            writeDwarf(out_, kElfDwarf, target_, lineSource()->files().front(),
+                       compDir(), dwarfFns_, dwarfGlobals_);
         finishChunk();
     }
 
