@@ -12666,3 +12666,9 @@ so the shape was taken out of the case and is recorded here. And on the Linux bo
 -O2 (two of them at -O1 too) on 397fbb8 and on this branch alike - `assign-wide-through-call`,
 `divide-by-constant-signs`, `pipelined-data-exit`, `sizeof-qualified-member`: the x86 optimizer at
 those levels is gated by no suite, which is the finding.
+
+**On the Windows box, against 397fbb8, LF checkouts.** The x86_64-windows cases: -O0 600 / 1
+against 599 / 1, -O1 598 / 3 against 597 / 3, -O2 596 / 5 against 595 / 5 - the one more pass being
+`compare-with-zero`, every failure the same on both (`throw-pointer-base-adjust` at all three;
+`pipelined-data-exit` and `sizeof-qualified-member` from -O1; `assign-wide-through-call` and
+`divide-by-constant-signs` at -O2). tms6747.sh at -O2, both legs: 386 / 0 against 385 / 0.
