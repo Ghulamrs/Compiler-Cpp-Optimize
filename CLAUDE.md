@@ -12707,3 +12707,16 @@ at -O2 after `make test`, and its Windows leg runs the cases with recorded outpu
 output and refusals, 603 after `.notarget`): -O0 602 / 1 against 600 / 1, -O1 602 / 1 against 598 / 3, -O2
 602 / 1 against 596 / 5; the one left is `throw-pointer-base-adjust`, its lines out of order at every level
 on both (379 is the recorded-output half). Emit golden 0 of 1574; tms6747.sh -O2 388 / 0, both legs.
+
+## throw-pointer-base-adjust on x86_64-windows was the case's argument order, 2026-10-07
+
+**The one Windows case failure at 50506b4 (602 / 1 at -O0, -O1 and -O2) was not a
+miscompile.** `main` printed `printf("...", asB(), asA(), asD(), constB(), nullB())`,
+and the order arguments are evaluated in is unspecified: cpp11 on x86_64-windows ran
+the two that go on the stack first, so `B* null 1` and `const B* 2 4` came out ahead
+of the rest. cl and clang-cl, asked on the box, print all five right to left. Every
+handler's own line - the base adjustment of 4, the null kept null, `const B *` - was
+right on every target. The calls are one a statement now, which is the rule
+`lambda-capture-this` taught; no compiler source changed. Windows cases 603 / 0 at -O0,
+-O1, -O2 (602 / 1 before); emit golden 3 of 1582 changed, this case's own; Linux run.sh
+625 / 0 at -O0 and -O2; tms6747.sh -O2 388 / 0 both legs, unchanged.
