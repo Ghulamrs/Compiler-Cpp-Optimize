@@ -1422,7 +1422,7 @@ const Type *Parser::enumSpecifier() {
 
     // The tag names a type, as a class tag does: its integer underneath, but an integer
     // reaches it only by a cast (checkAssignable, rankArgument), and it promotes back.
-    const Type *self = nullptr;
+    Type *self = nullptr;
     if (!tag.empty()) {
         self = types_.enumType(prefix + tag,
                                underlying != nullptr ? underlying->kind() : Kind::Int);
@@ -1453,6 +1453,7 @@ const Type *Parser::enumSpecifier() {
         }
         enumIndex_[prefix + name] = enums_.size();
         enums_.push_back(EnumConst{ prefix + name, next, valueType });
+        if (self != nullptr) self->addEnumerator(name, next);
         next = next + 1;
         if (!consume(",")) break;
     }

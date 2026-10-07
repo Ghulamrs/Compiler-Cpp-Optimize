@@ -248,8 +248,15 @@ static bool holdsInstruction(const std::string &text) {
 // **A line entry names its function**, which is the one functionBegin last numbered.
 // One with no instruction after it is replaced: at one address cdb takes the first, so
 // a breakpoint on `int y = ...` stopped and said it was on the function's opening line.
+
+// **One entry per run of a line, as cl writes it**: a `for` gave four, a column apiece, and cdb
+// refused `bp` on the line as ambiguous.
 void CoffSpelling::location(int file, int line, int column) {
     if (cvFunctions_ == 0) return;
+    if (cvFunctions_ == lastLocFn_ && file == lastLocFile_ && line == lastLocLine_) return;
+    lastLocFn_ = cvFunctions_;
+    lastLocFile_ = file;
+    lastLocLine_ = line;
     if (lastLocAt_ + lastLoc_.size() <= o_.size() && o_.compare(lastLocAt_, lastLoc_.size(), lastLoc_) == 0 &&
         !holdsInstruction(o_.substr(lastLocAt_ + lastLoc_.size())))
         o_.erase(lastLocAt_, lastLoc_.size());

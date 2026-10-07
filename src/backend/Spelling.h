@@ -274,4 +274,5 @@ private:
     // The last `.cv_loc` and where it was written, so one that no instruction follows can be replaced.
     std::string lastLoc_;
     std::size_t lastLocAt_ = 0;
+    int lastLocFn_ = 0, lastLocFile_ = 0, lastLocLine_ = 0;
 };

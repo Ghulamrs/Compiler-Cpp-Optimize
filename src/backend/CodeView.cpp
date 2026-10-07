@@ -195,6 +195,8 @@ void writeFunction(Records &r, const DwarfFunction &f, int id, CodeViewTypes &ty
 // The file's globals and statics, and a S_UDT for every class, union and enum named.
 void writeGlobals(Records &r, const std::vector<DwarfGlobal> &globals, CodeViewTypes &types,
                   const Spell &spell) {
+    // **No empty subsection**: link.exe then lost the file table after it, and no line had a file.
+    if (globals.empty() && types.named().empty()) return;
     std::string &o = r.out();
     r.openSubsection();
     for (const DwarfGlobal &g : globals) {
@@ -221,6 +223,42 @@ void openDebugS(std::string &o, const std::string &associative) {
     num(o, "  .long", kCvSignatureC13);
 }
 
+}
+
+// The scopes a Microsoft name carries, innermost first: `?f@Inner@Outer@@...` gives Inner and
+// Outer. False for anything this does not read - a template or a back-reference in a scope.
+static bool scopesOf(const std::string &symbol, std::vector<std::string> &scopes) {
+    if (symbol.size() < 2 || symbol[0] != '?') return false;
+    std::size_t at;
+    if (symbol[1] == '?') {
+        if (symbol.size() < 4 || symbol[2] == '$') return false;
+        at = symbol[2] == '_' ? 4 : 3;
+    } else {
+        at = symbol.find('@');
+        if (at == std::string::npos) return false;
+        at++;
+    }
+    while (at < symbol.size() && symbol[at] != '@') {
+        const std::size_t end = symbol.find('@', at);
+        if (end == std::string::npos) return false;
+        const std::string piece = symbol.substr(at, end - at);
+        if (piece.empty() || piece[0] == '?' || (piece.size() == 1 && piece[0] >= '0' && piece[0] <= '9'))
+            return false;
+        scopes.push_back(piece);
+        at = end + 1;
+    }
+    return true;
+}
+
+std::string codeViewName(const std::string &symbol, const std::string &name, const Type *thisClass) {
+    std::vector<std::string> scopes;
+    std::string qualified;
+    if (scopesOf(symbol, scopes)) {
+        for (std::size_t i = scopes.size(); i-- > 0;) qualified += scopes[i] + "::";
+    } else if (thisClass != nullptr && !thisClass->tag().empty()) {
+        qualified = thisClass->tag() + "::";
+    }
+    return qualified + name;
 }
 
 std::string codeViewPath(const std::string &compDir, const std::string &name) {

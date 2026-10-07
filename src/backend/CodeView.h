@@ -36,5 +36,8 @@ void writeCodeView(std::string &out, const Target &target, CodeViewLanguage lang
                    const std::vector<DwarfFunction> &fns,
                    const std::vector<DwarfGlobal> &globals, const Spell &spell);
 
+// cl's S_GPROC32 name - `geo::Shape::area`, `Box<int>::twice` - from the symbol's scopes or `this`.
+std::string codeViewName(const std::string &symbol, const std::string &name, const Type *thisClass);
+
 // A source path as `.cv_file` wants it: absolute (cdb matches a breakpoint by it), backslashes doubled.
 std::string codeViewPath(const std::string &compDir, const std::string &name);

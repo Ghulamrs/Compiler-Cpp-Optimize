@@ -175,11 +175,19 @@ unsigned CodeViewTypes::aggregate(const Type *t) {
     return full;
 }
 
-// The enumerators are not kept on the type, so the list is empty: cdb shows the number.
+// One LF_ENUMERATE per enumerator, public (3), with its value as a numeric leaf.
 unsigned CodeViewTypes::enumeration(const Type *t) {
-    const unsigned list = record(kLfFieldList, Bytes());
+    Bytes fields;
+    for (const std::pair<std::string, long long> &e : t->enumerators()) {
+        u16(fields, kLfEnumerate);
+        u16(fields, 3);
+        numeric(fields, e.second);
+        text(fields, e.first);
+        pad(fields);
+    }
+    const unsigned list = record(kLfFieldList, fields);
     Bytes b;
-    u16(b, 0);
+    u16(b, static_cast<unsigned>(t->enumerators().size()));
     u16(b, 0);
     u32(b, fundamental(t));
     u32(b, list);
