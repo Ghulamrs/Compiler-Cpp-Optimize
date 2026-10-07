@@ -2168,7 +2168,9 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         std::size_t q = 0;
         while (peekAt(q).kind == TokenKind::Ident && peekAt(q + 1).is("::")) q += 2;
         const bool wrapsMemberPointer = q > 0 && peekAt(q).is("*");
-        bool wrapsAPointer = peek().is("*") || wrapsMemberPointer;
+        // `int (&f)(int)` likewise: a reference to a function, its parameter list outside.
+        bool wrapsAPointer = peek().is("*") || peek().is("&") || peek().is("&&") ||
+                             wrapsMemberPointer;
 
         declarator(types_.intType(), true, true);
         expect(")");

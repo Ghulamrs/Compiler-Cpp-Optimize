@@ -534,6 +534,15 @@ static bool isPromotion(const Type *from, const Type *to) {
     if (to->kind() == Kind::UInt && from->kind() == Kind::Char32) return true;
     return to->kind() == Kind::Double && from->kind() == Kind::Float;
 }
+// The function an expression designates as an lvalue: one of function type (a reference to a
+// function, read), or a function's name, which arrives as `&f`. Null for anything else.
+const Type *Parser::functionDesignated(const Expr &e) const {
+    if (e.type()->isFunction()) return e.type();
+    if (const Unary *u = dynamic_cast<const Unary *>(&e))
+        if (u->op() == '&' && u->operand().type()->isFunction()) return u->operand().type();
+    return nullptr;
+}
+
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
@@ -541,6 +550,14 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // rank.
     if (param->isReference()) {
         const Type *want = param->pointee();
+
+        // **A reference to a function binds a function lvalue of its type** - [dcl.init.ref]/5,
+        // an exact match; a name arrives as its address, `&f`, and that is the same function.
+        if (want->isFunction()) {
+            const Type *fn = functionDesignated(arg);
+            return fn != nullptr && fn->unqualified() == want->unqualified() ? Rank::Identity
+                                                                             : Rank::None;
+        }
 
         // **A reference to an array binds to an array of the same length**,
         // without the decay a by-value parameter would apply.

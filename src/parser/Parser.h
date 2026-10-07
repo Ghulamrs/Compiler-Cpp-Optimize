@@ -1107,6 +1107,8 @@ private:
     // The vtable, type_info and name string each class emitted, by tag, so the key-function rule can take them back.
     std::map<std::string, std::vector<std::string> > classSymbols_;
     bool keyFunctionUndefined(const std::string &tag) const;
+    bool hasKeyFunction(const std::string &tag) const;
+    const Signature *keyFunction(const std::string &tag) const;
     void pruneExternalVtables(Program &program);
     void markInlineBody(std::size_t which) { if (which != PendingBody::npos()) functions_[which].inlineBody = true; }
     // One body for both halves of the copy. They differ in three places -
@@ -1486,6 +1488,10 @@ private:
     // so its statics, enumerators and nested types are named bare.
     std::map<std::string, const Type *> closureScope_;
     const Type *lambdaScope() const;
+    // Whether class scope declares the name, so that it hides a global of that name.
+    bool classScopeDeclares(const std::string &name);
+    // The function an expression designates as an lvalue, or null.
+    const Type *functionDesignated(const Expr &e) const;
     // `$this` - the member a `[this]` capture holds.
     static const char *capturedThis() { return "$this"; }
     // The class the enclosing function's `this` points at, const and all.
