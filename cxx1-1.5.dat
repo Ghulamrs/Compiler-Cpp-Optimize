@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 155 files, seal F13C4134
+CRC32  size  file - 155 files, seal A889FEEF
 ------------------------------------------------------------------
 E331A0DC      4713  include/algorithm
 2828A398       492  include/cassert
@@ -69,27 +69,27 @@ AF796A22     52031  src/Preprocessor.cpp
 B3CEE1F5      4590  src/Source.cpp
 9A4A7B64      2166  src/Source.h
 1DF6CA52     20625  src/Type.cpp
-74AD1325     24212  src/Type.h
+6DF9D3B2     25178  src/Type.h
 850CBD3E       346  src/Version.h
 B852AB5F     46255  src/backend/Arm64Darwin.cpp
 D0CC3E7C      5853  src/backend/Arm64Darwin.h
 B6EDF017      3980  src/backend/Backend.cpp
 0AD56545      1938  src/backend/Backend.h
-E94C8474      9503  src/backend/CodeView.cpp
-F25CF9DB      1954  src/backend/CodeView.h
-0C61FB23      8987  src/backend/CodeViewTypes.cpp
+3678ABA7     11174  src/backend/CodeView.cpp
+EAC9EA9F      2160  src/backend/CodeView.h
+43169042      9516  src/backend/CodeViewTypes.cpp
 98A5E412      1988  src/backend/CodeViewTypes.h
 AAB19237     15795  src/backend/Dwarf.cpp
 4E15F1D1      1428  src/backend/Dwarf.h
 9B52B487     45855  src/backend/Masm.cpp
 8D8CDD71      6834  src/backend/Masm.h
-C3F58E2E     17283  src/backend/Spelling.cpp
-71F664D4     11928  src/backend/Spelling.h
+47B49BBD     18044  src/backend/Spelling.cpp
+D7941783     12266  src/backend/Spelling.h
 36BD4A86    117499  src/backend/Tms6747.cpp
 B827D124     15023  src/backend/Tms6747.h
 B1F30744     18886  src/backend/Walker.cpp
 788B452A      9821  src/backend/Walker.h
-AAC21B62     97551  src/backend/X86_64Linux.cpp
+EBF930F6    100243  src/backend/X86_64Linux.cpp
 7EEA4AD5     13518  src/backend/X86_64Linux.h
 9E21FAC2      3341  src/backend/X86_64Windows.cpp
 B4514228      1203  src/backend/X86_64Windows.h
@@ -156,7 +156,7 @@ A451ACA2     43068  src/parser/ParserOperator.cpp
 FF0CE503    106456  src/parser/ParserStmt.cpp
 1007307C    109531  src/parser/ParserTemplate.cpp
 1A937DFB     85266  src/parser/ParserTopLevel.cpp
-6ECCEDDE    123524  src/parser/ParserType.cpp
+A8A65F51    125942  src/parser/ParserType.cpp
 CB0BEC3D     38757  src/parser/ParserVtable.cpp
 ------------------------------------------------------------------
 Sealed on 08-10-2026
