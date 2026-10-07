@@ -12630,5 +12630,6 @@ volatile type is refused at its declaration, the line "The volatile sweep" drew.
 *` already went through, which the case holds in both orders beside the differences.
 `comparison` does not ask for a composite pointer type at all, so `char *` beside `int *`
 compares where clang refuses it - an over-acceptance noted, not mended here.
-`pointer-difference-cv.cpp` (char, int and a struct, both orders, a `const char *const`) fails
+`pointer-difference-cv.cpp` (char, int and a struct, both orders, `f - (buf + n)` - the shape the
+pipeliner round above met - and a `const char *const`) fails
 on the compiler before; `pointer-difference-types-refused.cpp` is `char *` minus `int *`.
