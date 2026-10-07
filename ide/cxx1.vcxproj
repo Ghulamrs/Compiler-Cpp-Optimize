@@ -96,6 +96,8 @@
     <ClCompile Include="..\src\parser\ParserVtable.cpp" />
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />
     <ClCompile Include="..\src\backend\Backend.cpp" />
+    <ClCompile Include="..\src\backend\CodeView.cpp" />
+    <ClCompile Include="..\src\backend\CodeViewTypes.cpp" />
     <ClCompile Include="..\src\backend\Dwarf.cpp" />
     <ClCompile Include="..\src\backend\Masm.cpp" />
     <ClCompile Include="..\src\backend\Spelling.cpp" />
@@ -145,6 +147,8 @@
     <ClInclude Include="..\src\parser\ParserInternal.h" />
     <ClInclude Include="..\src\backend\Arm64Darwin.h" />
     <ClInclude Include="..\src\backend\Backend.h" />
+    <ClInclude Include="..\src\backend\CodeView.h" />
+    <ClInclude Include="..\src\backend\CodeViewTypes.h" />
     <ClInclude Include="..\src\backend\Dwarf.h" />
     <ClInclude Include="..\src\backend\Masm.h" />
     <ClInclude Include="..\src\backend\Spelling.h" />
