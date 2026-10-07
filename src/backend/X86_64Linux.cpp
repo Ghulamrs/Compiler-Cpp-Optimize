@@ -1605,7 +1605,8 @@ void X86_64Linux::emit(const Function &fn) {
     frameSize_ = fn.frameSize() + inlineReserve_;
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
-    markLine(fn.pos());
+    // On Windows the entry is named by the `{` line, as cl names it - see openingBrace.
+    markLine(target_.microsoftNames() ? openingBrace(fn.pos()) : fn.pos());
     if (optimizer_) optimizer_->frame(scalarsOf(fn));
     // The shadow space and the widest stack arguments of a call not inside another's operands, in 16s.
     // A nested call is evaluated with the outer one's values pushed, so it never finds the area; counting it

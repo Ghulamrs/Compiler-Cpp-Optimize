@@ -17,6 +17,20 @@ void Walker::markLine(std::size_t pos) {
     notCode_ += emittedSize() - before;
 }
 
+std::size_t Walker::openingBrace(std::size_t pos) const {
+    if (lines_ == nullptr) return pos;
+    const std::string &text = lines_->text();
+    int depth = 0;
+    for (std::size_t at = pos; at < text.size(); at++) {
+        const char c = text[at];
+        if (c == '(') depth++;
+        else if (c == ')') depth--;
+        else if (c == ';' && depth == 0) return pos;
+        else if (c == '{' && depth == 0) return at;
+    }
+    return pos;
+}
+
 void Walker::visit(const ExprStmt &n) { markLine(n); n.expr().accept(*this); }
 
 void Walker::resetBlocks(const std::vector<int> &parents) {

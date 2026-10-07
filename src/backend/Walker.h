@@ -53,6 +53,9 @@ protected:
     void markLine(const Stmt &n);
 
     void markLine(std::size_t pos);
+    // Where a function's body opens: the first `{` outside parentheses from pos, which is the line cl names a function's entry by
+    // (and cdb's step into stops on); pos itself where there is none before a `;`.
+    std::size_t openingBrace(std::size_t pos) const;
     const Source *lineSource() const { return lines_; }
     const std::string &compDir() const { return compDir_; }
     virtual void emitLoc(int file, int line, int column) { (void)file; (void)line; (void)column; }
