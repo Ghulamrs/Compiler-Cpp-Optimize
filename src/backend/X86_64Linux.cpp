@@ -2368,7 +2368,8 @@ void X86_64Linux::run(const Program &program) {
         if (target_.microsoftNames())
             writeCodeView(out_, target_, CodeViewLanguage::Cpp,
                           codeViewPath(compDir(), lineSource()->files().front() + ".obj"),
-                          dwarfFns_, dwarfGlobals_);
+                          dwarfFns_, dwarfGlobals_,
+                          [this](const std::string &s) { return a_->labelText(s); });
         else
             writeDwarf(out_, kElfDwarf, target_, lineSource()->files().front(),
                        compDir(), dwarfFns_, dwarfGlobals_);
