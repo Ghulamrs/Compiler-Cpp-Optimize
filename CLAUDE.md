@@ -12747,3 +12747,30 @@ inner @9, middle @13, outer @18, main @24 for both; `p` from line 7 goes 7, 8, 9
 middle @13 on both (cl also stops on the closing brace, line 10 - the AST keeps no position for
 `}`, so ours does not). Cases with recorded output on this box: -O0 379 / 0, -O2 379 / 0, and
 with `-g -masm=gnu` 379 / 0; emit golden at -O0 against main 5b66242, 0 of 1616 changed.
+
+## M10 W2: what cdb shows in Locals and Watch - types, parameters, locals, statics, 2026-10-08
+
+**`.debug$T` is written by `backend/CodeViewTypes.cpp`, as bytes, depth first.** A record is
+numbered from 0x1000 in the order it is written and refers only to records before it, so a type
+is built on first use. A fundamental type and a plain pointer to one take CodeView's own numbers
+and no record - plain `char` is T_RCHAR (0x70), `long long` T_QUAD (cdb prints `int64`), `int *`
+T_64PINT4 - because those are cl's, and they decide how cdb prints a value. `const` is an
+LF_MODIFIER, any other pointer an LF_POINTER, a function an LF_PROCEDURE over an LF_ARGLIST, an
+array an LF_ARRAY; a class is a forward reference first (so a member pointing back at it has a
+number), then its LF_FIELDLIST (LF_BCLASS per direct non-virtual base, LF_MEMBER per member the
+class wrote itself, LF_BITFIELD under a bit-field), then the class. An enum is an LF_ENUM over an
+empty list, the enumerators not being kept on the type; cdb prints the number.
+
+**Parameters first, in order, then locals.** S_GPROC32's type is now its LF_PROCEDURE, and cdb
+counts that many S_REGREL32 records off the top as parameters (`dv /i` says `prv param`). Each
+slot is `rbp + frameBias - offset`, frameBias being the frame plus the outgoing area - the same
+displacement CoffSpelling::op adds to every rbp operand, and what establisherOffset gives the FH3
+tables. A block that declares something is an S_BLOCK32 around its own records; a static local is
+an S_LDATA32 inside its function; a global is an S_GDATA32 or S_LDATA32, and every class, union
+and enum named gets an S_UDT.
+
+**Gated with `m10.py compare`** - ours against cl /Zi in cdb, `dv /t /V` parsed into name, type
+and value with pointer values masked: tests/m10/w2.cpp at line 21 (inside the block) 11 / 11
+variables equal with an address each, at 23 10 / 10, frames equal, and `??` of the global, the
+file static, the static local and both functions' types equal. Cases -O0 379 / 0 and with
+`-g -masm=gnu` 379 / 0; emit golden at -O0 against 5b66242 0 of 1616 changed.
