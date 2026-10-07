@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 155 files, seal A889FEEF
+CRC32  size  file - 155 files, seal B4F0CA94
 ------------------------------------------------------------------
 E331A0DC      4713  include/algorithm
 2828A398       492  include/cassert
@@ -83,8 +83,8 @@ AAB19237     15795  src/backend/Dwarf.cpp
 4E15F1D1      1428  src/backend/Dwarf.h
 9B52B487     45855  src/backend/Masm.cpp
 8D8CDD71      6834  src/backend/Masm.h
-47B49BBD     18044  src/backend/Spelling.cpp
-D7941783     12266  src/backend/Spelling.h
+C0022931     18370  src/backend/Spelling.cpp
+5EA461E4     12444  src/backend/Spelling.h
 36BD4A86    117499  src/backend/Tms6747.cpp
 B827D124     15023  src/backend/Tms6747.h
 B1F30744     18886  src/backend/Walker.cpp
