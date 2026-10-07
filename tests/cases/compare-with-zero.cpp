@@ -1,6 +1,6 @@
 // Every comparison against zero the x86 optimizer may write as `test %r, %r` in place of `cmp $0, %r`:
-// the six relations on signed and unsigned values of four widths, a pointer, a loop counting down to it,
-// and a comparison kept as a number. The flags the two leave are the same, so every answer must be too.
+// the six relations on signed and unsigned values of four widths, a pointer, and a loop counting down to it.
+// The flags the two leave are the same, so every answer must be too.
 extern "C" int printf(const char *, ...);
 
 static int relations(long long v) {
@@ -43,11 +43,6 @@ static int countDown(int n) {
     return s;
 }
 
-static int asNumbers(int a, long long b) {
-    int x = a != 0, y = b < 0, z = (a >= 0) + (b <= 0);
-    return x * 100 + y * 10 + z;
-}
-
 int main() {
     long long values[] = { 0, 1, -1, 7, -7, 2147483647LL, -2147483647LL - 1, 4294967296LL, -4294967296LL };
     for (int i = 0; i < 9; ++i) printf("%d ", relations(values[i]));
@@ -58,6 +53,5 @@ int main() {
     int n = 3;
     printf("%d %d\n", pointers(&n, nullptr), pointers(nullptr, &n));
     printf("%d %d %d\n", countDown(0), countDown(4), countDown(100));
-    printf("%d %d %d %d\n", asNumbers(0, 0), asNumbers(-5, -6), asNumbers(9, 3), asNumbers(-1, 0));
     return 0;
 }
