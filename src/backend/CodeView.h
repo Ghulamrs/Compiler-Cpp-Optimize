@@ -21,16 +21,20 @@
 
 #include "Dwarf.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 // S_COMPILE3's language: CV_CFL_C is 0, CV_CFL_CXX is 1.
 enum class CodeViewLanguage { C = 0, Cpp = 1 };
 
+// How a symbol or label is written where a record names it - CoffSpelling::labelText.
+typedef std::function<std::string(const std::string &)> Spell;
+
 void writeCodeView(std::string &out, const Target &target, CodeViewLanguage language,
                    const std::string &objectName,
                    const std::vector<DwarfFunction> &fns,
-                   const std::vector<DwarfGlobal> &globals);
+                   const std::vector<DwarfGlobal> &globals, const Spell &spell);
 
 // A source path as `.cv_file` wants it: absolute (cdb matches a breakpoint by it), backslashes doubled.
 std::string codeViewPath(const std::string &compDir, const std::string &name);
