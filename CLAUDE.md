@@ -12560,6 +12560,61 @@ compiled case byte-identical at -O1, -O2 and -Os. Compile time of the Compiler++
 runs: -O1 3,875 -> 3,896 ms, -O2 5,299 -> 5,335 ms, -Os 4,148 -> 4,276 ms - under 1% at -O1 and -O2,
 the recomputes being numberValues' few and one per rewritten loop.
 
+## A loop that leaves on a byte it reads, eight turns at a time on the C6000, 2026-10-07
+
+**`while (*p) p++`, strchr, strcmp and a string hash were sequential at -O2**: the pipeliner takes only
+a counted loop, and these leave on the data - "the test is not a compare of two", "a branch inside",
+or a loop whose back branch is unconditional and leaves by `return`. RTS6x wrote memcpy, strlen,
+strchr and strcmp in assembly for it. `recogniseWindow` and `emitWindow` (C6xPipe) take such a loop
+whenever the counted recogniser refuses it: one block, ways out by conditional branches inside and the
+back branch, no store, no call, and at least one pointer stepped by one a turn - followed by
+`trackPointer` through copies and constant adds - that a byte load reads through.
+
+**Only loads run ahead, and only inside an aligned 8-byte block a turn has read.** The first turn's
+byte at u = p + offset is a byte the loop reads for certain, so the rest of u's block cannot fault;
+turn k reads `*+B[(o + k) & 7]`, B = u & ~7, o = u & 7, and the turns stop at the block's end, w = 8 - o -
+span, at least one. A pointer whose first byte is read only past an exit (strcmp's b) reads its block
+under G, the first turn's own test. So the loop runs a block - up to eight turns - per round, and a
+turn the loop would not have run never commits.
+
+**Two ways to commit, chosen per loop.** Where everything the loop leaves behind is a register plus a
+step of -1, 0 or 1 a turn (`affineTurn`: strlen, strchr in both shapes, strcmp, `while (*p++) n++`),
+nothing is written per turn: each test's stop bit is or-ed down a chain, the places passed are their
+count less the chain's sum, bounded by w times the exits a turn has, and every live register is made
+from K, the turn the window stopped in, after the turns. Otherwise (the hash, a byte kept in a
+register, a table read) each turn's arithmetic still runs ahead under fresh names, but every value
+live at the head or an exit is copied back under R, the mask of turns still alive - `AND R, Y, R` at
+each exit, Y = -1 to go on and 0 to leave, the turn's own bit cleared at its end - with K, R and the
+test, for an instruction under the back branch's predicate, and Z, R and not-Y, for one done only on
+the way out. A load the window cannot read ahead is read where it stands, under R.
+
+**What it measured, vm6747sim -c, 100 calls over 1 KB at eight alignments, -O2, RTS6x's own `.s` beside:**
+
+| | origin/main | now | rts6x.lib (assembly) |
+| --- | --- | --- | --- |
+| strlen, `while (*p) p++` | 1,235,598 | 407,702 | 65,302 |
+| strcmp, `while (*a && *a == *b)` | 2,405,728 | 616,336 | 200,436 |
+| strchr, RTS6x's reference shape | 2,603,910 | 516,202 | 82,802 |
+| hash, `h = h * 33 + *p` | 1,745,523 | 1,184,685 | - |
+
+**The loops that carry a value round were already right, and the measurement says why splitting is
+not needed.** A sum, a dot product, Horner's rule and a floating sum are counted loops, and the modulo
+scheduler places each at no less than its recurrence: `s += a[i]` at II=2, which its units decide, the
+ADD's one cycle not; Horner's `x * k + a[i]` at II=5, MPY32's four and the ADD; an ADDDP sum at 7,
+an ADDSP one at 4. Splitting an integer accumulator buys nothing where the recurrence is a one-cycle
+ADD, and a floating sum is never reassociated. `pipelined-reduction.cpp` holds them at every trip count.
+
+**Two cases, both legs, every level**: `pipelined-data-exit.cpp` (eleven loop shapes, each string at
+sixteen alignments and twenty-three lengths, and once ending on its object's last byte) and
+`pipelined-reduction.cpp`. The -O0 golden moved by 0 of 1558; the -O2 one by 18 of 391, every one
+`lifetime.h`'s `lfSame` (closed form, two pointers) or `type_info::hash_code` (a hash, committed).
+
+**Left**: a store in the loop (strcpy, memcpy) refuses - a byte read early might be the one a store
+writes; a turn with bytes at two offsets (the hash) takes the committed form; more than two ways out
+a turn takes it too; and LMBD would make the closed form's count one instruction, but VM6747's
+emulator has no LMBD. Found beside it: `const char *f; f - (area + a)` with `area` a `char[]` is
+refused as "'const char *' minus 'char *' needs the same pointee type", which [expr.add]/6 allows.
+
 ## `char *` minus `const char *`, 2026-10-07
 
 **[expr.add]/6 subtracts two pointers to cv-qualified or cv-unqualified versions of one
