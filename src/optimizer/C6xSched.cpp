@@ -216,6 +216,30 @@ bool isReturn(const Line &l, const std::set<std::string> &labels) {
 
 // ----- liveness over the blocks -----
 
+// **The guard.** Liveness is a cache of one text: it keeps the text's buffer, its length and the edit count it was
+// computed at, and a question asked of it after an edit recomputes it first - so a pass that removes a definition and
+// then asks whether a register is free cannot read the answer from before the removal (numberValues, 2026-10-07).
+thread_local std::uint64_t textEdits = 0;
+namespace {
+struct LiveStamp { const Line *data = nullptr; std::size_t size = 0; std::uint64_t edits = ~0ull; };
+thread_local LiveStamp liveStamp;
+thread_local const char *heldBy = nullptr;     // the pass inside a LivenessHeld, if any
+bool liveCurrent(const std::vector<Line> &v) {
+    return liveStamp.data == v.data() && liveStamp.size == v.size() && liveStamp.edits == textEdits;
+}
+// Recompute where stale: the fields are a cache, the vector is never a const object, and nothing but them is written.
+void ensureLiveness(const std::vector<Line> &v) {
+    if (!liveCurrent(v)) computeLiveness(const_cast<std::vector<Line> &>(v));
+}
+bool liveChecking() { static const bool on = std::getenv("CPP11_C6XLIVECHECK") != nullptr; return on; }
+}   // namespace
+
+LivenessHeld::LivenessHeld(const std::vector<Line> &v, const char *pass) : outer(heldBy) { if (!heldBy) ensureLiveness(v); heldBy = pass; }
+LivenessHeld::~LivenessHeld() { heldBy = outer; }
+
+std::uint64_t liveOutAt(const std::vector<Line> &v, std::size_t i) { if (!heldBy) ensureLiveness(v); return v[i].liveOut; }
+std::uint64_t liveInAt(const std::vector<Line> &v, std::size_t i) { if (!heldBy) ensureLiveness(v); return v[i].liveIn; }
+
 // Every line takes the registers live at the end of its block: a label or a
 // directive opens a block, a branch closes one, a call reads its arguments
 // and clobbers the caller-saved registers, and a return leaves the exit set.
@@ -266,11 +290,12 @@ void computeLiveness(std::vector<Line> &v) {
         std::size_t end = b + 1 < nb ? starts[b + 1] : v.size();
         for (std::size_t i = starts[b]; i < end; i++) { v[i].liveOut = out[b]; v[i].liveIn = in[b]; }
     }
+    liveStamp.data = v.data(); liveStamp.size = v.size(); liveStamp.edits = textEdits;
 }
 
 // Whether reg is overwritten before it is read on the straight path from i, or
 // is not live where the block ends; a directive ends the path and answers no.
-bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg) {
+bool deadAfterAsComputed(const std::vector<Line> &v, std::size_t i, const std::string &reg) {
     for (std::size_t j = i + 1; j < v.size(); j++) {
         if (!v[j].instr) return isLabel(v[j]) ? (v[i].liveOut & bitOf(reg)) == 0 : false;
         std::vector<std::string> reads, writes;
@@ -290,6 +315,26 @@ bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg
         if (has(writes, reg) && v[j].pred.empty()) return true;
     }
     return (v[i].liveOut & bitOf(reg)) == 0;
+}
+
+// The question every pass asks, of liveness that is current - or, inside a LivenessHeld, as it was computed, which
+// CPP11_C6XLIVECHECK=1 holds to its vow: a "dead" the current text would answer "live" to stops the compiler.
+bool deadAfter(const std::vector<Line> &v, std::size_t i, const std::string &reg) {
+    if (!heldBy) { ensureLiveness(v); return deadAfterAsComputed(v, i, reg); }
+    const bool dead = deadAfterAsComputed(v, i, reg);
+    if (dead && liveChecking() && !liveCurrent(v)) {
+        const std::uint64_t edits = textEdits;
+        const LiveStamp stamp = liveStamp;
+        std::vector<Line> now(v);
+        computeLiveness(now);
+        const bool really = deadAfterAsComputed(now, i, reg);
+        textEdits = edits; liveStamp = stamp;
+        if (!really) {
+            std::fprintf(stderr, "cpp11: liveness held by %s is stale: %s is live after line %zu,%s\n", heldBy, reg.c_str(), i, v[i].raw.c_str());
+            std::abort();
+        }
+    }
+    return dead;
 }
 
 // MVKL then MVKH of a constant that fits sixteen signed bits is one MVK.
@@ -315,6 +360,7 @@ int accessSize(const std::string &m) {
 // fits ucst5 scaled by the access: MVK k,A0; SUB A15,A0,R; LDW *R,D, and
 // the SUB A15,k,R spelling of a small k, each with R and A0 dead after.
 void foldFrame(std::vector<Line> &v) {
+    LivenessHeld held(v, "foldFrame");   // It removes only definitions of A0 and of an address register, each dead where it goes.
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
         if ((v[i].mnem != "SUB" && v[i].mnem != "SUBAW") || v[i].ops.size() != 3 || v[i].ops[0] != "A15") continue;
         std::string reg = v[i].ops[2];
@@ -438,6 +484,7 @@ bool renameable(const Line &l) {
 // S nor D written between and D dead after it - across the register files too, where the reader is left with one crossing
 // source. And the other way: an instruction whose result is only copied on writes the copy's destination itself.
 bool forwardMoves(std::vector<Line> &v) {
+    LivenessHeld held(v, "forwardMoves");   // A copy goes only where its destination's old value is read by nobody, its source read later in the same block.
     bool changed = false;
     for (std::size_t i = 0; i < v.size(); i++) {
         const Line &mv = v[i];
@@ -523,6 +570,7 @@ bool touches(const Line &l, const std::vector<std::string> &regs) {
 // lines between leave alone and L, H dead after the two, writes Y:X itself; and `MV S, L; MV T, H` then the first reader of
 // L or H, reading them as the pair H:L and leaving them dead, reads T:S. The backend's A5:A4 result, moved into a temporary.
 bool forwardPairMoves(std::vector<Line> &v) {
+    LivenessHeld held(v, "forwardPairMoves");   // As forwardMoves, a half at a time - copies of values nobody reads after, the sources read within the block.
     bool changed = false;
     for (std::size_t i = 0; i < v.size(); i++) {
         const Line &w = v[i];
@@ -614,6 +662,7 @@ bool forwardPairMoves(std::vector<Line> &v) {
 // dead after, where the reader has a constant form - ADD, AND, OR, XOR and the compares
 // take -16..15 in either place, SUB r,k takes 0..31, a shift takes a count of 0..31.
 bool forwardConstants(std::vector<Line> &v) {
+    LivenessHeld held(v, "forwardConstants");   // A constant goes only where its register is dead after its one reader.
     bool changed = false;
     for (std::size_t i = 0; i < v.size(); i++) {
         const Line &mk = v[i];
@@ -659,6 +708,7 @@ bool forwardConstants(std::vector<Line> &v) {
 // `[P] B` or `[!P] B` next, P dead after the branch, becomes the copy `MV R, P` - or nothing
 // where P is R - under the branch of the other sense.
 bool flipPredicates(std::vector<Line> &v) {
+    LivenessHeld held(v, "flipPredicates");   // The XOR becomes a copy with the same reads and writes, or goes where it read and wrote one register.
     bool changed = false;
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
         const Line &x = v[i];
@@ -763,7 +813,6 @@ void numberValues(std::vector<Line> &v) {
     long next = 1, stores = 0;
     std::size_t runStart = 0;
     auto reset = [&](std::size_t at) { val.clear(); made.clear(); defAt.clear(); next++; stores++; runStart = at; };
-    bool stale = false;                     // a removal or copy outlived the liveness: recompute before renaming
     // The number's register was overwritten before the remake: the line that made it is given a fresh
     // register - one dead there and untouched up to here - its readers up to the next write of the old
     // register renamed with it, and the remake becomes a copy. `a[j]` read twice with `a[j]` in the way.
@@ -774,7 +823,6 @@ void numberValues(std::vector<Line> &v) {
             readsAndWrites(v[k], r, w);
             if (has(w, D) && v[k].pred.empty()) { end = k; break; }
         }
-        if (stale) { computeLiveness(v); stale = false; }
         for (int n = 16; n < 32; n++) {
             const std::string F = "A" + std::to_string(n);
             bool ok = deadAfter(v, p, F);
@@ -809,7 +857,6 @@ void numberValues(std::vector<Line> &v) {
             }
             if (!ok) continue;
             for (std::size_t c = 0; c < changed.size(); c++) v[where[c]] = changed[c];
-            stale = true;
             return F;
         }
         return std::string();
@@ -849,7 +896,7 @@ void numberValues(std::vector<Line> &v) {
             const std::string dst = writes[0];
             if (l.mnem == "MV" && sideOf(l.ops[0])) {                           // a copy carries the number
                 const long n = numberOf(l.ops[0]);
-                if (val.count(dst) && val[dst] == n) { l = parse(""); stale = true; continue; }   // a copy back of what it holds
+                if (val.count(dst) && val[dst] == n) { l = parse(""); continue; }   // a copy back of what it holds
                 val[dst] = n;
                 continue;
             }
@@ -870,9 +917,9 @@ void numberValues(std::vector<Line> &v) {
                 }
             }
             if (!holder.empty()) {
-                if (holder == dst) { l = parse(""); stale = true; continue; }   // gone: no operands left to read
+                if (holder == dst) { l = parse(""); continue; }   // gone: no operands left to read
                 Line r = make("MV", holder, dst);
-                if (crossings(r) <= 1) { l = r; val[dst] = number; stale = true; continue; }
+                if (crossings(r) <= 1) { l = r; val[dst] = number; continue; }
             }
             val[dst] = number;
             defAt[number] = i;
@@ -966,6 +1013,20 @@ void reuseEntryLoads(std::vector<Line> &v) {
     v.swap(out);
 }
 
+// One loop's rewrite applied before the next loop is looked at, so liveness asked of the text is of the text: the lines
+// `pre` before line h, the lines blanked dropped; where the back edge at i went.
+std::size_t applyLoop(std::vector<Line> &v, std::size_t h, const std::vector<Line> &pre, std::size_t i) {
+    std::vector<Line> out;
+    std::size_t at = i;
+    for (std::size_t k = 0; k < v.size(); k++) {
+        if (k == h) out.insert(out.end(), pre.begin(), pre.end());
+        if (v[k].instr || !v[k].raw.empty()) out.push_back(v[k]);
+        if (k == i) at = out.size() - 1;
+    }
+    v.swap(out);
+    return at;
+}
+
 // **A constant made inside a loop nest is made before it**: `MVKL sym, d; MVKH sym, d`, the only writer of d
 // anywhere in a loop's region - inner loops and all - with d not live into the head and no branch into
 // the region but the back edge to its head, goes in front of the head. `comp` in sieve's outer loop.
@@ -977,7 +1038,7 @@ void hoistConstantPairs(std::vector<Line> &v) {
         if (isLabel(v[i])) at[labelName(v[i])] = i;
         if (v[i].instr) for (std::size_t o = 0; o < v[i].ops.size(); o++) named[v[i].ops[o]]++;
     }
-    std::map<std::size_t, std::vector<Line> > pre;
+    std::set<std::string> hoistedHeads;                    // a region holding one of these has been rewritten already
     for (std::size_t i = 0; i < v.size(); i++) {
         const Line &b = v[i];
         if (!b.instr || b.mnem != "B" || !at.count(b.ops[0]) || named[b.ops[0]] != 1) continue;
@@ -988,8 +1049,9 @@ void hoistConstantPairs(std::vector<Line> &v) {
         for (std::size_t k = h; k <= i; k++) if (isLabel(v[k])) inside.insert(labelName(v[k]));
         for (std::size_t k = 0; k < v.size() && ok; k++)
             if ((k < h || k > i) && v[k].instr && v[k].mnem == "B" && inside.count(v[k].ops[0])) ok = false;
-        for (std::size_t k = h + 1; k < i && ok; k++) if (!v[k].instr && !isLabel(v[k])) ok = false;
+        for (std::size_t k = h + 1; k < i && ok; k++) if ((!v[k].instr && !isLabel(v[k])) || (isLabel(v[k]) && hoistedHeads.count(labelName(v[k])))) ok = false;
         if (!ok) continue;
+        const std::uint64_t headIn = liveInAt(v, h);
         std::map<std::string, int> writers;
         for (std::size_t k = h + 1; k < i; k++) {
             if (!v[k].instr) continue;
@@ -1009,14 +1071,14 @@ void hoistConstantPairs(std::vector<Line> &v) {
             if (!sideOf(d) || d == "A15" || d == "B15" || d == "B3" || d == "B14") continue;
             std::string f = d;
             std::vector<std::pair<std::size_t, Line> > web;         // the readers renamed, where d is written elsewhere too
-            if (writers[d] != 2 || (v[h].liveIn & bitOf(d))) {
+            if (writers[d] != 2 || (headIn & bitOf(d))) {
                 // A fresh register the region never names and the head is not entered with: the pair's value in
                 // it, its readers up to d's next write in this straight run renamed, or the pair stays.
                 f.clear();
                 for (int side = 0; side < 2 && f.empty(); side++)
                     for (int n = 16; n < 32 && f.empty(); n++) {
                         const std::string c = std::string(sideOf(d) == 'A' ? (side ? "B" : "A") : (side ? "A" : "B")) + std::to_string(n);
-                        if (!used.count(c) && !(v[h].liveIn & bitOf(c))) f = c;
+                        if (!used.count(c) && !(headIn & bitOf(c))) f = c;
                     }
                 if (f.empty()) continue;
                 bool ok = true, ended = false;
@@ -1054,15 +1116,12 @@ void hoistConstantPairs(std::vector<Line> &v) {
             v[k + 1] = parse("");
             k++;
         }
-        if (!hoisted.empty()) pre[h] = hoisted;
+        if (hoisted.empty()) continue;
+        hoistedHeads.insert(b.ops[0]);
+        i = applyLoop(v, h, hoisted, i);
+        at.clear();
+        for (std::size_t k = 0; k < v.size(); k++) if (isLabel(v[k])) at[labelName(v[k])] = k;
     }
-    if (pre.empty()) return;
-    std::vector<Line> out;
-    for (std::size_t i = 0; i < v.size(); i++) {
-        if (pre.count(i)) for (std::size_t k = 0; k < pre[i].size(); k++) out.push_back(pre[i][k]);
-        if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
-    }
-    v.swap(out);
 }
 
 // **A loop's invariants move to its preheader**: in a rotated loop - one block, entered by falling into its
@@ -1075,7 +1134,6 @@ void hoistInvariants(std::vector<Line> &v) {
         if (isLabel(v[i])) labels.insert(labelName(v[i]));
         for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     }
-    std::map<std::size_t, std::vector<Line> > pre;          // the preheader to insert before a head
     for (std::size_t i = 0; i < v.size(); i++) {
         if (!v[i].instr || v[i].mnem != "B" || v[i].pred.empty() || !labels.count(v[i].ops[0])) continue;
         std::size_t h = i; int uses = 0;
@@ -1094,8 +1152,11 @@ void hoistInvariants(std::vector<Line> &v) {
             else body.push_back(k);
         }
         if (!ok) continue;
-        std::uint64_t liveAtExits = v[i].liveOut;
-        for (std::size_t e = 0; e < exits.size(); e++) liveAtExits |= v[exits[e]].liveOut;
+        // The liveness of the loop as it is entered: its own edits rename what they hoist, never what is asked about after.
+        const std::uint64_t backOut = liveOutAt(v, i);
+        std::vector<std::uint64_t> exitOut(exits.size());
+        std::uint64_t liveAtExits = backOut;
+        for (std::size_t e = 0; e < exits.size(); e++) liveAtExits |= exitOut[e] = liveOutAt(v, exits[e]);
         std::set<std::string> used;
         for (std::size_t b = 0; b < body.size(); b++) {
             std::vector<std::string> reads, writes;
@@ -1170,8 +1231,8 @@ void hoistInvariants(std::vector<Line> &v) {
                 };
                 // The same value hoisted already - the same instruction over the same sources - is reused.
                 std::string f;
-                std::uint64_t liveAfter = v[i].liveOut, liveBefore = 0;   // d at the exits past this write, and before it
-                for (std::size_t e = 0; e < exits.size(); e++) (exits[e] > body[b] ? liveAfter : liveBefore) |= v[exits[e]].liveOut;
+                std::uint64_t liveAfter = backOut, liveBefore = 0;   // d at the exits past this write, and before it
+                for (std::size_t e = 0; e < exits.size(); e++) (exits[e] > body[b] ? liveAfter : liveBefore) |= exitOut[e];
                 if (liveBefore & bitOf(d)) continue;                       // an exit before the write reads the value coming in
                 const bool exits = next == body.size() && (liveAfter & bitOf(d));
                 if (!exits) for (std::size_t e = 0; e < hoisted.size() && f.empty(); e++) {
@@ -1205,17 +1266,9 @@ void hoistInvariants(std::vector<Line> &v) {
             }
         }
         if (hoisted.empty()) continue;
-        pre[h] = hoisted;
-        std::vector<Line> kept;
-        for (std::size_t b = 0; b < body.size(); b++) if (gone[b]) v[body[b]].instr = false, v[body[b]].raw = "";
+        for (std::size_t b = 0; b < body.size(); b++) if (gone[b]) v[body[b]] = parse("");
+        i = applyLoop(v, h, hoisted, i);
     }
-    if (pre.empty()) return;
-    std::vector<Line> out;
-    for (std::size_t i = 0; i < v.size(); i++) {
-        if (pre.count(i)) for (std::size_t k = 0; k < pre[i].size(); k++) out.push_back(pre[i][k]);
-        if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
-    }
-    v.swap(out);
 }
 
 // **An address stepped with the counter is a pointer the access steps itself**: in a rotated loop whose counter iv is stepped
@@ -1228,7 +1281,6 @@ void inductionPointers(std::vector<Line> &v) {
         if (isLabel(v[i])) labels.insert(labelName(v[i]));
         for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     }
-    std::map<std::size_t, std::vector<Line> > pre;          // the entry code to insert before a head
     for (std::size_t i = 0; i < v.size(); i++) {
         if (!v[i].instr || v[i].mnem != "B" || v[i].pred.empty() || !labels.count(v[i].ops[0])) continue;
         std::size_t h = i; int uses = 0;
@@ -1250,8 +1302,10 @@ void inductionPointers(std::vector<Line> &v) {
             else body.push_back(k);
         }
         if (!ok) continue;
-        std::uint64_t liveAtExits = v[i].liveOut;
-        for (std::size_t e = 0; e < exits.size(); e++) liveAtExits |= v[exits[e]].liveOut;
+        // The liveness of the loop as it is entered: its own edits step pointers it chose from registers free here.
+        const std::uint64_t headIn = liveInAt(v, h);
+        std::uint64_t liveAtExits = liveOutAt(v, i);
+        for (std::size_t e = 0; e < exits.size(); e++) liveAtExits |= liveOutAt(v, exits[e]);
         std::map<std::string, int> writers, readers;
         std::vector<std::vector<std::string> > reads(body.size()), writes(body.size());
         std::set<std::string> used;
@@ -1273,7 +1327,7 @@ void inductionPointers(std::vector<Line> &v) {
             for (int k = 3; k < 32; k++) {
                 if ((k >= 10 && k <= 15) || (side == 1 && k == 3)) continue;
                 std::string r = std::string(side ? "B" : "A") + std::to_string(k);
-                if (!used.count(r) && !(liveAtExits & bitOf(r)) && !(v[h].liveIn & bitOf(r))) pool.push_back(r);
+                if (!used.count(r) && !(liveAtExits & bitOf(r)) && !(headIn & bitOf(r))) pool.push_back(r);
             }
         // The last write of r before b, with no read of r between it and b but at b itself; body.size() for none.
         auto reaches = [&](const std::string &r, std::size_t b) -> std::size_t {
@@ -1289,7 +1343,7 @@ void inductionPointers(std::vector<Line> &v) {
                 if (has(reads[k], r)) return true;
                 if (has(writes[k], r)) return false;
             }
-            return (liveAtExits & bitOf(r)) != 0 || (v[h].liveIn & bitOf(r)) != 0;
+            return (liveAtExits & bitOf(r)) != 0 || (headIn & bitOf(r)) != 0;
         };
         std::vector<Line> entry;
         std::set<std::size_t> gone;
@@ -1324,7 +1378,7 @@ void inductionPointers(std::vector<Line> &v) {
             if (stride % size != 0 || stride / size > 31) continue;
             // The pointer: T where this is its only write and no exit reads it, else a register the loop never names.
             std::string P = T;
-            if (writers[T] != 1 || (liveAtExits & bitOf(T)) || (v[h].liveIn & bitOf(T))) {
+            if (writers[T] != 1 || (liveAtExits & bitOf(T)) || (headIn & bitOf(T))) {
                 P.clear();
                 for (std::size_t f = 0; f < pool.size() && P.empty(); f++) if (sideOf(pool[f]) == sideOf(T)) { P = pool[f]; pool.erase(pool.begin() + static_cast<long>(f)); }
                 if (P.empty()) continue;
@@ -1346,16 +1400,9 @@ void inductionPointers(std::vector<Line> &v) {
             if (!S.empty()) gone.insert(sa);
         }
         if (entry.empty()) continue;
-        pre[h] = entry;
-        for (std::set<std::size_t>::const_iterator it = gone.begin(); it != gone.end(); ++it) { v[body[*it]].instr = false; v[body[*it]].raw = ""; }
+        for (std::set<std::size_t>::const_iterator it = gone.begin(); it != gone.end(); ++it) v[body[*it]] = parse("");
+        i = applyLoop(v, h, entry, i);
     }
-    if (pre.empty()) return;
-    std::vector<Line> out;
-    for (std::size_t i = 0; i < v.size(); i++) {
-        if (pre.count(i)) for (std::size_t k = 0; k < pre[i].size(); k++) out.push_back(pre[i][k]);
-        if (v[i].instr || !v[i].raw.empty()) out.push_back(v[i]);
-    }
-    v.swap(out);
 }
 
 // **A loop that fills memory with one value stores doublewords**: a rotated loop of `ADD 1, iv, iv`, `STB|STH|STW V,
@@ -1368,7 +1415,6 @@ void widenFills(std::vector<Line> &v) {
         if (isLabel(v[i])) labels.insert(labelName(v[i]));
         for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     }
-    std::map<std::size_t, std::vector<Line> > pre;
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
         if (!v[i].instr || v[i].mnem != "B" || v[i].pred.empty() || !labels.count(v[i].ops[0]) || !isLabel(v[i + 1])) continue;
         std::size_t h = i; int uses = 0;
@@ -1405,8 +1451,8 @@ void widenFills(std::vector<Line> &v) {
         else { if (c.ops[1] != iv) continue; n = c.ops[0]; }
         plusOne = negated;
         if (n == iv || n == P || n == V || P == iv || V == iv || V == P || P == "A15" || P == "B15" || (!isNumber(n) && !sideOf(n))) continue;
-        if (storeAt == cmpAt || (v[i].liveOut & bitOf(C)) || (v[i + 1].liveIn & bitOf(C))) continue;
-        const std::uint64_t liveAtExits = v[i].liveOut | v[i + 1].liveIn, liveHead = v[h].liveIn;
+        if (storeAt == cmpAt || (liveOutAt(v, i) & bitOf(C)) || (liveInAt(v, i + 1) & bitOf(C))) continue;
+        const std::uint64_t liveAtExits = liveOutAt(v, i) | liveInAt(v, i + 1), liveHead = liveInAt(v, h);
         std::set<std::string> used;
         used.insert(iv); used.insert(P); used.insert(V); used.insert(C); if (!isNumber(n)) used.insert(n);
         const char S = sideOf(P), SV = sideOf(V);
@@ -1475,15 +1521,8 @@ void widenFills(std::vector<Line> &v) {
         branch(exit, "");
         if (!legal) continue;
         if (std::getenv("CPP11_FILL")) std::fprintf(stderr, "fill %s: %s of %s through %s, %ld-byte elements\n", base.c_str(), v[body[storeAt]].mnem.c_str(), V.c_str(), P.c_str(), k);
-        pre[h] = out;
+        i = applyLoop(v, h, out, i);
     }
-    if (pre.empty()) return;
-    std::vector<Line> out;
-    for (std::size_t i = 0; i < v.size(); i++) {
-        if (pre.count(i)) out.insert(out.end(), pre[i].begin(), pre[i].end());
-        out.push_back(v[i]);
-    }
-    v.swap(out);
 }
 
 // **An index scaled by the access width goes into the access**: `SHL I, log2(size), T` read by `ADD R, T, U`s whose U is first touched by a load or store through `*U` of that width (U dead after, or the load's own destination, R untouched between) becomes `*+R[I]`, the machine scaling a register offset itself, and the ADD goes; the SHL goes too once every reader folded.
@@ -1568,6 +1607,7 @@ bool foldScaledIndex(std::vector<Line> &v, std::size_t i, const std::set<std::st
 // after, is `*+R(k)`; and `*R` followed by `ADD k, R, R` with nothing touching R between, k whole elements
 // up to 31, is `*R++` or `*R++[n]` and the ADD goes - `SUB` the same way with a minus.
 void foldAddressing(std::vector<Line> &v) {
+    LivenessHeld held(v, "foldAddressing");   // An address goes into its access later in the run, the register it lived in dead after; I and R stay unwritten.
     std::set<std::string> named;
     for (std::size_t i = 0; i < v.size(); i++) for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     for (std::size_t i = 0; i + 1 < v.size(); i++) {
@@ -1730,6 +1770,7 @@ bool isPop(const std::vector<Line> &v, std::size_t i) {
 // B15 between, keeps its value in A16-A31 instead: the pair's slot d takes
 // A(16+2d):A(17+2d), and the two stack adjustments go with the memory access.
 void foldPushPop(std::vector<Line> &v) {
+    LivenessHeld held(v, "foldPushPop");   // A pair's registers are written and read between its push and its pop, in one block.
     std::vector<std::size_t> open;             // pushes not yet popped, this block
     std::vector<std::pair<std::size_t, std::size_t> > pairs;
     for (std::size_t i = 0; i < v.size(); i++) {
@@ -2176,6 +2217,7 @@ bool skipped(const char *pass) {
 // A result nothing reads - a copy, an address, a constant made and then overwritten - is not made; a load
 // stays, every read of an object being a read here, and so does anything that writes memory or a pair.
 bool removeDead(std::vector<Line> &v) {
+    LivenessHeld held(v, "removeDead");   // What it removes is dead.
     bool changed = false;
     for (std::size_t i = 0; i < v.size(); i++) {
         const Line &l = v[i];
