@@ -254,6 +254,10 @@ static bool holdsInstruction(const std::string &text) {
 void CoffSpelling::location(int file, int line, int column) {
     if (cvFunctions_ == 0) return;
     if (cvFunctions_ == lastLocFn_ && file == lastLocFile_ && line == lastLocLine_) return;
+    // **No second run of a line**: a loop's step written after its body was a second run of the `for`
+    // line, and cdb refused `bp` on it as ambiguous; that code counts as the line before it.
+    if (cvFunctions_ != lastLocFn_) linesRun_.clear();
+    if (!linesRun_.insert(std::make_pair(file, line)).second) return;
     lastLocFn_ = cvFunctions_;
     lastLocFile_ = file;
     lastLocLine_ = line;
