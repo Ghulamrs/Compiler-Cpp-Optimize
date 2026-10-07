@@ -12720,3 +12720,30 @@ right on every target. The calls are one a statement now, which is the rule
 `lambda-capture-this` taught; no compiler source changed. Windows cases 603 / 0 at -O0,
 -O1, -O2 (602 / 1 before); emit golden 3 of 1582 changed, this case's own; Linux run.sh
 625 / 0 at -O0 and -O2; tms6747.sh -O2 388 / 0 both legs, unchanged.
+
+## M10 W1: CodeView on x86_64-windows, so cdb stops at a line and walks the stack, 2026-10-08
+
+**`-g -masm=gnu` on x86_64-windows wrote DWARF, and nothing on Windows could use it.** clang
+refused the `.debug_*` sections in their ELF spelling (`expected comdat type`), and RIDE's
+probe (docs/M10-ANALYSIS.md there) had already measured that link.exe drops DWARF from a COFF
+object anyway. With `-g` that spelling now writes CodeView, the format link.exe turns into a PDB
+and cdb reads: `CoffSpelling` writes `.cv_file` (the path made absolute, which is what cdb
+matches `bp \`w1.cpp:9\`` against), `.cv_func_id` per function and `.cv_loc` per line, and
+`backend/CodeView.cpp` - beside `Dwarf.cpp`, fed the same `DwarfFunction` - writes `.debug$S`:
+S_OBJNAME, S_COMPILE3 (C++), and per function S_GPROC32 or S_LPROC32, S_FRAMEPROC, S_END and
+`.cv_linetable`, with `.cv_filechecksums` and `.cv_stringtable` after. A COMDAT function's
+records go in a `.debug$S` associative with it, as clang writes them. The driver passes
+`/debug` to link.exe under `-g`.
+
+**Two line entries at one address are one too many.** The entry for the function's own line is
+written before the prologue and the first statement's after the parameter stores, and between
+a statement's entry and the next there is sometimes no instruction; cdb takes the first entry at
+an address, so `bp` on line 7 reported line 6. A `.cv_loc` that no instruction follows is
+replaced by the next. No `.cv_loc` is written inside a funclet: its code is in `.text$x`, which
+its function's line table cannot measure to.
+
+**Gated with M10's `m10.py` against cl /Zi in cdb**: tests/m10/w1.cpp stopped at line 9, `k` gave
+inner @9, middle @13, outer @18, main @24 for both; `p` from line 7 goes 7, 8, 9 then back to
+middle @13 on both (cl also stops on the closing brace, line 10 - the AST keeps no position for
+`}`, so ours does not). Cases with recorded output on this box: -O0 379 / 0, -O2 379 / 0, and
+with `-g -masm=gnu` 379 / 0; emit golden at -O0 against main 5b66242, 0 of 1616 changed.
