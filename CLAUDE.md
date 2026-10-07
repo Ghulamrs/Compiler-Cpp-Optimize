@@ -12456,3 +12456,56 @@ the vtable names its virtuals - so they stay, where clang emits none of the thre
 `unused-inline-not-emitted.cpp` is a two-file case: both units define inline
 functions over `never_linked`, which nothing defines, and the program links.
 `tools/windows/run-cases.cmd` builds a case's `.part.cpp` into it now, as run.sh does.
+
+## A reference to a function as a member, an unused vtable, and class scope before the namespace, 2026-10-07
+
+**Three front-end gaps, the first and third found writing RTS6x and the second recorded by the
+round before this one.** All in `src/parser/`; each case fails on the compiler before.
+
+**`int (&r)(int, int);` as a data member** was refused in the mem-initialiser - "'r' is neither
+a member of 'S' nor a direct base of it" - and the constructor's own parameter `int (&f)(int,
+int)` was "expected ','". The declarator's parenthesised branch took a parameter list after
+`(*p)` and not after `(&p)`, so `(&r)(int, int)` declared `r` a reference to `int` and left the
+parameter list to make it a member *function*. `&` and `&&` take the list now, as `*` does, and
+the rest is [dcl.init.ref]/5: a reference to a function binds a function lvalue of its type, an
+exact match in `rankArgument`; `bindReference` stores the function's address, which a name
+already arrives as (`&f`, `functionDesignated`); and a function lvalue - what the reference reads
+as - is called through `&*slot` in `postfix`. A member holding one is `callable` by its bare
+name, which is the 10-07 member-function-pointer road, and hides `::r`. A local reference to a
+function, `int (&local)(int, int) = mul; local(3, 4)`, came with it. Case
+`reference-to-function-member` (`.`, `->`, `this->`, the bare name, a const object, two such
+members, an implicit copy, a local); the constructors are out of line so the names compare.
+
+**A polymorphic class with no key function had its vtable group emitted whether or not anything
+built one**, so its virtuals were too - where clang and cl emit none of the three. Measured with
+clang for all three ABIs: the table is written where a constructor or destructor stores it, a
+class only caught gets its type_info alone (`_ZTI6Caught`, `??_R0?AUCaught@@@8`), and a class
+whose key function is defined in the unit keeps its table built or not. `pruneUnusedInline`
+walks globals as well as functions now: an inline `_ZTV`, `_ZTI`, `_ZTS`, `_ZTT` or `_ZTC` (on
+Microsoft an inline `??_7`) is held like an inline function and kept only when something reached
+names it - a constructor's vptr store, a `throw`, a `dynamic_cast`, a `Try`'s catch types, which
+the walk reads now - unless its class's key function is defined here (`hasKeyFunction`, beside
+`keyFunctionUndefined`). Every compiler-written function - an implicit special member, a
+deleting destructor, a thunk - is held too, being inline by [class.copy] and [class.dtor]: an
+implicit destructor stores the vptr, and as a root it kept the very table it was emitted for.
+A Microsoft class keeps its five RTTI records only where its locator or one of the records is
+named, and a type only *caught* roots no copy constructor or destructor - the backend writes
+it its descriptor and nothing else, so `??0Caught@@QEAA@AEBU0@@Z` and with it the vftable
+went. Case `unused-vtable-not-emitted`: inline virtuals over `never_linked`, which nothing
+defines, in a class nothing builds, its derived class, and one only caught; it linked on no
+target before. Names agree with clang on all three targets.
+
+**The golden, every change read.** -O0: 97 of 1546 changed, 12 added, every change a deletion -
+`<stdexcept>`'s nine classes' groups and virtuals in every case that includes `<string>` or the
+streams, `std::exception`/`bad_alloc`'s RTTI on x86_64-windows, `virtual-base-*`'s VTT and C1
+of classes built only as bases, `base-tail-padding`'s `V`. -O2 (tms6747): 25 of 388 changed, 4
+with lines added - the inliner's unit budget being a share of a smaller unit, as on 10-07.
+
+**A static data member was hidden by a global of the same name** inside a member function:
+[basic.lookup.unqual] searches the class before the namespace, and `primary` gave the static
+member branch only names no global answered, so `count` in `S::get()` read `::count` - a silent
+wrong value. `classScopeDeclares` asks the class being read (or whose body this is), its bases
+and the class a lambda was written in for a data member, a static one, a member function or an
+enumerator; where it answers, the global is set aside before any branch reads it. A local still
+wins. Case `class-member-hides-global` (a static int, double and array, a static const, a
+static member function, a derived class, a class in a namespace against the namespace's own).

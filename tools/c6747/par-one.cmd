@@ -15,5 +15,11 @@ findstr /b RESULT %1.log > %1.r 2>nul
 set R=
 set /p R=< %1.r
 rem In parentheses: a line ending in a digit, wall_ms=2, would make "2>" a redirection of stderr.
-if "%R%"=="" ((echo BOX %1 timeout-or-failed)> %1.result) else ((echo BOX %1 %R:RESULT =%)> %1.result)
+rem Apart, by goto: an if line is parsed whole, and %R:RESULT =% with R empty ends cmd before .result is written.
+if "%R%"=="" goto :none
+(echo BOX %1 %R:RESULT =%)> %1.result
+goto :written
+:none
+(echo BOX %1 timeout-or-failed)> %1.result
+:written
 del %1.r 2>nul

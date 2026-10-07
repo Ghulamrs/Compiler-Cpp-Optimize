@@ -1178,12 +1178,15 @@ ExprPtr Parser::primary(Program *program) {
 
         const Local *l = findLocal(name);
         const GlobalSym *g = l != nullptr ? nullptr : findGlobal(name);
+        // **Class scope comes before the namespace** - [basic.lookup.unqual]/8: a static member, a
+        // member function or an enumerator of the class (or a base) hides a global of the same name.
+        if (g != nullptr && classScopeDeclares(name)) g = nullptr;
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
         // A name that holds something callable rather than naming a function:
         // a function pointer, or an object whose `(` is [over.call].
         auto callable = [](const Type *t) {
             if (t != nullptr && t->isReference()) t = t->referent();
-            return t != nullptr && (t->isFunctionPointer() ||
+            return t != nullptr && (t->isFunctionPointer() || t->isFunction() ||
                                     t->unqualified()->isStructOrUnion());
         };
         bool callsThroughObject = callable(held);
@@ -1570,6 +1573,21 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     const Type *referent = ref->referent();
     const Type *it = init->type();
 
+    // **A reference to a function holds the function's address** - [dcl.init.ref]/5 binds it to a
+    // function lvalue of the same type, and `&f` already is that address.
+    if (referent->isFunction()) {
+        const Type *fn = functionDesignated(*init);
+        if (fn == nullptr || fn->unqualified() != referent->unqualified())
+            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                           it->describe() + "' - a reference to a function binds "
+                           "only a function of that type");
+        if (it->isFunction()) {
+            init.reset(new Unary('&', std::move(init)));
+        }
+        init->setType(types_.pointerTo(referent));
+        return init;
+    }
+
     // Binding takes an address, so the two things that have none cannot be bound to
     // directly. A const reference still may: it copies them into a temporary below,
     // which is what the standard says happens.
@@ -1686,6 +1704,25 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
 ExprPtr Parser::objectRef(const std::string &name) {
     if (ExprPtr v = localRef(name)) return v;
     return globalRef(name);
+}
+
+// Does class scope, between block scope and the namespace, declare this name - a data member, a
+// static one, a member function or an enumerator of the class being read, a base, or the class a
+// lambda was written in. Asked of a name a global also answers, which the class then hides.
+bool Parser::classScopeDeclares(const std::string &name) {
+    const Type *roots[2] = { currentClass_ != nullptr ? currentClass_
+                                                      : classStack_.empty() ? nullptr
+                                                                            : classStack_.back(),
+                             lambdaScope() };
+    for (const Type *root : roots) {
+        if (root == nullptr) continue;
+        if (root->findMember(name) != nullptr || root->findStaticMember(name) != nullptr)
+            return true;
+        for (const Type *c = root; c != nullptr; c = c->base())
+            if (name != localOf(c->tag()) && overloadsOf(c->tag() + "::" + name) != nullptr)
+                return true;
+    }
+    return findClassEnum(name) != nullptr;
 }
 
 ExprPtr Parser::localRef(const std::string &name) {
@@ -1888,6 +1925,13 @@ ExprPtr Parser::postfix() {
             continue;
         }
 
+        // **A function lvalue - what a reference to a function reads as - is called through
+        // its address**, [conv.func]: `&*slot`, which every backend takes as the slot's value.
+        if (peek().is("(") && n->type()->isFunction()) {
+            const Type *fp = types_.pointerTo(n->type());
+            n.reset(new Unary('&', std::move(n)));
+            n->setType(fp);
+        }
         if (peek().is("(") && n->type()->isFunctionPointer()) {
             at_++;
             const Type *fn = n->type()->pointee();

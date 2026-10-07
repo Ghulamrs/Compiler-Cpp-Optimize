@@ -3265,6 +3265,17 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
 // non-pure virtual member declared in the class and not defined inline. Where
 // that one is not defined in this unit, the vtable and type_info are not either.
 bool Parser::keyFunctionUndefined(const std::string &tag) const {
+    const Signature *key = keyFunction(tag);
+    return key != nullptr && !key->defined;
+}
+
+// Whether the class has a key function and this unit defines it: then the group is emitted here.
+bool Parser::hasKeyFunction(const std::string &tag) const {
+    const Signature *key = keyFunction(tag);
+    return key != nullptr && key->defined;
+}
+
+const Parser::Signature *Parser::keyFunction(const std::string &tag) const {
     std::map<std::string, std::vector<VSlot> >::const_iterator vt = vtables_.find(tag);
     for (std::size_t i = 0; i < functions_.size(); i++) {
         const Signature &f = functions_[i];
@@ -3275,9 +3286,9 @@ bool Parser::keyFunctionUndefined(const std::string &tag) const {
                 if (vt->second[k].pure && overrides(vt->second[k], f.name, f.params, f.constThis))
                     pure = true;
         if (pure) continue;
-        return !f.defined;
+        return &f;
     }
-    return false;
+    return nullptr;
 }
 
 // A class whose key function lives in another unit gets its vtable, its
@@ -3365,6 +3376,7 @@ public:
     void visit(const Case &n) override { n.body().accept(*this); }
     void visit(const Label &n) override { n.body().accept(*this); }
     void visit(const Try &n) override {
+        for (const std::string &t : n.types()) out->push_back(t);
         for (const StmtPtr &s : n.body()) s->accept(*this);
         if (n.hasPad()) n.pad().accept(*this);
         if (n.cleanup() != nullptr) n.cleanup()->accept(*this);
@@ -3375,37 +3387,75 @@ public:
 
 }
 
-// **An inline function nothing here odr-uses is not emitted** - [basic.def.odr]/3, and what clang, g++
-// and cl do: its body may name what no library defines. Reached from every other function and every
-// global's data; a symbol is dropped only if it was held, and nothing reachable names it or its alias.
+// **An inline function, or a vtable group with no key function, nothing here uses is not emitted** -
+// [basic.def.odr]/3, and what clang, g++ and cl do. Reached from every function and global not held;
+// a symbol is dropped only if it was held and nothing reachable names it or its alias.
 void Parser::pruneUnusedInline(Program &program) {
-    if (discardableInline_.empty()) return;
     for (std::size_t i = 0; i < functions_.size(); i++)
         if (functions_[i].fromTemplate) discardableInline_.erase(functions_[i].symbol);
+    // What the compiler writes is inline by [class.copy] and [class.dtor]: reached, or not emitted.
+    std::set<std::string> fromTemplate;
+    for (std::size_t i = 0; i < functions_.size(); i++)
+        if (functions_[i].fromTemplate) fromTemplate.insert(functions_[i].symbol);
+    std::set<std::string> held = discardableInline_;
+    for (const Function &f : program.functions)
+        if (f.isInline() && fromTemplate.count(f.symbol()) == 0) held.insert(f.symbol());
+    // A class whose key function is defined here owns its group in this unit, built or not.
+    std::vector<std::string> keyed;
+    if (!target_.microsoftNames())
+        for (std::map<std::string, std::vector<std::string> >::const_iterator it =
+                 classSymbols_.begin(); it != classSymbols_.end(); ++it)
+            if (hasKeyFunction(it->first))
+                for (const std::string &sym : it->second) keyed.push_back(sym.substr(4));
+    auto heldGlobal = [&](const Global &g) {
+        if (!g.isInline) return false;
+        const std::string &n = g.symbol;
+        if (target_.microsoftNames()) return n.compare(0, 4, "??_7") == 0;
+        if (n.compare(0, 4, "_ZTV") != 0 && n.compare(0, 4, "_ZTI") != 0 &&
+            n.compare(0, 4, "_ZTS") != 0 && n.compare(0, 4, "_ZTT") != 0 &&
+            n.compare(0, 4, "_ZTC") != 0)
+            return false;
+        for (const std::string &k : keyed)         // _ZTC names its layout class first
+            if (n.compare(4, k.size(), k) == 0) return false;
+        return true;
+    };
+    if (held.empty()) {
+        bool any = false;
+        for (const Global &g : program.globals) any = any || heldGlobal(g);
+        if (!any) return;
+    }
+    // A node is a function (its index) or a global (its index past the functions).
+    const std::size_t nf = program.functions.size();
     std::map<std::string, std::size_t> bySymbol;
-    for (std::size_t i = 0; i < program.functions.size(); i++) {
+    for (std::size_t i = 0; i < nf; i++) {
         bySymbol[program.functions[i].symbol()] = i;
         if (!program.functions[i].alias().empty()) bySymbol[program.functions[i].alias()] = i;
     }
-    std::vector<bool> reached(program.functions.size(), false);
+    for (std::size_t i = 0; i < program.globals.size(); i++)
+        bySymbol[program.globals[i].symbol] = nf + i;
+    std::vector<bool> reached(nf + program.globals.size(), false);
+    std::set<std::string> everyName;
     std::vector<std::string> named;
     named.push_back(program.initFunction);
-    for (const Global &g : program.globals) {
-        named.push_back(g.prefixWord);
-        for (const GlobalPiece &p : g.init) named.push_back(p.symbol);
-    }
     for (const MicrosoftThrow &t : program.msThrows) {
+        if (!t.thrown) continue;         // a type only caught needs its descriptor alone
         named.push_back(t.destructor);
         for (const MicrosoftThrow::Catchable &c : t.catchables) named.push_back(c.copyCtor);
     }
     std::vector<std::size_t> work;
-    for (std::size_t i = 0; i < program.functions.size(); i++)
-        if (discardableInline_.count(program.functions[i].symbol()) == 0) {
+    for (std::size_t i = 0; i < nf; i++)
+        if (held.count(program.functions[i].symbol()) == 0) {
             reached[i] = true;
             work.push_back(i);
         }
+    for (std::size_t i = 0; i < program.globals.size(); i++)
+        if (!heldGlobal(program.globals[i])) {
+            reached[nf + i] = true;
+            work.push_back(nf + i);
+        }
     for (;;) {
         for (const std::string &s : named) {
+            everyName.insert(s);
             const std::map<std::string, std::size_t>::const_iterator f = bySymbol.find(s);
             if (f != bySymbol.end() && !reached[f->second]) {
                 reached[f->second] = true;
@@ -3416,13 +3466,34 @@ void Parser::pruneUnusedInline(Program &program) {
         if (work.empty()) break;
         const std::size_t i = work.back();
         work.pop_back();
-        SymbolsNamed collect(&named);
-        program.functions[i].body().accept(collect);
+        if (i < nf) {
+            SymbolsNamed collect(&named);
+            program.functions[i].body().accept(collect);
+        } else {
+            const Global &g = program.globals[i - nf];
+            named.push_back(g.prefixWord);
+            for (const GlobalPiece &p : g.init) named.push_back(p.symbol);
+        }
     }
     std::vector<Function> kept;
-    for (std::size_t i = 0; i < program.functions.size(); i++)
+    for (std::size_t i = 0; i < nf; i++)
         if (reached[i]) kept.push_back(std::move(program.functions[i]));
     program.functions.swap(kept);
+    std::vector<Global> keptGlobals;
+    for (std::size_t i = 0; i < program.globals.size(); i++)
+        if (reached[nf + i]) keptGlobals.push_back(std::move(program.globals[i]));
+    program.globals.swap(keptGlobals);
+    // A Microsoft class keeps its five records where its vftable stayed or something names one.
+    std::vector<const Type *> rtti;
+    for (const Type *cls : program.rtti) {
+        MicrosoftRtti n;
+        std::string why;
+        if (!microsoftClassRttiNames(cls, &n, &why) || everyName.count(n.locator) ||
+            everyName.count(n.descriptor) || everyName.count(n.baseDescriptor) ||
+            everyName.count(n.array) || everyName.count(n.hierarchy))
+            rtti.push_back(cls);
+    }
+    program.rtti.swap(rtti);
 }
 
 // **To a fixed point, because a body can be what first calls another.** Giving
