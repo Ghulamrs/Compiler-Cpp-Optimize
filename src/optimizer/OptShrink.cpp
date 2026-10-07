@@ -21,6 +21,12 @@ bool scaleByOne(const Instr &i) {
 // value is a small non-negative constant, the REX prefix goes.
 bool shorter(Instr &i, RegSet wide, bool flagsLive) {
     if (gpr(i.b) && frameReg(i.b.reg.id)) return false;
+    // `cmp $0, %r` is `test %r, %r`, a byte shorter, flags and all: both clear CF and OF and set ZF, SF and PF from %r.
+    if (is(i.m, {"cmp", "cmpl", "cmpq"}) && i.operands == 2 && i.a.kind == Operand::Immediate && i.a.numeric &&
+        i.a.value == 0 && gpr(i.b)) {
+        i = Instr{"test", i.b, i.b, 2};
+        return true;
+    }
     // A power of two is a shift, which is quicker and no longer.
     const long long v = i.a.value;
     if (i.m == "imul" && i.operands == 2 && i.a.kind == Operand::Immediate && i.a.numeric && gpr(i.b) &&
