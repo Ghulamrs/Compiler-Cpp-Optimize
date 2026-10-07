@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstring>
 #include <iosfwd>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct Str {
@@ -275,4 +277,6 @@ private:
     std::string lastLoc_;
     std::size_t lastLocAt_ = 0;
     int lastLocFn_ = 0, lastLocFile_ = 0, lastLocLine_ = 0;
+    // Every (file, line) the function being written has had a run of, so none gets a second.
+    std::set<std::pair<int, int> > linesRun_;
 };

@@ -12801,3 +12801,14 @@ array - at line 48 9 / 9 variables and `??` of row, pt, bits, c, sq, box, name, 
 (classes expanded member by member, the base's too); in `Square::perimeter` 2 / 2 with `this`; in
 `total` (a reference and a reference to an array) 3 / 3; in `geo::Shape::area` 1 / 1; frames equal
 at all four. w1.cpp and w2.cpp still equal.
+
+
+## M10: no second run of a line in the CodeView line table, 2026-10-08
+
+**A `for` whose body is on lines of its own had its line twice**: the step and the test are written
+after the body, and their entry named the `for` line again, so cdb answered `bp` on it with
+"Ambiguous symbol error" (cl writes the line once, its step coming before the body). A line that
+already had a run in the function gets no second: that code counts as the line before it, and the
+breakpoint binds. Measured with m10.py on a three-line loop: cl /Zi and ours both stop on it; c90
+steps 5, 6, 7, 5, 6, 7 as cl does, cpp11 5, 6, 5, 6 (it keeps no line for the closing brace).
+tests/m10 compares are unchanged; cases and emit golden unchanged.
