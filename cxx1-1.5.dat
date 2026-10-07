@@ -1,7 +1,7 @@
 ©2026 G. R. Akhtar - ISO C++ 11
 Release seal, version 1.5, sealed 03-10-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 151 files, seal 06621AA8
+CRC32  size  file - 151 files, seal D6B8B482
 ------------------------------------------------------------------
 7F3ECECE      4553  include/algorithm
 24D34375       483  include/cassert
@@ -129,12 +129,12 @@ F9EA609E     10839  src/optimizer/OptMemory.cpp
 E6AF9AD9      5712  src/optimizer/OptPass.cpp
 C908A573      3700  src/optimizer/OptPass.h
 C3F2667C      4468  src/optimizer/OptPasses.h
-3330DC54     11278  src/optimizer/OptPipeline.cpp
+EB8197E1     11402  src/optimizer/OptPipeline.cpp
 10274C29       273  src/optimizer/OptPipeline.h
 04F79287      3989  src/optimizer/OptShrink.cpp
 733C47CF      6503  src/optimizer/OptTable.cpp
 D5A5640B      3328  src/optimizer/OptTable.h
-225FA5B2     29040  src/optimizer/OptValues.cpp
+EBE87737     29190  src/optimizer/OptValues.cpp
 9F102317     10752  src/optimizer/Optimizer.cpp
 9E3EB6F4      5814  src/optimizer/Optimizer.h
 4F4196A6     41147  src/parser/Parser.cpp
