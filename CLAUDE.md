@@ -12641,3 +12641,28 @@ repository `SIM6747` (github.com/Ghulamrs/SIM6747), its seal `sim6747-1.1.dat`.
 `tests/tms6747.sh` takes it from `$SIM6747` or `../SIM6747/sim6747.exe`, where it read
 `$VMSIM` and `../VM6747-sim/vm6747.exe`; nothing answers to the old names. The sections
 above keep the name each was written under. `vm6747`, the emulator, is unchanged.
+
+## `cmp $0, %r` is `test %r, %r`, brought across from Compiler-Cppi, 2026-10-07
+
+**`shorter()` (OptShrink.cpp) writes a compare of a register with zero as a test of it against
+itself**, at -O1 and -O2 on both x86 targets - from Compiler-Cppi's 13cff2b, approved for this tree
+on 2026-10-07. The two leave the same flags for every reader: both clear CF and OF and set ZF, SF and
+PF from the register; only AF differs, and nothing reads it. So it is taken whether or not the flags
+are live, only where the operand is a register named at its own width (`cmp`, `cmpl`, `cmpq`) and
+never a frame register; a memory operand keeps its `cmp $0`. -O0 never reaches the optimizer.
+
+**Measured on the Windows box against 397fbb8.** The -O0 emit golden: 0 of 1570 changed, 4 added.
+At -O2 over every case for x86_64-windows and x86_64-linux, 315 of 783 assembly files changed, and
+every changed line is a `cmp $0` becoming `test` or a `.p2align 6,,L-1` whose L fell by the byte
+saved. `.text` of the cases at -O2, assembled by clang: x86_64-windows 568,213 -> 566,969 bytes
+(-0.22%), x86_64-linux 542,666 -> 541,237 (-0.26%). `compare-with-zero.cpp` holds the six relations
+at four widths signed and unsigned, a pointer and loops counting down.
+
+**Found writing the case, and not this change's:** a comparison kept as a number - `int y = b < 0`
+beside another value in the same function - is `setl %cl` into a register that still holds another
+value, and the `imul $10, %ecx` after it reads the upper 24 bits it never cleared; clang prints
+`2 111 101 101` where -O1 and -O2 print `2 -2705 101 -155`. 397fbb8 emits the same code with `cmp`,
+so the shape was taken out of the case and is recorded here. And on the Linux box four cases fail at
+-O2 (two of them at -O1 too) on 397fbb8 and on this branch alike - `assign-wide-through-call`,
+`divide-by-constant-signs`, `pipelined-data-exit`, `sizeof-qualified-member`: the x86 optimizer at
+those levels is gated by no suite, which is the finding.
