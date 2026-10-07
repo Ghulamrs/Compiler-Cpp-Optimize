@@ -12633,3 +12633,11 @@ compares where clang refuses it - an over-acceptance noted, not mended here.
 `pointer-difference-cv.cpp` (char, int and a struct, both orders, `f - (buf + n)` - the shape the
 pipeliner round above met - and a `const char *const`) fails
 on the compiler before; `pointer-difference-types-refused.cpp` is `char *` minus `int *`.
+
+## The simulator is SIM6747, 2026-10-07
+
+**vm6747sim was renamed, a clean break at its version 1.1**: the program is `sim6747`, the
+repository `SIM6747` (github.com/Ghulamrs/SIM6747), its seal `sim6747-1.1.dat`.
+`tests/tms6747.sh` takes it from `$SIM6747` or `../SIM6747/sim6747.exe`, where it read
+`$VMSIM` and `../VM6747-sim/vm6747.exe`; nothing answers to the old names. The sections
+above keep the name each was written under. `vm6747`, the emulator, is unchanged.

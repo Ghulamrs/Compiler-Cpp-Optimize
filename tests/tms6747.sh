@@ -14,7 +14,7 @@
 # the host: it is a construct refused by name for this target.
 #
 # Each case runs twice: its assembly on vm6747, and as a TI program - asm6x, then lnk6x against
-# TI's runtime - on vm6747sim, which runs the machine code. Both must match. The second leg is
+# TI's runtime - on sim6747, which runs the machine code. Both must match. The second leg is
 # what sees an assembler's encoding and TI's own runtime (C1, C2, D2 hid from the emulator).
 # SIM=0 leaves it out, said aloud; tests/tms6747-sim.txt names the cases it cannot run, why beside.
 set -u
@@ -36,7 +36,7 @@ find_tool() {
 }
 ASM6X=$(find_tool "${ASM6X:-}" ../ASM6x/build/asm6x.exe "$(command -v asm6x 2>/dev/null)")
 LNK6X=$(find_tool "${LNK6X:-}" ../LNK6x/build/lnk6x.exe "$(command -v lnk6x 2>/dev/null)")
-VMSIM=$(find_tool "${VMSIM:-}" ../VM6747-sim/vm6747.exe "$(command -v vm6747sim 2>/dev/null)")
+SIM6747=$(find_tool "${SIM6747:-}" ../SIM6747/sim6747.exe "$(command -v sim6747 2>/dev/null)")
 # The run-time library: RTS6x's, built beside this tree, since it passed the suite whole (M5, 2026-10-07);
 # TI's exception-handling rts6740 as RTSLIB=rts6740_elf_eh.lib, TIRTS its directory (default ~/c6747-lib).
 RTSLIB="${RTSLIB:-rts6x.lib}"
@@ -93,13 +93,13 @@ one() {
                  { [ -z "$parts" ] || "$ASM6X" "$parts" -o "$OUT/$base.part.obj"; } &&
                  "$LNK6X" -mv6740 --abi=eabi -i "$TIRTS" "$OUT/link.cmd" "$OUT/$base.obj" ${parts:+"$OUT/$base.part.obj"} \
                      -l "$RTSLIB" -o "$OUT/$base.ti.out"; } > "$OUT/$base.ti.log" 2>&1 < /dev/null; then
-            echo "FAIL $base (vm6747sim): asm6x or lnk6x refused it"
+            echo "FAIL $base (sim6747): asm6x or lnk6x refused it"
             sed 's/^/      /' "$OUT/$base.ti.log" | head -3
             verdict=fail
         else
-            { ( ulimit -t 20 2>/dev/null; "$VMSIM" --run "$OUT/$base.ti.out" ) > "$OUT/$base.sim.out" 2>&1 < /dev/null; } 2>/dev/null || true
+            { ( ulimit -t 20 2>/dev/null; "$SIM6747" --run "$OUT/$base.ti.out" ) > "$OUT/$base.sim.out" 2>&1 < /dev/null; } 2>/dev/null || true
             if ! diff -q "tests/cases/$base.expected" "$OUT/$base.sim.out" >/dev/null; then
-                echo "FAIL $base (vm6747sim):"
+                echo "FAIL $base (sim6747):"
                 diff "tests/cases/$base.expected" "$OUT/$base.sim.out" | sed 's/^/      /' | head -8
                 verdict=fail
             fi
@@ -111,8 +111,8 @@ if [ "${1:-}" = --one ]; then one "$3" > "$OUT/$3.report" 2>&1; exit 0; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [ ! -x "$VM" ]; then echo "tms6747.sh: no emulator at $VM"; exit 1; fi
 if [ "$SIM" = 1 ]; then
-    for need in "asm6x:$ASM6X" "lnk6x:$LNK6X" "vm6747sim:$VMSIM"; do
-        [ -n "${need#*:}" ] || { echo "tms6747.sh: no ${need%%:*} - build it, name it, or SIM=0 to leave the vm6747sim leg out"; exit 1; }
+    for need in "asm6x:$ASM6X" "lnk6x:$LNK6X" "sim6747:$SIM6747"; do
+        [ -n "${need#*:}" ] || { echo "tms6747.sh: no ${need%%:*} - build it, name it, or SIM=0 to leave the sim6747 leg out"; exit 1; }
     done
     [ -f "$TIRTS/$RTSLIB" ] || { echo "tms6747.sh: no $RTSLIB in $TIRTS - set TIRTS and RTSLIB, or SIM=0"; exit 1; }
     # RIDE's flat map, with a stack a case may need (stack-probe takes 256 KB).
@@ -129,7 +129,7 @@ SECTIONS
 }
 MAP
 else
-    echo "tms6747.sh: SIM=0 - the vm6747sim leg is left out; only the assembly is run, on vm6747"
+    echo "tms6747.sh: SIM=0 - the sim6747 leg is left out; only the assembly is run, on vm6747"
 fi
 cases() {
     for src in tests/cases/*.cpp; do
@@ -146,7 +146,7 @@ count() { cat "$OUT"/*.verdict 2>/dev/null | grep -cx "$1" || true; }
 pass=$(( $(count pass) + $(count simskip) )); simskip=$(count simskip); fail=$(count fail); skipEh=$(count eh); skipLp=$(count lp64); skipNt=$(count notarget)
 
 echo "tms6747.sh: $pass passed, $fail failed, $skipEh skipped for exceptions, $skipLp skipped for a 64-bit long, $skipNt not for this target"
-[ "$SIM" = 1 ] && echo "tms6747.sh: every pass also on vm6747sim (asm6x, lnk6x, $RTSLIB) but $simskip in tests/tms6747-sim.txt"
+[ "$SIM" = 1 ] && echo "tms6747.sh: every pass also on sim6747 (asm6x, lnk6x, $RTSLIB) but $simskip in tests/tms6747-sim.txt"
 if [ -n "$CYCLES" ]; then
     for base in $(cases); do [ -s "$OUT/$base.cycles" ] && echo "$base $(cat "$OUT/$base.cycles")"; done > "$OUT/cycles.txt"
     awk '{ sub("count=", "", $2); s += $2 } END { printf "tms6747.sh: %d cycles (cycle.CPU) over %d cases, in %s\n", s, NR, FILENAME }' "$OUT/cycles.txt"
