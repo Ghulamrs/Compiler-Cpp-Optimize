@@ -12510,6 +12510,56 @@ enumerator; where it answers, the global is set aside before any branch reads it
 wins. Case `class-member-hides-global` (a static int, double and array, a static const, a
 static member function, a derived class, a class in a namespace against the namespace's own).
 
+## Liveness that knows which text it was computed for, 2026-10-07
+
+**The numberValues fault was one instance of a shape every C6000 text pass shares**: liveness is
+written into the lines once and read later by `deadAfter` and by direct reads of `liveOut` and
+`liveIn`, and a pass that edits the text in between reads an answer about a text that no longer
+exists. A removal of a definition, a predicated write, a retargeted branch - each makes a register
+live where the cached sets say dead. The 10-07 mend was a `stale` flag that numberValues set by
+hand; rule 3 says that is a defect with a delay on it, so the flag is gone and the cache guards itself.
+
+**The guard** (C6xSched.cpp, C6xModel.h). `Line` counts its own edits: a copy or an assignment of one
+bumps `textEdits`, and that is how a vector of them is edited - `v[j] = r`, an erase's shifts,
+`l = parse("")`. `computeLiveness` stamps the vector's buffer, length and that count; `deadAfter`,
+`liveOutAt` and `liveInAt` recompute when the stamp does not match. The in-place blanking that
+`instr = false` used to do is an assignment of `parse("")` now, so nothing edits the text unseen.
+
+**A pass whose edits only shrink liveness may say so** - `LivenessHeld held(v, "name")`, the reason
+beside it - and then reads liveness as computed on entry, which a recompute after each of its
+edits would only make more precise. `CPP11_C6XLIVECHECK=1` holds every such vow: a "dead" from held
+liveness that the current text answers "live" to stops the compiler and names the pass. It bites:
+numberValues held, the 10-07 case stops at -O1, -O2 and -Os with "A16 is live", the register of the
+original fault.
+
+| pass | edits, then reads liveness? | verdict |
+| --- | --- | --- |
+| foldCalls, foldMvk, dropUnnamedLabels, rotateLoops, tidyJumps | no liveness read | safe |
+| threadPredicates, predicateArms | edit (grow liveness: a branch retargeted, a predicated write), read nothing | the next reader recomputes - rounds did, the guard does |
+| reuseEntryLoads | removes a load (a definition); reads nothing | hoistInvariants recomputes at entry |
+| foldFrame, foldPushPop | read after their own erasures; foldPushPop also after foldFrame's | held: defs of dead registers removed, a pair used within one block |
+| forwardMoves, forwardPairMoves, forwardConstants, flipPredicates, removeDead | read after their own edits; recomputed between them by rounds | held: every removed def was dead, every moved read stays in its block |
+| numberValues | removes remakes, then asks for a free register | **the 10-07 fault**; now the guard, the flag deleted |
+| hoistInvariants, inductionPointers, widenFills | later loops read liveness while earlier loops' preheaders were pending outside the text | applied loop by loop (`applyLoop`) and read through the guard; within a loop, a snapshot taken on entry, named so |
+| hoistConstantPairs | the same, per region | applied region by region; an outer region holding a rewritten one is refused, as the blank lines refused it before |
+| foldAddressing, foldScaledIndex | read after their own folds, across unnamed labels | held: the folded register is dead, I and R unwritten to the access |
+| pipelineLoops and C6xPipe's helpers | computed at entry, read before any edit, the text replaced at the end | safe, read-only; not touched (another branch owns the file) |
+| schedule, foldBranchNops | no liveness read | safe |
+
+**No other pass was wrong.** Each stale read was shown to answer what fresh liveness answers, and
+measured: with the guard, every case at -O1, -O2 and -Os and the Compiler++ harness at all three
+emit byte-identical code, the emit golden at -O0 and at --o2 0 changed; the check mode, on, finds no
+broken vow over the 392 tms6747 cases at three levels or the harness. So there is no new case - the
+one that would fail is `ternary-index-after-remake.cpp`, and it does, on a compiler with the guard
+held off in numberValues.
+
+**Measured on the Windows box, at the merge with 64b8958**: tms6747.sh 379 / 0 at -O0, -O1, -O2 and -Os,
+both legs; emit golden 0 of 1558 changed at -O0 and 0 of 391 at --o2, against 64b8958's own; every
+compiled case byte-identical at -O1, -O2 and -Os. Compile time of the Compiler++ harness
+(`tools/c6747/o2run/harness/harness.cpp`, 191,946 lines of assembly at -O2), least of seven interleaved
+runs: -O1 3,875 -> 3,896 ms, -O2 5,299 -> 5,335 ms, -Os 4,148 -> 4,276 ms - under 1% at -O1 and -O2,
+the recomputes being numberValues' few and one per rewritten loop.
+
 ## A loop that leaves on a byte it reads, eight turns at a time on the C6000, 2026-10-07
 
 **`while (*p) p++`, strchr, strcmp and a string hash were sequential at -O2**: the pipeliner takes only

@@ -1260,7 +1260,7 @@ bool recogniseWindow(const std::vector<Line> &v, std::size_t back, const std::se
     int names = 0;
     for (std::size_t i = 0; i < v.size(); i++) if (v[i].instr) for (std::size_t o = 0; o < v[i].ops.size(); o++) if (v[i].ops[o] == W.label) names++;
     if (names != 1) { why = "the head is entered from elsewhere"; return false; }
-    W.liveHead = v[W.head].liveIn;
+    W.liveHead = liveInAt(v, W.head);
     for (std::size_t i = W.head + 1; i < back; i++) {
         const Line &l = v[i];
         if (isLabel(l)) { if (!passThrough(l, named)) { why = "a label inside"; return false; } continue; }
@@ -1269,7 +1269,7 @@ bool recogniseWindow(const std::vector<Line> &v, std::size_t back, const std::se
             if (l.mnem != "B" || l.pred.empty() || l.ops.empty() || !at.count(l.ops[0]) || l.ops[0] == W.label) { why = "a branch inside that is not a way out"; return false; }
             Window::Exit e; e.target = l.ops[0]; e.pred = l.pred;
             if (!W.backPred.empty() && back + 1 < v.size() && isLabel(v[back + 1]) && labelName(v[back + 1]) == e.target) e.target = "";
-            e.live = v[at[l.ops[0]]].liveIn;
+            e.live = liveInAt(v, at[l.ops[0]]);
             W.cls.push_back(static_cast<int>(W.exits.size()));
             W.exits.push_back(e);
             W.liveOut |= e.live;
@@ -1288,7 +1288,7 @@ bool recogniseWindow(const std::vector<Line> &v, std::size_t back, const std::se
     }
     if (!W.backPred.empty()) {
         Window::Exit e; e.pred = W.backPred[0] == '!' ? W.P : "!" + W.P;
-        e.live = back + 1 < v.size() ? v[back + 1].liveIn : ~0ull;
+        e.live = back + 1 < v.size() ? liveInAt(v, back + 1) : ~0ull;
         W.exits.push_back(e);
         W.liveOut |= e.live;
     }
