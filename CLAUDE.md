@@ -12559,3 +12559,21 @@ compiled case byte-identical at -O1, -O2 and -Os. Compile time of the Compiler++
 (`tools/c6747/o2run/harness/harness.cpp`, 191,946 lines of assembly at -O2), least of seven interleaved
 runs: -O1 3,875 -> 3,896 ms, -O2 5,299 -> 5,335 ms, -Os 4,148 -> 4,276 ms - under 1% at -O1 and -O2,
 the recomputes being numberValues' few and one per rewritten loop.
+
+## `char *` minus `const char *`, 2026-10-07
+
+**[expr.add]/6 subtracts two pointers to cv-qualified or cv-unqualified versions of one
+object type, and cpp11 compared the pointees whole**, so `p - q` with `char *p` and `const
+char *q` was "needs the same pointee type" - the ordinary shape of a parser measuring how far
+it has read through a `const char *` buffer from a mutable cursor. `pointerSub` compares the
+pointees' `unqualified()` now; the stride is the pointee's size, which const does not change.
+Two pointers to different types are still refused, with the same message, as clang refuses
+them. Only const is compared away because only const is in the type system - a pointer to a
+volatile type is refused at its declaration, the line "The volatile sweep" drew.
+
+**The comparisons never refused**: `<`, `<=`, `>`, `>=`, `==` and `!=` of `T *` and `const T
+*` already went through, which the case holds in both orders beside the differences.
+`comparison` does not ask for a composite pointer type at all, so `char *` beside `int *`
+compares where clang refuses it - an over-acceptance noted, not mended here.
+`pointer-difference-cv.cpp` (char, int and a struct, both orders, a `const char *const`) fails
+on the compiler before; `pointer-difference-types-refused.cpp` is `char *` minus `int *`.

@@ -32,8 +32,10 @@ ExprPtr Parser::pointerAdd(ExprPtr p, ExprPtr n) {
     return sum;
 }
 
+// [expr.add]/6: the pointees are cv-qualified or not versions of one type, so `char *` minus
+// `const char *` is a difference; the qualifiers are compared away, the types are not.
 ExprPtr Parser::pointerSub(ExprPtr l, ExprPtr r, std::size_t pos) {
-    if (l->type()->pointee() != r->type()->pointee())
+    if (l->type()->pointee()->unqualified() != r->type()->pointee()->unqualified())
         src_.fail(pos, "'" + l->type()->describe() + "' minus '" +
                        r->type()->describe() + "' needs the same pointee type");
     long long stride = l->type()->pointee()->size(target_);
