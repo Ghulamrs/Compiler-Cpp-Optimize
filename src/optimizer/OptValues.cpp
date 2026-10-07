@@ -302,8 +302,10 @@ private:
             for (const Operand *o : {&u.a, &u.b}) {
                 if (o->kind == Operand::Register && o->reg.id == d) {
                     named = true;
-                    const bool written = o == &u.b ? (rolesOf(u).b & kWrite) != 0 : (rolesOf(u).a & kWrite) != 0;
-                    if (written && o->reg.width >= 4) redefined = true;
+                    const unsigned role = o == &u.b ? rolesOf(u).b : rolesOf(u).a;
+                    // `imul $10, %ecx` writes the register and reads it first, at its own width.
+                    if ((role & kRead) && o->reg.width > ws) return false;
+                    if ((role & kWrite) && o->reg.width >= 4) redefined = true;
                     else if (o->reg.width > ws) return false;
                 } else if ((o->isMem() || o->kind == Operand::Indirect) && (o->reg.id == d || (o->indexed() && o->index.id == d))) {
                     return false;

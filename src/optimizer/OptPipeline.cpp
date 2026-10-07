@@ -50,10 +50,10 @@ struct ThreadJumps : Pass {
     bool execute(Function &fn) override { return threadJumps(fn); }
 };
 
-// Ten instructions for three, so a speed level's alone; the flow is rebuilt
-// before anything reads the entries this inserts.
+// Ten instructions for three, so a speed level's alone; the flow is rebuilt before anything reads the entries this inserts,
+// and before this reads any: thread-jumps runs just ahead of it and inserts labels and jumps without rebuilding.
 struct DivideByConstant : Pass {
-    DivideByConstant() : Pass(PassInfo{"divide-by-constant", kFlow, 0, 0, 0}) {}
+    DivideByConstant() : Pass(PassInfo{"divide-by-constant", kFlow, 0, 0, kTodoBuildFlow}) {}
     bool gate(const Function &fn) const override { return !fn.costs().forSize(); }
     bool execute(Function &fn) override { return divideByConstant(fn.stream, fn.flow); }
 };

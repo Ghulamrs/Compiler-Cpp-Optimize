@@ -88,6 +88,7 @@ if [ "$WHICH" = all ] || [ "$WHICH" = linux ]; then
             rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
             tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
             cd ~/cxx1-verify && ./build -j1 >/dev/null && make test &&
+            CXX1="./cpp11.exe -O2" sh tests/run.sh &&
             ASM6X=$HOME/asm6x-build/asm6x.exe sh tests/asm6x.sh' || rc=1
         echo "linux leg: $(( $(date +%s) - t ))s, $([ $rc -eq 0 ] && echo passed || echo FAILED)"
         exit $rc
@@ -226,6 +227,26 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
             fail=$((fail + 1))
         fi
     done
+    # **The cases again at -O2**: run.sh and the loop above build at -O0, and five wrong answers of the x86
+    # optimizer stood under a green verify-three for that reason (2026-10-07). Recorded output only.
+    ssh -o BatchMode=yes "$WINDOWS" "set CXX1_CASES_FLAGS=-O2&& $REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" >/dev/null || STATUS=1
+    OUT2=$(mktemp -d)
+    scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/verify/winout" "$OUT2"
+    p2=0; f2=0
+    for e in "$ROOT"/tests/cases/*.expected; do
+        n=$(basename "$e" .expected)
+        case "$n" in *" "[0-9]*) continue;; esac
+        nt="$ROOT/tests/cases/$n.notarget"
+        if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then continue; fi
+        if [ -f "$OUT2/winout/$n.out" ] && tr -d '\r' < "$OUT2/winout/$n.out" | diff -q - "$e" >/dev/null; then
+            p2=$((p2 + 1))
+        else
+            echo "  $n at -O2: did not run, or output differs"; f2=$((f2 + 1))
+        fi
+    done
+    echo "windows cases at -O2: $p2 passed, $f2 failed"
+    fail=$((fail + f2))
+    rm -rf "$OUT2"
     # The Windows half of tools/unwind-check: something cxx1 threw, caught by
     # cl. A run rather than a diff, for the same reason.
     if ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\throw-check.cmd $REMOTE" \
