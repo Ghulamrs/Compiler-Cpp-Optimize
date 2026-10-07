@@ -36,7 +36,12 @@ int nullB() {
     catch (B *p) { printf("B* null %d\n", p == 0); return 1; }
     return 0;
 }
-int main() {
-    printf("%d %d %d %d %d\n", asB(), asA(), asD(), constB(), nullB());
+int main() {      // one call a statement: argument order is unspecified, cl and clang-cl go right to left
+    int b = asB();
+    int a = asA();
+    int d = asD();
+    int c = constB();
+    int n = nullB();
+    printf("%d %d %d %d %d\n", b, a, d, c, n);
     return 0;
 }
