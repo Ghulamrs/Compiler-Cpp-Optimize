@@ -240,6 +240,9 @@ public:
     void functionEnd(const std::string &name) override;
     void noteHasEh(bool yes) override { hasEh_ = yes; }
     void initialiserEntry(const std::string &fn, bool dsoHandle) override;
+    // CodeView's line entries in place of DWARF's - see CodeView.h.
+    void fileEntry(int n, const std::string &name) override;
+    void location(int file, int line, int column) override;
 
     std::string labelText(const std::string &l) const override { return sym(l); }
 
@@ -265,4 +268,10 @@ private:
     // The unwind codes, built in the prologue and written at the end.
     std::string unwindData_;
     int unwindCodes_ = 0;
+    // Whether a `.cv_file` was written (so -g), and how many functions have a `.cv_func_id`: the last is the one a `.cv_loc` names.
+    bool codeView_ = false;
+    int cvFunctions_ = 0;
+    // The last `.cv_loc` and where it was written, so one that no instruction follows can be replaced.
+    std::string lastLoc_;
+    std::size_t lastLocAt_ = 0;
 };

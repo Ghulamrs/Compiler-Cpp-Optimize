@@ -792,6 +792,8 @@ bool Driver::link() {
         // **An 8 MB stack, which is what the other two targets already give.**
         command += " /nologo /subsystem:console /stack:8388608 /out:"
                  + shellQuote(linkTo_);
+        // -g's CodeView goes into a PDB beside the program, which is where cdb looks.
+        if (debug_) command += " /debug";
         for (const std::string &o : objects) command += " " + shellQuote(o);
         for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
 

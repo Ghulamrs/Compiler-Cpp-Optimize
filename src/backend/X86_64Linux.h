@@ -176,7 +176,8 @@ private:
     const Abi &abi_;
     int depth_ = 0;
     std::string returnLabel_;
-    void emitLoc(int file, int line, int column) override { a_->location(file, line, column); }
+    // Not in a funclet: its code is in another section, which its function's CodeView line table cannot measure to.
+    void emitLoc(int file, int line, int column) override { if (!inFunclet_) a_->location(file, line, column); }
     void defineLabel(const std::string &l) override;
     void defineStateLabel(const std::string &l) override;
     void jump(const std::string &l) override;

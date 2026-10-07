@@ -223,6 +223,47 @@ void CoffSpelling::functionBegin(const std::string &name, bool exported,
     }
     if (exported) globl(name);
     defLabel(name);
+    if (codeView_) { o_ += "  .cv_func_id "; appendNum(o_, cvFunctions_++); o_ += '\n'; }
+}
+
+// The name arrives absolute and escaped (codeViewPath); the checksum is optional and left out.
+void CoffSpelling::fileEntry(int n, const std::string &name) {
+    codeView_ = true;
+    o_ += "  .cv_file ";
+    appendNum(o_, n);
+    o_ += " \"" + name + "\"\n";
+}
+
+// Whether text holds an instruction: a line indented, and not a directive.
+static bool holdsInstruction(const std::string &text) {
+    for (std::size_t at = 0; at < text.size();) {
+        if (text.compare(at, 2, "  ") == 0 && at + 2 < text.size() && text[at + 2] != '.') return true;
+        const std::size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) break;
+        at = nl + 1;
+    }
+    return false;
+}
+
+// **A line entry names its function**, which is the one functionBegin last numbered.
+// One with no instruction after it is replaced: at one address cdb takes the first, so
+// a breakpoint on `int y = ...` stopped and said it was on the function's opening line.
+void CoffSpelling::location(int file, int line, int column) {
+    if (cvFunctions_ == 0) return;
+    if (lastLocAt_ + lastLoc_.size() <= o_.size() && o_.compare(lastLocAt_, lastLoc_.size(), lastLoc_) == 0 &&
+        !holdsInstruction(o_.substr(lastLocAt_ + lastLoc_.size())))
+        o_.erase(lastLocAt_, lastLoc_.size());
+    lastLocAt_ = o_.size();
+    o_ += "  .cv_loc ";
+    appendNum(o_, cvFunctions_ - 1);
+    o_ += ' ';
+    appendNum(o_, file);
+    o_ += ' ';
+    appendNum(o_, line);
+    o_ += ' ';
+    appendNum(o_, column);
+    o_ += '\n';
+    lastLoc_ = o_.substr(lastLocAt_);
 }
 
 // For a global the code generator says this *before* the label, which is where
