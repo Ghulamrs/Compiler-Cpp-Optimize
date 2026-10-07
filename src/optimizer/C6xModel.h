@@ -14,7 +14,10 @@ namespace c6x {
 
 enum { UL = 1, US = 2, UD = 4, UM = 8 };   // the units, as a bitmask
 
-struct Line {
+// Every edit of the text - a line copied, or assigned over another - counted, for liveness to tell it is stale.
+extern thread_local std::uint64_t textEdits;
+
+struct LineFields {
     std::string raw;
     bool instr = false;
     bool verbatim = false;              // scheduled already: printed as it stands, never rescheduled
@@ -23,6 +26,15 @@ struct Line {
     std::vector<std::string> ops;
     std::uint64_t liveOut = ~0ull;      // the registers live at the end of this line's block
     std::uint64_t liveIn = ~0ull;       // and at its start
+};
+
+// A line of the text; an assignment over one, or a copy of one, is an edit, which is how a vector of them is edited.
+struct Line : LineFields {
+    Line() = default;
+    Line(Line &&) = default;
+    Line(const Line &o) : LineFields(o) { textEdits++; }
+    Line &operator=(const Line &o) { LineFields::operator=(o); textEdits++; return *this; }
+    Line &operator=(Line &&o) { LineFields::operator=(std::move(o)); textEdits++; return *this; }
 };
 
 // One instruction as the scheduler sees it: what it reads and writes, its
@@ -80,6 +92,15 @@ bool isBranch(const std::string &m);
 bool blockEnd(const Line &l);
 bool isCall(const Line &l, const std::set<std::string> &labels);
 void computeLiveness(std::vector<Line> &v);
+// The liveness of this text, recomputed first where an edit since makes it stale - unless a LivenessHeld is open.
+std::uint64_t liveOutAt(const std::vector<Line> &v, std::size_t i);
+std::uint64_t liveInAt(const std::vector<Line> &v, std::size_t i);
+// A pass that vouches its edits only shrink liveness reads it as computed; CPP11_C6XLIVECHECK=1 checks that it does.
+struct LivenessHeld {
+    LivenessHeld(const std::vector<Line> &v, const char *pass);
+    ~LivenessHeld();
+    const char *outer;
+};
 int accessSize(const std::string &m);
 std::string renamed(const std::string &op, const std::string &from, const std::string &to);
 int crossings(const Line &l);
