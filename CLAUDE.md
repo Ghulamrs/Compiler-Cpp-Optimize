@@ -12774,3 +12774,30 @@ and value with pointer values masked: tests/m10/w2.cpp at line 21 (inside the bl
 variables equal with an address each, at 23 10 / 10, frames equal, and `??` of the global, the
 file static, the static local and both functions' types equal. Cases -O0 379 / 0 and with
 `-g -masm=gnu` 379 / 0; emit golden at -O0 against 5b66242 0 of 1616 changed.
+
+## M10 W4: classes, enums, member functions and loops as cl shows them in cdb, 2026-10-08
+
+**A member function is named as cl names it.** S_GPROC32 carried `fn.name()`, so the stack said
+`perimeter` where cl's says `Square::perimeter`. `codeViewName` (CodeView.cpp) reads the scopes out
+of the Microsoft symbol - `?area@Shape@geo@@...` is `geo::Shape::area` - and where a scope is a
+template (`?$Box@H@`) takes the class `this` points at, whose tag is already `Box<int>`.
+
+**An enum knows its enumerators.** They lived only in the parser's `enums_`, so LF_ENUM had an
+empty list and cdb printed `0n5 (No matching enumerant)` where cl's printed `Green (0n5)`. The parser
+records each one on the enum's Type as well (`Type::addEnumerator`), and CodeViewTypes writes an
+LF_ENUMERATE apiece. Nothing else reads it, so no target's output moved.
+
+**One line entry per run of a line.** `for (int i = 0; i < 3; i++) s += row[i];` gave four
+`.cv_loc` for line 33, a column apiece, and cdb answered `bp` on it with "Ambiguous symbol error";
+cl writes one. A `.cv_loc` for the line the last one named, in the same function, is not written.
+
+**And a W2 fault: no empty symbol subsection.** A file with no global and no class wrote an empty
+DEBUG_S_SYMBOLS subsection before `.cv_filechecksums`; link.exe then lost the file table, every
+line in the PDB had "unknown file name", and no breakpoint bound. tests/m10/w1.cpp is that file.
+
+**Gated with `m10.py compare`**: tests/m10/w4.cpp - an array, a struct, a union, an enum, a typedef,
+a class with a base in a namespace and member functions, a reference parameter, a template, a char
+array - at line 48 9 / 9 variables and `??` of row, pt, bits, c, sq, box, name, n equal to cl's
+(classes expanded member by member, the base's too); in `Square::perimeter` 2 / 2 with `this`; in
+`total` (a reference and a reference to an array) 3 / 3; in `geo::Shape::area` 1 / 1; frames equal
+at all four. w1.cpp and w2.cpp still equal.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 enum class Kind {
@@ -215,6 +216,10 @@ public:
         templateName_ = std::move(name);
         templateArgs_ = std::move(args);
     }
+    // An enumeration's enumerators, unqualified and in order - for a debugger (CodeView's LF_ENUMERATE).
+    const std::vector<std::pair<std::string, long long> > &enumerators() const { return cls().enumerators_; }
+    void addEnumerator(const std::string &name, long long value) { enumerators_.push_back(std::make_pair(name, value)); }
+
     // **The namespace the template was declared in**, kept beside the bare name rather than folded
     // into it: `templateName_` is also the key `templates_` is looked up by, and that map is keyed
     // unqualified on purpose so `std::vector` finds `vector`.
@@ -461,6 +466,7 @@ private:
     std::vector<VbPtr> vbptrs_;
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;
+    std::vector<std::pair<std::string, long long> > enumerators_;
     int size_ = 0;
     int align_ = 1;
     bool complete_ = false;

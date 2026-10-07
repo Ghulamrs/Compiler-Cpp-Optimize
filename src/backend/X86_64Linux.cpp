@@ -1576,6 +1576,12 @@ void X86_64Linux::emit(const Function &fn) {
         d.returns = fn.returns();
         d.locals = &fn.locals();
         d.symbol = a_->labelText(fn.symbol());
+        if (target_.microsoftNames()) {
+            const Type *self = nullptr;
+            for (const Local &l : fn.locals())
+                if (l.isParam && l.name == "this" && l.type->isPointer()) self = l.type->pointee();
+            d.name = codeViewName(fn.symbol(), fn.name(), self);
+        }
         // CoffSpelling's own labels round the code - see its prologue and functionEnd.
         d.prologEnd = "\"$LNprolog$" + fn.symbol() + "\"";
         d.codeEnd = "\"$LNend$" + fn.symbol() + "\"";
