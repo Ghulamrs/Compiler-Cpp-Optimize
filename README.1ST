@@ -197,7 +197,7 @@ two header directories of section 2.
 This is **version 1.4**, sealed **18-09-2026**.
 
     cxx1.exe -version            says both, and names the seal file
-    cxx1-1.5.dat                 the seal: a CRC32 and a size per file
+    cxx1-1.6.dat                 the seal: a CRC32 and a size per file
     tools/seal check             verifies every line of it
 
 The seal covers what the compiler *is*: every file under `src/`, `include/`,
