@@ -25,6 +25,10 @@ int main() {
     P *mp = ps + 3;
     printf("%d %d %d\n", (int)(mp - cp), (int)(cp - mp), cp != mp);
 
+    const char *f = buf + 6;
+    int a2 = 2;
+    printf("%d %d\n", (int)(f - (buf + a2)), (int)((buf + a2) - f));
+
     const char *const cc = buf + 7;
     printf("%d %d\n", (int)(cc - p), (int)(p - cc));
     return 0;
