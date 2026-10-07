@@ -12672,3 +12672,33 @@ against 599 / 1, -O1 598 / 3 against 597 / 3, -O2 596 / 5 against 595 / 5 - the 
 `compare-with-zero`, every failure the same on both (`throw-pointer-base-adjust` at all three;
 `pipelined-data-exit` and `sizeof-qualified-member` from -O1; `assign-wide-through-call` and
 `divide-by-constant-signs` at -O2). tms6747.sh at -O2, both legs: 386 / 0 against 385 / 0.
+
+## Two wrong answers of the x86 optimizer, and the -O2 runs that now block a merge, 2026-10-07
+
+**Five cases printed wrong at -O1 or -O2 on both x86 targets under a green verify-three**, because
+run.sh and the Windows runner built every case at -O0. Two faults, both in `src/optimizer/`.
+
+**An extension read by a read-modify-write was taken for unread.** `extensionUnread`
+(OptValues.cpp) turns `movzbl %cl, %ecx` into nothing when every later use of the register reads
+only its low byte or redefines it - and it counted `imul $10, %ecx` and `add %esi, %eax` as
+redefinitions because they *write* the register, though both read all four bytes first. So the
+zero extension after a `setl` went, and `int y = b < 0; ... y * 10` multiplied the bits another
+value had left above the byte: `2 -2705 101 -155` where clang prints `2 111 101 101`. An operand
+whose role reads it is a read at its own width now, written or not. That one fault was
+`assign-wide-through-call` -O1, `pipelined-data-exit`, `sizeof-qualified-member` and
+`throw-pointer-base-adjust` (its Windows misordering was this, not evaluation order).
+`setcc-as-number.cpp` is the case, the shape `compare-with-zero.cpp` had to give up.
+
+**divide-by-constant read a flow thread-jumps had left stale.** thread-jumps inserts labels and
+jumps and does not rebuild the flow, and at -O2 divide-by-constant runs straight after it in the
+same round - so it read liveness by index into a stream that had moved. In `m[i / 8][i % 8]`,
+forward-values keeps one `mov $8, %edi` for both divides; the stale liveness said %edi was dead
+after the first, its rewrite took %edi as scratch, and the second `idiv %edi` divided by a
+product (SIGFPE in `assign-wide-through-call`, a wrong sweep in `divide-by-constant-signs`).
+divide-by-constant rebuilds the flow before it runs (`kTodoBuildFlow`). The rule: a pass that
+inserts entries rebuilds before the next pass reads the flow, or that pass asks for the rebuild.
+`divide-after-rotated-loop.cpp` is the case.
+
+**And the gate that would have caught them.** `tools/verify-three`'s Linux leg runs run.sh again
+at -O2 after `make test`, and its Windows leg runs the cases with recorded output again with
+`CXX1_CASES_FLAGS=-O2` and counts them into the leg's verdict.
