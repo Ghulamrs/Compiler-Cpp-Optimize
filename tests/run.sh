@@ -83,11 +83,18 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # All the cases at once, JOBS of them (the machine's processors by default), then the reports in case order.
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 for src in tests/cases/*.cpp; do basename "$src" .cpp; done | xargs -P "$JOBS" -n 1 sh "$0" --one
-pass=0; fail=0
+# **A pass is one of two different things**, counted apart: a case with a recorded
+# output printed it, or a case with a recorded refusal was refused with that message.
+# The second says the compiler said no where it should; it proves nothing about what
+# compiles, and a total that mixed the two read as more than it was (review of 2026-10-08).
+pass=0; fail=0; ran=0; refused=0
 for src in tests/cases/*.cpp; do
     base=$(basename "$src" .cpp)
     cat "$OUT/$base.report"
-    case "$(cat "$OUT/$base.verdict" 2>/dev/null)" in pass) pass=$((pass + 1)) ;; fail) fail=$((fail + 1)) ;; esac
+    case "$(cat "$OUT/$base.verdict" 2>/dev/null)" in
+      pass) pass=$((pass + 1)); if [ -f "tests/cases/$base.error" ]; then refused=$((refused + 1)); else ran=$((ran + 1)); fi ;;
+      fail) fail=$((fail + 1)) ;;
+    esac
 done
 
 # A quoted pattern is several inputs: -S writes a .s beside each, never all of them to stdout.
@@ -100,5 +107,5 @@ else
     echo "FAIL a quoted pattern with -S: wanted a.s and b.s and nothing on stdout"; fail=$((fail + 1))
 fi
 
-echo "run.sh: $pass passed, $fail failed"
+echo "run.sh: $pass passed, $fail failed ($ran printed their recorded output, $refused were refused as recorded)"
 [ "$fail" -eq 0 ]

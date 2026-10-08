@@ -138,17 +138,24 @@ $(OBJDIR)/%.o: src/%.cpp
 # somewhere other than here; unset, each falls back to ./cpp11.exe.
 # ide/'s Visual Studio and Xcode projects list their sources by name, where this Makefile globs:
 # a source missing there built here and failed RIDE's Windows link (C6xPipe.cpp, 2026-09-30).
+#
+# Two gates about the tree rather than the compiler run last and fail the
+# target: every refusal the source raises is cited in docs/EXCLUSIONS.md (the
+# document drifted to 116 uncited while this only reported a count - review of
+# 2026-10-08), and no comment group in src/ runs past the three-line cap.
 test: $(TARGET)
 	@python3 ide/generate.py --check >/dev/null || { echo "make test: ide/ projects are stale - run python3 ide/generate.py"; exit 1; }
 	@CXX1=$(TARGET) ./tests/run.sh
 	@CXX1=$(TARGET) ./tests/emit.sh
 	@CXX1=$(TARGET) ./tests/names.sh
 	@CXX1=$(TARGET) ./tests/overload.sh
-	-@./tools/comment-lines --count
+	@./tools/exclusions --check docs/EXCLUSIONS.md || { echo "make test: docs/EXCLUSIONS.md does not match the source - see the lines above"; exit 1; }
+	@./tools/comment-lines --count
+	@./tools/comment-lines >/dev/null || { echo "make test: comment groups over the cap - run make comments"; exit 1; }
 
 # The comment-line policy, on its own, because it is about the source and not
-# about the compiler: three lines to a group, one over a one-liner. `make test`
-# reports the count and does not fail on it (the leading -); this target gates.
+# about the compiler: three lines to a group, one over a one-liner. Both this
+# target and `make test` gate on it.
 comments:
 	@./tools/comment-lines
 

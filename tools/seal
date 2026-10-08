@@ -49,7 +49,16 @@ VERSION = fromVersionHeader("CXX1_VERSION", "1.1")
 SEAL_DATE = fromVersionHeader("CXX1_SEAL_DATE", "10-09-2026")
 NAME = fromVersionHeader("CXX1_SEAL_FILE", "cxx1-%s.dat" % VERSION)
 BANNER = fromVersionHeader("CXX1_BANNER",
-                           "c2026 G. R. Akhtar - ISO C++ 11,  Compiler")
+                           "c2026 G. R. Akhtar - C++03 with C++11 extensions")
+
+
+def versionLines(check):
+    """**The READMEs' version lines come from the same header**, through
+    tools/version-lines: `write` regenerates them before sealing, `check` fails
+    on a stale one - README.1ST said 1.4 beside a 1.6 seal for three releases."""
+    import subprocess
+    cmd = [sys.executable, os.path.join(HERE, "version-lines")] + (["--check"] if check else [])
+    return subprocess.call(cmd)
 
 # The directories a release is made of, each walked in full - source code only (2026-10-05): the
 # Makefile, msvc/build.cmd and ide/generate.py decide how it is built, not what it is, and are not sealed.
@@ -88,6 +97,8 @@ def crc(path):
 
 
 def write():
+    if versionLines(check=False) != 0:
+        return 1
     rows = [(f,) + crc(f) for f in files()]
     total = binascii.crc32(
         ("".join("%s %08X" % (f, c) for f, c, _ in rows)).encode()) & 0xFFFFFFFF
@@ -131,7 +142,8 @@ def check():
         if (c, n) != sealed[f]:
             print("  changed %s  %08X -> %08X" % (f, sealed[f][0], c)); bad += 1
     print("seal %s: %d files, %d differ" % (VERSION, len(sealed), bad))
-    return 1 if bad else 0
+    stale = versionLines(check=True)
+    return 1 if (bad or stale) else 0
 
 
 if __name__ == "__main__":
