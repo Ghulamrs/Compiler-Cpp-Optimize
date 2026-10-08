@@ -122,13 +122,13 @@ of the vftable on Microsoft — and `dynamic_cast` to a pointer works on each.
 reads none of that: Itanium takes offset-to-top from in front of the vtable
 inline, Microsoft calls `__RTCastToVoid`. What is left of it:
 
-- **`dynamic_cast` to a reference** — it has no null to answer with, so a
-  failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:644`
-- **`dynamic_cast` naming a class with more than one base** — that wants
-  `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
-  Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:704`
+- **`dynamic_cast` to a reference on x86_64-windows** — a failure throws
+  `std::bad_cast`, a class this target neither throws nor catches yet; the
+  Itanium targets call `__cxa_bad_cast`. And **to an rvalue reference** on
+  every target. `src/parser/ParserExprNew.cpp`
+- **`dynamic_cast` through a class with more than one base, on
+  x86_64-windows** — the Microsoft hierarchy is written one base deep; the
+  Itanium targets walk `__vmi_class_type_info`. `src/parser/ParserExprNew.cpp`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -443,10 +443,9 @@ declaration order. What is left is the shapes where one object is many:
 - **naming a capture after a default one** — `[=]` and `[&]` on their own take
   everything the body reads, `this` included where the body names a member.
   `src/parser/ParserExprLambda.cpp:198`
-- **a capture-less lambda converting to a function pointer** —
-  [expr.prim.lambda]/6 gives the closure a conversion function returning one
-  that calls the body, and that function is not synthesised.
-  `src/parser/ParserOverload.cpp:1060`
+- **a lambda that captures converting to a function pointer** -
+  [expr.prim.lambda]/6 gives the conversion to a captureless one only, which
+  works. `src/parser/ParserOverload.cpp:1146`
 
 ## Lexer and preprocessor
 

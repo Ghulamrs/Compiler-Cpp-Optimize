@@ -1,0 +1,6 @@
+down 1 2
+const 3
+up 1
+failed -1 caught 1
+as std::exception
+matched 9 caught 1

@@ -82,4 +82,19 @@ namespace std { typedef ::type_info type_info; }
 }
 #endif
 
+// What a failed `dynamic_cast` to a reference throws, [expr.dynamic.cast]/9. On the
+// Itanium targets the class is the runtime's own - its destructor and what() are
+// declared here and defined there, as <new> declares bad_alloc.
+#if !defined(_WIN32) && !defined(__TMS320C6X__)
+#include <exception>
+namespace std {
+class bad_cast : public exception {
+public:
+    bad_cast() {}
+    virtual ~bad_cast();
+    virtual const char *what() const;
+};
+}
+#endif
+
 #endif

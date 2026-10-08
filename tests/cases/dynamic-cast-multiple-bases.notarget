@@ -1,0 +1,1 @@
+x86_64-windows  a class with two polymorphic bases is refused on this target for its layout (a polymorphic base after the first), older than this case; and dynamic_cast through any class with more than one base is refused by name here, the Microsoft RTTI hierarchy being written one base deep

@@ -866,12 +866,58 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
     ExprPtr v = expr();
     expect(")");
 
-    if (to->isReference())
-        src_.fail(pos, "'dynamic_cast' to a reference is not supported yet - it "
-                       "has no null to return, so a failure throws "
-                       "'std::bad_cast', and there is no C++ standard library "
-                       "here to throw it from; the pointer form works and "
-                       "answers with a null");
+    if (to->isReference()) return dynamicCastReference(std::move(v), to, pos);
+    return dynamicCastFrom(std::move(v), to, pos);
+}
+
+// [expr.dynamic.cast]/9: the pointer form on the operand's address, a null answer
+// being `__cxa_bad_cast()` - the ABI's routine that throws std::bad_cast, as clang calls.
+ExprPtr Parser::dynamicCastReference(ExprPtr v, const Type *to, std::size_t pos) {
+    if (to->isRValueReference())
+        src_.fail(pos, "'dynamic_cast' to an rvalue reference is not supported yet - the "
+                       "lvalue reference form works");
+    if (target_.microsoftNames())
+        src_.fail(pos, "'dynamic_cast' to a reference is not supported yet on x86_64-windows - "
+                       "a failed one throws 'std::bad_cast', a class this target does not throw "
+                       "or catch yet; the pointer form works and answers with a null");
+    const Type *referent = to->referent();
+    if (!isGlvalue(*v) || !v->type()->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'dynamic_cast<" + to->describe() + ">' needs an object of a class to "
+                       "ask about, and this is '" + v->type()->describe() + "'");
+    const Type *ptr = types_.pointerTo(referent);
+    const Type *object = v->type();
+    ExprPtr addr(new Unary('&', std::move(v)));
+    addr->setType(types_.pointerTo(object));
+    ExprPtr answer = dynamicCastFrom(std::move(addr), ptr, pos);
+    const int slot = allocateFrameSlot(ptr);
+    const std::string temp = ".dynref" + std::to_string(newTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(ptr);
+    ExprPtr save(new Assign(std::move(held), std::move(answer)));
+    save->setType(ptr);
+    ExprPtr test(Var::local(temp, slot));
+    test->setType(ptr);
+    ExprPtr one(new Num(1LL));
+    one->setType(types_.intType());
+    ExprPtr fail = runtimeCall("__cxa_bad_cast", types_.get(Kind::Void), std::vector<ExprPtr>());
+    ExprPtr alsoOne(new Num(1LL));
+    alsoOne->setType(types_.intType());
+    ExprPtr failed(new Comma(std::move(fail), std::move(alsoOne)));
+    failed->setType(types_.intType());
+    ExprPtr check(new Conditional(std::move(test), std::move(one), std::move(failed)));
+    check->setType(types_.intType());
+    ExprPtr first(new Comma(std::move(save), std::move(check)));
+    first->setType(types_.intType());
+    ExprPtr again(Var::local(temp, slot));
+    again->setType(ptr);
+    ExprPtr both(new Comma(std::move(first), std::move(again)));
+    both->setType(ptr);
+    ExprPtr obj(new Unary('*', std::move(both)));
+    obj->setType(referent);
+    return obj;
+}
+
+ExprPtr Parser::dynamicCastFrom(ExprPtr v, const Type *to, std::size_t pos) {
     // **[expr.dynamic.cast]/7: `void *` is the other target, and it asks a different question.**
     const bool toVoid = to->isPointer() && to->pointee()->unqualified()->isVoid();
 
@@ -926,13 +972,12 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
         } else {
             sym = emitClassTypeInfo(cls, cls->tag(), pos);
         }
+        // Itanium writes __vmi_class_type_info for any class; Microsoft's hierarchy is one base deep here.
         if (sym.empty())
-            src_.fail(pos, "'" + cls->describe() + "' has more than one base, "
-                           "and describing that to the run time needs a shape "
-                           "carrying every base's offset and flags - "
-                           "__vmi_class_type_info on Itanium, a multiple-"
-                           "inheritance hierarchy on Microsoft - which is not "
-                           "supported yet. A single base works");
+            src_.fail(pos, "'dynamic_cast' with '" + cls->describe() + "', which has more than "
+                           "one base, is not supported yet on x86_64-windows - its RTTI hierarchy "
+                           "would carry every base's displacement and the multiple-inheritance "
+                           "flag; a single base works there, and every shape on the other targets");
         return sym;
     };
 
