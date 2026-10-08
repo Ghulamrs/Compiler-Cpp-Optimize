@@ -949,6 +949,12 @@ void Parser::topLevel(Program &program) {
     // declaration-order walk below reads all three from outside that block.
     std::map<std::string, std::size_t> valueInit;
     const bool isCtor = memberOf != nullptr && d.name == localOf(d.qualifier);
+    // [class.base.init]/6: `: S(args)` names the class itself - the target constructor
+    // does everything a list would, so the entry is the list's only one.
+    bool delegates = false;
+    std::vector<ExprPtr> delegateArgs;
+    std::size_t delegatePos = 0;
+    std::size_t entries = 0;
     if (memberOf != nullptr && peek().is(":")) {
         if (!isCtor)
             src_.fail(peek().pos, "an initialiser list belongs to a "
@@ -989,6 +995,18 @@ void Parser::topLevel(Program &program) {
             const int frameBeforeArgs = frameSize_;
             std::vector<ExprPtr> args;
             parseArguments(args);
+            entries++;
+            {
+                const Type *named = templateBase != nullptr ? templateBase : findTypedef(entry);
+                if (entry == d.qualifier || entry == localOf(d.qualifier) ||
+                    (named != nullptr && named->unqualified() == memberOf->unqualified())) {
+                    delegates = true;
+                    delegateArgs = std::move(args);
+                    delegatePos = epos;
+                    if (!consume(",")) break;
+                    continue;
+                }
+            }
 
             // **The name written is not always the base's tag.** A class in a
             // namespace has a qualified tag - `n::Base` - and the list names
@@ -1075,10 +1093,6 @@ void Parser::topLevel(Program &program) {
                 memberExprs[entry] = std::move(args);
                 namedInInit.insert(entry);
                 where[entry] = epos;
-            } else if (entry == d.qualifier) {
-                src_.fail(epos, "a delegating constructor is not supported "
-                                "yet - it is C++11's own addition and comes "
-                                "later");
             } else {
                 src_.fail(epos, "'" + entry + "' is neither a member of '" +
                                 d.qualifier + "' nor a direct base of it");
@@ -1088,10 +1102,14 @@ void Parser::topLevel(Program &program) {
 
     }
 
+    StmtPtr delegateCall;
+    if (delegates) delegateCall = delegatingCall(d, memberOf, std::move(delegateArgs),
+                                                 delegatePos, entries);
+
     // **Every member, in declaration order, by the first of three rules that applies to
     // it** - [class.base.init]/8, /9 and /11: named in the list, its own initialiser, or
     // a class with constructors default-constructed. A union's members are not built.
-    if (memberOf != nullptr && isCtor) {
+    if (memberOf != nullptr && isCtor && !delegates) {
         const std::vector<Member> &all = memberOf->members();
         for (std::size_t i = 0; i < all.size(); i++) {
             const Member *m = &all[i];
@@ -1315,8 +1333,15 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withInits)));
     }
 
+    if (delegateCall != nullptr) {
+        std::vector<StmtPtr> withTarget;
+        withTarget.push_back(std::move(delegateCall));
+        withTarget.push_back(std::move(body));
+        body = StmtPtr(new Block(std::move(withTarget)));
+    }
+
     // **And in front of all of it, on Microsoft, the most-derived guard.**
-    if (memberOf != nullptr && memberOf->hasVptr() &&
+    if (memberOf != nullptr && memberOf->hasVptr() && !delegates &&
         (d.name == localOf(d.qualifier) ||
          d.name == "~" + localOf(d.qualifier))) {
         std::vector<StmtPtr> withVptr = storeVptrs(d.qualifier, memberOf, thisOffset_);
@@ -1340,7 +1365,7 @@ void Parser::topLevel(Program &program) {
     // the order the standard fixes and clang emits. The base's C2 and D2 are what is
     // called, and on Windows there is one name for each, called directly.
     for (std::size_t bn = 0;
-         memberOf != nullptr && bn < memberOf->bases().size() &&
+         memberOf != nullptr && !delegates && bn < memberOf->bases().size() &&
          (d.name == localOf(d.qualifier) ||
           d.name == "~" + localOf(d.qualifier)); bn++) {
         const bool building = d.name == localOf(d.qualifier);
@@ -1805,3 +1830,33 @@ bool Parser::trailingArrowAhead() const {
     return false;
 }
 
+// The call a delegating constructor makes - [class.base.init]/6 - to the target chosen by
+// overload resolution, on `this`, before the body; its C1 on Itanium, as clang calls.
+StmtPtr Parser::delegatingCall(const Declared &d, const Type *cls, std::vector<ExprPtr> args,
+                               std::size_t pos, std::size_t entries) {
+    if (entries != 1)
+        src_.fail(pos, "a delegating constructor's initialiser list names '" +
+                       localOf(d.qualifier) + "' and nothing else - the constructor it "
+                       "delegates to builds the bases and members, [class.base.init]/6");
+    if (cls->hasVirtualBase())
+        src_.fail(pos, "a delegating constructor of a class with a virtual base is not "
+                       "supported yet - the target would have to be told whether this "
+                       "object is the most derived one");
+    const std::string key = constructorKey(cls->tag());
+    Signature chosen = resolveOverload(key, args, pos);
+    applyDefaults(chosen, args, pos);
+    const Type *self = types_.pointerTo(cls);
+    std::vector<ExprPtr> all;
+    ExprPtr me(Var::local("this", thisOffset_));
+    me->setType(self);
+    all.push_back(std::move(me));
+    std::vector<const Type *> params;
+    params.push_back(self);
+    for (std::size_t i = 0; i < chosen.params.size(); i++) {
+        all.push_back(std::move(args[i]));
+        params.push_back(chosen.params[i]);
+    }
+    return StmtPtr(new ExprStmt(completeCall(cls->tag(), chosen.symbol, nullptr,
+                                             types_.get(Kind::Void), params, false, pos,
+                                             std::move(all), false, 0)));
+}
