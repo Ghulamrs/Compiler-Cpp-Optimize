@@ -2154,6 +2154,10 @@ private:
     // `E::a`, `n::E::a`, `C::E::a` - an enumerator named through its enumeration, [dcl.enum]/11.
     ExprPtr enumeratorThroughEnum();
     bool atSwitchCondition() const;
+    // The classes befriended by each class, by tag - [class.friend]/2.
+    std::map<std::string, std::vector<std::string> > friendClasses_;
+    void befriendClass(const std::string &owner, bool keyed);
+    bool isFriendClassOf(const Type *cls) const;
     // ---- end WS-C1 ----
     // Set by exceptionSpecification() at each place a parameter list can be closed, read and cleared by whichever declare* call follows.
     bool pendingNoexcept_ = false;

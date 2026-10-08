@@ -688,11 +688,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (tag.empty())
                 src_.fail(fpos, "an anonymous class has no name to grant "
                                 "friendship with");
-            if (peek().is("class") || peek().is("struct") || peek().is("union"))
-                src_.fail(fpos, "'friend class' is not supported yet - it "
-                                "grants every member function of another class "
-                                "access at once, where this grants one named "
-                                "function");
+            const bool keyed = peek().is("class") || peek().is("struct") || peek().is("union");
+            if (keyed || (peek().kind == TokenKind::Ident && peekAt(1).is(";") &&
+                          findTypedef(peek().text) != nullptr &&
+                          findTypedef(peek().text)->unqualified()->isStructOrUnion())) {
+                befriendClass(tag, keyed);
+                continue;
+            }
             StorageClass fsc;
             Qualifiers fquals;
             const Type *fbase = specifiers(&fsc, &fquals);

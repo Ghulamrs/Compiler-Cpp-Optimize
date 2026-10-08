@@ -91,6 +91,33 @@ void Parser::refuseConstexprClassObject() {
                           "'const' builds the same object at run time");
 }
 
+// `friend class X;`, or `friend X;` for a class already declared - [class.friend]/2: every member
+// of X reaches what `owner` keeps private. An X not yet declared is declared by it in the namespace
+// around `owner`, [namespace.memdef]/3.
+void Parser::befriendClass(const std::string &owner, bool keyed) {
+    if (keyed) at_++;
+    const std::string name = expectIdent("the class to befriend");
+    std::string key = name;
+    if (const Type *t = findTypedef(name)) key = t->unqualified()->tag();
+    else if (!namespaceStack_.empty()) key = namespacePrefix() + name;
+    friendClasses_[owner].push_back(key);
+    expect(";");
+}
+
+// Is the code being read inside a member of a class `cls` befriended - or of a class nested in one?
+bool Parser::isFriendClassOf(const Type *cls) const {
+    if (cls == nullptr) return false;
+    std::map<std::string, std::vector<std::string> >::const_iterator it =
+        friendClasses_.find(cls->unqualified()->tag());
+    if (it == friendClasses_.end()) return false;
+    const Type *here[3] = { currentClass_, classStack_.empty() ? nullptr : classStack_.back(), lambdaScope() };
+    for (const Type *h : here)
+        for (const Type *c = h; c != nullptr; c = c->enclosing())
+            for (std::size_t i = 0; i < it->second.size(); i++)
+                if (c->unqualified()->tag() == it->second[i]) return true;
+    return false;
+}
+
 // The implicit member a `= default` stands for was declared public; it takes the access it was written under.
 void Parser::applyDefaultedAccess(const std::string &tag, const Type *type) {
     std::map<std::string, Defaulted>::const_iterator it = defaulted_.find(tag);

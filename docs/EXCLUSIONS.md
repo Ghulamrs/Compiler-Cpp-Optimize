@@ -222,8 +222,6 @@ SFINAE and variadic packs. What is left:
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1231`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:3342`
-- **`friend class X;`** — one named function can be befriended.
-  `src/parser/ParserType.cpp:672`
 - **befriending one member function of another class** —
   `src/parser/ParserType.cpp:684`
 - **a const member named in a mem-initialiser list** —
