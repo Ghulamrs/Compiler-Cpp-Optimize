@@ -688,6 +688,8 @@ void MasmCodeGen::funcletLeave(const std::string &label) {
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
+    // Written here as raw text, so said to be defined: an early exit's `jmp $LNleave$` made it an EXTERN otherwise.
+    masm_.predefine({ sym, "$LNbeg$" + sym, "$LNpush$" + sym, "$LNprolog$" + sym, "$LNleave$" + sym, "$LNend$" + sym });
     // The text around the body: the head, then the body as written out, then the tail with the unwind data.
     std::string head, f;
     // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
