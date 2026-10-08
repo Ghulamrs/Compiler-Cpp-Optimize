@@ -124,6 +124,18 @@ StmtPtr Parser::declarationBody() {
                                  "and has no initialiser - there would be "
                                  "nothing to test");
         }
+        // `auto f(int) -> int;` in a block declares a function, its return type after the list.
+        if (mentionsDeduced(d.type) && trailingArrowAhead()) {
+            refuseTrailingBase(d.type, d.pos);
+            std::vector<const Type *> params;
+            bool variadic = false;
+            const std::size_t open = at_;
+            parameterTypes(params, variadic);
+            pendingNoexcept_ = exceptionSpecification();
+            const Type *returns = readTrailingReturn(open);
+            declareFunction(d.name, returns, params, variadic, false, d.pos);
+            continue;
+        }
         if (mentionsDeduced(d.type)) {
             d.type = deduceAuto(d.type, d.name, d.pos);
             checkOneDeducedType(deducedSoFar, lastDeducedAuto_, d.name, d.pos);

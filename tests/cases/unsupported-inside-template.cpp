@@ -7,11 +7,13 @@
 //
 // [temp.deduct]/8 is about types and expressions that are ill-formed, not
 // about what the compiler has implemented, so the two sites re-raise when the
-// failure was a refusal. This template deduces perfectly well and cannot be
-// given a linker name, and that is what the reader is now told.
+// failure was a refusal. This template deduces perfectly well and its return
+// type cannot be spelt in an Itanium name, and that is what the reader is told.
+// (It was `-> A` until trailing return types landed; `-> decltype(a)` is the
+// form still refused.)
 //
 // template-sfinae.cpp is the other half: a real substitution failure still
 // drops its candidate and the program still runs.
-template <class A> auto f(A a) -> A { return a; }
+template <class A> auto f(A a) -> decltype(a) { return a; }
 
 int main() { return f(0); }

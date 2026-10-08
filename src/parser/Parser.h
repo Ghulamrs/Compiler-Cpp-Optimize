@@ -1820,6 +1820,13 @@ private:
     // readers that meet the alias without a `::` after it; every other use is rewritten.
     std::map<std::string, std::string> namespaceAliases_;
     void namespaceAlias(const std::string &name, std::size_t pos);
+    // WS-D: `auto f(params) -> T`, the return type read after the parameters.
+    void refuseTrailingBase(const Type *declared, std::size_t pos);
+    const Type *readTrailingReturn(std::size_t paramsOpen);
+    std::size_t skipFunctionQualifiers(std::size_t i) const;
+    bool autoBeforeQualifiedName() const;
+    void refuseTemplateTrailingDecltype();
+    bool trailingArrowAhead() const;
     std::string resolveNamespaceName(const std::string &written) const;
     // **An unnamed namespace is a named one that nothing outside can name.**
     bool inUnnamedNamespace_ = false;

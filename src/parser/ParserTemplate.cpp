@@ -305,8 +305,16 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
         if (d.paramsAt != 0) at_ = d.paramsAt;
         std::vector<const Type *> params;
         bool variadic = false;
+        const std::size_t paramsOpen = at_;
+        const Type *written = d.type;
         parameterTypes(params, variadic);
         d.type = types_.functionType(d.type, std::move(params), variadic);
+        // `template <class T> auto f(T) -> T`: the pattern's return type is the trailing one.
+        if (mentionsDeduced(written) && tokens_[skipFunctionQualifiers(at_)].is("->")) {
+            at_ = skipFunctionQualifiers(at_);
+            refuseTemplateTrailingDecltype();
+            d.type = types_.functionType(readTrailingReturn(paramsOpen), d.type->params(), variadic);
+        }
     } else if (qualifier == nullptr) {
         src_.fail(d.pos, "'" + d.name + "' is a template and not a function, "
                          "and only function templates are supported yet");

@@ -1,0 +1,1 @@
+a trailing return type cannot itself be deduced - 'auto' there is C++14

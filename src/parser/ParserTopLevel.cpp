@@ -603,29 +603,12 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
-    // **A trailing return type is C++11, and it arrives here wearing the same `auto`.**
-    // `auto f(int) -> int` says what the return type is rather than asking for it to be
-    // deduced. The parameter list is still ahead, so the arrow is found past it.
-    bool trailingArrow = false;
-    if (peek().is("(")) {
-        int depth = 0;
-        for (std::size_t i = at_; i < tokens_.size(); i++) {
-            if (tokens_[i].is("(")) depth++;
-            else if (tokens_[i].is(")")) {
-                if (--depth == 0) {
-                    trailingArrow = i + 1 < tokens_.size() &&
-                                    tokens_[i + 1].is("->");
-                    break;
-                }
-            }
-        }
-    }
-    if (mentionsDeduced(d.type) && trailingArrow)
-        src_.fail(d.pos, "a trailing return type - `auto f(...) -> T` - is "
-                         "C++11 and is not supported yet; write the return "
-                         "type in front, which says the same thing wherever it "
-                         "does not name a parameter");
-    if (mentionsDeduced(d.type))
+    // `auto f(int a) -> decltype(a)`, C++11: the return type is read after the parameters,
+    // which are in scope for it by then, [dcl.fct]/2 and [basic.scope.param].
+    const bool trailingArrow = trailingArrowAhead();
+    const bool trailing = trailingArrow && mentionsDeduced(d.type);
+    if (trailing) refuseTrailingBase(d.type, d.pos);
+    if (mentionsDeduced(d.type) && !trailing)
         src_.fail(d.pos, "a function's return type cannot be deduced - `auto` "
                          "there is C++14, and this compiler is C++11");
 
@@ -799,6 +782,7 @@ void Parser::topLevel(Program &program) {
     pendingNoexcept_ = exceptionSpecification();
     // **Captured here because declareFunction consumes it.**
     const bool declaredNoexcept = pendingNoexcept_;
+    if (trailing) d.type = readTrailingReturn(0);
 
     if (consume(";")) {
         if (memberOf != nullptr)
@@ -1709,3 +1693,115 @@ void Parser::namespaceAlias(const std::string &name, std::size_t pos) {
         if (spelled && !tokens_[j].is("::")) tokens_[i].text = tail;
     }
 }
+
+// [dcl.fct]/2: a declarator with a trailing return type has plain `auto` in front of it;
+// `auto *f() -> int` and `const auto f() -> int` are ill-formed, as clang says.
+void Parser::refuseTrailingBase(const Type *declared, std::size_t pos) {
+    if (declared->kind() != Kind::Deduced)
+        src_.fail(pos, "a function with a trailing return type is written with plain 'auto' "
+                       "in front, and this one says '" + declared->describe() + "'");
+}
+
+// `-> T` after a parameter list, at_ on the arrow. With `paramsOpen` 0 the parameters are
+// declared already; otherwise the list from that `(` is read again into a scope of its own,
+// names and types only - an operand there is unevaluated, so no slot is taken.
+const Type *Parser::readTrailingReturn(std::size_t paramsOpen) {
+    const std::size_t arrow = peek().pos;
+    expect("->");
+    const std::size_t typeAt = at_;
+    if (paramsOpen != 0) {
+        enterScope();
+        at_ = paramsOpen + 1;
+        while (!consume(")")) {
+            if (consume("...")) continue;
+            StorageClass psc;
+            const Type *pt = specifiers(&psc);
+            Declared pd = declarator(pt, true);
+            if (!pd.name.empty() && !pd.type->isVoid()) {
+                if (pd.type->isArray()) pd.type = types_.pointerTo(pd.type->pointee());
+                locals_.push_back(Local{ pd.name, 0, pd.type, false, std::string() });
+                locals_.back().isParameter = true;
+            }
+            if (consume("=")) skipDefaultArgument();
+            consume(",");
+        }
+        at_ = typeAt;
+    }
+    StorageClass rsc;
+    const Type *returns = declarator(specifiers(&rsc), true).type;
+    if (paramsOpen != 0) {
+        locals_.resize(scopeStarts_.back());
+        scopeStarts_.pop_back();
+    }
+    if (mentionsDeduced(returns))
+        src_.fail(arrow, "a trailing return type cannot itself be deduced - 'auto' there "
+                         "is C++14, and this compiler is C++11");
+    return returns;
+}
+
+// Past the cv, ref-qualifier and exception specification a function declarator may carry
+// after its `)`, from token i: where a trailing `->` would stand.
+std::size_t Parser::skipFunctionQualifiers(std::size_t i) const {
+    for (;;) {
+        if (i >= tokens_.size() - 1) return tokens_.size() - 1;
+        const Token &t = tokens_[i];
+        if (t.is("const") || t.is("volatile") || t.is("&") || t.is("&&")) { i++; continue; }
+        if (!t.is("noexcept") && !t.is("throw")) return i;
+        i++;
+        if (!tokens_[i].is("(")) continue;
+        for (int depth = 0; i < tokens_.size() - 1; i++) {
+            if (tokens_[i].is("(")) depth++;
+            else if (tokens_[i].is(")") && --depth == 0) { i++; break; }
+        }
+    }
+}
+
+// `auto` followed by `S::f(`, `S::~S(`, `Box<T>::get(` or `S::operator+(`: a qualified name
+// a parameter list follows, which is a declarator-id and not the start of a type.
+bool Parser::autoBeforeQualifiedName() const {
+    std::size_t i = at_;
+    bool qualified = false;
+    while (i + 1 < tokens_.size() && tokens_[i].kind == TokenKind::Ident) {
+        i++;
+        if (tokens_[i].is("<")) {
+            for (int depth = 0; i + 1 < tokens_.size(); i++) {
+                if (tokens_[i].is("<")) depth++;
+                else if (tokens_[i].is(">") && --depth == 0) { i++; break; }
+                else if (tokens_[i].is(">>") && (depth -= 2) <= 0) { i++; break; }
+                else if (tokens_[i].is(";") || tokens_[i].is("{")) return false;
+            }
+        }
+        if (!tokens_[i].is("::")) return qualified && tokens_[i].is("(");
+        qualified = true;
+        i++;
+        if (tokens_[i].is("~")) i++;
+        if (tokens_[i].is("operator")) return true;
+    }
+    return false;
+}
+
+// A function template's `-> decltype(e)`: Itanium spells such a signature with the expression
+// itself (`Dt...E`), which this mangler cannot write; refused by name rather than misnamed.
+void Parser::refuseTemplateTrailingDecltype() {
+    for (std::size_t i = at_ + 1; i < tokens_.size() - 1; i++) {
+        if (tokens_[i].is("{") || tokens_[i].is(";") || tokens_[i].is("=")) return;
+        if (tokens_[i].is("decltype"))
+            src_.fail(tokens_[i].pos, "a function template whose trailing return type is "
+                                      "'decltype(...)' is not supported yet - its Itanium name "
+                                      "spells the expression, and this compiler cannot; '-> T' "
+                                      "works");
+    }
+}
+
+// At a parameter list's `(`: whether a trailing `->` follows its `)` and qualifiers.
+bool Parser::trailingArrowAhead() const {
+    if (!peek().is("(")) return false;
+    int depth = 0;
+    for (std::size_t i = at_; i < tokens_.size() - 1; i++) {
+        if (tokens_[i].is("(")) depth++;
+        else if (tokens_[i].is(")") && --depth == 0)
+            return tokens_[skipFunctionQualifiers(i + 1)].is("->");
+    }
+    return false;
+}
+
