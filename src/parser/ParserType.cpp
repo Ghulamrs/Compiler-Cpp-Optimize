@@ -1400,18 +1400,16 @@ int Parser::alignasSpecifier() {
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
 
-    // **A scoped enumeration is C++11 and is a type of its own** - its
-    // enumerators do not leak into the enclosing scope and do not convert to
-    // int.
-    if (peek().is("class") || peek().is("struct"))
-        src_.fail(peek().pos, "a scoped enumeration - 'enum class' - is not "
-                              "supported yet: an enumeration is an int that "
-                              "remembers its name here, where a scoped one is "
-                              "a distinct type whose enumerators are reached "
-                              "through it");
+    // **`enum class` is a type of its own** - [dcl.enum]/2: its enumerators stay inside it and
+    // it converts to nothing without a cast (refuseScopedConversion, refuseScopedOperand).
+    const bool scoped = peek().is("class") || peek().is("struct");
+    if (scoped) at_++;
 
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
+    if (scoped && tag.empty())
+        src_.fail(pos, "a scoped enumeration needs a name - its enumerators are reached through "
+                       "it, [dcl.enum]/2");
 
     // **An enum-base fixes the underlying type** - `enum E : unsigned char` -
     // and with it the enumeration's size, signedness and the type of each
@@ -1421,10 +1419,13 @@ const Type *Parser::enumSpecifier() {
         std::size_t upos = peek().pos;
         StorageClass usc;
         underlying = specifiers(&usc)->unqualified();
-        if (!underlying->isInteger() || underlying->kind() == Kind::Bool)
+        if (!underlying->isInteger() || underlying->kind() == Kind::Bool ||
+            underlying->isEnumeration())
             src_.fail(upos, "an enum-base must be an integral type other than "
                             "bool, and '" + underlying->describe() + "' is not");
     }
+    // [dcl.enum]/5: a scoped enumeration without one is fixed at int.
+    if (scoped && underlying == nullptr) underlying = types_.intType();
 
     // **An enum is named through what encloses it**, the same way a class is:
     // `C::Kind` inside a class and `n::Kind` inside a namespace.
@@ -1437,8 +1438,16 @@ const Type *Parser::enumSpecifier() {
     // reaches it only by a cast (checkAssignable, rankArgument), and it promotes back.
     Type *self = nullptr;
     if (!tag.empty()) {
+        const Type *before = findTypedef(prefix + tag);
         self = types_.enumType(prefix + tag,
                                underlying != nullptr ? underlying->kind() : Kind::Int);
+        // [dcl.enum]/3: a redeclaration says the same thing about scope and base as the first.
+        if (before != nullptr && before->unqualified() == self &&
+            (self->isScopedEnumeration() != scoped ||
+             (underlying != nullptr && self->kind() != underlying->kind())))
+            src_.fail(pos, "'" + tag + "' was declared before as a different enumeration - a "
+                           "redeclaration repeats 'class' and the enum-base exactly");
+        if (scoped) self->setScoped();
         declareTypeName(prefix + tag, self);
     }
     // [dcl.enum]/5: an enumerator has its enumeration's type once the enum is complete, so
@@ -1446,14 +1455,32 @@ const Type *Parser::enumSpecifier() {
     const Type *valueType = self != nullptr ? self : underlying;
     const Type *narrowAs = underlying != nullptr ? underlying : types_.intType();
 
-    if (!peek().is("{")) return valueType != nullptr ? valueType : types_.intType();
+    // `enum class E;` and `enum E : int;` - an opaque declaration, [dcl.enum]/3; an unscoped one
+    // without a base cannot be one, its size waiting on its enumerators.
+    if (!peek().is("{")) {
+        if (scoped || underlying != nullptr) {
+            if (!peek().is(";") && !peek().is(","))
+                src_.fail(peek().pos, "an opaque enumeration declaration ends at its name or "
+                                      "enum-base - '" + tag + "' is declared, not used, here");
+        }
+        return valueType != nullptr ? valueType : types_.intType();
+    }
+    if (self != nullptr && self->enumDefined())
+        src_.fail(pos, "'" + tag + "' is defined twice");
+    if (self != nullptr) self->setEnumDefined();
     at_++;
 
+    // A scoped enumerator is named `E::a`, and inside the braces by its own name with the
+    // underlying type ([dcl.enum]/5) - that unqualified key is taken back at the '}'.
+    const std::string within_ = scoped ? prefix + tag + "::" : prefix;
+    std::vector<std::pair<std::string, std::size_t> > inBody;
+    std::vector<std::size_t> made;
     long long next = 0;
+    const std::size_t first = enums_.size();
     while (!peek().is("}")) {
         std::size_t npos = peek().pos;
         std::string name = expectIdent("an enumerator");
-        if (findEnum(prefix + name))
+        if (enumIndex_.count(within_ + name) != 0 || (!scoped && findEnum(prefix + name)))
             src_.fail(npos, "'" + name + "' is declared twice");
         if (consume("=")) {
             const long long given = constantExpression("a constant");
@@ -1464,15 +1491,53 @@ const Type *Parser::enumSpecifier() {
                                 "' does not fit the enum-base '" +
                                 underlying->describe() + "'");
         }
-        enumIndex_[prefix + name] = enums_.size();
-        enums_.push_back(EnumConst{ prefix + name, next, valueType });
+        enumIndex_[within_ + name] = enums_.size();
+        enums_.push_back(EnumConst{ within_ + name, next,
+                                    scoped ? underlying : valueType });
+        made.push_back(enums_.size() - 1);
+        // C++11's `E::a` for an unscoped E too, [dcl.enum]/11.
+        if (!scoped && !tag.empty()) enumIndex_[prefix + tag + "::" + name] = enums_.size() - 1;
+        if (scoped) {
+            const std::size_t had = enumIndex_.count(prefix + name);
+            inBody.push_back(std::make_pair(prefix + name,
+                                            had ? enumIndex_[prefix + name] : enums_.size()));
+            enumIndex_[prefix + name] = enums_.size() - 1;
+        }
         if (self != nullptr) self->addEnumerator(name, next);
         next = next + 1;
         if (!consume(",")) break;
     }
     expect("}");
+    for (std::size_t i = inBody.size(); i-- > 0; ) {
+        if (inBody[i].second >= first) enumIndex_.erase(inBody[i].first);
+        else                           enumIndex_[inBody[i].first] = inBody[i].second;
+    }
+    for (std::size_t i = 0; i < made.size(); i++) enums_[made[i]].type = valueType;
     if (enums_.empty()) src_.fail(pos, "enum has no enumerators");
     return valueType != nullptr ? valueType : types_.intType();
+}
+
+// The longest run of `A::B::` that names an enumeration, then the enumerator: null where there is none.
+ExprPtr Parser::enumeratorThroughEnum() {
+    if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return nullptr;
+    std::string q = peek().text;
+    const Type *found = nullptr;
+    std::size_t took = 0;
+    for (std::size_t k = 1; peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+        const Type *t = findTypedef(q);
+        if (t != nullptr && t->unqualified()->isEnumeration()) { found = t->unqualified(); took = k; }
+        q += "::" + peekAt(k + 1).text;
+    }
+    if (found == nullptr) return nullptr;
+    const std::string name = peekAt(took + 1).text;
+    const auto it = enumIndex_.find(found->enumTag() + "::" + name);
+    if (it == enumIndex_.end())
+        src_.fail(peekAt(took + 1).pos, "'" + name + "' is not an enumerator of '" +
+                                        found->enumTag() + "'");
+    at_ += took + 2;
+    ExprPtr n(new Num(enums_[it->second].value));
+    n->setType(found);
+    return n;
 }
 
 // The specifiers are read without their qualifiers here, and specifiers() folds the

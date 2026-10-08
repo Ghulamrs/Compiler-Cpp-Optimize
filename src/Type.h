@@ -219,6 +219,12 @@ public:
     // An enumeration's enumerators, unqualified and in order - for a debugger (CodeView's LF_ENUMERATE).
     const std::vector<std::pair<std::string, long long> > &enumerators() const { return cls().enumerators_; }
     void addEnumerator(const std::string &name, long long value) { enumerators_.push_back(std::make_pair(name, value)); }
+    // `enum class` - [dcl.enum]/2: a distinct type whose enumerators are reached through it and
+    // which converts to nothing implicitly; and whether its body has been read (an opaque one has not).
+    bool isScopedEnumeration() const { return isEnumeration() && cls().scoped_; }
+    void setScoped() { scoped_ = true; }
+    bool enumDefined() const { return cls().enumDefined_; }
+    void setEnumDefined() { enumDefined_ = true; }
 
     // **The namespace the template was declared in**, kept beside the bare name rather than folded
     // into it: `templateName_` is also the key `templates_` is looked up by, and that map is keyed
@@ -472,6 +478,8 @@ private:
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;
     std::vector<std::pair<std::string, long long> > enumerators_;
+    bool scoped_ = false;
+    bool enumDefined_ = false;
     int size_ = 0;
     int align_ = 1;
     bool complete_ = false;

@@ -229,9 +229,6 @@ SFINAE and variadic packs. What is left:
 - **a const member named in a mem-initialiser list** —
   `src/parser/ParserTopLevel.cpp:980`
 - **a delegating constructor** — `src/parser/ParserTopLevel.cpp:1027`
-- **a scoped enumeration**, `enum class` — an enumeration is an int that
-  remembers its name here, where a scoped one is a distinct type whose
-  enumerators are reached through it. `src/parser/ParserType.cpp:1374`
 - **`= default` outside the class** — a special member defaulted on a later
   declaration is user-provided, where one defaulted inside its class is the
   implicit one; write it inside. `src/parser/ParserConst.cpp:32`

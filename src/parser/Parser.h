@@ -2149,6 +2149,11 @@ private:
     const Signature *moveAssignOf(const Type *cls) const;
     void refuseConstexprConstructorBody(std::size_t parenAt) const;
     void refuseConstexprClassObject();
+    void refuseScopedConversion(const Type *from, const Type *to, std::size_t pos) const;
+    void refuseScopedOperand(const Type *a, const Type *b, const char *op, std::size_t pos) const;
+    // `E::a`, `n::E::a`, `C::E::a` - an enumerator named through its enumeration, [dcl.enum]/11.
+    ExprPtr enumeratorThroughEnum();
+    bool atSwitchCondition() const;
     // ---- end WS-C1 ----
     // Set by exceptionSpecification() at each place a parameter list can be closed, read and cleared by whichever declare* call follows.
     bool pendingNoexcept_ = false;
