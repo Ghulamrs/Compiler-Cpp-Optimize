@@ -45,8 +45,14 @@ int lazy(bool build) {
 int main() {
     lfWatch();
     S local(1);
-    printf("%d %d %d\n", count(3), count(30), count(300));
+    int c1 = count(3);
+    int c2 = count(30);
+    int c3 = count(300);
+    printf("%d %d %d\n", c1, c2, c3);
     printf("%d\n", inLoop());
-    printf("%d %d %d\n", lazy(false), lazy(true), lazy(true));
+    int l1 = lazy(false);
+    int l2 = lazy(true);
+    int l3 = lazy(true);
+    printf("%d %d %d\n", l1, l2, l3);
     return 0;
 }

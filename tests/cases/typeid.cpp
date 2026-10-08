@@ -41,7 +41,9 @@ int main() {
     printf("%d %d %d %d\n", typeid(*pb) == typeid(D), typeid(ref) == typeid(D), typeid(pb) == typeid(B *), typeid(*pb) != typeid(B));
     printf("%d %d %d %d\n", ti == typeid(D), typeid(Plain) == typeid(Plain), typeid(char) != typeid(signed char), typeid(const int) == typeid(int));
     printf("%s %s %s %s\n", typeid(int).name(), typeid(D).name(), typeid(*pb).name(), typeid(const char *).name());
-    printf("%d %d %d\n", typeid(*make(1)) == typeid(D), typeid(make(0)) == typeid(B *), side);
+    int dynamicD = typeid(*make(1)) == typeid(D);
+    int staticB = typeid(make(0)) == typeid(B *);
+    printf("%d %d %d\n", dynamicD, staticB, side);
     printf("%d %d\n", typeid(double).before(typeid(int)) != typeid(int).before(typeid(double)), typeid(D).hash_code() == typeid(dobj).hash_code());
     Colour c = Green;
     printf("%d %d %s %s\n", typeid(c) == typeid(Colour), typeid(Colour) == typeid(Plainer), typeid(Colour).name(), typeid(Plainer).name());

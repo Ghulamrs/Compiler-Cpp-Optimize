@@ -26,7 +26,8 @@ int through(const Cache &c) { return c.get() + c.get(); }
 int main() {
     Cache c; c.value = 21; c.reads = 0; c.warned = false;
     const Cache &r = c;
-    printf("%d %d %d\n", through(c), c.reads, (int)c.warned);
+    int sum = through(c);
+    printf("%d %d %d\n", sum, c.reads, (int)c.warned);
     // Through a pointer to const, and read back through a reference to const.
     const Cache *p = &c;
     p->reads = 100;

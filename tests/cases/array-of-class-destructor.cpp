@@ -24,7 +24,9 @@ int scope(int k) {
     return a[2].id;
 }
 int main() {
-    printf("%d %d\n", scope(0), scope(1));
+    int first = scope(0);
+    int second = scope(1);
+    printf("%d %d\n", first, second);
     printf("%d %d %d\n", built, gone, last);
     int n = 4;
     T *p = new T[n];

@@ -45,9 +45,13 @@ int main(void) {
     Counter c;
     Counter *p = &c;
     Uses u;
-    printf("%d %d %d\n", c.start(10), c.bump(), c.bump(5));
+    int s = c.start(10);
+    int b1 = c.bump();
+    int b2 = c.bump(5);
+    printf("%d %d %d\n", s, b1, b2);
     printf("%d %d\n", c.value(), c.doubled());
-    printf("%d %d\n", p->bump(), p->value());
+    int b3 = p->bump();
+    printf("%d %d\n", b3, p->value());
     printf("%d\n", u.viaPrivate());
     return 0;
 }

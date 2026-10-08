@@ -28,7 +28,9 @@ int main() {
     printf("%d %d %d %d\n", typeid(*pb) == typeid(D), typeid(ref) == typeid(D), typeid(pb) == typeid(B *), typeid(*pb) != typeid(B));
     printf("%d %d %d %d\n", ti == typeid(D), typeid(Plain) == typeid(Plain), typeid(char) != typeid(signed char), typeid(const int) == typeid(int));
     printf("%d %d %d\n", typeid(const char *) != typeid(char *), typeid(int *) == typeid(int *), typeid(D).name() != 0);
-    printf("%d %d %d\n", typeid(*make(1)) == typeid(D), typeid(make(0)) == typeid(B *), side);
+    int dynamicD = typeid(*make(1)) == typeid(D);
+    int staticB = typeid(make(0)) == typeid(B *);
+    printf("%d %d %d\n", dynamicD, staticB, side);
     printf("%d %d\n", typeid(double).before(typeid(int)) != typeid(int).before(typeid(double)), typeid(D).hash_code() == typeid(dobj).hash_code());
     printf("%d ", typeid(*pick(Tmp(), &dobj)) == typeid(D));
     printf("| %d\n", typeid(pick(Tmp(), &dobj)) == typeid(B *));

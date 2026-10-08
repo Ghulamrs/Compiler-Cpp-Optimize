@@ -84,6 +84,7 @@ int main() {
 
     printf("byValue:\n");
     Plain w; w.a.v = 10; w.n = 1;
-    printf("  got %d, w.a=%d\n", byValue(static_cast<Plain &&>(w)), w.a.v);
+    int got = byValue(static_cast<Plain &&>(w));
+    printf("  got %d, w.a=%d\n", got, w.a.v);
     return 0;
 }

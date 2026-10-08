@@ -73,7 +73,9 @@ int main() {
 
     int bitand r = a;
     r = 7;
-    printf("%d %d\n", a, twice(a));
+    int before = a;
+    int doubled = twice(a);
+    printf("%d %d\n", before, doubled);
 
     int *ptr = bitand a;
     printf("%d\n", *ptr);

@@ -87,6 +87,8 @@ int main(void) {
     // And the functions themselves still work, which is the other half.
     printf("%d %d %d %d %d %d %d\n", quiet(), loud(), alsoQuiet(), notQuiet(),
            oldStyle(), computed(), declaredFirst());
-    printf("%d %d\n", b.get(), b.grow());
+    int got = b.get();
+    int grown = b.grow();
+    printf("%d %d\n", got, grown);
     return 0;
 }

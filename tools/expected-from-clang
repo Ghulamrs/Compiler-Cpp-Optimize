@@ -1,0 +1,64 @@
+#!/bin/sh
+# Whether every .expected in tests/cases is clang's output (review of 2026-10-08, V16).
+#
+# Each case with a .expected is compiled by clang with -std=c++11 -pedantic-errors,
+# run, and its output diffed against the file - cpp11 takes no part. A case that
+# includes a C++ header is compiled against the host's library first, and against
+# this tree's include/ when that library refuses C++11 (Microsoft's STL does): the
+# language is clang's either way, the library is said on the line. Usage:
+#
+#     tools/expected-from-clang [case ...]      CLANG names the compiler (clang++)
+#
+# OWNLIBS goes on a compile against include/ - on Windows the C++ runtime library
+# the host headers would have named (std::set_new_handler is in libcpmt).
+#
+# Prints one line per case that is not the same - DIFFERS, NO-COMPILE, TIMEOUT -
+# and a total; every diff is in tests/out-provenance/<case>.diff. It never fails:
+# a difference is a question for a reader (an evaluation order, an elision, a
+# target's data model), and the verification page answers each one by name.
+cd "$(dirname "$0")/.."
+CLANG="${CLANG:-clang++}"
+OUT=tests/out-provenance
+FLAGS="-std=c++11 -pedantic-errors -fno-delayed-template-parsing -w"
+
+one() {
+  base=$1; src=tests/cases/$base.cpp
+  part=""; [ -f "tests/cases/$base.part.cpp" ] && part="tests/cases/$base.part.cpp"
+  lib=host
+  if ! $CLANG $FLAGS "$src" $part -o "$OUT/$base.exe" > "$OUT/$base.build" 2>&1; then
+    lib=include/
+    if ! $CLANG $FLAGS -nostdinc++ -isystem include "$src" $part $OWNLIBS -o "$OUT/$base.exe" > "$OUT/$base.build" 2>&1; then
+      echo "NO-COMPILE $base: $(grep -m1 'error:' "$OUT/$base.build" | sed 's/^.*error: //')" > "$OUT/$base.verdict"
+      return
+    fi
+  fi
+  timeout 20 "$OUT/$base.exe" < /dev/null > "$OUT/$base.raw" 2>&1
+  rc=$?
+  tr -d '\r' < "$OUT/$base.raw" > "$OUT/$base.out"
+  if [ $rc -eq 124 ]; then echo "TIMEOUT $base" > "$OUT/$base.verdict"; return; fi
+  if diff "tests/cases/$base.expected" "$OUT/$base.out" > "$OUT/$base.diff"; then
+    echo "same $lib" > "$OUT/$base.verdict"
+  else
+    echo "DIFFERS $base ($lib library, exit $rc): $(grep -c '^[<>]' "$OUT/$base.diff") lines" > "$OUT/$base.verdict"
+  fi
+}
+
+if [ "${1:-}" = --one ]; then one "$2"; exit 0; fi
+
+mkdir -p "$OUT"; rm -f "$OUT"/*
+if [ $# -gt 0 ]; then list="$*"; else
+  list=$(for e in tests/cases/*.expected; do basename "$e" .expected; done)
+fi
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+for b in $list; do echo "$b"; done | xargs -P "$JOBS" -n 1 sh "$0" --one
+
+same=0; host=0; own=0; other=0
+for b in $list; do
+  v=$(cat "$OUT/$b.verdict" 2>/dev/null || echo "NO-VERDICT $b")
+  case "$v" in
+    "same host") same=$((same + 1)); host=$((host + 1)) ;;
+    "same include/") same=$((same + 1)); own=$((own + 1)) ;;
+    *) echo "$v"; other=$((other + 1)) ;;
+  esac
+done
+echo "expected-from-clang: $same of $((same + other)) match clang's output ($host with the host's library, $own with include/), $other to explain"

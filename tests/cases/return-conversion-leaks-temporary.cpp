@@ -55,11 +55,14 @@ int dirty(int depth) {
     return pad[63];
 }
 
+// Reads `live` while the argument's temporaries are still alive - one call a statement.
+static void show(const char *label, int tag) { printf("%s %d live %d\n", label, tag, live); }
+
 int main() {
     int seed = dirty(3);
-    printf("describe: %d live %d\n", describe(9).tag, live);
-    printf("countText: %d live %d\n", countText(1).tag, live);
-    printf("both:      %d live %d\n", describe(1).tag + countText(2).tag, live);
+    show("describe:", describe(9).tag);
+    show("countText:", countText(1).tag);
+    show("both:     ", describe(1).tag + countText(2).tag);
     printf("seed used: %d\n", seed != 0);
     return 0;
 }

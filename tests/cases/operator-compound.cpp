@@ -42,6 +42,8 @@ int main(void) {
     a ^= 3;                       // 6
     a <<= 4;                      // 96
     a >>= 2;                      // 24
-    printf("%d %d\n", a.v, (a += b).v);
+    int before = a.v;
+    int after = (a += b).v;
+    printf("%d %d\n", before, after);
     return 0;
 }

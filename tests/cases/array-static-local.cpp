@@ -4,4 +4,9 @@ extern "C" int printf(const char *, ...);
 static int built = 0;
 struct S { int v; S() : v(built++) {} ~S() { printf("~%d ", v); } };
 int f(int k) { static S arr[2]; return arr[k].v + built; }
-int main() { printf("%d %d %d\n", f(0), f(1), built); return 0; }
+int main() {
+    int a = f(0);
+    int b = f(1);
+    printf("%d %d %d\n", a, b, built);
+    return 0;
+}
