@@ -242,8 +242,10 @@ SFINAE and variadic packs. What is left:
   has no body. `src/parser/ParserType.cpp:1078`
 - **a ref-qualifier**, `f() &` or `f() &&` — the object's value category does
   not choose an overload here. `src/parser/ParserType.cpp:966`
-- **a `constexpr` constructor** — the constant evaluator folds a call to a
-  function and has no object to build. `src/parser/ParserType.cpp:577`
+- **a `constexpr` object of class type** — a `constexpr` constructor is an
+  ordinary one here, run at run time; the constant evaluator folds integers
+  and floating values and has no object to build, so `const` is the spelling
+  that works. `src/parser/ParserConst.cpp:89`
 - **an anonymous union** — its members would have to become members of the
   class around it, sharing storage. C++98, not C++11.
   `src/parser/ParserType.cpp:763`
@@ -476,6 +478,7 @@ beside it goes in the same commit.
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:4005`, `src/parser/ParserTopLevel.cpp:652` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:583` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:380` |
+| a statement in a `constexpr` constructor's body | C++14 | `src/parser/ParserConst.cpp:77` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:682`, `src/parser/ParserInit.cpp:891`, `src/parser/ParserTopLevel.cpp:359` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:47` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:76` |

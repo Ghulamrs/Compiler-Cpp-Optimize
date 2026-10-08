@@ -2147,6 +2147,8 @@ private:
     static bool nonPublicDefault(const DefaultedMember &m) { return m.is && m.access != Access::Public; }
     void declareDefaultedMoveAssign(const std::string &tag, const Type *type, std::size_t pos);
     const Signature *moveAssignOf(const Type *cls) const;
+    void refuseConstexprConstructorBody(std::size_t parenAt) const;
+    void refuseConstexprClassObject();
     // ---- end WS-C1 ----
     // Set by exceptionSpecification() at each place a parameter list can be closed, read and cleared by whichever declare* call follows.
     bool pendingNoexcept_ = false;

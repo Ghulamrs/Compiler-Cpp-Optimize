@@ -58,6 +58,39 @@ Parser::Defaulted Parser::defaultedFor(const std::string &tag) const {
     return it != defaulted_.end() ? it->second : Defaulted();
 }
 
+// [dcl.constexpr]/4: a C++11 constexpr constructor's body is empty; statements in it are C++14.
+void Parser::refuseConstexprConstructorBody(std::size_t parenAt) const {
+    std::size_t k = parenAt;
+    int depth = 0;
+    for (;; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End || (depth == 0 && t.is(";"))) return;
+        if (t.is("(") || t.is("[")) depth++;
+        else if (t.is(")") || t.is("]")) depth--;
+        else if (t.is("{")) {
+            const Token &before = peekAt(k - 1);
+            if (depth == 0 && before.kind != TokenKind::Ident && !before.is(">")) break;
+            depth++;
+        } else if (t.is("}")) depth--;
+    }
+    if (peekAt(k + 1).is("}")) return;
+    src_.fail(peekAt(k + 1).pos, "a 'constexpr' constructor with statements in its body is C++14, "
+                                 "and this compiler is C++11 - [dcl.constexpr]/4 asks for an empty "
+                                 "body and the work in the initialiser list");
+}
+
+// A `constexpr` object of class type - not a function returning one, which runs at run time like any other.
+void Parser::refuseConstexprClassObject() {
+    if (peek().kind != TokenKind::Ident) return;
+    const Token &next = peekAt(1);
+    bool object = next.is("=") || next.is("{") || next.is(";") || next.is(",") || next.is("[");
+    if (next.is("(")) { at_++; object = atParenInitialiser(); at_--; }
+    if (!object) return;
+    src_.fail(peek().pos, "a 'constexpr' object of class type is not supported yet: the constant "
+                          "evaluator folds integers and floating values and has no object model - "
+                          "'const' builds the same object at run time");
+}
+
 // The implicit member a `= default` stands for was declared public; it takes the access it was written under.
 void Parser::applyDefaultedAccess(const std::string &tag, const Type *type) {
     std::map<std::string, Defaulted>::const_iterator it = defaulted_.find(tag);

@@ -583,12 +583,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // objects a constant expression may build.
         if (!tag.empty() && peek().is("constexpr") &&
             peekAt(1).kind == TokenKind::Ident && peekAt(1).text == local &&
-            peekAt(2).is("("))
-            src_.fail(peek().pos, "a 'constexpr' constructor is not supported "
-                                  "yet: the constant evaluator folds a call to "
-                                  "a function and has no object to build, so a "
-                                  "'constexpr' object of a class type cannot be "
-                                  "made here");
+            peekAt(2).is("(")) {
+            // [dcl.constexpr]/3: one may always run at run time, so it is an ordinary constructor here.
+            refuseConstexprConstructorBody(2);
+            at_++;
+            itemStart = at_;
+        }
 
         // A constructor has the class's own name and no return type, so it has to be seen
         // before specifiers() is asked for one - the name is a registered type name by now
@@ -1483,6 +1483,7 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     if (quals == nullptr) quals = &discard;
     const Type *t = unqualifiedSpecifiers(storage, quals);
     if (quals->isVolatile) refuseVolatileUnderADeclarator(*storage);
+    if (quals->isConstexpr && t->unqualified()->isStructOrUnion()) refuseConstexprClassObject();
     return quals->isConst ? types_.withConst(t) : t;
 }
 
