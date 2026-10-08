@@ -16,6 +16,14 @@
 # the file:line references out of the document and reports every refusal site
 # the document does not cite, and every citation that no longer exists.
 #
+# A hand-written entry is one the inventory cannot derive - a refusal whose
+# marker word arrives at run time inside a spliced string, or a `.notarget`
+# that refuses a case for one target. Such an entry cites a test file instead
+# of a source line - `tests/cases/<name>.cpp`, `.error`, `.notarget` or
+# `tests/open/<name>.cpp` - and `--check` verifies the file exists, counting a
+# missing one as a stale citation. That is as far as a tool can hold a sentence
+# somebody wrote: the case is the oracle, and the sentence has to be read.
+#
 # Two things it cannot do, both recorded because a reader will meet them.
 # A message written as a ternary comes back with both arms joined -- there are
 # two, at ParserType.cpp's `explicit` and ParserTemplate.cpp's class/function
@@ -100,12 +108,17 @@ def main():
         have = set(site for site, _ in rows)
         missing = sorted(s for s in have if s.replace("src/", "") not in cited and s not in cited)
         stale = sorted(c for c in cited if not any(s.endswith(c) or s == c for s in have))
+        cases = sorted(set(re.findall(r"tests/(?:cases|open|overload)/[A-Za-z0-9_.-]+\.(?:cpp|error|notarget|nonames|clang)", doc)))
+        gone = [c for c in cases if not os.path.exists(c)]
         for s in missing:
             print(f"not in the document: {s}  {dict(rows)[s]}")
         for c in stale:
             print(f"cited and gone:      {c}")
-        print(f"\n{len(have)} sites, {len(missing)} uncited, {len(stale)} stale citations")
-        return 1 if (missing or stale) else 0
+        for c in gone:
+            print(f"case cited and gone: {c}")
+        print(f"\n{len(have)} sites, {len(missing)} uncited, {len(stale) + len(gone)} stale citations"
+              f" ({len(cases)} hand-written entries name a test file, {len(gone)} missing)")
+        return 1 if (missing or stale or gone) else 0
 
     for site, msg in rows:
         print(f"{site}\t{msg}")
