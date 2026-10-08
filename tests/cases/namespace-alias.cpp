@@ -10,7 +10,7 @@ namespace library {
     int twice(int x) { return x * 2; }
     struct Point {
         int x, y;
-        Point(int a, int b) : x(a), y(b) {}
+        Point(int a, int b);
         int sum() const;
     };
     template <class T> struct Box { T held; T get() const { return held; } };
@@ -27,6 +27,7 @@ namespace deep = library::detail;
 namespace again = lib;
 namespace fromGlobal = ::library;
 
+lib::Point::Point(int a, int b) : x(a), y(b) {}
 int lib::Point::sum() const { return x + y; }
 
 int useDirective() {
