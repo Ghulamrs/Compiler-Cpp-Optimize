@@ -1,0 +1,1 @@
+x86_64-linux  cxx1 emits the C1 form (and D1) of a constructor defined inside its class where clang on this target emits only the C2 a use asks for - the difference implicit-move.nonames records; C1 and C2 are identical for a class with no virtual bases and both are mergeable.

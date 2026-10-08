@@ -2246,6 +2246,14 @@ private:
     int ilElemSeq_ = 0;
     // `auto x = {...}`, the '{' ahead: the list's one element type, read and rewound.
     const Type *deduceBracedAuto(const std::string &name, std::size_t pos);
+    // [expr.prim.lambda]/6: a captureless closure's `__invoke` and its conversion to a pointer to it.
+    void captureFreeConversion(const std::string &tag, const std::string &local, const Type *returns,
+                               const std::vector<const Type *> &params, std::size_t pos,
+                               std::vector<PendingBody> &bodies);
+    int lambdaConvSeq_ = 0;
+    // `dynamic_cast` after its operand is read: a pointer target, and a reference one through it.
+    ExprPtr dynamicCastFrom(ExprPtr v, const Type *to, std::size_t pos);
+    ExprPtr dynamicCastReference(ExprPtr v, const Type *to, std::size_t pos);
 
     Program *current_ = nullptr;
 };

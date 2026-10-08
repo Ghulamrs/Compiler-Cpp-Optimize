@@ -327,9 +327,12 @@ ExprPtr Parser::lambdaExpression() {
         capturedThisFrom = from;
     }
 
-    if (returns == nullptr)
+    if (returns == nullptr) {
         returns = deduceLambdaReturn(paramsFrom, paramsTo, bodyFrom, bodyTo,
                                      capNames, capTypes);
+        // [expr.prim.lambda]/4 deduces after the lvalue-to-rvalue conversion, which drops a scalar's cv.
+        if (!returns->unqualified()->isStructOrUnion()) returns = returns->unqualified();
+    }
 
     // The closure type, named `$_0` upward within the enclosing function, as
     // clang names one. **One met while an enclosing lambda's body is read for
@@ -420,6 +423,7 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<PendingBody> mine;
     mine.push_back(PendingBody{ tag, start, local, tag + "::operator()",
                                 PendingBody::npos() });
+    if (capNames.empty()) captureFreeConversion(tag, local, returns, params, pos, mine);
     replayInlineBodies(std::move(mine));
 
     // The object itself: a slot in this frame, and the expression is its name.
@@ -604,4 +608,73 @@ ExprPtr Parser::outerCaptureAccess(const std::string &name) {
 
     ExprPtr acc = thisMember(self->offset, closure, *m);
     return useReference(std::move(acc));
+}
+
+// The body of each is tokens over hidden typedefs, so any type is one identifier; `__invoke`
+// calls `operator()` on a null closure, which reads nothing of it - both oracles' shape.
+void Parser::captureFreeConversion(const std::string &tag, const std::string &local,
+                                   const Type *returns, const std::vector<const Type *> &params,
+                                   std::size_t pos, std::vector<PendingBody> &bodies) {
+    const Type *closure = findTypedef(tag);
+    const Type *fn = types_.functionType(returns, params, false);
+    const Type *fp = types_.pointerTo(fn);
+    Declared inv;
+    inv.name = "__invoke";
+    inv.type = fn;
+    inv.pos = pos;
+    declareMember(tag, inv, false, Access::Public, false, false, true);
+    Declared cv;
+    cv.name = "operator " + fn->describe() + " *";
+    cv.type = types_.functionType(fp, std::vector<const Type *>(), false);
+    cv.pos = pos;
+    declareMember(tag, cv, true, Access::Public, false, false);
+
+    const std::string k = std::to_string(lambdaConvSeq_++);
+    const std::string cls = "$lcls" + k, ptr = "$lfp" + k, ret = "$lret" + std::to_string(lambdaRetSeq_++);
+    declareTypeName(cls, closure);
+    declareTypeName(ptr, fp);
+    declareTypeName(ret, returns);
+    Token t;
+    t.pos = pos;
+    auto put = [&](TokenKind kind, const std::string &text) { t.kind = kind; t.text = text; tokens_.push_back(t); };
+    const std::size_t invAt = tokens_.size();
+    put(TokenKind::Ident, ret); put(TokenKind::Ident, "__invoke"); put(TokenKind::Punct, "(");
+    for (std::size_t i = 0; i < params.size(); i++) {
+        const std::string pt = "$lpt" + k + "_" + std::to_string(i);
+        declareTypeName(pt, params[i]);
+        if (i > 0) put(TokenKind::Punct, ",");
+        put(TokenKind::Ident, pt); put(TokenKind::Ident, "$a" + std::to_string(i));
+    }
+    put(TokenKind::Punct, ")"); put(TokenKind::Punct, "{");
+    if (!returns->isVoid()) put(TokenKind::Keyword, "return");
+    put(TokenKind::Punct, "("); put(TokenKind::Punct, "("); put(TokenKind::Ident, cls);
+    put(TokenKind::Punct, "*"); put(TokenKind::Punct, ")"); put(TokenKind::Num, "0");
+    tokens_.back().value = 0;
+    put(TokenKind::Punct, ")"); put(TokenKind::Punct, "->"); put(TokenKind::Keyword, "operator");
+    put(TokenKind::Punct, "("); put(TokenKind::Punct, ")"); put(TokenKind::Punct, "(");
+    for (std::size_t i = 0; i < params.size(); i++) {
+        if (i > 0) put(TokenKind::Punct, ",");
+        // A by-value class or an rvalue reference is handed on as an xvalue, the others as named.
+        const bool move = params[i]->isRValueReference() ||
+                          (!params[i]->isReference() && params[i]->unqualified()->isStructOrUnion());
+        if (move) {
+            put(TokenKind::Keyword, "static_cast"); put(TokenKind::Punct, "<");
+            put(TokenKind::Ident, "$lpt" + k + "_" + std::to_string(i));
+            if (!params[i]->isReference()) put(TokenKind::Punct, "&&");
+            put(TokenKind::Punct, ">"); put(TokenKind::Punct, "(");
+        }
+        put(TokenKind::Ident, "$a" + std::to_string(i));
+        if (move) put(TokenKind::Punct, ")");
+    }
+    put(TokenKind::Punct, ")"); put(TokenKind::Punct, ";"); put(TokenKind::Punct, "}");
+    put(TokenKind::End, "");
+    bodies.push_back(PendingBody{ tag, invAt, local, tag + "::__invoke", PendingBody::npos() });
+
+    const std::size_t cvAt = tokens_.size();
+    put(TokenKind::Keyword, "operator"); put(TokenKind::Ident, ptr); put(TokenKind::Punct, "(");
+    put(TokenKind::Punct, ")"); put(TokenKind::Keyword, "const"); put(TokenKind::Punct, "{");
+    put(TokenKind::Keyword, "return"); put(TokenKind::Punct, "&"); put(TokenKind::Ident, cls);
+    put(TokenKind::Punct, "::"); put(TokenKind::Ident, "__invoke"); put(TokenKind::Punct, ";");
+    put(TokenKind::Punct, "}"); put(TokenKind::End, "");
+    bodies.push_back(PendingBody{ tag, cvAt, local, tag + "::" + cv.name, PendingBody::npos() });
 }

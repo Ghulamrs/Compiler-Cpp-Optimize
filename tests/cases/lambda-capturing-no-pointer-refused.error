@@ -1,0 +1,1 @@
+a lambda converts to a function pointer only if it captures nothing

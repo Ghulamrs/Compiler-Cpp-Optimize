@@ -2361,6 +2361,8 @@ ExprPtr Parser::unary() {
                                            "cannot be told from the use alone");
                         const Signature &f = functions_[(*set)[0]];
                         at_ += q + 1;
+                        // [expr.unary.op]/3: a static member function's address is an ordinary pointer.
+                        if (f.isStaticMember) return functionAsValue(key, pos);
                         // **A virtual one holds the slot, not the function.**
                         // Itanium: 1 + the slot's byte offset, tested at the
                         // call; Microsoft: the address of a vcall thunk.

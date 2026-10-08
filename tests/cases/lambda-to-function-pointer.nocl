@@ -1,0 +1,1 @@
+The closure names, as lambda.nocl records: cl calls a closure <lambda_N> in the scope ?0? where cxx1 writes $_N in ?1?, and the call operator, the conversion function ??B and the static __invoke carry that name. None of it is reachable from outside - a closure type is unnamed, [expr.prim.lambda].
