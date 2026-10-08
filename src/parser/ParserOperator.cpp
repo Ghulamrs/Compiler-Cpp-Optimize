@@ -490,6 +490,7 @@ ExprPtr Parser::cloneLvalue(const Expr &e, std::size_t pos) {
 
 ExprPtr Parser::shiftOf(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) {
     if (ExprPtr call = overloadedBinary(op, lhs, rhs, pos)) return call;
+    refuseScopedOperand(lhs->type(), rhs->type(), binOpSpelling(op), pos);
     const Type *lt = promote(lhs->type());
     const Type *rt = promote(rhs->type());
     ExprPtr n(new Binary(op, convert(std::move(lhs), lt),
@@ -666,6 +667,7 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
                                  : "the operand of postfix '--'";
     requireAssignable(*target, pos, what);
     const Type *t = target->type();
+    refuseScopedOperand(t, nullptr, increment ? "++" : "--", pos);
     // std::nullptr_t is a scalar and is still not something to step: it has
     // one value, so there is no next one.
     if (!t->isScalar() || t->isNullPtr())

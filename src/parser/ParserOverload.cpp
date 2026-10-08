@@ -19,7 +19,8 @@ const Type *Parser::unsignedVersion(const Type *t) const {
 }
 
 const Type *Parser::promote(const Type *t) const {
-    // [conv.prom]/3: an unscoped enumeration promotes as its underlying integer does.
+    // [conv.prom]/3: an unscoped enumeration promotes as its underlying integer does; a scoped one not at all.
+    if (t->isScopedEnumeration()) return t;
     if (t->isEnumeration()) t = types_.get(t->kind());
     if (t->isInteger() && t->rank() < types_.intType()->rank())
         return types_.intType();
@@ -29,6 +30,11 @@ const Type *Parser::promote(const Type *t) const {
 }
 
 const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
+    // [expr]/10 starts from an unscoped enumeration: two of one scoped type compare, nothing else mixes.
+    if (a->isScopedEnumeration() || b->isScopedEnumeration()) {
+        if (a->unqualified() == b->unqualified()) return a->unqualified();
+        refuseScopedConversion(a, b, peek().pos);
+    }
     if (a->kind() == Kind::LongDouble || b->kind() == Kind::LongDouble)
         return types_.get(Kind::LongDouble);
     if (a->kind() == Kind::Double || b->kind() == Kind::Double)
@@ -57,8 +63,33 @@ int publicBaseOffset(const Type *derived, const Type *base);
 static bool publiclyDerivedFrom(const Type *derived, const Type *base);
 static int anyBaseOffset(const Type *derived, const Type *base);
 
+// [dcl.enum]/10: what makes `enum class` worth writing, said where the conversion would be made.
+void Parser::refuseScopedConversion(const Type *from, const Type *to, std::size_t pos) const {
+    auto shown = [](const Type *t) {
+        const Type *u = t->unqualified();
+        if (u->isScopedEnumeration()) return "enum class " + u->enumTag();
+        return u->isEnumeration() ? "enum " + u->enumTag() : t->describe();
+    };
+    src_.fail(pos, "'" + shown(from) + "' does not convert to '" + shown(to) + "' implicitly - a "
+                   "scoped enumeration converts only with a cast, [dcl.enum]/10");
+}
+
+// The built-in arithmetic and bitwise operators take no scoped enumeration, [expr]/10.
+void Parser::refuseScopedOperand(const Type *a, const Type *b, const char *op, std::size_t pos) const {
+    const Type *t = a != nullptr && a->unqualified()->isScopedEnumeration() ? a
+                  : b != nullptr && b->unqualified()->isScopedEnumeration() ? b : nullptr;
+    if (t == nullptr) return;
+    src_.fail(pos, "'" + std::string(op) + "' does not take 'enum class " + t->unqualified()->enumTag() +
+                   "' - a scoped enumeration has no arithmetic; '==' and '<' compare two of one "
+                   "type, and a cast reaches the integer");
+}
+
 ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() == to) return e;
+    // A scoped enumeration converts only by a cast, in either direction - [dcl.enum]/10, [expr.static.cast]/9.
+    if (!allowExplicit && e->type() != nullptr && e->type()->unqualified() != to->unqualified() &&
+        (e->type()->isScopedEnumeration() || to->isScopedEnumeration()) && !to->isReference())
+        refuseScopedConversion(e->type(), to, peek().pos);
 
     // **A class converted by its own conversion function**, which is where a
     // class reaches a number, a pointer or a bool.
@@ -263,7 +294,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         } else {
             ExprPtr n(new Num(static_cast<long long>(0)));
             n->setType(types_.intType());
-            zero = convert(std::move(n), from);
+            zero = convert(std::move(n), from, true);
         }
         ExprPtr test(new Binary(BinOp::Ne, std::move(e), std::move(zero)));
         test->setType(to);
@@ -307,9 +338,25 @@ ExprPtr Parser::decay(ExprPtr e) {
 }
 
 void Parser::requireScalar(const Expr &e, std::size_t pos, const char *what) {
+    // [dcl.enum]/10: a scoped enumeration is no truth value - but it may govern a switch, [stmt.switch]/2.
+    if (e.type()->unqualified()->isScopedEnumeration() && std::string(what) == "unary '+'")
+        refuseScopedOperand(e.type(), nullptr, "+", pos);
+    if (e.type()->unqualified()->isScopedEnumeration() && !atSwitchCondition())
+        refuseScopedConversion(e.type(), types_.get(Kind::Bool), pos);
     if (!e.type()->isScalar())
         src_.fail(pos, std::string(what) + " needs a number or a pointer, not '" +
                        e.type()->describe() + "'");
+}
+
+// At the `)` of `switch (...)`: the token before the matching `(` says which statement this is.
+bool Parser::atSwitchCondition() const {
+    if (!peek().is(")") || at_ == 0) return false;
+    int depth = 0;
+    for (std::size_t i = at_; i-- > 0; ) {
+        if (tokens_[i].is(")")) depth++;
+        else if (tokens_[i].is("(") && depth-- == 0) return i > 0 && tokens_[i - 1].is("switch");
+    }
+    return false;
 }
 
 // A string literal reaches here wrapped in the Cast that decayed it from an
@@ -515,6 +562,7 @@ const Type *Parser::decayedType(const Type *t) {
 
 // The integral and floating promotions, [conv.prom] and [conv.fpprom], and only those - every other arithmetic pairing is a conversion, which ranks below; it is what makes f(int) beat f(double) for a char argument.
 static bool isPromotion(const Type *from, const Type *to) {
+    if (from->isScopedEnumeration()) return false;
     // [conv.prom]/3: an enumeration to the type its underlying integer promotes to.
     if (from->isEnumeration() && !to->isEnumeration()) {
         const Kind k = from->kind();
@@ -629,8 +677,10 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // Top-level const on the parameter is not part of its type for this purpose.
     if (from->unqualified() == to->unqualified()) return Rank::Identity;
 
-    // Nothing converts to an enumeration implicitly - [conv.integral]/1 starts from one.
+    // Nothing converts to an enumeration implicitly - [conv.integral]/1 starts from one - and a
+    // scoped one converts to nothing, [dcl.enum]/10.
     if (from->isArithmetic() && to->unqualified()->isEnumeration()) return Rank::None;
+    if (from->isScopedEnumeration()) return Rank::None;
     if (from->isArithmetic() && to->isArithmetic())
         return isPromotion(from, to) ? Rank::Promotion : Rank::Conversion;
 
@@ -1076,6 +1126,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
         src_.fail(pos, why);
     }
     if (viable.size() == 1) {
+        refuseDeleted(functions_[viable[0]], pos);
         functions_[viable[0]].used = true;
         if (!functions_[viable[0]].isNoexcept) mayThrow_++;
         return functions_[viable[0]];
@@ -1098,6 +1149,8 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
             src_.fail(pos, why);
         }
     }
+    // [dcl.fct.def.delete]: a deleted candidate is ranked like any other and refused only where it wins.
+    refuseDeleted(functions_[viable[best]], pos);
     functions_[viable[best]].used = true;
     // **Every call is potentially-throwing unless the function promised
     // otherwise**, and this is the one place a call finds out which function it
@@ -1115,9 +1168,11 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     // Copying ignores the const at the top.
     if (ft->unqualified() == to->unqualified()) return;
 
+    if (ft->unqualified()->isScopedEnumeration()) refuseScopedConversion(ft, to, pos);
     if (ft->isArithmetic() && to->unqualified()->isEnumeration()) {
         // describe() spells an enumeration as its integer; this message is about the difference.
         auto shown = [](const Type *t) {
+            if (t->unqualified()->isScopedEnumeration()) return "enum class " + t->unqualified()->enumTag();
             return t->unqualified()->isEnumeration() ? "enum " + t->unqualified()->enumTag()
                                                      : t->describe();
         };

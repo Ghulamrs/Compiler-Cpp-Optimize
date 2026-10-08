@@ -667,6 +667,7 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
 // class - and [class.friend], by a function the class granted access to. Those two
 // are the only ways past a private member, and are asked in the same breath.
 bool Parser::isFriendOf(const Type *cls) const {
+    if (isFriendClassOf(cls)) return true;
     if (cls == nullptr || currentFunction_.empty()) return false;
     std::map<std::string, std::vector<std::string> >::const_iterator it =
         friends_.find(cls->unqualified()->tag());

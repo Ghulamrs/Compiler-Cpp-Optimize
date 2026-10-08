@@ -187,6 +187,7 @@ ExprPtr Parser::arithmetic(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
     if (ExprPtr call = overloadedBinary(op, lhs, rhs, pos)) return call;
     lhs = decay(std::move(lhs));
     rhs = decay(std::move(rhs));
+    refuseScopedOperand(lhs->type(), rhs->type(), binOpSpelling(op), pos);
 
     if (op == BinOp::Add) {
         if (lhs->type()->isPointer() && rhs->type()->isInteger())
@@ -528,7 +529,7 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
             z.reset(new Num(0LL));
             z->setType(types_.intType());
         }
-        return convert(std::move(z), types_.withoutConst(to));
+        return convert(std::move(z), types_.withoutConst(to), true);
     }
     ExprPtr v = decay(assign());
     if (peek().is(","))
@@ -541,7 +542,7 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
         c->setType(to);
         return c;
     }
-    return convert(std::move(v), types_.withoutConst(to));
+    return convert(std::move(v), types_.withoutConst(to), true);
 }
 
 // **A function's address, from its key.**
@@ -954,6 +955,7 @@ ExprPtr Parser::primary(Program *program) {
     // **`::f()` - a name asked for at global scope explicitly.** Refused by
     // name rather than left to "expected an expression", which points at a
     // '::' and says nothing.
+    if (ExprPtr e = enumeratorThroughEnum()) return e;
     if (peek().is("::"))
         src_.fail(peek().pos, "a name qualified with '::' alone is not "
                               "supported yet in an expression - as a type, "
@@ -2220,6 +2222,7 @@ ExprPtr Parser::unary() {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("~", v, pos)) return call;
         v = decay(std::move(v));
+        refuseScopedOperand(v->type(), nullptr, "~", pos);
         if (!v->type()->isInteger())
             src_.fail(pos, "'~' needs an integer, not '" + v->type()->describe() + "'");
         const Type *t = promote(v->type());
@@ -2242,6 +2245,7 @@ ExprPtr Parser::unary() {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("-", v, pos)) return call;
         v = decay(std::move(v));
+        refuseScopedOperand(v->type(), nullptr, "-", pos);
         if (!v->type()->isArithmetic())
             src_.fail(pos, "unary '-' needs a number, not '" + v->type()->describe() + "'");
         const Type *t = promote(v->type());

@@ -73,14 +73,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
-    // **`final` on a class head forbids deriving from it** - [class]/3 - which
-    // is a check made at every later derivation rather than anything about
-    // this one, and nothing records it.
-    if (peek().is("final") && (peekAt(1).is("{") || peekAt(1).is(":")))
-        src_.fail(peek().pos, "'final' on a class is not supported yet: "
-                              "nothing here records that a class may not be "
-                              "derived from, so the word would be accepted "
-                              "and never checked");
+    // **`final` on a class head forbids deriving from it** - [class]/3 - recorded on the type
+    // and checked by every later base clause. Contextual: only in front of the body is it the keyword.
+    bool classFinal = false;
+    if (peek().is("final") && (peekAt(1).is("{") || peekAt(1).is(":"))) { classFinal = true; at_++; }
 
     // **A class written inside another is named through it**: the tag becomes
     // "Outer::Inner", so it cannot collide with a global, with the single component
@@ -165,6 +161,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // has.
     if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
     else                                  type->noteClassKey(isClass);
+    if (classFinal) type->setFinal();
     if (!localOwner.empty()) {
         // The single component is what both ABIs spell inside the wrapper, and the
         // written name is what resolves inside this function - which also shadows a
@@ -216,6 +213,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
                                 "class has to be complete, because the derived "
                                 "object contains one");
+            if (b->isFinal())
+                src_.fail(bpos, "'" + baseName + "' is marked 'final' and cannot "
+                                "be a base class - [class]/3");
             written.push_back(WrittenBase{ b, how, isVirtualBase });
             if (!consume(",")) break;
         }
@@ -583,12 +583,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // objects a constant expression may build.
         if (!tag.empty() && peek().is("constexpr") &&
             peekAt(1).kind == TokenKind::Ident && peekAt(1).text == local &&
-            peekAt(2).is("("))
-            src_.fail(peek().pos, "a 'constexpr' constructor is not supported "
-                                  "yet: the constant evaluator folds a call to "
-                                  "a function and has no object to build, so a "
-                                  "'constexpr' object of a class type cannot be "
-                                  "made here");
+            peekAt(2).is("(")) {
+            // [dcl.constexpr]/3: one may always run at run time, so it is an ordinary constructor here.
+            refuseConstexprConstructorBody(2);
+            at_++;
+            itemStart = at_;
+        }
 
         // A constructor has the class's own name and no return type, so it has to be seen
         // before specifiers() is asked for one - the name is a registered type name by now
@@ -602,6 +602,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
+            refuseVirtSpecifiers("a constructor");
             if (peek().is("{") || peek().is(":")) {
                 pendingBodies_.push_back(PendingBody{
                     tag, itemStart, local, constructorKey(tag),
@@ -610,7 +611,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 skipBracedBlock();
                 continue;
             }
-            refuseDefaultedOrDeleted();
             expect(";");
             continue;
         }
@@ -688,11 +688,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (tag.empty())
                 src_.fail(fpos, "an anonymous class has no name to grant "
                                 "friendship with");
-            if (peek().is("class") || peek().is("struct") || peek().is("union"))
-                src_.fail(fpos, "'friend class' is not supported yet - it "
-                                "grants every member function of another class "
-                                "access at once, where this grants one named "
-                                "function");
+            const bool keyed = peek().is("class") || peek().is("struct") || peek().is("union");
+            if (keyed || (peek().kind == TokenKind::Ident && peekAt(1).is(";") &&
+                          findTypedef(peek().text) != nullptr &&
+                          findTypedef(peek().text)->unqualified()->isStructOrUnion())) {
+                befriendClass(tag, keyed);
+                continue;
+            }
             StorageClass fsc;
             Qualifiers fquals;
             const Type *fbase = specifiers(&fsc, &fquals);
@@ -999,15 +1001,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                               "- the qualifier on 'this' is part of the name on "
                               "both ABIs, and 'volatile' is not in this "
                               "compiler's type system");
-                // **`override` and `final` are C++11 and are checks**, not
-                // declarations: the first says this must be replacing a base's
-                // virtual and the second that nothing may replace it.
-                if (peek().is("override") || peek().is("final"))
-                    src_.fail(peek().pos, std::string("'") + peek().text +
-                                  "' is not supported yet: an override is "
-                                  "found by its base's slot here whether or "
-                                  "not the word is written, so this would be "
-                                  "a check rather than a change");
                 // [class.static]/1: a static member function has no `this`, so
                 // there is nothing for either of these to qualify.
                 if (memberIsStatic && constThis)
@@ -1019,20 +1012,35 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      "and 'virtual' - one says there is no "
                                      "object and the other dispatches on one");
                 pendingNoexcept_ = exceptionSpecification();
+                // [class.virtual]/4: `override` and `final` mark a virtual member function, which a static one is never.
+                if (memberIsStatic) refuseVirtSpecifiers("a static member function");
+                const VirtSpecifiers virt = takeVirtSpecifiers();
                 // **A `constexpr` member function is implicitly const in C++11.**
                 if (mquals.isConstexpr) constThis = true;
 
-                // **`= 0` is the pure-specifier**, and not an initialiser.
-                refuseDefaultedOrDeleted();
+                // **`= default` is for the copy and move assignment alone here** - [dcl.fct.def.default]/1 -
+                // and is the implicit one, so nothing is declared; `= delete` declares and stamps.
+                const SpecialDef special = takeSpecialDef();
+                if (special == SpecialDef::Defaulted) {
+                    const Type *self = tag.empty() ? nullptr : findTypedef(tag);
+                    const Type *p = d.type->params().size() == 1 ? d.type->params()[0] : nullptr;
+                    const bool ofSelf = p != nullptr && p->isReference() && self != nullptr &&
+                                        p->referent()->unqualified() == self->unqualified();
+                    if (d.name != "operator=" || !ofSelf || memberIsStatic)
+                        src_.fail(pendingSpecialAt_, "'" + d.name + "' is not a special member function, "
+                                                     "and only one of those may be defaulted - "
+                                                     "[dcl.fct.def.default]/1");
+                    Defaulted &df = defaulted_[tag];
+                    if (p->isRValueReference()) defaultedMember(df.moveAssign, access, d.pos, "the move assignment");
+                    else                        defaultedMember(df.copyAssign, access, d.pos, "the copy assignment");
+                    if (!consume(",")) break;
+                    continue;
+                }
 
+                // **`= 0` is the pure-specifier**, and not an initialiser.
                 bool isPure = false;
                 if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
                     !peekAt(1).isFloat && peekAt(1).value == 0) {
-                    if (!isVirtual)
-                        src_.fail(peek().pos, "'= 0' makes a function pure, and "
-                                              "only a virtual one can be - '" +
-                                              d.name + "' is not declared "
-                                              "'virtual'");
                     if (memberIsStatic)
                         src_.fail(peek().pos, "'" + d.name + "' cannot be both "
                                               "'static' and pure");
@@ -1050,7 +1058,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     const std::size_t sigAt = functions_.size();
                     declareMember(tag, d, constThis, access,
                                   kind == Kind::Union, isVirtual, memberIsStatic,
-                                  isPure);
+                                  isPure, virt);
                     pendingBodies_.push_back(PendingBody{
                         tag, itemStart, local, tag + "::" + d.name,
                         signatureAddedUnder(tag + "::" + d.name, sigAt) });
@@ -1063,7 +1071,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
-                              isVirtual, memberIsStatic, isPure);
+                              isVirtual, memberIsStatic, isPure, virt);
+                if (special == SpecialDef::Deleted) {
+                    // A deleted virtual would leave its slot naming a function with no body.
+                    if (functions_.back().isVirtual)
+                        src_.fail(pendingSpecialAt_, "a deleted virtual function is not supported yet: "
+                                                     "its vtable slot would name a function that has no body");
+                    functions_.back().deleted = true;
+                }
                 if (!consume(",")) break;
                 continue;
             }
@@ -1387,18 +1402,16 @@ int Parser::alignasSpecifier() {
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
 
-    // **A scoped enumeration is C++11 and is a type of its own** - its
-    // enumerators do not leak into the enclosing scope and do not convert to
-    // int.
-    if (peek().is("class") || peek().is("struct"))
-        src_.fail(peek().pos, "a scoped enumeration - 'enum class' - is not "
-                              "supported yet: an enumeration is an int that "
-                              "remembers its name here, where a scoped one is "
-                              "a distinct type whose enumerators are reached "
-                              "through it");
+    // **`enum class` is a type of its own** - [dcl.enum]/2: its enumerators stay inside it and
+    // it converts to nothing without a cast (refuseScopedConversion, refuseScopedOperand).
+    const bool scoped = peek().is("class") || peek().is("struct");
+    if (scoped) at_++;
 
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
+    if (scoped && tag.empty())
+        src_.fail(pos, "a scoped enumeration needs a name - its enumerators are reached through "
+                       "it, [dcl.enum]/2");
 
     // **An enum-base fixes the underlying type** - `enum E : unsigned char` -
     // and with it the enumeration's size, signedness and the type of each
@@ -1408,10 +1421,13 @@ const Type *Parser::enumSpecifier() {
         std::size_t upos = peek().pos;
         StorageClass usc;
         underlying = specifiers(&usc)->unqualified();
-        if (!underlying->isInteger() || underlying->kind() == Kind::Bool)
+        if (!underlying->isInteger() || underlying->kind() == Kind::Bool ||
+            underlying->isEnumeration())
             src_.fail(upos, "an enum-base must be an integral type other than "
                             "bool, and '" + underlying->describe() + "' is not");
     }
+    // [dcl.enum]/5: a scoped enumeration without one is fixed at int.
+    if (scoped && underlying == nullptr) underlying = types_.intType();
 
     // **An enum is named through what encloses it**, the same way a class is:
     // `C::Kind` inside a class and `n::Kind` inside a namespace.
@@ -1424,8 +1440,16 @@ const Type *Parser::enumSpecifier() {
     // reaches it only by a cast (checkAssignable, rankArgument), and it promotes back.
     Type *self = nullptr;
     if (!tag.empty()) {
+        const Type *before = findTypedef(prefix + tag);
         self = types_.enumType(prefix + tag,
                                underlying != nullptr ? underlying->kind() : Kind::Int);
+        // [dcl.enum]/3: a redeclaration says the same thing about scope and base as the first.
+        if (before != nullptr && before->unqualified() == self &&
+            (self->isScopedEnumeration() != scoped ||
+             (underlying != nullptr && self->kind() != underlying->kind())))
+            src_.fail(pos, "'" + tag + "' was declared before as a different enumeration - a "
+                           "redeclaration repeats 'class' and the enum-base exactly");
+        if (scoped) self->setScoped();
         declareTypeName(prefix + tag, self);
     }
     // [dcl.enum]/5: an enumerator has its enumeration's type once the enum is complete, so
@@ -1433,14 +1457,32 @@ const Type *Parser::enumSpecifier() {
     const Type *valueType = self != nullptr ? self : underlying;
     const Type *narrowAs = underlying != nullptr ? underlying : types_.intType();
 
-    if (!peek().is("{")) return valueType != nullptr ? valueType : types_.intType();
+    // `enum class E;` and `enum E : int;` - an opaque declaration, [dcl.enum]/3; an unscoped one
+    // without a base cannot be one, its size waiting on its enumerators.
+    if (!peek().is("{")) {
+        if (scoped || underlying != nullptr) {
+            if (!peek().is(";") && !peek().is(","))
+                src_.fail(peek().pos, "an opaque enumeration declaration ends at its name or "
+                                      "enum-base - '" + tag + "' is declared, not used, here");
+        }
+        return valueType != nullptr ? valueType : types_.intType();
+    }
+    if (self != nullptr && self->enumDefined())
+        src_.fail(pos, "'" + tag + "' is defined twice");
+    if (self != nullptr) self->setEnumDefined();
     at_++;
 
+    // A scoped enumerator is named `E::a`, and inside the braces by its own name with the
+    // underlying type ([dcl.enum]/5) - that unqualified key is taken back at the '}'.
+    const std::string within_ = scoped ? prefix + tag + "::" : prefix;
+    std::vector<std::pair<std::string, std::size_t> > inBody;
+    std::vector<std::size_t> made;
     long long next = 0;
+    const std::size_t first = enums_.size();
     while (!peek().is("}")) {
         std::size_t npos = peek().pos;
         std::string name = expectIdent("an enumerator");
-        if (findEnum(prefix + name))
+        if (enumIndex_.count(within_ + name) != 0 || (!scoped && findEnum(prefix + name)))
             src_.fail(npos, "'" + name + "' is declared twice");
         if (consume("=")) {
             const long long given = constantExpression("a constant");
@@ -1451,15 +1493,53 @@ const Type *Parser::enumSpecifier() {
                                 "' does not fit the enum-base '" +
                                 underlying->describe() + "'");
         }
-        enumIndex_[prefix + name] = enums_.size();
-        enums_.push_back(EnumConst{ prefix + name, next, valueType });
+        enumIndex_[within_ + name] = enums_.size();
+        enums_.push_back(EnumConst{ within_ + name, next,
+                                    scoped ? underlying : valueType });
+        made.push_back(enums_.size() - 1);
+        // C++11's `E::a` for an unscoped E too, [dcl.enum]/11.
+        if (!scoped && !tag.empty()) enumIndex_[prefix + tag + "::" + name] = enums_.size() - 1;
+        if (scoped) {
+            const std::size_t had = enumIndex_.count(prefix + name);
+            inBody.push_back(std::make_pair(prefix + name,
+                                            had ? enumIndex_[prefix + name] : enums_.size()));
+            enumIndex_[prefix + name] = enums_.size() - 1;
+        }
         if (self != nullptr) self->addEnumerator(name, next);
         next = next + 1;
         if (!consume(",")) break;
     }
     expect("}");
+    for (std::size_t i = inBody.size(); i-- > 0; ) {
+        if (inBody[i].second >= first) enumIndex_.erase(inBody[i].first);
+        else                           enumIndex_[inBody[i].first] = inBody[i].second;
+    }
+    for (std::size_t i = 0; i < made.size(); i++) enums_[made[i]].type = valueType;
     if (enums_.empty()) src_.fail(pos, "enum has no enumerators");
     return valueType != nullptr ? valueType : types_.intType();
+}
+
+// The longest run of `A::B::` that names an enumeration, then the enumerator: null where there is none.
+ExprPtr Parser::enumeratorThroughEnum() {
+    if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return nullptr;
+    std::string q = peek().text;
+    const Type *found = nullptr;
+    std::size_t took = 0;
+    for (std::size_t k = 1; peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+        const Type *t = findTypedef(q);
+        if (t != nullptr && t->unqualified()->isEnumeration()) { found = t->unqualified(); took = k; }
+        q += "::" + peekAt(k + 1).text;
+    }
+    if (found == nullptr) return nullptr;
+    const std::string name = peekAt(took + 1).text;
+    const auto it = enumIndex_.find(found->enumTag() + "::" + name);
+    if (it == enumIndex_.end())
+        src_.fail(peekAt(took + 1).pos, "'" + name + "' is not an enumerator of '" +
+                                        found->enumTag() + "'");
+    at_ += took + 2;
+    ExprPtr n(new Num(enums_[it->second].value));
+    n->setType(found);
+    return n;
 }
 
 // The specifiers are read without their qualifiers here, and specifiers() folds the
@@ -1470,6 +1550,7 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     if (quals == nullptr) quals = &discard;
     const Type *t = unqualifiedSpecifiers(storage, quals);
     if (quals->isVolatile) refuseVolatileUnderADeclarator(*storage);
+    if (quals->isConstexpr && t->unqualified()->isStructOrUnion()) refuseConstexprClassObject();
     return quals->isConst ? types_.withConst(t) : t;
 }
 

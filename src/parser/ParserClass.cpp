@@ -128,27 +128,48 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
         src_.fail(pos, "a destructor takes no parameters");
     // A destructor is `noexcept` in C++11 whether or not it says so.
     pendingNoexcept_ = exceptionSpecification();
+    const VirtSpecifiers virt = takeVirtSpecifiers();
+    const SpecialDef special = takeSpecialDef();
 
     if (overloadsOf(destructorKey(cls)) != nullptr)
         src_.fail(pos, "'" + cls + "' has two destructors, and a class has one");
-    registerDestructor(cls, pos, access, isVirtual, false);
+    // Every object's death is a use, and the destroy sites are many: a deleted destructor is refused by name.
+    if (special == SpecialDef::Deleted)
+        src_.fail(pendingSpecialAt_, "a deleted destructor - '~" + localOf(cls) + "() = delete' - is "
+                                     "not supported yet: every place an object of the class is "
+                                     "destroyed would have to refuse it, and only calls are checked");
+    // **A defaulted destructor is the implicit one.** A virtual one is registered now, so that it has its
+    // slot whether or not a member gives it work; the rest is left to declareImplicitDestructor.
+    if (special == SpecialDef::Defaulted) {
+        defaultedMember(defaulted_[cls].dtor, access, pos, "the destructor");
+        if (isVirtual || virt.isOverride || virt.isFinal)
+            registerDestructor(cls, pos, access, isVirtual, true, virt);
+        return;
+    }
+    registerDestructor(cls, pos, access, isVirtual, false, virt);
 }
 
 // Everything a destructor needs in the tables, whether a program wrote it or
 // the compiler did: the name, the entry, and the vtable slots a virtual one
 // claims.
 void Parser::registerDestructor(const std::string &cls, std::size_t pos,
-                                Access access, bool isVirtual, bool implicit) {
+                                Access access, bool isVirtual, bool implicit,
+                                VirtSpecifiers virt) {
     const std::vector<const Type *> params;
     const std::string key = destructorKey(cls);
+    const std::string name = "~" + localOf(cls);
 
     // **A base with a virtual destructor makes this one virtual**, keyword or not -
     // [class.dtor]. The base's slots are already in this class's table, so it is
     // answered by looking for the "~" entry, and before the name is built.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
+    bool foundBase = false;
     for (std::size_t i = 0; i < slots.size(); i++)
-        if (slots[i].name == "~") { slot = i; isVirtual = true; break; }
+        if (slots[i].name == "~") {
+            checkNotFinal(slots[i], cls, name, pos);
+            slot = i; isVirtual = foundBase = true; break;
+        }
     // And a base off the primary chain - a second base, a virtual one - whose
     // destructor is virtual makes this one virtual too, in a slot of its own.
     if (!isVirtual)
@@ -159,9 +180,19 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
                     vtables_.find(bs[bi].type->tag());
                 if (it == vtables_.end()) continue;
                 for (std::size_t i = 0; i < it->second.size(); i++)
-                    if (it->second[i].name == "~") { isVirtual = true; break; }
+                    if (it->second[i].name == "~") {
+                        checkNotFinal(it->second[i], cls, name, pos);
+                        isVirtual = foundBase = true; break;
+                    }
             }
         }
+    // [class.virtual]/4, for the destructor: `override` wants a base's virtual one and `final` a virtual one.
+    if (virt.isOverride && !foundBase)
+        src_.fail(virt.overrideAt, "'" + cls + "::" + name + "' is marked 'override' but overrides "
+                                   "nothing - no base has a virtual destructor");
+    if (virt.isFinal && !isVirtual)
+        src_.fail(virt.finalAt, "'" + cls + "::" + name + "' is marked 'final' and is not virtual "
+                                "- only a virtual destructor can be");
 
     // **A virtual destructor is U on Microsoft whatever its access**, the same
     // rule a virtual member function already followed - measured with cl,
@@ -190,12 +221,14 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     std::vector<const Type *> none;
     if (slot < slots.size()) {
         slots[slot].symbol = ms ? deleting : out;       // the complete form
+        slots[slot].isFinal = virt.isFinal;
         if (!ms && slot + 1 < slots.size() &&
             slots[slot + 1].name == "~$deleting")
             slots[slot + 1].symbol = deleting;
         return;
     }
     slots.push_back(VSlot{ "~", ms ? deleting : out, none, false });
+    slots.back().isFinal = virt.isFinal;
     if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
 }
 
@@ -1112,10 +1145,16 @@ std::string Parser::synthesizeVcallThunk(const Type *cls, const Signature &f,
 void Parser::markSymbolUsed(const std::string &symbol) {
     if (symbol.empty()) return;
     for (std::size_t i = 0; i < functions_.size(); i++)
-        if (functions_[i].symbol == symbol) { functions_[i].used = true; return; }
+        if (functions_[i].symbol == symbol) {
+            refuseDeleted(functions_[i], at_ + 1 < tokens_.size() ? peek().pos : functions_[i].pos);
+            functions_[i].used = true;
+            return;
+        }
 }
 
+// A use of a deleted function is refused here as well as at a call: the compiler-written members reach their bases' and members' through this.
 void Parser::markUsed(const Signature *f) {
+    refuseDeleted(*f, at_ + 1 < tokens_.size() ? peek().pos : f->pos);
     functions_[static_cast<std::size_t>(f - &functions_[0])].used = true;
 }
 
@@ -1788,6 +1827,25 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
         src_.fail(pos, "a constructor cannot take '...'");
     // Read here rather than at the call site.
     pendingNoexcept_ = exceptionSpecification();
+    const SpecialDef special = takeSpecialDef();
+
+    // **A defaulted constructor is the implicit one and is not declared here**: declareImplicitSpecials
+    // writes it exactly as it would have, and reads `defaulted_` for the access and for [class.copy]/9.
+    if (special == SpecialDef::Defaulted) {
+        const Type *self = findTypedef(cls);
+        Defaulted &df = defaulted_[cls];
+        const Type *p = params.size() == 1 ? params[0] : nullptr;
+        const bool ofSelf = p != nullptr && p->isReference() && self != nullptr &&
+                            p->referent()->unqualified() == self->unqualified();
+        if (params.empty())                      defaultedMember(df.defaultCtor, access, pos, "the default constructor");
+        else if (ofSelf && !p->isRValueReference()) defaultedMember(df.copyCtor, access, pos, "the copy constructor");
+        else if (ofSelf)                         defaultedMember(df.moveCtor, access, pos, "the move constructor");
+        else
+            src_.fail(pendingSpecialAt_, "'" + cls + "::" + cls + "' with these parameters is not a special "
+                                         "member function, and only one of those may be defaulted - "
+                                         "[dcl.fct.def.default]/1");
+        return;
+    }
 
     // A constructor returns nothing, and saying so as void is what lets the rest of the compiler treat the call like any other.
     const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
@@ -1821,6 +1879,7 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
                                     false, false, pos, false, cls, false, access });
     functions_.back().isExplicit = isExplicit;
     functions_.back().isNoexcept = pendingNoexcept_;
+    functions_.back().deleted = special == SpecialDef::Deleted;
     pendingNoexcept_ = false;
 }
 
@@ -2416,6 +2475,19 @@ const Parser::Signature *Parser::copyAssignOf(const Type *cls) const {
     return move;
 }
 
+// The move assignment of a class, `X &operator=(X &&)`, written or defaulted; copyAssignOf answers the copy first.
+const Parser::Signature *Parser::moveAssignOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty()) return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(assignmentKey(cls->tag()));
+    if (set == nullptr) return nullptr;
+    for (std::size_t i = 0; i < set->size(); i++) {
+        const Signature &f = functions_[(*set)[i]];
+        if (f.params.size() == 1 && f.params[0]->isRValueReference() &&
+            f.params[0]->referent()->unqualified() == cls->unqualified()) return &f;
+    }
+    return nullptr;
+}
+
 std::string Parser::baseConstructorSymbol(const Signature &ctor, const Type *base) {
     if (target_.microsoftNames()) return ctor.symbol;
     // A constructor template's C2 was spelled with its C1, from the pattern.
@@ -2437,24 +2509,33 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     if (tag.empty() || type->kind() == Kind::Union) return;
     // Asked before the copy constructor is declared, because declaring one would answer it yes.
     const bool wroteConstructor = hasConstructors(tag);
+    // A member written `= default` is user-declared for [class.copy]/7 and /9 and implicit for everything else.
+    const Defaulted df = defaulted_.count(tag) != 0 ? defaulted_[tag] : Defaulted();
     // **Read now, for the same reason and at the same moment.** After the three calls
     // below, every one of these answers yes for a class that wrote nothing at all,
     // and [class.copy]/9 is a question about what the *user* declared.
     const bool wroteCopyOrDtor = copyConstructorOf(type) != nullptr ||
                                  moveConstructorOf(type) != nullptr ||
-                                 overloadsOf(destructorKey(tag)) != nullptr;
+                                 overloadsOf(destructorKey(tag)) != nullptr ||
+                                 df.copyCtor.is || df.copyAssign.is || df.moveAssign.is || df.dtor.is;
+    // [class.copy]/7 and /18: a defaulted move constructor or move assignment deletes the implicit copies.
     declareImplicitDestructor(tag, type, pos);
     declareImplicitCopyCtor(tag, type, pos);
     declareImplicitCopyAssign(tag, type, pos);
+    if (df.moveAssign.is) declareDefaultedMoveAssign(tag, type, pos);
     // Before the `wroteConstructor` return below: writing a constructor of
     // your own costs you the implicit *default* one and nothing else.
-    declareImplicitMoveCtor(tag, type, pos, wroteCopyOrDtor);
-    if (wroteConstructor) return;
+    declareImplicitMoveCtor(tag, type, pos, wroteCopyOrDtor && !df.moveCtor.is);
+    applyDefaultedAccess(tag, type);
+    if (wroteConstructor && !df.defaultCtor.is) return;
+    // [class.ctor]/5: only a user-declared constructor suppresses this one - a deleted implicit copy does not.
+    const bool needDefault = df.defaultCtor.is || (!df.copyCtor.is && !df.moveCtor.is);
+    if (!needDefault) return;
 
-    // **An initialiser on a member is work**, and this is where a class with nothing but `int x =
-    // 5;` gets a default constructor at all: without one there is no function to put the store in,
-    // and `S s;` would leave x holding the stack.
-    bool work = type->hasVptr();
+    // **An initialiser on a member is work**: without a constructor there is no function to put the
+    // store in, and `S s;` would leave x holding the stack. So is a defaulted default constructor
+    // beside a written one, since `S s;` then has to find a constructor to call.
+    bool work = type->hasVptr() || hasConstructors(tag) || nonPublicDefault(df.defaultCtor);
     for (std::size_t i = 0; i < type->members().size() && !work; i++)
         if (memberInit_.find(tag + "::" + type->members()[i].name) !=
             memberInit_.end())
@@ -2487,7 +2568,7 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     functionIndex_[constructorKey(tag)].push_back(functions_.size());
     functions_.push_back(Signature{ tag, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, tag, false,
-                                    Access::Public, false });
+                                    df.defaultCtor.is ? df.defaultCtor.access : Access::Public, false });
     functions_.back().implicit = true;
 }
 
@@ -2509,6 +2590,7 @@ void Parser::declareImplicitDestructor(const std::string &tag, const Type *type,
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size() && !work; i++)
         if (destructorOf(memberClass(ms[i].type)) != nullptr) work = true;
+    if (nonPublicDefault(defaultedFor(tag).dtor)) work = true;
     if (!work) return;
 
     registerDestructor(tag, pos, Access::Public, isVirtual, true);
@@ -2700,8 +2782,11 @@ void Parser::synthesizeDestructor(std::size_t which) {
 void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
                                        std::size_t pos) {
     if (copyAssignOf(type) != nullptr) return;
+    const Defaulted df = defaultedFor(tag);
+    // [class.copy]/18: a move written `= default` deletes the copy - declared, so a use is refused by name.
+    bool deleted = df.moveCtor.is || df.moveAssign.is;
     // [class.copy]/23.
-    if (moveConstructorOf(type) != nullptr) return;
+    if (moveConstructorOf(type) != nullptr && !deleted) return;
 
     // **A const member has no assignment to give**, so the operator the compiler would
     // write is deleted rather than non-trivial and none is declared. Asked over every
@@ -2710,8 +2795,12 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
     for (std::size_t i = 0; i < ms.size(); i++)
         if (ms[i].type->isConst()) return;
 
-    bool work = type->polymorphic();
     const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size(); i++)
+        if (deletedSpecial(copyAssignOf(bs[i].type))) deleted = true;
+    for (std::size_t i = 0; i < ms.size(); i++)
+        if (deletedSpecial(copyAssignOf(memberClass(ms[i].type)))) deleted = true;
+    bool work = type->polymorphic() || deleted || nonPublicDefault(df.copyAssign);
     for (std::size_t i = 0; i < bs.size() && !work; i++)
         if (copyAssignOf(bs[i].type) != nullptr) work = true;
     for (std::size_t i = 0; i < ms.size() && !work; i++)
@@ -2736,6 +2825,27 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
                                     pos, false, tag, false, Access::Public,
                                     false });
     functions_.back().implicit = true;
+    functions_.back().deleted = deleted;
+}
+
+// `X &operator=(X &&) = default;` - the move assignment the compiler writes: each subobject's own
+// move assignment, or its copy where it has none ([class.copy]/28).
+void Parser::declareDefaultedMoveAssign(const std::string &tag, const Type *type, std::size_t pos) {
+    std::vector<const Type *> params;
+    params.push_back(types_.rvalueReferenceTo(type));
+    const Type *self = types_.referenceTo(type);
+    const Type *fn = types_.functionType(self, params, false);
+    std::string out, why;
+    const bool ok = target_.microsoftNames()
+            ? microsoftCopyAssignName(tag, type, fn, 'Q', &out, &why)
+            : itaniumCopyAssignName(tag, type, fn, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + tag + "' needs a move assignment the compiler would write, and it "
+                       "cannot be given a name the linker can hold: " + why);
+    functionIndex_[assignmentKey(tag)].push_back(functions_.size());
+    functions_.push_back(Signature{ "operator=", out, self, params, false, false,
+                                    pos, false, tag, false, Access::Public, false });
+    functions_.back().implicit = true;
 }
 
 // The copy constructor the class did not write, on the same measured line: a class
@@ -2746,7 +2856,8 @@ void Parser::declareImplicitMoveCtor(const std::string &tag, const Type *type,
     if (userDeclared) return;
     if (moveConstructorOf(type) != nullptr) return;
 
-    bool work = type->polymorphic();
+    // A defaulted move is declared even where it is trivial: the copy it deletes would otherwise take the call.
+    bool work = type->polymorphic() || defaultedFor(tag).moveCtor.is;
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size() && !work; i++)
         if (moveConstructorOf(bs[i].type) != nullptr ||
@@ -2783,14 +2894,22 @@ void Parser::declareImplicitMoveCtor(const std::string &tag, const Type *type,
 void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (copyConstructorOf(type) != nullptr) return;
-    // [class.copy]/7: a user-declared move constructor **deletes** the implicit copy constructor.
-    if (moveConstructorOf(type) != nullptr) return;
+    const Defaulted df = defaultedFor(tag);
+    // [class.copy]/7: a user-declared move constructor **deletes** the implicit copy constructor;
+    // written by hand it is left undeclared, and the copy is refused where the move is not viable.
+    bool deleted = df.moveCtor.is || df.moveAssign.is;
+    if (moveConstructorOf(type) != nullptr && !deleted) return;
 
-    bool work = type->polymorphic();
+    // [class.copy]/11: a base or member whose copy is deleted deletes this one.
     const std::vector<Type::BaseSpec> &bs = type->bases();
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < bs.size(); i++)
+        if (deletedSpecial(copyConstructorOf(bs[i].type))) deleted = true;
+    for (std::size_t i = 0; i < ms.size(); i++)
+        if (deletedSpecial(copyConstructorOf(memberClass(ms[i].type)))) deleted = true;
+    bool work = type->polymorphic() || deleted || nonPublicDefault(df.copyCtor);
     for (std::size_t i = 0; i < bs.size() && !work; i++)
         if (copyConstructorOf(bs[i].type) != nullptr) work = true;
-    const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size() && !work; i++)
         if (copyConstructorOf(memberClass(ms[i].type)) != nullptr) work = true;
     if (!work) return;
@@ -2812,6 +2931,7 @@ void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
                                     false, false, pos, false, tag, false,
                                     Access::Public, false });
     functions_.back().implicit = true;
+    functions_.back().deleted = deleted;
 }
 
 // The body of a default constructor nobody wrote: the bases in the order they were
@@ -3071,8 +3191,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         // [class.copy]/15: the implicit move moves each subobject, and moving
         // something that has only a copy is what its copy constructor does.
         const Signature *cc = nullptr;
-        if (assigning) cc = copyAssignOf(base);
-        else {
+        if (assigning && moving) cc = moveAssignOf(base);
+        if (assigning && cc == nullptr) cc = copyAssignOf(base);
+        else if (!assigning) {
             if (moving) cc = moveConstructorOf(base);
             if (cc == nullptr) cc = copyConstructorOf(base);
         }
@@ -3141,8 +3262,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         long long elemCount = 1;
         const Type *elem = mt->isArray() ? memberElements(mt, &elemCount) : mt;
         const Signature *cc = nullptr;
-        if (assigning) cc = copyAssignOf(memberClass(mt));
-        else {
+        if (assigning && moving) cc = moveAssignOf(memberClass(mt));
+        if (assigning && cc == nullptr) cc = copyAssignOf(memberClass(mt));
+        else if (!assigning) {
             if (moving) cc = moveConstructorOf(memberClass(mt));
             if (cc == nullptr) cc = copyConstructorOf(memberClass(mt));
         }
@@ -3771,7 +3893,8 @@ void Parser::checkNotAbstract(const Type *t, std::size_t pos,
 
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
-                           bool isVirtual, bool isStatic, bool isPure) {
+                           bool isVirtual, bool isStatic, bool isPure,
+                           VirtSpecifiers virt) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -3816,11 +3939,13 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     // slot is what makes this virtual**, keyword or not - so the search runs first.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
+    bool foundBase = false;
     for (std::size_t i = 0; i < slots.size(); i++) {
         if (!overrides(slots[i], d.name, params, constThis)) continue;
         checkOverrideReturn(slots[i], fn->returns(), cls, d.name, d.pos);
+        checkNotFinal(slots[i], cls, d.name, d.pos);
         slot = i;
-        isVirtual = true;
+        isVirtual = foundBase = true;
         break;
     }
 
@@ -3837,11 +3962,24 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
                 for (std::size_t i = 0; i < it->second.size(); i++)
                     if (overrides(it->second[i], d.name, params, constThis)) {
                         checkOverrideReturn(it->second[i], fn->returns(), cls, d.name, d.pos);
-                        isVirtual = true;
+                        checkNotFinal(it->second[i], cls, d.name, d.pos);
+                        isVirtual = foundBase = true;
                         break;
                     }
             }
         }
+    // [class.virtual]/4: `override` wants a base's virtual to replace, and `final` a virtual to mark.
+    if (virt.isOverride && !foundBase)
+        src_.fail(virt.overrideAt, "'" + cls + "::" + d.name + "' is marked 'override' but "
+                                   "overrides nothing - no base declares a virtual '" + d.name +
+                                   "' with these parameters");
+    if (virt.isFinal && !isVirtual)
+        src_.fail(virt.finalAt, "'" + cls + "::" + d.name + "' is marked 'final' and is not "
+                                "virtual - only a virtual function can be");
+    // Asked here and not where `= 0` is read, because a base's slot makes a function virtual without the keyword.
+    if (isPure && !isVirtual)
+        src_.fail(d.pos, "'= 0' makes a function pure, and only a virtual one can be - '" +
+                         d.name + "' is not declared 'virtual' and overrides nothing");
 
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
@@ -3865,6 +4003,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         slots[slot].symbol = entry;
         slots[slot].pure = isPure;
         slots[slot].returns = fn->returns();
+        slots[slot].isFinal = virt.isFinal;
         return;
     }
     // **cl groups a class's own overloads of one name at the first one's
@@ -3877,7 +4016,14 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
             if (slots[i].name == d.name) { at = i; break; }
     }
     slots.insert(slots.begin() + static_cast<std::ptrdiff_t>(at),
-                 VSlot{ d.name, entry, params, constThis, isPure, fn->returns() });
+                 VSlot{ d.name, entry, params, constThis, isPure, fn->returns(), virt.isFinal });
+}
+
+void Parser::checkNotFinal(const VSlot &s, const std::string &cls, const std::string &name,
+                           std::size_t pos) const {
+    if (!s.isFinal) return;
+    src_.fail(pos, "'" + cls + "::" + name + "' overrides a virtual function marked "
+                   "'final' - [class.virtual]/4 - and nothing may override one");
 }
 
 // A member function's linkage name. Never plain, and never affected by
@@ -3955,6 +4101,7 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
     checkOperatorDeclarable(key, params, false, pos, internal);
     const bool cName = cLinkage_ > 0 || key == "main";
     std::vector<std::size_t> &set = functionIndex_[key];
+    const SpecialDef special = takeSpecialDef();
 
     for (std::size_t k = 0; k < set.size(); k++) {
         Signature &f = functions_[set[k]];
@@ -3963,6 +4110,12 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         // name, so a function written with the same parameters is a new one.
         if (f.fromTemplate && instantiationKey_.empty()) continue;
         if (f.variadic != variadic || !sameParameters(f.params, params)) continue;
+        // [dcl.fct.def.delete]/4: a deleted definition is the first declaration.
+        if (special == SpecialDef::Deleted)
+            src_.fail(pos, "'" + key + "' is deleted here and was declared before - a deleted "
+                           "function has to be deleted on its first declaration");
+        if (f.deleted)
+            src_.fail(pos, "'" + key + "' was declared '= delete' and may not be declared again");
 
         if (f.returns != returns)
             src_.fail(pos, "'" + key + "' was declared to return '" +
@@ -4031,6 +4184,7 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                                     cName, std::string(), false,
                                     Access::Public });
     functions_.back().isNoexcept = pendingNoexcept_;
+    functions_.back().deleted = special == SpecialDef::Deleted;
     pendingNoexcept_ = false;
     if (pendingExplicitConversion_ && isConversionName(instantiationName(name)))
         functions_.back().isExplicit = true;
@@ -4055,6 +4209,8 @@ Parser::overloadsOf(const std::string &name) const {
 const Parser::Signature *Parser::findFunction(const std::string &name) const {
     const std::vector<std::size_t> *set = overloadsOf(name);
     if (set == nullptr || set->size() != 1) return nullptr;
+    // Its one caller names the function as a value, which is a use: [dcl.fct.def.delete]/2.
+    refuseDeleted(functions_[(*set)[0]], peek().pos);
     return &functions_[(*set)[0]];
 }
 
