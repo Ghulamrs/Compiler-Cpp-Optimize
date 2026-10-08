@@ -1,0 +1,1 @@
+x86_64-linux  clang emits only the C2 variant of a constructor defined inside its class, where cxx1 emits C1 and C2 - the difference implicit-move.nonames records; a constexpr constructor is inline wherever it is defined, so it cannot be moved out of line to meet it. Measured 2026-10-08 with VS clang 19.1.5: the four cxx1-only names are all C1.

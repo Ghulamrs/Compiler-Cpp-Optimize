@@ -57,7 +57,8 @@ int main() {
     printf("%d %d %d\n", (int)sizeof(Small), (int)Small::B, (int)sizeof(Dir));
     printf("%d %d %d\n", (int)Dir::Up, (int)Plain::Two, One);
     printf("%lld %d\n", (long long)Later::Far, (int)Opaque::Shown);
-    printf("%d %d\n", Red, Up);
+    const int *up = &Up;
+    printf("%d %d\n", Red, *up);
     n::Mode m = n::Mode::On;
     C x;
     x.k = C::Kind::Node;

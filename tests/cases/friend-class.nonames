@@ -1,0 +1,1 @@
+x86_64-linux  clang emits only the C2 variant of a constructor written inside its class or by the compiler (Vault's, for its member initialiser), where cxx1 emits C1 and C2 - the difference implicit-move.nonames records. Measured 2026-10-08 with VS clang 19.1.5: the three cxx1-only names are all C1; x86_64-windows and arm64-darwin agree on every name.

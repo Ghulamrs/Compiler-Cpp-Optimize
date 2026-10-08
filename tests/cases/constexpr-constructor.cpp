@@ -34,6 +34,7 @@ int main() {
     int rs = r.sum();
     printf("%d %d\n", rs, r.z);
     int arr[twice(3)];
-    printf("%d\n", (int)(sizeof arr / sizeof arr[0]));
+    int six = twice(3);
+    printf("%d %d\n", (int)(sizeof arr / sizeof arr[0]), six);
     return 0;
 }
