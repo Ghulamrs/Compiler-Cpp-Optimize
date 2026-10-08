@@ -468,8 +468,10 @@ void MasmSpelling::weakDefinition(const std::string &name) {
 // ALIGN() the simplified .DATA, .CONST and .DATA? (PARA, 16) cannot give an
 // `alignas(64)` object; its name carries the alignment, since attributes may not change.
 void MasmSpelling::openDataBlock(int align) {
-    std::string name = seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata";
     const bool comdat = !pendingComdat_.empty();
+    // A COMDAT's block takes the classic name its section is made from: `.data` alone is the .DATA directive.
+    std::string name = comdat ? (seg_ == Bss ? "_BSS" : seg_ == Data ? "_DATA" : "CONST")
+                              : (seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata");
     if (!comdat) name += "$a" + std::to_string(align);
     o_ += std::string("\n") + name + " SEGMENT" + (seg_ == Const ? " READONLY" : "") +
           " ALIGN(" + std::to_string(align < 16 ? 16 : align) + ")" +
