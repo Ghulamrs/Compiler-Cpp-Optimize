@@ -7,15 +7,38 @@
 #include <climits>
 #include <cstring>
 
-// **An alias declaration is C++11 and is not a using-declaration** - it names
-// a type where the other names an entity, and it is what a program writes in
-// place of a typedef.
-void Parser::refuseAliasDeclaration() {
-    if (!peek().is("using")) return;
-    if (peekAt(1).kind != TokenKind::Ident || !peekAt(2).is("=")) return;
-    src_.fail(peek().pos, "an alias declaration - 'using X = T;' - is not "
-                          "supported yet, though it is C++11: 'typedef T X;' "
-                          "says the same thing here");
+// [dcl.typedef]/2: `using X = T;` names T as `typedef T X;` would, in whichever scope it stands -
+// `prefix` is what the key takes there (a namespace's, a class's tag and "::", or nothing in a block).
+bool Parser::aliasDeclaration(const std::string &prefix) {
+    if (!peek().is("using")) return false;
+    if (peekAt(1).kind != TokenKind::Ident || !(peekAt(2).is("=") || peekAt(2).is("["))) return false;
+    at_++;
+    const std::size_t pos = peek().pos;
+    const std::string name = peek().text;
+    at_++;
+    skipAttributes();
+    expect("=");
+    const std::size_t typeAt = peek().pos;
+    StorageClass sc;
+    const Type *t = specifiers(&sc);
+    if (sc != StorageNone)
+        src_.fail(typeAt, "an alias declaration names a type, and a storage class is not part of one");
+    if (t->unqualified()->kind() == Kind::Deduced)
+        src_.fail(typeAt, "an alias declaration names a type, and 'auto' deduces one from an "
+                          "initialiser it does not have");
+    const Declared d = declarator(t, true);
+    if (!d.name.empty())
+        src_.fail(d.pos, "an alias declaration names a type, and '" + d.name + "' would declare something "
+                         "of that type - write 'using " + name + " = T;' with T a type alone");
+    expect(";");
+    const std::string key = prefix + name;
+    std::unordered_map<std::string, std::size_t>::const_iterator had = typedefIndex_.find(key);
+    if (had != typedefIndex_.end() && typedefs_[had->second].type != d.type)
+        src_.fail(pos, "'" + name + "' is declared twice, and not as the same type: it was '" +
+                       typedefs_[had->second].type->describe() + "' and is now '" + d.type->describe() + "'");
+    typedefIndex_[key] = typedefs_.size();
+    typedefs_.push_back(TypedefName{ key, d.type });
+    return true;
 }
 
 // **`= default` and `= delete` sit exactly where `= 0` does**, after the virt-specifiers, and every
@@ -178,6 +201,7 @@ bool Parser::staticAssertion() {
 // *not* part of the function's type - measured, both spellings mangle alike - so what
 // it buys is `noexcept(e)`. `throw()` is taken as one; `throw(int)` is refused.
 bool Parser::exceptionSpecification() {
+    skipAttributes();
     bool noexc = false;
     if (consume("noexcept")) {
         noexc = true;

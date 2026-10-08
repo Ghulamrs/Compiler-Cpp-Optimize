@@ -99,7 +99,7 @@ void Parser::topLevel(Program &program) {
     // here on. A using-*declaration*, `using N::f;`, names one thing and is a
     // different rule; it is refused by name.
     if (peek().is("using")) {
-        refuseAliasDeclaration();
+        if (aliasDeclaration(namespacePrefix())) return;
         const std::size_t pos = peek().pos;
         at_++;
         // **`using N::f;` names one thing, and what it leaves behind is an

@@ -2121,8 +2121,12 @@ private:
                                          const std::vector<const Type *> &argTypes, std::size_t pos);
     bool deduceFromArgument(const Type *param, const Type *arg, std::vector<const Type *> *binding,
                             std::vector<long long> *values, std::string *why);
-    // `using X = T;` is an alias declaration and not a using-declaration.
-    void refuseAliasDeclaration();
+    // `using X = T;` is an alias declaration and not a using-declaration: true if one was read.
+    bool aliasDeclaration(const std::string &prefix);
+    // ---- WS-C2 (review 2026-10-08): attributes read and ignored, [dcl.attr.grammar]/5 ----
+    bool skipAttributes();
+    void skipBalanced();
+    std::size_t lastAttributeEnd_ = static_cast<std::size_t>(-1);
     bool exceptionSpecification();
     // ---- WS-C1 (review 2026-10-08): the virt-specifier-seq and `= default` / `= delete`, read behind the exception specification ----
     VirtSpecifiers pendingVirt_;
