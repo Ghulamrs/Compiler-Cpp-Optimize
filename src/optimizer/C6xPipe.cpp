@@ -18,8 +18,7 @@ namespace c6x {
 namespace {
 
 int tracing() {
-    static int t = -1;
-    if (t < 0) t = std::getenv("CPP11_PIPE") ? std::atoi(std::getenv("CPP11_PIPE")) : 0;
+    static const int t = std::getenv("CPP11_PIPE") ? std::atoi(std::getenv("CPP11_PIPE")) : 0;
     return t;
 }
 
