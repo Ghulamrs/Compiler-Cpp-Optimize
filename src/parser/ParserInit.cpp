@@ -40,16 +40,10 @@ Parser::Init Parser::parseInitialiser() {
     return in;
 }
 
-bool Parser::atBracedInitialiser(const std::string &name) {
-    if (!peek().is("{")) return false;
-    if (!peekAt(1).is("}"))
-        src_.fail(peek().pos, "'" + name + "{...}' is list-initialisation, and "
-                              "that is not supported yet - write '" + name +
-                              " = {...}', which for everything this compiler "
-                              "reads braces on means the same thing. Empty "
-                              "braces, '" + name + "{}', are read: they "
-                              "value-initialise");
-    return true;
+// `T x{...}` - direct-list-initialisation, [dcl.init.list]/3: for an aggregate or a scalar
+// the same braces `= {...}` reads, and the readers of the Init that follows do the rest.
+bool Parser::atBracedInitialiser(const std::string &) {
+    return peek().is("{");
 }
 
 // From an `=`, `(` or `{` to the end of its initialiser: a depth-0 `,` or `;`, the
@@ -907,20 +901,28 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
     std::vector<ExprPtr> &args = ci.args;
     ci.copyInit = valueInitCopied;
 
-    // **A braced initialiser, and the answers it has.** An initializer_list
-    // constructor takes the braces as a list - [over.match.list]; a member
-    // initialiser makes the class no aggregate in C++11; the rest is refused.
+    // **A braced initialiser, [over.match.list].** An initializer_list constructor takes the
+    // braces as a list; otherwise the elements are the arguments and every constructor is a
+    // candidate - unless the class wrote only a member initialiser, which is C++14's aggregate.
     if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
         const Type *ilType = nullptr;
         const Signature *ilCtor =
             initializerListConstructor(d.type->unqualified(), &ilType);
-        if (ilCtor != nullptr) {
+        if (isInitializerListType(d.type)) {
+            // [dcl.init.list]/3: the list object itself, over its backing array.
+            consume("=");
+            Init in = parseInitialiser();
+            args.push_back(buildInitializerList(d.type->unqualified(), in, d.pos, ci.ilSetup));
+            ci.copyInit = true;
+            ci.listInit = true;
+        } else if (ilCtor != nullptr) {
             consume("=");
             Init in = parseInitialiser();
             args.push_back(buildInitializerList(ilType, in, d.pos, ci.ilSetup));
             ci.copyInit = true;
             ci.listInit = true;
-        } else if (hasMemberInitialiser(d.type->tag())) {
+        } else if (hasMemberInitialiser(d.type->tag()) &&
+                   onlyImplicitConstructors(d.type->tag())) {
             src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
                              "initialiser on a member, so in C++11 it "
                              "is not an aggregate and a braced list "
@@ -929,11 +931,11 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
                              "Give the class a constructor, or take "
                              "the member initialiser off");
         } else {
-            src_.fail(d.pos, "list-initialisation - '" + d.name +
-                             "{...}' calling a constructor - is not "
-                             "supported yet unless the class has an "
-                             "initializer_list constructor; write the "
-                             "arguments in parentheses");
+            const bool copyList = consume("=");
+            Init in = parseInitialiser();
+            listConstructor(d.type->unqualified(), in, args, copyList, d.pos);
+            ci.copyInit = copyList;
+            ci.listInit = true;
         }
     }
     // **A braced list written as the argument**, `Row r({1, 2})`: [dcl.init]/16
@@ -960,6 +962,7 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
                              d.type->describe() + " " + d.name +
                              ";' for the default constructor");
         parseArguments(args);
+        buildBracedArguments(constructorKey(d.type->tag()), args, d.pos);
     } else if (consume("=")) {
         // **Copy-initialisation.** `X b = a;` is a constructor called with one
         // argument, chosen by the ordinary overload rules. What separates it
@@ -1151,6 +1154,10 @@ std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
                                                      const std::string &symbol,
                                                      const std::string &helper) {
     CtorInit ci = readConstructorInitialiser(d);
+    if (ci.listInit && isInitializerListType(d.type))
+        src_.fail(d.pos, "'" + d.name + "' is a 'std::initializer_list' with static storage made "
+                         "from braces, whose array would have to be static too - that is not "
+                         "supported yet; give the list automatic storage");
     std::vector<StmtPtr> out;
     for (std::size_t z = 0; z < ci.ilSetup.size(); z++)
         out.push_back(std::move(ci.ilSetup[z]));

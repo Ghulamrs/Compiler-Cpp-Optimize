@@ -1080,12 +1080,21 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
 
     const std::size_t resume = at_;
     if (paren) at_++;
-    else consume("=");
-    if (peek().is("{"))
-        src_.fail(peek().pos, "'auto' from a braced initialiser is not "
-                              "supported yet - it deduces an "
-                              "initializer_list, which this compiler has no "
-                              "library for");
+    else if (!consume("=") && peek().is("{"))
+        src_.fail(peek().pos, "'auto " + name + "{...}' deduces 'std::initializer_list' by "
+                              "C++11's words and the element's type by N3922's, which "
+                              "compilers apply to C++11 - not supported yet; write '= {...}' "
+                              "for the list, or '= ...' for the one value");
+    if (peek().is("{")) {
+        const Type *il = deduceBracedAuto(name, pos);
+        at_ = resume;
+        if (declared->kind() != Kind::Deduced &&
+            !(declared->unqualified() != declared && declared->unqualified()->kind() == Kind::Deduced))
+            src_.fail(pos, "'" + name + "' is declared '" + declared->describe() + "' from a braced "
+                           "list - only 'auto' and 'const auto' deduce one here, a reference or a "
+                           "pointer to the list is not supported yet");
+        return deduceAutoFrom(declared, il, name, pos);
+    }
     // **Read for its type and rewound**, so this reading built nothing: the
     // real one happens below, from the same tokens.
     const Type *from = nullptr;
@@ -1798,6 +1807,8 @@ ExprPtr Parser::templateCall(Program *program) {
                 at_++;
                 return classTemporary(cls, pos);
             }
+            if (cls != nullptr && cls->isStructOrUnion() && peek().is("{"))
+                return listTemporary(cls, pos);
             // **`CNeeds<(N == 3)>::check()` - a static member through a
             // template-id.**
             if (cls != nullptr && cls->isStructOrUnion() && peek().is("::")) {

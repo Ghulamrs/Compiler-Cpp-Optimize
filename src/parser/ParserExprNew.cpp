@@ -105,38 +105,16 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     if (peek().is("{")) {
         const Type *ilType = nullptr;
         if (initializerListConstructor(plain, &ilType) != nullptr) {
-            std::vector<StmtPtr> setup;
             Init in = parseInitialiser();
-            ExprPtr list = buildInitializerList(ilType, in, pos, setup);
+            args.push_back(initializerListExpr(ilType, in, pos));
             expect(")");
-            ExprPtr chain;
-            for (std::size_t i = 0; i < setup.size(); i++) {
-                ExprStmt *one = dynamic_cast<ExprStmt *>(setup[i].get());
-                if (one == nullptr)
-                    src_.fail(pos, "this braced list needs setup an expression "
-                                   "cannot carry - name a variable of type '" +
-                                   plain->describe() + "' and initialise it "
-                                   "with the braces instead");
-                ExprPtr e = one->release();
-                const Type *t = e->type();
-                if (chain == nullptr) { chain = std::move(e); continue; }
-                ExprPtr joined(new Comma(std::move(chain), std::move(e)));
-                joined->setType(t);
-                chain = std::move(joined);
-            }
-            if (chain != nullptr) {
-                const Type *lt = list->type();
-                ExprPtr seq(new Comma(std::move(chain), std::move(list)));
-                seq->setType(lt);
-                list = std::move(seq);
-            }
-            args.push_back(std::move(list));
             builtArgs = true;      // the ')' is consumed above
         }
     }
     if (!builtArgs) parseArguments(args);
 
     const std::string key = constructorKey(plain->tag());
+    buildBracedArguments(key, args, pos);
     if (hasConstructors(plain->tag()))
         convertThroughConversionFunction(args, plain, true, pos);
     // **`T(t)` for a class whose constructors leave its copy trivial** is a
@@ -210,6 +188,238 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
                        (ctor.access == Access::Private ? "private" : "protected"));
     const bool zeroFirst = valueInit && ctor.implicit;
     return constructTemporary(plain, ctor, std::move(args), zeroFirst, pos);
+}
+
+// The backing array and the list object are statements; an expression carries them
+// as a comma chain in front of the list, the shape `Row({1, 2})` already used.
+ExprPtr Parser::initializerListExpr(const Type *ilType, Init &in, std::size_t pos) {
+    std::vector<StmtPtr> setup;
+    ExprPtr list = buildInitializerList(ilType, in, pos, setup);
+    ExprPtr chain;
+    for (std::size_t i = 0; i < setup.size(); i++) {
+        ExprStmt *one = dynamic_cast<ExprStmt *>(setup[i].get());
+        if (one == nullptr)
+            src_.fail(pos, "this braced list needs setup an expression cannot carry - "
+                           "name a variable and initialise it with the braces instead");
+        ExprPtr e = one->release();
+        const Type *t = e->type();
+        if (chain == nullptr) { chain = std::move(e); continue; }
+        ExprPtr joined(new Comma(std::move(chain), std::move(e)));
+        joined->setType(t);
+        chain = std::move(joined);
+    }
+    if (chain == nullptr) return list;
+    const Type *lt = list->type();
+    ExprPtr seq(new Comma(std::move(chain), std::move(list)));
+    seq->setType(lt);
+    return seq;
+}
+
+bool Parser::isInitializerListType(const Type *t) {
+    const Type *p = t->unqualified();
+    return p->isStructOrUnion() && p->isSpecialization() && p->templateName() == "initializer_list" &&
+           (p->templateNamespace() == "std" || p->templateNamespace() == "std::");
+}
+
+// The element type is a typedef no program can spell, so any type can be written as one token.
+const Type *Parser::initializerListOf(const Type *elem, std::size_t pos) {
+    std::map<std::string, TemplateDecl>::const_iterator it = findTemplate("std::initializer_list");
+    if (it == templates_.end() || !it->second.isClass ||
+        (it->second.ns != "std" && it->second.ns != "std::"))
+        src_.fail(pos, "a braced list here makes a 'std::initializer_list', and none is declared - "
+                       "include <initializer_list>");
+    const std::string name = "$ilelem" + std::to_string(ilElemSeq_++);
+    declareTypeName(name, elem);
+    const std::size_t resume = at_;
+    at_ = tokens_.size();
+    Token t;
+    t.pos = pos;
+    t.kind = TokenKind::Punct; t.text = "<";   tokens_.push_back(t);
+    t.kind = TokenKind::Ident; t.text = name;  tokens_.push_back(t);
+    t.kind = TokenKind::Punct; t.text = ">";   tokens_.push_back(t);
+    t.kind = TokenKind::End;   t.text = "";    tokens_.push_back(t);
+    const TemplateDecl decl = it->second;
+    const Type *made = instantiateClass(decl, pos);
+    at_ = resume;
+    return made;
+}
+
+// [dcl.spec.auto]/6 with [temp.deduct.call]/1: every element deduces E, and they must agree.
+const Type *Parser::deduceBracedAuto(const std::string &name, std::size_t pos) {
+    const Type *elem = nullptr;
+    const std::size_t brace = peek().pos;
+    {
+        Discarded held(this);
+        Init in = parseInitialiser();
+        if (in.items.empty())
+            src_.fail(pos, "'" + name + "' is declared 'auto' from '{}', which has no element to "
+                           "deduce a type from");
+        for (std::size_t i = 0; i < in.items.size(); i++) {
+            if (in.items[i].isList)
+                src_.fail(in.items[i].pos, "'" + name + "' is declared 'auto' from a list holding "
+                                           "a braced list, which has no type to deduce");
+            const Type *e = decayedType(in.items[i].value->type());
+            if (elem != nullptr && e != elem)
+                src_.fail(brace, "'" + name + "' is declared 'auto' from a braced list "
+                                           "whose elements are '" + elem->describe() + "' and '" +
+                                           e->describe() + "' - they must be one type");
+            elem = e;
+        }
+    }
+    return initializerListOf(elem, brace);
+}
+
+bool Parser::onlyImplicitConstructors(const std::string &tag) const {
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(tag));
+    if (set == nullptr) return true;
+    for (std::size_t i = 0; i < set->size(); i++)
+        if (!functions_[(*set)[i]].implicit) return false;
+    return true;
+}
+
+// A nested list is refused by name rather than built against a parameter type that is
+// not known until the constructor is chosen; the elements go in as written.
+Parser::Signature Parser::listConstructor(const Type *plain, Init &in,
+                                          std::vector<ExprPtr> &args, bool copyList,
+                                          std::size_t pos) {
+    std::vector<std::size_t> where;
+    for (std::size_t i = 0; i < in.items.size(); i++) {
+        if (in.items[i].isList)
+            src_.fail(in.items[i].pos, "a braced list inside the braces that call a constructor "
+                                       "of '" + plain->describe() + "' is not supported yet - "
+                                       "write the inner one as 'T{...}' with its type named");
+        args.push_back(std::move(in.items[i].value));
+        where.push_back(in.items[i].pos);
+    }
+    const std::string key = constructorKey(plain->tag());
+    convertThroughConversionFunction(args, plain, !copyList, pos);
+    Signature ctor = resolveOverload(key, args, pos);
+    // [over.match.list]/1: copy-list-initialisation may not choose an explicit constructor.
+    if (copyList && ctor.isExplicit)
+        src_.fail(pos, "'" + plain->describe() + "' has a constructor taking these arguments "
+                       "and it is 'explicit', so '= {...}' may not choose it - write the braces "
+                       "without the '=', which asks for it by name");
+    // [dcl.init.list]/7 holds for each element against the parameter it reaches.
+    for (std::size_t i = 0; i < args.size() && i < ctor.params.size(); i++)
+        checkNarrowing(ctor.params[i], *args[i], where[i], std::string());
+    return ctor;
+}
+
+// `T{}` zeroes the scalar; `T{x}` is x converted, never narrowed; two elements are refused.
+ExprPtr Parser::scalarFromList(const Type *to, Init &in, std::size_t pos) {
+    if (in.items.size() > 1)
+        src_.fail(in.items[1].pos, "'" + to->describe() + "{...}' takes one value, and this "
+                                   "list has " + std::to_string(in.items.size()));
+    if (in.items.size() == 1 && in.items[0].isList)
+        src_.fail(in.items[0].pos, "'" + to->describe() + "{{...}}' - braces inside the braces "
+                                   "of a scalar, which has no member to take them");
+    if (in.items.empty()) {
+        ExprPtr z;
+        if (to->isPointer() || to->isNullPtr()) {
+            z.reset(new Num(0LL));
+            z->setType(types_.get(Kind::NullPtr));
+        } else if (to->isFloating()) {
+            z.reset(new Num(0.0L));
+            z->setType(types_.doubleType());
+        } else {
+            z.reset(new Num(0LL));
+            z->setType(types_.intType());
+        }
+        return convert(std::move(z), types_.withoutConst(to));
+    }
+    ExprPtr v = decay(std::move(in.items[0].value));
+    checkNarrowing(to, *v, in.items[0].pos, std::string());
+    checkAssignable(*v, to, pos, "'" + to->describe() + "{...}'");
+    return convert(std::move(v), types_.withoutConst(to));
+}
+
+// The object is a hidden local of this frame, built by the statements `emitInit` writes
+// for a declaration, chained in front of its address; destroyed with the full expression.
+ExprPtr Parser::aggregateTemporary(const Type *plain, Init &in, std::size_t pos) {
+    const std::string name = "$list" + std::to_string(listTemps_++);
+    const int off = declare(name, plain, pos);
+    std::vector<StmtPtr> stmts;
+    std::vector<InitStep> path;
+    emitInit(name, path, plain, in, stmts);
+    ExprPtr chain;
+    for (std::size_t i = 0; i < stmts.size(); i++) {
+        ExprStmt *one = dynamic_cast<ExprStmt *>(stmts[i].get());
+        if (one == nullptr)
+            src_.fail(pos, "'" + plain->describe() + "{...}' needs setup an expression cannot "
+                           "carry - name a variable and initialise it with the braces instead");
+        ExprPtr e = one->release();
+        const Type *t = e->type();
+        if (chain == nullptr) { chain = std::move(e); continue; }
+        ExprPtr joined(new Comma(std::move(chain), std::move(e)));
+        joined->setType(t);
+        chain = std::move(joined);
+    }
+    if (destructorOf(plain) != nullptr) {
+        const int guard = guardFlag();
+        pendingTemps_.push_back(Temporary{ off, plain, guard });
+        ExprPtr set = setGuard(guard, 1);
+        if (chain == nullptr) chain = std::move(set);
+        else {
+            ExprPtr mark(new Comma(std::move(chain), std::move(set)));
+            mark->setType(types_.intType());
+            chain = std::move(mark);
+        }
+    }
+    ExprPtr obj(Var::local(name, off));
+    obj->setType(plain);
+    if (chain == nullptr) { obj->setXvalue(); return obj; }
+    ExprPtr at(new Unary('&', std::move(obj)));
+    at->setType(types_.pointerTo(plain));
+    ExprPtr both(new Comma(std::move(chain), std::move(at)));
+    both->setType(types_.pointerTo(plain));
+    ExprPtr made(new Unary('*', std::move(both)));
+    made->setType(plain);
+    made->setXvalue();
+    return made;
+}
+
+// [dcl.init.list]/3 in order: an initializer_list constructor, then the other
+// constructors, an aggregate by its members, a scalar from one element.
+ExprPtr Parser::listTemporaryFrom(const Type *to, Init &in, bool copyList, std::size_t pos) {
+    const Type *plain = to->unqualified();
+    if (plain->isVoid()) src_.fail(pos, "'void{...}' has no value");
+    if (plain->isArray())
+        src_.fail(pos, "'" + to->describe() + "{...}' - an array is not a type a temporary "
+                       "can have; name a variable for it");
+    if (!plain->isStructOrUnion()) return scalarFromList(plain, in, pos);
+    if (isInitializerListType(plain)) return initializerListExpr(plain, in, pos);
+    if (!plain->tag().empty() && hasConstructors(plain->tag())) {
+        checkNotAbstract(plain, pos, "the temporary '" + plain->describe() + "{...}' would make");
+        const Type *ilType = nullptr;
+        if (!in.items.empty() && initializerListConstructor(plain, &ilType) != nullptr) {
+            std::vector<ExprPtr> args;
+            args.push_back(initializerListExpr(ilType, in, pos));
+            const Signature ctor = resolveOverload(constructorKey(plain->tag()), args, pos);
+            return constructTemporary(plain, ctor, std::move(args), false, pos);
+        }
+        if (in.items.empty() || !onlyImplicitConstructors(plain->tag()) ||
+            !hasMemberInitialiser(plain->tag())) {
+            std::vector<ExprPtr> args;
+            Signature ctor = listConstructor(plain, in, args, copyList, pos);
+            applyDefaults(ctor, args, pos);
+            if (ctor.access != Access::Public && !insideAccessOf(plain, ctor.access) &&
+                !isFriendOf(plain))
+                src_.fail(pos, "'" + plain->describe() + "' has no public constructor taking "
+                               "these arguments - the one that matches is " +
+                               (ctor.access == Access::Private ? "private" : "protected"));
+            return constructTemporary(plain, ctor, std::move(args), in.items.empty() && ctor.implicit, pos);
+        }
+    }
+    if (hasMemberInitialiser(plain->tag()))
+        src_.fail(pos, "'" + plain->describe() + "' writes an initialiser on a member, so in "
+                       "C++11 it is not an aggregate and a braced list cannot initialise it - "
+                       "C++14 changed that rule and this compiler is C++11");
+    return aggregateTemporary(plain, in, pos);
+}
+
+ExprPtr Parser::listTemporary(const Type *to, std::size_t pos) {
+    Init in = parseInitialiser();
+    return listTemporaryFrom(to, in, false, pos);
 }
 
 // **The conversion function on `from` that answers something usable.** The
@@ -1125,18 +1335,19 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     std::vector<ExprPtr> ctorArgs;
     bool hasInit = false;
     ExprPtr init;
-    // **`new T{}` is `new T()`.** [dcl.init]/11 sends both to value-initialisation,
-    // and the empty pair is the only braces read here: every branch below takes
-    // "nothing inside the parentheses" to mean exactly that.
+    // **`new T{}` is `new T()`**, [dcl.init]/11; `new T{...}` list-initialises the object,
+    // [expr.new]/15 - a constructor's arguments, or an aggregate or scalar made as `T{...}`.
     const bool braces = peek().is("{");
-    if (braces && !peekAt(1).is("}"))
-        src_.fail(peek().pos, "'new " + made->describe() + "{...}' is "
-                              "list-initialisation, and that is not supported "
-                              "yet - write 'new " + made->describe() +
-                              "(...)'. The empty pair, 'new " +
-                              made->describe() + "{}', is read: it "
-                              "value-initialises");
-    if (braces) {
+    if (braces && !peekAt(1).is("}")) {
+        if (array)
+            src_.fail(peek().pos, "'new " + made->describe() + "[n]{...}' - a braced list for "
+                                  "the elements of 'new[]' is not supported yet; the empty "
+                                  "pair value-initialises them");
+        Init in = parseInitialiser();
+        if (constructed) listConstructor(made, in, ctorArgs, false, pos);
+        else init = listTemporaryFrom(made, in, false, pos);
+        hasInit = true;
+    } else if (braces) {
         at_ += 2;
         hasInit = true;
     } else if (peek().is("(")) {
@@ -1387,6 +1598,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     if (constructed) {
+        buildBracedArguments(constructorKey(made->tag()), ctorArgs, pos);
         convertThroughConversionFunction(ctorArgs, made, true, pos);
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);

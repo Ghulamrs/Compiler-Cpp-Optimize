@@ -2205,12 +2205,47 @@ private:
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 
     // ----- WS-E2: initialisation, expressions, casts (review 2026-10-08)
-    // Where `base` sits inside `derived` along an accessible, non-virtual path - the
-    // offset a static_cast downcast walks back by, [expr.static.cast]/11; -1 if none,
-    // and *viaVirtual says the path crosses a virtual base.
+
+    // `base`'s offset in `derived` by an accessible path, -1 if none; *viaVirtual if it crosses a virtual base.
     int downcastOffset(const Type *derived, const Type *base, bool *viaVirtual) const;
     // `(D *)p` for a `B *p`: the pointer moved back by `off` bytes, a null kept null.
     ExprPtr downcastPointer(ExprPtr p, const Type *to, int off);
+    // [over.match.list]'s second phase: the braces' elements as a constructor's arguments,
+    // `args` filled from `in`; a copy-list-init refuses an `explicit` one; no element narrows.
+    Signature listConstructor(const Type *plain, Init &in, std::vector<ExprPtr> &args,
+                              bool copyList, std::size_t pos);
+    // `T{...}` as an expression, [expr.type.conv]/2 - the '{' still ahead.
+    ExprPtr listTemporary(const Type *to, std::size_t pos);
+    // A list-initialised temporary of `to` from an already-read list, as an xvalue.
+    ExprPtr listTemporaryFrom(const Type *to, Init &in, bool copyList, std::size_t pos);
+    // An aggregate built in a hidden local of this frame from its braced list.
+    ExprPtr aggregateTemporary(const Type *plain, Init &in, std::size_t pos);
+    // A scalar from its one braced element, [dcl.init.list]/3 - narrowing refused.
+    ExprPtr scalarFromList(const Type *to, Init &in, std::size_t pos);
+    // A braced list over `ilType`'s element, its backing array's setup folded in front.
+    ExprPtr initializerListExpr(const Type *ilType, Init &in, std::size_t pos);
+    // A braced call argument is parsed as an Init behind a placeholder and built once
+    // the parameter is known - here, before the overload set is ranked.
+    struct BracedArg { const Expr *placeholder; Init init; };
+    std::vector<BracedArg> bracedArgs_;
+    ExprPtr bracedPlaceholder(Init in);
+    bool isBracedPlaceholder(const Expr &e) const;
+    void buildBracedArguments(const std::string &key, std::vector<ExprPtr> &args,
+                              std::size_t pos, const Type *object = nullptr);
+    void buildBracedArguments(const std::vector<const Type *> &params,
+                              std::vector<ExprPtr> &args, std::size_t pos);
+    ExprPtr bracedArgumentFor(const Type *param, Init &in, std::size_t pos);
+    Signature resolveOverloadBraced(const std::string &key, std::vector<ExprPtr> &args,
+                                    std::size_t pos, const Type *object = nullptr);
+    bool onlyImplicitConstructors(const std::string &tag) const;
+    int listTemps_ = 0;
+    // `std::initializer_list<E>` itself, which a braced list makes rather than calls.
+    static bool isInitializerListType(const Type *t);
+    // `std::initializer_list<elem>`, instantiated through tokens naming a hidden typedef.
+    const Type *initializerListOf(const Type *elem, std::size_t pos);
+    int ilElemSeq_ = 0;
+    // `auto x = {...}`, the '{' ahead: the list's one element type, read and rewound.
+    const Type *deduceBracedAuto(const std::string &name, std::size_t pos);
 
     Program *current_ = nullptr;
 };

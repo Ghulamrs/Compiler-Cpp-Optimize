@@ -1,0 +1,7 @@
+direct 1 2 copy 3 4 from 1 2
+explicit 5
+list 3 10 pair -1 30 one 1 40
+member-init 7 11 7 12
+aggregate 1 2.5 3 4.5 scalar 6 7
+static 13 14 15 16.5 global 8 9 5 6.5
+LEDGER built=10 gone=10 live=0 double=0 phantom=0 over=0 lost=0

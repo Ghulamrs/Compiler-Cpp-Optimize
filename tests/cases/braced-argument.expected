@@ -1,0 +1,5 @@
+class 12 34
+aggregate 56 78
+scalar 9 10
+member 103 107
+LEDGER built=3 gone=3 live=0 double=0 phantom=0 over=0 lost=0

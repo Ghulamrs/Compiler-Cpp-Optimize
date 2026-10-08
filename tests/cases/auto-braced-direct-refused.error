@@ -1,0 +1,1 @@
+deduces 'std::initializer_list' by C++11's words and the element's type by N3922's

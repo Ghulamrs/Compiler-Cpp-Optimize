@@ -1,0 +1,6 @@
+argument 3
+bound 3 4 member 6
+returned 7 14
+aggregate 8 11 12 13
+scalar 14 15 16
+LEDGER built=3 gone=3 live=0 double=0 phantom=0 over=0 lost=0

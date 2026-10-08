@@ -106,9 +106,8 @@ So what is still missing is `<memory>`, `<exception>`,
 the rest - and inside the headers that do exist, whatever a program reaches for
 that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
-It is also why a *language* feature is refused in one place: `auto` from a
-braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:1061`.
+`<initializer_list>` is there, so `auto x = {1, 2}` deduces one and a braced
+argument reaches an `initializer_list` parameter.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -276,17 +275,19 @@ SFINAE and variadic packs. What is left:
 
 ## Initialisation, and braces
 
-- **list-initialisation calling a constructor**, `P p{1, 2}` — write the
-  arguments in parentheses. Two shapes *are* read: the *empty* pair, `{}`,
-  which is value-initialisation; and a braced list handed to a class that
-  declares a `std::initializer_list` constructor, which is built through it.
-  `src/parser/ParserInit.cpp:899`, `src/parser/ParserInit.cpp:39`
-- **`T{...}` with a value in the braces** — list-initialisation written as an
-  expression; write the value in parentheses. The empty pair is read: `T{}`
-  value-initialises, as `T()` does. `src/parser/ParserExpr.cpp:470`
-- **`T{}` on a class** — value-initialising a class with braces *in an
-  expression*; `T()` does the same and is read.
-  `src/parser/ParserExpr.cpp:476`
+- **a braced list nested inside the braces that call a constructor** -
+  `P p{1, {2, 3}}`; name the inner one's type, `T{...}`.
+  `src/parser/ParserExprNew.cpp:288`
+- **a braced call argument on a road that never asks the parameter's type** -
+  a call through a function pointer or a member pointer; name the type,
+  `T{...}`. `src/parser/ParserExprCall.cpp:488`
+- **`auto x{...}`** - C++11 makes it `std::initializer_list`, N3922 the
+  element's type, and compilers apply N3922 to C++11; `auto x = {...}` deduces
+  the list. `src/parser/ParserTemplate.cpp:1084`
+- **`auto &` or `auto *` from a braced list** - only `auto` and `const auto`
+  deduce `std::initializer_list` here. `src/parser/ParserTemplate.cpp:1093`
+- **a `std::initializer_list` with static storage made from braces** - its
+  backing array would need static storage too. `src/parser/ParserInit.cpp:1158`
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:210`
 - **a braced default argument** — `src/parser/ParserClass.cpp:4019`,
@@ -298,10 +299,6 @@ SFINAE and variadic packs. What is left:
 - **a braced list for an array of a class with a destructor and no
   constructor** - `src/parser/ParserStmt.cpp`
 - **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:645`
-- **`S{...}` as an expression** — list-initialisation one syntax over from the
-  declaration form. `S(...)` calls a constructor, and a plain struct is built
-  by naming its members. `src/parser/ParserExpr.cpp:1398`
-
 ## Objects that would run code before `main`
 
 Dynamic initialisation runs now - [basic.start.init]/2 in the file's own
@@ -349,8 +346,8 @@ declaration order. What is left is the shapes where one object is many:
 - **more than one value in a new-expression** — `src/parser/ParserExprNew.cpp:1143`
 - **`new T[n][m]`** — only the first dimension may be given.
   `src/parser/ParserExprNew.cpp:1091`
-- **`new T{...}`** with a value inside — list-initialisation; the empty pair
-  value-initialises. `src/parser/ParserExprNew.cpp:1117`
+- **`new T[n]{...}`** with values inside - the empty pair value-initialises
+  the elements; `new T{...}` works. `src/parser/ParserExprNew.cpp:1343`
 
 ## Statements, exceptions and control
 

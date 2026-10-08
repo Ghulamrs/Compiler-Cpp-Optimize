@@ -39,10 +39,96 @@ void Parser::parseArguments(std::vector<ExprPtr> &args) {
                 continue;
             }
         }
-        args.push_back(assign());
+        // **A braced list as an argument** is kept behind a placeholder until the parameter
+        // it copy-list-initialises is known - [dcl.init]/16 cannot be applied before that.
+        if (peek().is("{")) args.push_back(bracedPlaceholder(parseInitialiser()));
+        else args.push_back(assign());
         if (consume(")")) break;
         expect(",");
     }
+}
+
+// The placeholder is a `void` constant nothing can rank, so a list that is never
+// built fails resolution rather than reaching a backend.
+ExprPtr Parser::bracedPlaceholder(Init in) {
+    ExprPtr mark(new Num(0LL));
+    mark->setType(types_.get(Kind::Void));
+    bracedArgs_.push_back(BracedArg{ mark.get(), std::move(in) });
+    return mark;
+}
+
+bool Parser::isBracedPlaceholder(const Expr &e) const {
+    for (std::size_t i = 0; i < bracedArgs_.size(); i++)
+        if (bracedArgs_[i].placeholder == &e) return true;
+    return false;
+}
+
+// [over.ics.list] in the one shape built here: the parameter's own type decides what the
+// braces make, and a reference parameter binds to the temporary so made.
+ExprPtr Parser::bracedArgumentFor(const Type *param, Init &in, std::size_t pos) {
+    const Type *to = param->isReference() ? param->referent() : param;
+    return listTemporaryFrom(to, in, true, pos);
+}
+
+void Parser::buildBracedArguments(const std::vector<const Type *> &params,
+                                  std::vector<ExprPtr> &args, std::size_t pos) {
+    for (std::size_t i = 0; i < args.size(); i++) {
+        if (!isBracedPlaceholder(*args[i])) continue;
+        if (i >= params.size())
+            src_.fail(pos, "a braced list is given where this call has no parameter to take it");
+        for (std::size_t k = 0; k < bracedArgs_.size(); k++)
+            if (bracedArgs_[k].placeholder == args[i].get()) {
+                Init in = std::move(bracedArgs_[k].init);
+                bracedArgs_.erase(bracedArgs_.begin() + static_cast<long>(k));
+                args[i] = bracedArgumentFor(params[i], in, pos);
+                break;
+            }
+    }
+}
+
+// Before the set is ranked, every candidate is asked what it takes at a braced position:
+// where they agree the list is built against that type, where they do not it is refused.
+void Parser::buildBracedArguments(const std::string &key, std::vector<ExprPtr> &args,
+                                  std::size_t pos, const Type *object) {
+    bool any = false;
+    for (std::size_t i = 0; i < args.size() && !any; i++) any = isBracedPlaceholder(*args[i]);
+    if (!any) return;
+    const std::string name = object != nullptr ? key : qualifyForLookup(key, &Parser::hasFunctionNamed);
+    const std::vector<std::size_t> *set = overloadsOf(name);
+    if (set == nullptr)
+        src_.fail(pos, "a braced list is given as an argument of '" + key + "', and no function "
+                       "of that name is declared to say what it should make");
+    std::vector<const Type *> params;
+    for (std::size_t i = 0; i < args.size(); i++) {
+        const Type *agreed = nullptr;
+        bool disagree = false;
+        if (isBracedPlaceholder(*args[i]))
+            for (std::size_t k = 0; k < set->size(); k++) {
+                const Signature &f = functions_[(*set)[k]];
+                if (i >= f.params.size()) continue;
+                const Type *p = f.params[i]->isReference() ? f.params[i]->referent()->unqualified()
+                                                           : f.params[i]->unqualified();
+                if (agreed == nullptr) agreed = f.params[i];
+                else if (p != (agreed->isReference() ? agreed->referent()->unqualified()
+                                                     : agreed->unqualified())) disagree = true;
+            }
+        if (disagree)
+            src_.fail(pos, "a braced list is given as argument " + std::to_string(i + 1) + " of '" +
+                           key + "', whose overloads take different types there - name the type, "
+                           "'T{...}', so the list has one thing to make");
+        params.push_back(agreed);
+    }
+    for (std::size_t i = 0; i < args.size(); i++)
+        if (isBracedPlaceholder(*args[i]) && params[i] == nullptr)
+            src_.fail(pos, "a braced list is given as argument " + std::to_string(i + 1) + " of '" +
+                           key + "', and no overload has a parameter there");
+    buildBracedArguments(params, args, pos);
+}
+
+Parser::Signature Parser::resolveOverloadBraced(const std::string &key, std::vector<ExprPtr> &args,
+                                                std::size_t pos, const Type *object) {
+    buildBracedArguments(key, args, pos, object);
+    return resolveOverload(key, args, pos, object);
 }
 
 // **Split from completeCall so that overload resolution can stand between them.**
@@ -54,6 +140,7 @@ ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
                            bool variadic, std::size_t pos) {
     std::vector<ExprPtr> args;
     parseArguments(args);
+    buildBracedArguments(params, args, pos);
     return completeCall(name, symbol, std::move(callee), returns, params,
                         variadic, pos, std::move(args));
 }
@@ -395,6 +482,11 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         src_.fail(pos, "'" + name + "' takes " + (variadic ? "at least " : "") +
                        std::to_string(params.size()) + " argument(s), given " +
                        std::to_string(args.size()));
+    // A list nobody built reaches here from a road that never asked its parameter's type.
+    for (std::size_t i = 0; i < args.size(); i++)
+        if (isBracedPlaceholder(*args[i]))
+            src_.fail(pos, "a braced list as argument " + std::to_string(i + 1) + " of '" + name +
+                           "' is not supported yet on this road - name the type, 'T{...}'");
 
     // **A call through a pointer promises nothing.**
     if (callee != nullptr) mayThrow_++;
@@ -525,7 +617,7 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     if (owner == nullptr) owner = plain;
     std::string key = owner->tag() + "::" + name;
 
-    const Signature &sig = resolveOverload(key, args, pos, cls);
+    const Signature &sig = resolveOverloadBraced(key, args, pos, cls);
     applyDefaults(sig, args, pos);
 
     // Now there IS an inside, and this is where it starts to mean something:
