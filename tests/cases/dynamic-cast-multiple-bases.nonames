@@ -1,0 +1,2 @@
+x86_64-linux  the implicit constructors and destructors the compiler writes for these classes: cxx1 emits their C1 and D1 forms beside the C2 and D2 where clang emits only the forms a use asks for - the difference implicit-move.nonames records, inline by nature with no out-of-line form to switch to. Every type_info and every name the program declares agrees.
+arm64-darwin  the same: the C1 forms of the implicit constructors, and the C2 of Dia's.

@@ -125,10 +125,10 @@ inline, Microsoft calls `__RTCastToVoid`. What is left of it:
 - **`dynamic_cast` to a reference on x86_64-windows** — a failure throws
   `std::bad_cast`, a class this target neither throws nor catches yet; the
   Itanium targets call `__cxa_bad_cast`. And **to an rvalue reference** on
-  every target. `src/parser/ParserExprNew.cpp`
+  every target. `src/parser/ParserExprNew.cpp:880`, `src/parser/ParserExprNew.cpp:877`
 - **`dynamic_cast` through a class with more than one base, on
   x86_64-windows** — the Microsoft hierarchy is written one base deep; the
-  Itanium targets walk `__vmi_class_type_info`. `src/parser/ParserExprNew.cpp`
+  Itanium targets walk `__vmi_class_type_info`. `src/parser/ParserExprNew.cpp:977`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
