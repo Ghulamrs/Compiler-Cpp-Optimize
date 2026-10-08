@@ -10,8 +10,8 @@
 # string-literal rule alone accounts for a pile of them. A number from an
 # untriaged corpus is not a pass rate and must not be quoted as one.
 #
-# What it is for is the *failing set*: run it before a change and after one, and
-# diff tests/out-corpus/FAILING. A case that moves between the two lists is the
+# What it is for is the *failing set*: tests/c-corpus/BASELINE records it (kind and name),
+# and every run names each case that moved from it - still exiting 0. A case that moves between the two lists is the
 # thing worth reading, and until this script existed nothing in the tree could
 # say which cases those were - the number 379/424 was quoted eleven times in
 # CLAUDE.md with no way left to reproduce it.
@@ -66,5 +66,12 @@ done
 
 [ -n "$only" ] && exit 0
 echo "corpus.sh: $passed ran and agreed, $refused refused, $wrong wrong, of 424"
-echo "corpus.sh: the failing set is $OUT/FAILING - diff it across a change"
+awk '{ print $1, $2 }' "$OUT/FAILING" | sed 's/:$//' | sort -k2 > "$OUT/FAILING.names"
+grep -v '^#' tests/c-corpus/BASELINE > "$OUT/BASELINE.names"
+moved=$(diff "$OUT/BASELINE.names" "$OUT/FAILING.names" | grep '^[<>]')
+if [ -z "$moved" ]; then echo "corpus.sh: the failing set is the baseline's (tests/c-corpus/BASELINE)"
+else
+    echo "corpus.sh: moved from tests/c-corpus/BASELINE (< left the failing set, > joined it):"
+    echo "$moved" | sed 's/^/    /'
+fi
 exit 0
