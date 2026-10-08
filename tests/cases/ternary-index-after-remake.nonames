@@ -1,0 +1,3 @@
+x86_64-linux  clang 19 zeroes three locals - `x[4]`, `p[8]` and one of 40 bytes - by calling memset, where cxx1 writes the zeroes inline - an emission difference wearing a naming one, as compare-with-zero.nonames records for memcpy. Measured 2026-10-08 on the Windows box with clang 19.1.5; every name the program declares agrees.
+x86_64-windows  the same memset.
+arm64-darwin  the same, `_memset`.

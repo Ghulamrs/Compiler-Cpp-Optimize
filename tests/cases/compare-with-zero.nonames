@@ -1,0 +1,3 @@
+x86_64-linux  clang 19 initialises the local array `values[]` by a memcpy of 72 bytes from a constant copy, where cxx1 writes the nine stores inline - an emission difference wearing a naming one, the trap CLAUDE.md records under static_assert and explicit. Measured 2026-10-08 on the Windows box with clang 19.1.5; every name the program declares agrees.
+x86_64-windows  the same memcpy.
+arm64-darwin  the same, `_memcpy`.

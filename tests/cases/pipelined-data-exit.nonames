@@ -1,0 +1,3 @@
+x86_64-linux  cxx1 names the static local `main.lengths` where Itanium spells it _ZZ4mainE7lengths - docs/CONFORMANCE.md, "A static local keeps its own name in the object file"; the same object under two names, as static-local-constructor.nonames records. Measured 2026-10-08 on the Windows box with clang 19.1.5; every other name agrees.
+x86_64-windows  the same static local, `main.lengths` against clang's ?lengths@?1??main@@9@4QBHB.
+arm64-darwin  the same as x86_64-linux, under the leading underscore: `_main.lengths` against __ZZ4mainE7lengths.
