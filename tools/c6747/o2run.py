@@ -6,8 +6,13 @@
     tools/c6747/o2run.py collect   fetch each box's results into tests/out-o2run/<stamp>/<box>
     tools/c6747/o2run.py report    the tables, against the stored cl6x reference (o2run/reference-<box>.json)
 
+    tools/c6747/o2run.py no-ti-build [dir]   the cases cl6x 7.4.4 could not build in a collected run
+                                             (default the last), each with its first error, and the
+                                             cases tms6747 does not run at all, each with its reason
+
 The plan (agreed 04-10-2026): the tools are the RIDE 4.7 installed on each box; cl6x 7.4.4 on the CCS 5.5
-simulator is the oracle; the 16 lambda cases are exempt.
+simulator is the oracle. The 16 lambda cases were exempt until the review of 2026-10-08 (D10): they run
+now, and where cl6x cannot build one - it is C++03 - clang's recorded output is the stand-in.
   Windows: cpp11 -O2 on everything - every case, kernel, program, example, the compilerpp project and
            all ten Compiler++ harness files; cpp11 -O1, cl6x 7.4.4 -O2 and cl6x 8.2.2 -O2 on everything
            but the two Compiler++ programs (TI's builds of those take 13 minutes and do not change).
@@ -34,7 +39,6 @@ BOXES = {
                 'scp': ['scp', '-q', '-i', KEY, '-o', 'BatchMode=yes'], 'host': 'ec2-user@52.202.164.123',
                 'dir': 'o2run/{stamp}', 'predict': (15.0, 16.0, 17.0)},
 }
-EXEMPT = re.compile(r'^case-lambda')
 # The cases that failed on TI's simulator on 04-10-2026: Linux runs them whatever the sampling picks.
 FAILURE_LIST = ('array-destructor-only array-static-storage dynamic-init dynamic-init-const dynamic-init-reference '
                 'dynamic-init-scalar global-constructor static-base-pointer template-static-data-member-ctor '
@@ -67,7 +71,6 @@ def stage_programs(dst):
         b = os.path.basename(src)[:-4]; base = src[:-4]
         if os.path.exists(base + '.error') or b in skip: continue
         if os.path.exists(base + '.notarget') and re.search(r'^tms6747\s', open(base + '.notarget').read(), re.M): continue
-        if EXEMPT.match('case-' + b): continue
         mk('case-' + b, dict(SET='cases', MAP='ddr', TMO='120000', SRCS=b + '.cpp'), [(src, b + '.cpp')] + headers, base + '.expected')
     for d, pre in (('tools/c6747/bench', 'kern'), ('tools/c6747/programs', 'prog'), ('tools/c6747/ctor', 'prog')):
         for src in sorted(glob.glob(os.path.join(ROOT, d, '*.c')) + glob.glob(os.path.join(ROOT, d, '*.cpp'))):
@@ -350,6 +353,30 @@ def report():
     print(text)
 
 
+def no_ti_build():
+    """Which cases have no TI build and why: cl6x 7.4.4's first error, and the cases tms6747 skips."""
+    d = sys.argv[2] if len(sys.argv) > 2 else os.path.join(OUT, last()['stamp'])
+    b = os.path.join(d, 'windows', 'b')
+    rows = []
+    for c in sorted(glob.glob(os.path.join(b, 'case-*'))):
+        st = rd(os.path.join(c, '744', 'status')).strip()
+        if st and st != 'ok':
+            m = re.search(r', line \d+: error[^:]*: *(.*)', rd(os.path.join(c, '744', 'build.log')))
+            rows.append(f'{os.path.basename(c)[5:]}\t{m.group(1)[:100] if m else st}')
+    print(f'# {len(rows)} cases cl6x 7.4.4 (C++03) did not build in {os.path.basename(os.path.normpath(d))}; '
+          'cpp11 -O2 is held to the case\'s recorded output (clang\'s) there')
+    print('\n'.join(rows))
+    print('\n# cases tms6747 does not run at all, with the reason each gives')
+    for src in sorted(glob.glob(os.path.join(ROOT, 'tests/cases/*.notarget'))):
+        m = re.search(r'^tms6747\s+(.*)', open(src).read(), re.M)
+        if m: print(f'{os.path.basename(src)[:-9]}\t.notarget: {m.group(1)[:100]}')
+    for lst in ('tests/tms6747-lp64.txt', 'tests/tms6747-exceptions.txt'):
+        for l in open(os.path.join(ROOT, lst)):
+            if l.strip() and not l.startswith('#'):
+                n, _, why = l.strip().partition(' ')
+                print(f'{n}\t{os.path.basename(lst)}: {why.strip()[:100]}')
+
+
 if __name__ == '__main__':
-    {'init': init, 'status': status, 'collect': collect, 'report': report}.get(
+    {'init': init, 'status': status, 'collect': collect, 'report': report, 'no-ti-build': no_ti_build}.get(
         sys.argv[1] if len(sys.argv) > 1 else '', lambda: sys.exit(__doc__))()

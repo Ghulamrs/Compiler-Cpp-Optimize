@@ -1,0 +1,96 @@
+# 76 cases cl6x 7.4.4 (C++03) did not build in 1004-205830; cpp11 -O2 is held to the case's recorded output (clang's) there
+alignas-alignof	expected an identifier
+array-member-dimensions	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+array-of-class-list	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+bitfield-layout	this declaration has no storage class or type specifier
+bool-result	this declaration has no storage class or type specifier
+callable-members-and-braces	type name is not allowed
+char16-char32	identifier "char16_t" is undefined
+class-temporary	copy constructor for class "M" may not have a parameter of type "M"
+const-uninitialised-ok	data member initializer is not allowed
+constexpr	this declaration has no storage class or type specifier
+constexpr-call-floating	this declaration has no storage class or type specifier
+constexpr-double	this declaration has no storage class or type specifier
+constexpr-function	this declaration has no storage class or type specifier
+constructor-template	type "decltype" may not be initialized
+constructor-template-in-member-template	type "decltype" may not be initialized
+decltype	this declaration has no storage class or type specifier
+default-arg-declares	expected an expression
+digraphs	argument list for class template "Box" is missing
+direct-init-scalar	expected an identifier
+dtor-throws-unwinding	expected a ";"
+dynamic-init	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+enum-base	expected an identifier
+enum-conversions	expected an identifier
+explicit	identifier "nullptr" is undefined
+explicit-conversion-function	"explicit" is not allowed
+explicit-destructor-call	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+global-constructor	expected a ";"
+handler-exit-end-catch	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+implicit-move	copy constructor for class "Loud" may not have a parameter of type "Loud"
+init-list-as-argument	compile-failed
+initializer-list-construction	compile-failed
+integer-literal-types	this declaration has no storage class or type specifier
+lifetime-ledger	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+local-class-template-arg	a template argument may not reference a local type
+local-class-two-functions	expected an expression
+local-in-handler	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+local-try-states	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+lookup-order	expected an expression
+member-init-class	data member initializer is not allowed
+member-initialiser	data member initializer is not allowed
+member-pointer-models	identifier "nullptr" is undefined
+move-constructor	copy constructor for class "S" may not have a parameter of type "S"
+move-only	copy constructor for class "S" may not have a parameter of type "S"
+nested-parse-state	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+noexcept	expected a "{"
+noexcept-local-terminates	expected a "{"
+noexcept-terminates	expected a "{"
+noexcept-terminates-callee	expected a "{"
+placement-array-new	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+preprocessor-has-checks	function call is not allowed in a constant expression
+preprocessor-wide	shift count is too large
+range-for	expected a ";"
+range-for-class	expected a ";"
+range-for-vector	expected a ";"
+return-parameter-moves	copy constructor for class "M" may not have a parameter of type "M"
+runtime-shapes	compile-failed
+rvalue-ref	expected a ")"
+static-local-constructor	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+std-move-and-forward	copy constructor for class "Buf" may not have a parameter of type "Buf"
+stdexcept	namespace "std" has no member "to_string"
+template-angle-split	space required between adjacent ">" delimiters of nested template argument lists (">>" is the right 
+template-dependent-base	this declaration has no storage class or type specifier
+template-initializer-list-ctor	compile-failed
+template-nested-angle	space required between adjacent ">" delimiters of nested template argument lists (">>" is the right 
+template-variadic	expected an identifier
+template-variadic-into-args	expected an identifier
+template-variadic-peel	expected an identifier
+throw-out-of-handler	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+try-body-local	argument of type "void (*)()" is incompatible with parameter of type "void (*)() C"
+tuple	expected an identifier
+typeid	declaration conflicts with "std::type_info" (reserved class name)
+typeid-ms	class "std::type_info" has no member "hash_code"
+value-init-empty-braces	data member initializer is not allowed
+value-init-implicit-ctor	data member initializer is not allowed
+wchar-targets	this declaration has no storage class or type specifier
+wstring	namespace "std" has no member "to_wstring"
+
+# cases tms6747 does not run at all, with the reason each gives
+base-tail-padding	.notarget: the case asserts a 64-bit layout - a pointer of eight bytes - with static_assert, and the C6000's po
+new-header	.notarget: the emulator's runtime has no `std::set_new_handler`, no nothrow `operator new` and no `std::bad_all
+new-nothrow	.notarget: the emulator's runtime has no `std::set_new_handler` and no nothrow `operator new` - `<new>` declare
+pragma-pack	.notarget: refused by name: the C6000's LDW faults on a misaligned word and the backend emits no LDNW, so a cla
+static-assert	.notarget: the case asserts a 64-bit layout - a pointer of eight bytes - with static_assert, and the C6000's po
+throw-pointer-base-adjust	.notarget: TI's rts6740 matches a thrown pointer to a class against a handler for a pointer to one of its publi
+vtable	.notarget: the case asserts a 64-bit layout - a pointer of eight bytes - with static_assert, and the C6000's po
+auto	tms6747-lp64.txt: sizeof a pointer in the printed sizes
+base-tail-padding	tms6747-lp64.txt: static_assert on a layout with an 8-byte vptr
+bitfield-zero-width	tms6747-lp64.txt: a bit-field in a 64-bit unit (unsigned long long), refused by the backend
+include-c-wrappers	tms6747-lp64.txt: sizeof a pointer
+nullptr	tms6747-lp64.txt: sizeof nullptr_t
+own-vptr-plain-base	tms6747-lp64.txt: sizeof a class with an 8-byte vptr
+reference-member	tms6747-lp64.txt: sizeof a class holding a reference
+static-assert	tms6747-lp64.txt: asserts that the target is 64-bit
+static-cast	tms6747-lp64.txt: a 40-bit value in a long
+vtable	tms6747-lp64.txt: static_assert on a layout with an 8-byte vptr

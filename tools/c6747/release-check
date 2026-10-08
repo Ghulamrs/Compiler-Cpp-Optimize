@@ -61,6 +61,14 @@ divide-by-constant-signs|tests/cases/divide-by-constant-signs.cpp|tests/cases/di
 sieve|tools/c6747/bench/sieve.c|tools/c6747/bench/sieve.expected
 matmul|tools/c6747/bench/matmul.c|tools/c6747/bench/matmul.expected
 "
+# D10 (review of 2026-10-08): the lambda cases, once exempt from every TI run, are in the sample -
+# each with its .expected and not refused for tms6747 by a .notarget.
+for f in "$ROOT"/tests/cases/lambda*.expected; do
+    n=$(basename "$f" .expected)
+    grep -qs '^tms6747' "$ROOT/tests/cases/$n.notarget" && continue
+    SAMPLE="$SAMPLE
+$n|tests/cases/$n.cpp|tests/cases/$n.expected"
+done
 LEVELS="O1 O2 Os"
 
 [ -x "$CPP11" ] || { echo "release-check: no cpp11 at $CPP11"; exit 1; }
@@ -70,6 +78,7 @@ LEVELS="O1 O2 Os"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/rc" "$WORK/exp"
+cp "$ROOT"/tests/cases/*.h "$WORK/"           # lifetime.h, which a sample case includes
 for f in runca.js par-one.cmd c6747ca-windows.ccxml C6747.cmd release-check.cmd; do
     cp "$ROOT/tools/c6747/$f" "$WORK/rc/"
 done
