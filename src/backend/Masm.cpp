@@ -4,6 +4,8 @@
 #include "../Name.h"
 #include "../optimizer/OptIr.h"
 
+#include "../Source.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <ostream>
@@ -845,6 +847,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 // the COFF path makes in coffRecord. For ml64, which cannot say COMDAT, the records share one plain segment: `first` opens it, and the others follow in it.
 std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
                                 bool first, bool writable) {
+    // ml64 refuses a segment reopened with another ALIGN (A2015), and .xdata$x is opened at 8 and at 4.
+    if (!masm_.comdat() && std::string(segment) == ".xdata$x") align = 8;
     const std::string open = std::string(segment) + (writable ? " SEGMENT ALIGN(" : " SEGMENT READONLY ALIGN(") +
                              std::to_string(align) + ") 'DATA'";
     if (!masm_.comdat()) return first ? open + "\n" : std::string();
