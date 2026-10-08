@@ -4255,14 +4255,19 @@ void Parser::blockFunctionDeclaration(const Declared &d) {
 // parameters as members, named `rest$0` and `rest$1`, which `rest...` expands to.
 bool Parser::packParameter(std::vector<const Type *> *types,
                            std::vector<std::string> *names) {
-    if (peek().kind != TokenKind::Ident || !peekAt(1).is("...")) return false;
-    auto pk = packs_.find(peek().text);
+    // `[const] Ts [& | &&]... rest` - the pack read through packDeclarator, which says how each member is wrapped.
+    int wrap = 0;
+    std::size_t nameAt = 0;
+    const std::size_t n = packDeclarator(&wrap, &nameAt);
+    if (n == 0) return false;
+    auto pk = packs_.find(peekAt(nameAt).text);
     if (pk == packs_.end()) return false;
 
-    const std::vector<const Type *> members = pk->second.types;
+    std::vector<const Type *> members = pk->second.types;
     const bool pattern = members.size() == 1 &&
                          members[0]->kind() == Kind::TemplateParam;
-    at_ += 2;
+    at_ += n;
+    for (std::size_t i = 0; i < members.size(); i++) members[i] = wrapPackMember(members[i], wrap);
     std::string base;
     if (peek().kind == TokenKind::Ident) { base = peek().text; at_++; }
 

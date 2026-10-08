@@ -677,7 +677,8 @@ void Parser::topLevel(Program &program) {
                                                peek().pos);
                             inParams_ = false;
                             params.push_back(types_.withoutConst(packTypes[k]));
-                            paramSlots.push_back(Param{ packTypes[k], poff });
+                            const Type *pt = packTypes[k];   // a reference member arrives as its address
+                            paramSlots.push_back(Param{ pt->isReference() ? types_.pointerTo(pt->referent()) : pt, poff });
                         }
                         if (consume(")")) break;
                         expect(",");
@@ -858,7 +859,8 @@ void Parser::topLevel(Program &program) {
                 // **Under two keys, as a free specialization is.**
                 functionIndex_[d.qualifier + "::" + d.name]
                     .push_back(functions_.size());
-                functionIndex_[key].push_back(functions_.size());
+                // One key when they meet: `Box<M>`'s constructor template at U = M is `Box<M>::Box<M>`.
+                if (key != d.qualifier + "::" + d.name) functionIndex_[key].push_back(functions_.size());
                 functions_.push_back(Signature{
                     memberTemplateName_, sym, d.type, params, variadic, false,
                     d.pos, false, d.qualifier, constThis,

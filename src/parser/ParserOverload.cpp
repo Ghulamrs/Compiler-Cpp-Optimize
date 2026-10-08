@@ -851,8 +851,8 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
     // class template reaches `template <int N> V<N> operator+(V<N>, V<N>)`.
     {
         std::vector<const Type *> argTypes;
-        argTypes.push_back(left.type());
-        if (right != nullptr) argTypes.push_back(right->type());
+        argTypes.push_back(deductionArgType(left));
+        if (right != nullptr) argTypes.push_back(deductionArgType(*right));
         instantiateViableTemplates(name, argTypes, pos);
     }
 
@@ -862,7 +862,7 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
         const Type *lp = left.type()->unqualified();
         if (lp->isStructOrUnion()) {
             std::vector<const Type *> one;
-            one.push_back(right->type());
+            one.push_back(deductionArgType(*right));
             instantiateViableMemberTemplates(declaringClassOf(lp, name), name, one, pos);
         }
     }
@@ -1033,7 +1033,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     // deduces from the arguments is instantiated before the set is read.
     if (memberTemplates_.count(name) != 0) {
         std::vector<const Type *> argTypes;
-        for (std::size_t i = 0; i < args.size(); i++) argTypes.push_back(args[i]->type());
+        for (std::size_t i = 0; i < args.size(); i++) argTypes.push_back(deductionArgType(*args[i]));
         instantiateViableMemberTemplatesUnder(name, argTypes, pos);
     }
     const std::vector<std::size_t> *set = overloadsOf(name);

@@ -1,0 +1,8 @@
+Box() 1
+Box(T, int) 2
+copy 11
+0 3 1
+42
+~Box 11
+~Box 2
+~Box 1
