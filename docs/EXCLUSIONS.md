@@ -424,8 +424,9 @@ declaration order. What is left is the shapes where one object is many:
 
 ## Namespaces and lookup
 
-- **a namespace alias**, `namespace A = N;` —
-  `src/parser/ParserTopLevel.cpp:79`
+- **a namespace alias inside a block** — at namespace scope `namespace A = N;`
+  works, as a rewrite of every later `A::` to the end of the enclosing namespace;
+  a block's end is not one of those. `src/parser/ParserStmt.cpp:1720`
 - **a using-declaration inside a class**, `using B::f;` — it redeclares a base
   member rather than naming one, changing its access and joining the derived
   class's overload set. `src/parser/ParserType.cpp:553`

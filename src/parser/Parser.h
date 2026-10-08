@@ -1816,6 +1816,11 @@ private:
     std::vector<std::string> usingNamespaces_;
     // **A using-declaration is an alias, not a table.**
     std::map<std::string, std::string> usingDeclarations_;
+    // `namespace A = N;` - the alias's qualified name to the namespace it names, for the
+    // readers that meet the alias without a `::` after it; every other use is rewritten.
+    std::map<std::string, std::string> namespaceAliases_;
+    void namespaceAlias(const std::string &name, std::size_t pos);
+    std::string resolveNamespaceName(const std::string &written) const;
     // **An unnamed namespace is a named one that nothing outside can name.**
     bool inUnnamedNamespace_ = false;
     // **The body being read belongs to a static member.**

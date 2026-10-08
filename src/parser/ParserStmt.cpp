@@ -1707,11 +1707,18 @@ StmtPtr Parser::statementBody() {
             opened += "::" + expectIdent("a namespace name");
         }
         expect(";");
-        if (namespaces_.find(opened) == namespaces_.end())
+        // The alias's own name is what a namespace alias stands for, [namespace.alias]/2.
+        const std::string resolved = resolveNamespaceName(opened);
+        if (resolved.empty())
             src_.fail(peek().pos, "'" + opened + "' is not a namespace");
-        usingNamespaces_.push_back(opened);
+        usingNamespaces_.push_back(resolved);
         return StmtPtr(new Block({}));
     }
+    // [namespace.alias] allows one in a block; the rewrite behind it reaches a namespace's
+    // close and not a block's, so it is refused here by name.
+    if (peek().is("namespace") && peekAt(1).kind == TokenKind::Ident && peekAt(2).is("="))
+        src_.fail(peek().pos, "a namespace alias inside a block is not supported yet - "
+                              "write it at namespace scope, where it works");
 
     // **The using-*declaration* is refused inside a block**, where the one at namespace scope is
     // not: a name declared here lasts to the end of the block and takes part in overload resolution

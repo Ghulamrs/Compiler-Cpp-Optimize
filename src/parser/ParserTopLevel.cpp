@@ -77,8 +77,7 @@ void Parser::topLevel(Program &program) {
         if (peek().is("::"))
             src_.fail(peek().pos, "a nested namespace written 'N::M' is C++17 "
                                   "- open them one at a time");
-        if (consume("=")) 
-            src_.fail(pos, "a namespace alias is not supported yet");
+        if (consume("=")) { namespaceAlias(name, pos); return; }
         expect("{");
         namespaceStack_.push_back(name);
         namespaces_.insert(namespacePrefix().substr(
@@ -144,7 +143,9 @@ void Parser::topLevel(Program &program) {
             opened += "::" + expectIdent("a namespace name");
         }
         expect(";");
-        usingNamespaces_.push_back(opened);
+        // The directive names the namespace an alias stands for, [namespace.alias]/2.
+        const std::string resolved = resolveNamespaceName(opened);
+        usingNamespaces_.push_back(resolved.empty() ? opened : resolved);
         return;
     }
 
@@ -1622,4 +1623,89 @@ Program Parser::parse() {
     finishDynamicInit(program);
     pruneUnusedInline(program);
     return program;
+}
+
+// A written namespace name - relative to the enclosing namespaces, or an alias at any
+// component - as the qualified name of the namespace it means; empty where it means none.
+std::string Parser::resolveNamespaceName(const std::string &written) const {
+    std::vector<std::string> parts;
+    std::string rest = written;
+    const bool global = rest.compare(0, 2, "::") == 0;
+    if (global) rest = rest.substr(2);
+    for (std::string::size_type cut; (cut = rest.find("::")) != std::string::npos;
+         rest = rest.substr(cut + 2))
+        parts.push_back(rest.substr(0, cut));
+    parts.push_back(rest);
+    for (std::size_t i = namespaceStack_.size() + 1; i-- > 0; ) {
+        if (global && i != 0) continue;
+        std::string cur;
+        for (std::size_t k = 0; k < i; k++) cur += namespaceStack_[k] + "::";
+        bool ok = true;
+        for (std::size_t p = 0; p < parts.size() && ok; p++) {
+            cur += parts[p];
+            std::map<std::string, std::string>::const_iterator a = namespaceAliases_.find(cur);
+            if (a != namespaceAliases_.end()) cur = a->second;
+            else if (namespaces_.find(cur) == namespaces_.end()) ok = false;
+            if (p + 1 < parts.size()) cur += "::";
+        }
+        if (ok) return cur;
+    }
+    return "";
+}
+
+// `namespace A = N;`, the `=` consumed. [namespace.alias]: A names N from here to the end of
+// the enclosing namespace. Every later `A::` in that reach is rewritten to N's name in place -
+// one token's text, never a token added - so the string-keyed lookups meet N and never A.
+void Parser::namespaceAlias(const std::string &name, std::size_t pos) {
+    std::string written = consume("::") ? "::" : "";
+    written += expectIdent("a namespace name after '='");
+    while (peek().is("::")) {
+        at_++;
+        written += "::" + expectIdent("a namespace name after '::'");
+    }
+    expect(";");
+    const std::string target = resolveNamespaceName(written);
+    if (target.empty())
+        src_.fail(pos, "'" + written + "' is not a namespace, so there is nothing for "
+                       "'namespace " + name + "' to be an alias of");
+    if (findTypedef(namespacePrefix() + name) != nullptr ||
+        namespaces_.count(namespacePrefix() + name))
+        src_.fail(pos, "'" + name + "' is already declared here, and a namespace alias "
+                       "cannot reuse the name");
+    namespaceAliases_[namespacePrefix() + name] = target;
+
+    // Inside the enclosing block an unqualified `A ::` means the alias; past its closing
+    // brace `N :: A ::` does, for a target within N. A name after `::`, `.` or `->` is not it.
+    auto plainAt = [&](std::size_t i) {
+        if (tokens_[i].kind != TokenKind::Ident || tokens_[i].text != name) return false;
+        if (i + 1 >= tokens_.size() || !tokens_[i + 1].is("::")) return false;
+        return i == 0 || !(tokens_[i - 1].is("::") || tokens_[i - 1].is(".") ||
+                           tokens_[i - 1].is("->") || tokens_[i - 1].is("namespace"));
+    };
+    int depth = 0;
+    std::size_t i = at_;
+    for (; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
+        if (tokens_[i].is("{")) depth++;
+        else if (tokens_[i].is("}") && --depth < 0) break;
+        else if (plainAt(i)) tokens_[i].text = target;
+    }
+    if (namespaceStack_.empty()) return;
+    const std::string prefix = namespacePrefix();
+    if (target.compare(0, prefix.size(), prefix) != 0) return;
+    const std::string tail = target.substr(prefix.size());
+    for (; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
+        if (tokens_[i].kind != TokenKind::Ident || tokens_[i].text != name ||
+            i + 1 >= tokens_.size() || !tokens_[i + 1].is("::") || i < 2 ||
+            !tokens_[i - 1].is("::"))
+            continue;
+        std::size_t j = i - 1;
+        bool spelled = true;
+        for (std::size_t k = namespaceStack_.size(); spelled && k-- > 0; ) {
+            spelled = j >= 1 && tokens_[j].is("::") &&
+                      tokens_[j - 1].kind == TokenKind::Ident &&
+                      tokens_[j - 1].text == namespaceStack_[k];
+            if (spelled) j = j >= 2 ? j - 2 : 0;
+        }
+        if (spelled && !tokens_[j].is("::")) tokens_[i].text = tail;
+    }
 }
