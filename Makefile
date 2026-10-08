@@ -42,7 +42,7 @@ endif
 INCDIR   = $(CURDIR)/lib
 # The C++ headers, which wrap the C ones above rather than replacing them.
 CXXINCDIR = $(CURDIR)/include
-# "Built ... PST" is __DATE__ and __TIME__, which are the build host's local time: Pakistan's,
+# -version's "Built" is __DATE__ and __TIME__, the build host's local time: Pakistan's here,
 # whichever host builds - the Linux box keeps UTC, and its stamps were five hours early (C6).
 export TZ := Asia/Karachi
 # -pthread and not -lpthread: it sets the flags std::thread needs at compile
@@ -105,7 +105,7 @@ BINDIR  ?= .
 PROGRAM  = cpp11
 TARGET   = $(BINDIR)/$(PROGRAM).exe
 
-.PHONY: all test golden corpus open comments clean help
+.PHONY: all test golden corpus open comments clean help tsan
 
 all: $(TARGET)
 
@@ -188,9 +188,26 @@ corpus: $(TARGET)
 open: $(TARGET)
 	@CXX1=$(TARGET) ./tests/open.sh
 
+# **The thread pool under ThreadSanitizer** (review P4): the same sources built with
+# -fsanitize=thread into obj-tsan/, then tools/tsan-check - run.sh with -j 4, every case in one
+# compile per target, and two failing files at once. g++ has it (the Linux box has no clang), with
+# libtsan.so under its own directory and no libtsan.so.0 beside it: the link names one, by rpath.
+TSANDIR  = obj-tsan
+TSANOBJS = $(patsubst src/%.cpp,$(TSANDIR)/%.o,$(SRCS))
+$(TSANDIR)/%.o: src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -fsanitize=thread -MMD -MP -c $< -o $@
+$(TSANDIR)/cpp11.exe: $(TSANOBJS)
+	@mkdir -p $(TSANDIR)/lib
+	@ln -sf $(realpath $(shell $(CXX) -print-file-name=libtsan.so)) $(TSANDIR)/lib/libtsan.so.0
+	$(CXX) $(CXXFLAGS) -fsanitize=thread -Wl,-rpath,$(CURDIR)/$(TSANDIR)/lib -o $@ $(TSANOBJS)
+-include $(TSANOBJS:.o=.d)
+tsan: $(TSANDIR)/cpp11.exe
+	@./tools/tsan-check $(TSANDIR)/cpp11.exe
+
 clean:
-	rm -rf $(OBJDIR) $(TARGET)
-	rm -rf tests/out-run tests/out-emit tests/out-emit-O2 tests/out-corpus tests/out-open
+	rm -rf $(OBJDIR) $(TARGET) $(TSANDIR)
+	rm -rf tests/out-run tests/out-emit tests/out-emit-O2 tests/out-corpus tests/out-open tests/out-tsan
 # **tests/out-emit.golden is deliberately not on that line**, and this is the
 # exception the rule below is otherwise right about: a golden is recorded before
 # a change and read after one, with a rebuild in between, so a clean that took it

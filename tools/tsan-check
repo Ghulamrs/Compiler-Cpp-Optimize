@@ -1,0 +1,59 @@
+#!/bin/sh
+# The compiler's thread pool under ThreadSanitizer (review P4): `make tsan` builds a
+# -fsanitize=thread cpp11 into obj-tsan/ and hands it here.
+#
+#   tools/tsan-check obj-tsan/cpp11.exe
+#
+# Three runs, every report written to a file of its own (TSAN_OPTIONS log_path) and counted
+# at the end - a report on a refusal case would otherwise hide inside the text it was asked for:
+#   1. tests/run.sh, every compile given -j 4 - the two-file cases take two threads, and the
+#      assembler and link steps their own pool;
+#   2. every case at once, one cpp11 per target at -O2 with -j 4: the pool over 400 files;
+#   3. two files each with an error, -j 4: both diagnostics printed, the exit 1 (review P1).
+# It passes when all three do what they should and no report was written.
+set -u
+cd "$(dirname "$0")/.." || exit 1
+TSAN=$(cd "$(dirname "${1:?tools/tsan-check: needs the instrumented compiler}")" && pwd)/$(basename "$1")
+T=$(pwd)/tests/out-tsan
+rm -rf "$T"; mkdir -p "$T/reports" "$T/wrap" "$T/all" "$T/two"
+export TSAN_OPTIONS="log_path=$T/reports/tsan second_deadlock_stack=1 ${TSAN_OPTIONS:-}"
+fail=0
+
+# 1. the suite, through a wrapper that adds -j 4 to every compile
+printf '#!/bin/sh\nexec "%s" -j 4 "$@"\n' "$TSAN" > "$T/wrap/cpp11.exe"
+chmod +x "$T/wrap/cpp11.exe"
+CXX1="$T/wrap/cpp11.exe" ./tests/run.sh > "$T/run.log" 2>&1 || { echo "tsan-check: run.sh failed under TSAN"; fail=1; }
+tail -1 "$T/run.log"
+
+# 2. the pool over every case, for each target the tree emits
+cases=$(for c in tests/cases/*.cpp; do b=$(basename "$c" .cpp); [ -f "tests/cases/$b.error" ] || echo "$c"; done | grep -v '\.part\.cpp$')
+for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do
+    mkdir -p "$T/all/$target"
+    ok=0; bad=0
+    for c in $cases; do
+        b=$(basename "$c" .cpp)
+        if [ -f "tests/cases/$b.notarget" ] && grep -q "^$target\b" "tests/cases/$b.notarget"; then continue; fi
+        echo "$c"
+    done > "$T/all/$target.list"
+    ( cd "$T/all/$target" && "$TSAN" -nologo -j 4 -S -O2 -arch "$target" $(sed "s|^|$OLDPWD/|" "$T/all/$target.list") ) \
+        > "$T/all/$target.log" 2>&1 || { echo "tsan-check: the $target pool failed - $T/all/$target.log"; fail=1; }
+    echo "$target: $(ls "$T/all/$target" | wc -l | tr -d ' ') of $(wc -l < "$T/all/$target.list" | tr -d ' ') files written by one -j 4 compile"
+done
+
+# 3. an error in each of two files: both are said, and the run fails
+printf 'int f() { return missing_one; }\n' > "$T/two/a.cpp"
+printf 'int g() { return missing_two; }\n' > "$T/two/b.cpp"
+if ( cd "$T/two" && "$TSAN" -j 4 -S a.cpp b.cpp ) > "$T/two/log" 2>&1; then
+    echo "tsan-check: two files with errors compiled"; fail=1
+fi
+{ grep -q missing_one "$T/two/log" && grep -q missing_two "$T/two/log"; } || { echo "tsan-check: not both diagnostics:"; cat "$T/two/log"; fail=1; }
+echo "two failing files: $(grep -c ': error:' "$T/two/log") diagnostics"
+
+n=$(ls "$T/reports" | wc -l | tr -d ' ')
+if [ "$n" != 0 ]; then
+    echo "tsan-check: $n ThreadSanitizer report(s) in $T/reports:"
+    grep -h "WARNING: ThreadSanitizer" "$T"/reports/* | sort | uniq -c
+    fail=1
+fi
+[ $fail = 0 ] && echo "tsan-check: clean - no ThreadSanitizer report" || echo "tsan-check: FAILED"
+exit $fail
