@@ -119,7 +119,10 @@ private:
         // table is abstract.
         bool pure = false;
         const Type *returns = nullptr;     // checked when an override takes the slot
+        bool isFinal = false;              // [class.virtual]/4: no later override may take it
     };
+    // `override` and `final` as written on one declaration, each with where it was written.
+    struct VirtSpecifiers { bool isOverride = false, isFinal = false; std::size_t overrideAt = 0, finalAt = 0; };
     std::map<std::string, std::vector<VSlot> > vtables_;
     void checkOverrideReturn(const VSlot &s, const Type *returns, const std::string &cls,
                              const std::string &name, std::size_t pos) const;
@@ -1052,7 +1055,8 @@ private:
                            bool isVirtual);
     std::string deletingDestructorSymbol(const std::string &cls);
     void registerDestructor(const std::string &cls, std::size_t pos,
-                            Access access, bool isVirtual, bool implicit);
+                            Access access, bool isVirtual, bool implicit,
+                            VirtSpecifiers virt = VirtSpecifiers());
     void declareImplicitDestructor(const std::string &tag, const Type *type,
                                    std::size_t pos);
     void synthesizeDestructor(std::size_t which);
@@ -1404,7 +1408,11 @@ private:
     ExprPtr unevaluatedMember();
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
                        Access access, bool inUnion, bool isVirtual,
-                       bool isStatic = false, bool isPure = false);
+                       bool isStatic = false, bool isPure = false,
+                       VirtSpecifiers virt = VirtSpecifiers());
+    // [class.virtual]/4: the slot a member is about to take must not be `final`.
+    void checkNotFinal(const VSlot &s, const std::string &cls, const std::string &name,
+                       std::size_t pos) const;
     // The entry a pure virtual's slot holds: the runtime routine that reports
     // a call reaching a function the class never defined. Both measured -
     // `__cxa_pure_virtual` from clang, `_purecall` from cl.
@@ -2112,6 +2120,11 @@ private:
     // reaches that position by a different door than a member function.
     void refuseDefaultedOrDeleted();
     bool exceptionSpecification();
+    // ---- WS-C1 (review 2026-10-08): the virt-specifier-seq, read behind the exception specification ----
+    VirtSpecifiers pendingVirt_;
+    void readVirtSpecifiers();
+    VirtSpecifiers takeVirtSpecifiers() { VirtSpecifiers v = pendingVirt_; pendingVirt_ = VirtSpecifiers(); return v; }
+    void refuseVirtSpecifiers(const char *what);
     // Set by exceptionSpecification() at each place a parameter list can be closed, read and cleared by whichever declare* call follows.
     bool pendingNoexcept_ = false;
     // **Is the function being parsed declared `noexcept`?** [except.spec]/9.

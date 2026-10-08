@@ -236,11 +236,6 @@ SFINAE and variadic packs. What is left:
   body here, and a deleted one by declaring it private and never defining it.
   A constructor and a member function reach that position by different doors,
   so one helper answers for both. `src/parser/ParserConst.cpp:26`
-- **`override` and `final` on a member function** — an override is found by its
-  base's slot whether or not the word is written, so this would be a check
-  rather than a change. `src/parser/ParserType.cpp:977`
-- **`final` on a class** — nothing records that a class may not be derived
-  from. `src/parser/ParserType.cpp:83`
 - **a ref-qualifier**, `f() &` or `f() &&` — the object's value category does
   not choose an overload here. `src/parser/ParserType.cpp:966`
 - **a `constexpr` constructor** — the constant evaluator folds a call to a
@@ -611,7 +606,6 @@ which is the only oracle this document has.
 - this <...> is under '#pragma pack(<...>)', and the C6000 backend loads words aligned only - a packed member is not supported for this target yet - `src/parser/ParserType.cpp:60`
 - '<...>' has virtual functions in a base that is not the first, and the Microsoft ABI lays that out differently - the base with the vfptr goes first, wherever it was written. Not supported yet; it is measured for Itanium only - `src/parser/ParserType.cpp:298`
 - '<...>' has a virtual base '<...>' with virtual functions, and the Microsoft ABI dispatches through that base with vtordisp fields and thunks of its own - not supported for this target yet; the Itanium targets and the C6000 compile it - `src/parser/ParserType.cpp:440`
-- '<...>' is not supported yet: an override is found by its base's slot here whether or not the word is written, so this would be a check rather than a change - `src/parser/ParserType.cpp:986`
 - a braced member initialiser with values is not supported yet - '= {}' and '= {0}' zero an array or a scalar member; write the rest as a value - `src/parser/ParserType.cpp:1114`
 - a pointer or reference to a 'volatile' type is not supported yet - the qualifier is not in this compiler's type system, so this would be named 'int *' where clang writes 'PVi' and cl writes 'PECH'. A 'volatile' object of its own is read and written here as it should be, and is not refused - `src/parser/ParserType.cpp:1494`
 - the attribute '[[<...>]]' is not supported - C++11 has '[[noreturn]]' and '[[carries_dependency]]', which are read; '[[deprecated]]' is C++14 - `src/parser/ParserType.cpp:1561`

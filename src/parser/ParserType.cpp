@@ -73,14 +73,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
-    // **`final` on a class head forbids deriving from it** - [class]/3 - which
-    // is a check made at every later derivation rather than anything about
-    // this one, and nothing records it.
-    if (peek().is("final") && (peekAt(1).is("{") || peekAt(1).is(":")))
-        src_.fail(peek().pos, "'final' on a class is not supported yet: "
-                              "nothing here records that a class may not be "
-                              "derived from, so the word would be accepted "
-                              "and never checked");
+    // **`final` on a class head forbids deriving from it** - [class]/3 - recorded on the type
+    // and checked by every later base clause. Contextual: only in front of the body is it the keyword.
+    bool classFinal = false;
+    if (peek().is("final") && (peekAt(1).is("{") || peekAt(1).is(":"))) { classFinal = true; at_++; }
 
     // **A class written inside another is named through it**: the tag becomes
     // "Outer::Inner", so it cannot collide with a global, with the single component
@@ -165,6 +161,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // has.
     if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
     else                                  type->noteClassKey(isClass);
+    if (classFinal) type->setFinal();
     if (!localOwner.empty()) {
         // The single component is what both ABIs spell inside the wrapper, and the
         // written name is what resolves inside this function - which also shadows a
@@ -216,6 +213,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
                                 "class has to be complete, because the derived "
                                 "object contains one");
+            if (b->isFinal())
+                src_.fail(bpos, "'" + baseName + "' is marked 'final' and cannot "
+                                "be a base class - [class]/3");
             written.push_back(WrittenBase{ b, how, isVirtualBase });
             if (!consume(",")) break;
         }
@@ -602,6 +602,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
+            refuseVirtSpecifiers("a constructor");
             if (peek().is("{") || peek().is(":")) {
                 pendingBodies_.push_back(PendingBody{
                     tag, itemStart, local, constructorKey(tag),
@@ -999,15 +1000,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                               "- the qualifier on 'this' is part of the name on "
                               "both ABIs, and 'volatile' is not in this "
                               "compiler's type system");
-                // **`override` and `final` are C++11 and are checks**, not
-                // declarations: the first says this must be replacing a base's
-                // virtual and the second that nothing may replace it.
-                if (peek().is("override") || peek().is("final"))
-                    src_.fail(peek().pos, std::string("'") + peek().text +
-                                  "' is not supported yet: an override is "
-                                  "found by its base's slot here whether or "
-                                  "not the word is written, so this would be "
-                                  "a check rather than a change");
                 // [class.static]/1: a static member function has no `this`, so
                 // there is nothing for either of these to qualify.
                 if (memberIsStatic && constThis)
@@ -1019,6 +1011,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      "and 'virtual' - one says there is no "
                                      "object and the other dispatches on one");
                 pendingNoexcept_ = exceptionSpecification();
+                // [class.virtual]/4: `override` and `final` mark a virtual member function, which a static one is never.
+                if (memberIsStatic) refuseVirtSpecifiers("a static member function");
+                const VirtSpecifiers virt = takeVirtSpecifiers();
                 // **A `constexpr` member function is implicitly const in C++11.**
                 if (mquals.isConstexpr) constThis = true;
 
@@ -1028,11 +1023,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 bool isPure = false;
                 if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
                     !peekAt(1).isFloat && peekAt(1).value == 0) {
-                    if (!isVirtual)
-                        src_.fail(peek().pos, "'= 0' makes a function pure, and "
-                                              "only a virtual one can be - '" +
-                                              d.name + "' is not declared "
-                                              "'virtual'");
                     if (memberIsStatic)
                         src_.fail(peek().pos, "'" + d.name + "' cannot be both "
                                               "'static' and pure");
@@ -1050,7 +1040,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     const std::size_t sigAt = functions_.size();
                     declareMember(tag, d, constThis, access,
                                   kind == Kind::Union, isVirtual, memberIsStatic,
-                                  isPure);
+                                  isPure, virt);
                     pendingBodies_.push_back(PendingBody{
                         tag, itemStart, local, tag + "::" + d.name,
                         signatureAddedUnder(tag + "::" + d.name, sigAt) });
@@ -1063,7 +1053,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
-                              isVirtual, memberIsStatic, isPure);
+                              isVirtual, memberIsStatic, isPure, virt);
                 if (!consume(",")) break;
                 continue;
             }

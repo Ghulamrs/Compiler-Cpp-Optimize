@@ -72,15 +72,15 @@ bool Parser::staticAssertion() {
 // *not* part of the function's type - measured, both spellings mangle alike - so what
 // it buys is `noexcept(e)`. `throw()` is taken as one; `throw(int)` is refused.
 bool Parser::exceptionSpecification() {
+    bool noexc = false;
     if (consume("noexcept")) {
-        if (!consume("(")) return true;
-        const std::size_t at = peek().pos;
-        const long long value = constantExpression("a constant in 'noexcept('");
-        expect(")");
-        (void) at;
-        return value != 0;
-    }
-    if (peek().is("throw") && peekAt(1).is("(")) {
+        noexc = true;
+        if (consume("(")) {
+            const long long value = constantExpression("a constant in 'noexcept('");
+            expect(")");
+            noexc = value != 0;
+        }
+    } else if (peek().is("throw") && peekAt(1).is("(")) {
         const std::size_t at = peek().pos;
         at_ += 2;
         if (!consume(")"))
@@ -89,9 +89,43 @@ bool Parser::exceptionSpecification() {
                           "thrown type against a list, where 'noexcept' is a "
                           "promise the compiler only has to record. 'throw()' "
                           "with nothing in it is 'noexcept' and works");
-        return true;
+        noexc = true;
     }
-    return false;
+    readVirtSpecifiers();
+    return noexc;
+}
+
+// **`override` and `final` are contextual and follow the exception specification** - [class.mem]. Inside a
+// class body they are recorded for the declaration being read; a held body's replay has already checked
+// them and steps over; anywhere else - a free function, an out-of-line definition - they are ill-formed.
+void Parser::readVirtSpecifiers() {
+    pendingVirt_ = VirtSpecifiers();
+    while (peek().is("override") || peek().is("final")) {
+        const bool ov = peek().is("override");
+        VirtSpecifiers &v = pendingVirt_;
+        if ((ov && v.isOverride) || (!ov && v.isFinal))
+            src_.fail(peek().pos, std::string("'") + peek().text + "' is written twice");
+        if (ov) { v.isOverride = true; v.overrideAt = peek().pos; }
+        else    { v.isFinal = true;    v.finalAt = peek().pos; }
+        if (classStack_.empty() && !replayingInline_)
+            src_.fail(peek().pos, std::string("'") + peek().text + "' can only be written on a "
+                                  "member function's declaration inside its class - "
+                                  "[class.mem] - and this declaration is outside one");
+        at_++;
+    }
+    if (!classStack_.empty()) return;
+    pendingVirt_ = VirtSpecifiers();
+}
+
+// A constructor, a static member or a data member may carry neither word.
+void Parser::refuseVirtSpecifiers(const char *what) {
+    const VirtSpecifiers v = takeVirtSpecifiers();
+    if (v.isOverride)
+        src_.fail(v.overrideAt, std::string("'override' marks a virtual member function, and ") + what +
+                                " cannot be virtual");
+    if (v.isFinal)
+        src_.fail(v.finalAt, std::string("'final' marks a virtual member function, and ") + what +
+                             " cannot be virtual");
 }
 
 long long Parser::constantExpression(const char *what) {

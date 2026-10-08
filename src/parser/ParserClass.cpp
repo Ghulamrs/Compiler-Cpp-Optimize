@@ -128,27 +128,34 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
         src_.fail(pos, "a destructor takes no parameters");
     // A destructor is `noexcept` in C++11 whether or not it says so.
     pendingNoexcept_ = exceptionSpecification();
+    const VirtSpecifiers virt = takeVirtSpecifiers();
 
     if (overloadsOf(destructorKey(cls)) != nullptr)
         src_.fail(pos, "'" + cls + "' has two destructors, and a class has one");
-    registerDestructor(cls, pos, access, isVirtual, false);
+    registerDestructor(cls, pos, access, isVirtual, false, virt);
 }
 
 // Everything a destructor needs in the tables, whether a program wrote it or
 // the compiler did: the name, the entry, and the vtable slots a virtual one
 // claims.
 void Parser::registerDestructor(const std::string &cls, std::size_t pos,
-                                Access access, bool isVirtual, bool implicit) {
+                                Access access, bool isVirtual, bool implicit,
+                                VirtSpecifiers virt) {
     const std::vector<const Type *> params;
     const std::string key = destructorKey(cls);
+    const std::string name = "~" + localOf(cls);
 
     // **A base with a virtual destructor makes this one virtual**, keyword or not -
     // [class.dtor]. The base's slots are already in this class's table, so it is
     // answered by looking for the "~" entry, and before the name is built.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
+    bool foundBase = false;
     for (std::size_t i = 0; i < slots.size(); i++)
-        if (slots[i].name == "~") { slot = i; isVirtual = true; break; }
+        if (slots[i].name == "~") {
+            checkNotFinal(slots[i], cls, name, pos);
+            slot = i; isVirtual = foundBase = true; break;
+        }
     // And a base off the primary chain - a second base, a virtual one - whose
     // destructor is virtual makes this one virtual too, in a slot of its own.
     if (!isVirtual)
@@ -159,9 +166,19 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
                     vtables_.find(bs[bi].type->tag());
                 if (it == vtables_.end()) continue;
                 for (std::size_t i = 0; i < it->second.size(); i++)
-                    if (it->second[i].name == "~") { isVirtual = true; break; }
+                    if (it->second[i].name == "~") {
+                        checkNotFinal(it->second[i], cls, name, pos);
+                        isVirtual = foundBase = true; break;
+                    }
             }
         }
+    // [class.virtual]/4, for the destructor: `override` wants a base's virtual one and `final` a virtual one.
+    if (virt.isOverride && !foundBase)
+        src_.fail(virt.overrideAt, "'" + cls + "::" + name + "' is marked 'override' but overrides "
+                                   "nothing - no base has a virtual destructor");
+    if (virt.isFinal && !isVirtual)
+        src_.fail(virt.finalAt, "'" + cls + "::" + name + "' is marked 'final' and is not virtual "
+                                "- only a virtual destructor can be");
 
     // **A virtual destructor is U on Microsoft whatever its access**, the same
     // rule a virtual member function already followed - measured with cl,
@@ -190,12 +207,14 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     std::vector<const Type *> none;
     if (slot < slots.size()) {
         slots[slot].symbol = ms ? deleting : out;       // the complete form
+        slots[slot].isFinal = virt.isFinal;
         if (!ms && slot + 1 < slots.size() &&
             slots[slot + 1].name == "~$deleting")
             slots[slot + 1].symbol = deleting;
         return;
     }
     slots.push_back(VSlot{ "~", ms ? deleting : out, none, false });
+    slots.back().isFinal = virt.isFinal;
     if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
 }
 
@@ -1788,7 +1807,6 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
         src_.fail(pos, "a constructor cannot take '...'");
     // Read here rather than at the call site.
     pendingNoexcept_ = exceptionSpecification();
-
     // A constructor returns nothing, and saying so as void is what lets the rest of the compiler treat the call like any other.
     const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
 
@@ -3771,7 +3789,8 @@ void Parser::checkNotAbstract(const Type *t, std::size_t pos,
 
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
-                           bool isVirtual, bool isStatic, bool isPure) {
+                           bool isVirtual, bool isStatic, bool isPure,
+                           VirtSpecifiers virt) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -3816,11 +3835,13 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     // slot is what makes this virtual**, keyword or not - so the search runs first.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
+    bool foundBase = false;
     for (std::size_t i = 0; i < slots.size(); i++) {
         if (!overrides(slots[i], d.name, params, constThis)) continue;
         checkOverrideReturn(slots[i], fn->returns(), cls, d.name, d.pos);
+        checkNotFinal(slots[i], cls, d.name, d.pos);
         slot = i;
-        isVirtual = true;
+        isVirtual = foundBase = true;
         break;
     }
 
@@ -3837,11 +3858,24 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
                 for (std::size_t i = 0; i < it->second.size(); i++)
                     if (overrides(it->second[i], d.name, params, constThis)) {
                         checkOverrideReturn(it->second[i], fn->returns(), cls, d.name, d.pos);
-                        isVirtual = true;
+                        checkNotFinal(it->second[i], cls, d.name, d.pos);
+                        isVirtual = foundBase = true;
                         break;
                     }
             }
         }
+    // [class.virtual]/4: `override` wants a base's virtual to replace, and `final` a virtual to mark.
+    if (virt.isOverride && !foundBase)
+        src_.fail(virt.overrideAt, "'" + cls + "::" + d.name + "' is marked 'override' but "
+                                   "overrides nothing - no base declares a virtual '" + d.name +
+                                   "' with these parameters");
+    if (virt.isFinal && !isVirtual)
+        src_.fail(virt.finalAt, "'" + cls + "::" + d.name + "' is marked 'final' and is not "
+                                "virtual - only a virtual function can be");
+    // Asked here and not where `= 0` is read, because a base's slot makes a function virtual without the keyword.
+    if (isPure && !isVirtual)
+        src_.fail(d.pos, "'= 0' makes a function pure, and only a virtual one can be - '" +
+                         d.name + "' is not declared 'virtual' and overrides nothing");
 
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
@@ -3865,6 +3899,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         slots[slot].symbol = entry;
         slots[slot].pure = isPure;
         slots[slot].returns = fn->returns();
+        slots[slot].isFinal = virt.isFinal;
         return;
     }
     // **cl groups a class's own overloads of one name at the first one's
@@ -3877,7 +3912,14 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
             if (slots[i].name == d.name) { at = i; break; }
     }
     slots.insert(slots.begin() + static_cast<std::ptrdiff_t>(at),
-                 VSlot{ d.name, entry, params, constThis, isPure, fn->returns() });
+                 VSlot{ d.name, entry, params, constThis, isPure, fn->returns(), virt.isFinal });
+}
+
+void Parser::checkNotFinal(const VSlot &s, const std::string &cls, const std::string &name,
+                           std::size_t pos) const {
+    if (!s.isFinal) return;
+    src_.fail(pos, "'" + cls + "::" + name + "' overrides a virtual function marked "
+                   "'final' - [class.virtual]/4 - and nothing may override one");
 }
 
 // A member function's linkage name. Never plain, and never affected by

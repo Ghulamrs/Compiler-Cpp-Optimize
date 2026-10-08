@@ -250,6 +250,10 @@ public:
     bool abstract() const { return cls().abstract_; }
     void setAbstract(bool a) { abstract_ = a; }
 
+    // **`final` on the class head** - [class]/3 - checked where a base clause names it.
+    bool isFinal() const { return cls().final_; }
+    void setFinal() { final_ = true; }
+
     // **Whether copying this class is a function call rather than a move of bytes**,
     // which both platform ABIs make a question about how it is *passed*. Measured
     // with cl and clang; on the type, because the backends must agree with the parser.
@@ -453,6 +457,7 @@ private:
     int dataSize_ = 0;
     bool polymorphic_ = false;
     bool abstract_ = false;
+    bool final_ = false;
     bool nonTrivialCopy_ = false;
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
