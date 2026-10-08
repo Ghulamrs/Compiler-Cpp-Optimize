@@ -282,6 +282,32 @@ ExprPtr Parser::staticCast(std::size_t pos) {
                            "object to cast, and this is a value with no "
                            "address of its own - it is already the kind of "
                            "thing a '" + to->describe() + "' binds to");
+        // **[expr.static.cast]/2: a base lvalue cast to a reference to a derived class** -
+        // `&v` walked back by the base's offset and dereferenced, the const kept.
+        if (v->type()->unqualified() != referent->unqualified() &&
+            v->type()->unqualified()->isStructOrUnion() && referent->unqualified()->isStructOrUnion()) {
+            bool viaVirtual = false;
+            const int off = downcastOffset(referent, v->type(), &viaVirtual);
+            if (off >= 0 || viaVirtual) {
+                if (viaVirtual)
+                    src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" + v->type()->describe() +
+                                   "' - the base is a virtual base, whose offset is not a constant; "
+                                   "'dynamic_cast' is the cast that asks the object");
+                if (v->type()->isConst() && !referent->isConst())
+                    src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
+                                   v->type()->describe() + "' - a cast does not take const off");
+                const Type *dst = v->type()->isConst() ? types_.withConst(referent->unqualified())
+                                                       : referent->unqualified();
+                const Type *srcPtr = types_.pointerTo(v->type());
+                ExprPtr addr(new Unary('&', std::move(v)));
+                addr->setType(srcPtr);
+                ExprPtr moved = downcastPointer(std::move(addr), types_.pointerTo(dst), off);
+                ExprPtr obj(new Unary('*', std::move(moved)));
+                obj->setType(dst);
+                if (to->isRValueReference()) obj->setXvalue();
+                return obj;
+            }
+        }
         if (v->type()->unqualified() != referent->unqualified())
             src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
                            v->type()->describe() + "' - casting a reference "
@@ -303,8 +329,77 @@ ExprPtr Parser::staticCast(std::size_t pos) {
         ExprPtr c(new Cast(to, std::move(v)));
         return c;
     }
+    // **[expr.static.cast]/11: `B *` to `D *` where B is a base of D** - the inverse of the
+    // conversion `convert` makes the other way, refused through a virtual base.
+    if (to->isPointer() && v->type()->isPointer() && to->pointee()->unqualified()->isStructOrUnion() &&
+        v->type()->pointee()->unqualified()->isStructOrUnion() &&
+        to->pointee()->unqualified() != v->type()->pointee()->unqualified()) {
+        bool viaVirtual = false;
+        const int off = downcastOffset(to->pointee(), v->type()->pointee(), &viaVirtual);
+        if (viaVirtual)
+            src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" + v->type()->describe() +
+                           "' - the base is a virtual base, whose offset is not a constant; "
+                           "'dynamic_cast' is the cast that asks the object");
+        if (off >= 0) {
+            if (v->type()->pointee()->isConst() && !to->pointee()->isConst())
+                src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
+                               v->type()->describe() + "' - a cast does not take const off");
+            return downcastPointer(std::move(v), to, off);
+        }
+    }
     refuseUnrelatedClassCast(*v, to, pos, "'static_cast'");
     return convert(std::move(v), to, true);
+}
+
+int Parser::downcastOffset(const Type *derived, const Type *base, bool *viaVirtual) const {
+    if (derived == nullptr || base == nullptr) return -1;
+    const Type *d = derived->unqualified();
+    if (d == base->unqualified()) return 0;
+    const std::vector<Type::BaseSpec> &bases = d->bases();
+    for (std::size_t i = 0; i < bases.size(); i++) {
+        if (!baseStepAccessible(d, bases[i].access)) continue;
+        const int deeper = downcastOffset(bases[i].type, base, viaVirtual);
+        if (deeper < 0) continue;
+        if (bases[i].isVirtual) { *viaVirtual = true; return -1; }
+        return bases[i].offset + deeper;
+    }
+    return -1;
+}
+
+// At offset 0 only the type changes; otherwise the pointer is held, tested and moved back -
+// `(char *)0 - 4` is not null, so the test is the rule and not caution.
+ExprPtr Parser::downcastPointer(ExprPtr p, const Type *to, int off) {
+    if (off == 0) {
+        ExprPtr c(new Cast(to, std::move(p)));
+        c->setType(to);
+        return c;
+    }
+    const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+    ExprPtr asChars(new Cast(chars, std::move(p)));
+    asChars->setType(chars);
+    const int slot = allocateFrameSlot(chars);
+    const std::string temp = ".dp" + std::to_string(refTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(chars);
+    ExprPtr save(new Assign(std::move(held), std::move(asChars)));
+    save->setType(chars);
+    ExprPtr test(Var::local(temp, slot));
+    test->setType(chars);
+    ExprPtr shift(Var::local(temp, slot));
+    shift->setType(chars);
+    ExprPtr by(new Num(static_cast<long long>(off)));
+    by->setType(types_.intType());
+    ExprPtr moved(new Binary(BinOp::Sub, std::move(shift), std::move(by)));
+    moved->setType(chars);
+    ExprPtr zero(new Num(0LL));
+    zero->setType(chars);
+    ExprPtr pick(new Conditional(std::move(test), std::move(moved), std::move(zero)));
+    pick->setType(chars);
+    ExprPtr both(new Comma(std::move(save), std::move(pick)));
+    both->setType(chars);
+    ExprPtr out(new Cast(to, std::move(both)));
+    out->setType(to);
+    return out;
 }
 
 

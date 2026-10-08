@@ -2204,5 +2204,13 @@ private:
     ExprPtr pointerAdd(ExprPtr p, ExprPtr n);
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 
+    // ----- WS-E2: initialisation, expressions, casts (review 2026-10-08)
+    // Where `base` sits inside `derived` along an accessible, non-virtual path - the
+    // offset a static_cast downcast walks back by, [expr.static.cast]/11; -1 if none,
+    // and *viaVirtual says the path crosses a virtual base.
+    int downcastOffset(const Type *derived, const Type *base, bool *viaVirtual) const;
+    // `(D *)p` for a `B *p`: the pointer moved back by `off` bytes, a null kept null.
+    ExprPtr downcastPointer(ExprPtr p, const Type *to, int off);
+
     Program *current_ = nullptr;
 };
