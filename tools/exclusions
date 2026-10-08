@@ -79,6 +79,9 @@ def inventory(root="src"):
                 continue
             path = os.path.join(dirpath, n)
             lines = open(path, encoding="utf-8", errors="replace").readlines()
+            # The document cites `src/parser/X.cpp`; on Windows os.walk spells it with
+            # backslashes and every citation read as stale (found on the box, 2026-10-08).
+            path = path.replace(os.sep, "/")
             for i, line in enumerate(lines):
                 if not CALL.search(line):
                     continue
