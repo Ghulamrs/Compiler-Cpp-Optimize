@@ -50,6 +50,8 @@ public:
 
     // The primary token an alternative spelling stands for, or null.
     static const char *alternativeToken(const std::string &word);
+    // The length of a raw string's prefix at i, quote included; its `)delim"` in *close.
+    static std::size_t rawStringAt(const std::string &s, std::size_t i, std::string *close);
 
 private:
     const Source &src_;

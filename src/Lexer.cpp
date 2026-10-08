@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 
 static long long unescape(const std::string &s, std::size_t &i, std::size_t,
                           bool wide = false) {
@@ -76,6 +77,26 @@ static void appendUtf8(std::string &text, long long cp) {
         text.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
     }
     text.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+}
+
+// `R"`, `LR"`, `uR"`, `UR"` and `u8R"` - a prefix only where no name runs into it.
+std::size_t Lexer::rawStringAt(const std::string &s, std::size_t i, std::string *close) {
+    if (i > 0 && (std::isalnum(static_cast<unsigned char>(s[i - 1])) || s[i - 1] == '_'))
+        return 0;
+    static const char *const kPrefixes[] = { "u8R\"", "LR\"", "uR\"", "UR\"", "R\"", 0 };
+    for (int k = 0; kPrefixes[k] != 0; k++) {
+        const std::size_t n = std::strlen(kPrefixes[k]);
+        if (s.compare(i, n, kPrefixes[k]) != 0) continue;
+        // [lex.string]/2: up to sixteen characters, none of space, (, ), \\ or a control.
+        std::size_t j = i + n;
+        while (j < s.size() && j - (i + n) <= 16 && s[j] != '(' && s[j] != ')' &&
+               s[j] != '\\' && s[j] != '"' && !std::isspace(static_cast<unsigned char>(s[j])))
+            j++;
+        if (j >= s.size() || s[j] != '(' || j - (i + n) > 16) return 0;
+        *close = ")" + s.substr(i + n, j - (i + n)) + "\"";
+        return n;
+    }
+    return 0;
 }
 
 // The eleven word-spelled alternative tokens of [lex.digraph] table 2. They are
@@ -221,6 +242,26 @@ std::vector<Token> Lexer::tokenize() {
             std::size_t end = s.find("*/", i + 2);
             if (end == std::string::npos) src_.fail(i, "unterminated comment");
             i = end + 2;
+            continue;
+        }
+
+        // [lex.string]/4: a raw string is its characters as written, newlines included,
+        // up to the `)delim"` its opening named - no escape, no splice, no comment.
+        std::string rawClose;
+        if (std::size_t open = rawStringAt(s, i, &rawClose)) {
+            const std::size_t start = i;
+            const char p0 = s[i];
+            const std::size_t from = i + open + rawClose.size() - 1;
+            const std::size_t to = s.find(rawClose, from);
+            if (to == std::string::npos) src_.fail(start, "unterminated raw string");
+            Token t;
+            t.kind = TokenKind::Str;
+            t.text = s.substr(from, to - from);
+            t.prefix = p0 == 'u' && s[i + 1] == '8' ? '8' : (p0 == 'u' || p0 == 'U') ? p0 : 0;
+            t.wide = p0 == 'L';
+            t.pos = start;
+            out.push_back(std::move(t));
+            i = to + rawClose.size();
             continue;
         }
 
@@ -388,11 +429,6 @@ std::vector<Token> Lexer::tokenize() {
                 // works. What is left is the C++11 set plus the raw forms.
                 if (pre == "u8")
                     src_.fail(start, "a u8 character literal is C++17, and this compiler is C++11");
-                if (pre == "R" || pre == "u8R" || pre == "LR" || pre == "uR" ||
-                    pre == "UR")
-                    src_.fail(start, "a '" + pre + "' literal is a raw string, not "
-                                "supported yet - an ordinary \"...\" is a "
-                                "narrow string of char here");
             }
             Token t;
             t.text = s.substr(start, i - start);

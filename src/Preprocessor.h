@@ -54,6 +54,8 @@ private:
 
     std::vector<Cond> conds_;
     bool inBlockComment_ = false;
+    // The `)delim"` that closes a raw string a line left open, or empty.
+    std::string inRawString_;
     int depth_ = 0;
 
     int physLine_ = 0;

@@ -1,0 +1,13 @@
+[a\nb\tc]
+[quote " and )" inside]
+[// not a comment /* nor this */]
+[first
+%:define NOT_A_DIRECTIVE 1
+#if not a directive either
+last \
+line] 71
+[through a macro, (parens) too]
+[not a macro]
+[utf8 \n] 3
+6 12
+[]

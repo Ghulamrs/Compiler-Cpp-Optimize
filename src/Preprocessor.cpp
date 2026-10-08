@@ -47,14 +47,47 @@ std::vector<std::string> splitLines(const std::string &text) {
     std::vector<std::string> out;
     std::string current;
     std::size_t i = 0;
+    // Inside a raw string a backslash before a newline is two characters, not a splice.
+    std::string rawClose;
+    char quote = 0;
+    bool lineComment = false, blockComment = false;
     while (i < text.size()) {
         char c = text[i];
+        if (!rawClose.empty()) {
+            if (text.compare(i, rawClose.size(), rawClose) == 0) {
+                current += rawClose;
+                i += rawClose.size();
+                rawClose.clear();
+                continue;
+            }
+            if (c == '\n') { out.push_back(current); current.clear(); i++; continue; }
+            if (c != '\r') current.push_back(c);
+            i++;
+            continue;
+        }
+        if (c == '\n') {}
+        else if (blockComment) { if (text.compare(i, 2, "*/") == 0) blockComment = false; }
+        else if (lineComment) {}
+        else if (quote != 0) {
+            if (c == '\\' && i + 1 < text.size() && text[i + 1] != '\n') {
+                current.push_back(c); current.push_back(text[i + 1]); i += 2; continue;
+            }
+            if (c == quote) quote = 0;
+        } else if (text.compare(i, 2, "//") == 0) lineComment = true;
+        else if (text.compare(i, 2, "/*") == 0) { blockComment = true; current += "/*"; i += 2; continue; }
+        else if (std::size_t open = Lexer::rawStringAt(text, i, &rawClose)) {
+            current += text.substr(i, open);
+            i += open;
+            continue;
+        } else if (c == '"' || c == '\'') quote = c;
         if (c == '\n') {
             if (!current.empty() && current.back() == '\\') {
                 current.pop_back();
                 i++;
                 continue;
             }
+            lineComment = false;
+            quote = 0;
             out.push_back(current);
             current.clear();
             i++;
@@ -373,6 +406,15 @@ std::string Preprocessor::expandText(const std::string &s, std::vector<std::stri
     std::size_t i = 0;
 
     while (i < s.size()) {
+        // A raw string's lines are copied whole, to its `)delim"` - [lex.pptoken]/3.
+        if (trackComments && !inRawString_.empty()) {
+            std::size_t end = s.find(inRawString_, i);
+            if (end == std::string::npos) { out += s.substr(i); return out; }
+            out += s.substr(i, end + inRawString_.size() - i);
+            i = end + inRawString_.size();
+            inRawString_.clear();
+            continue;
+        }
         if (trackComments && inBlockComment_) {
             std::size_t end = s.find("*/", i);
             if (end == std::string::npos) { out += s.substr(i); return out; }
@@ -392,6 +434,18 @@ std::string Preprocessor::expandText(const std::string &s, std::vector<std::stri
             out += "/*";
             i += 2;
             inBlockComment_ = true;
+            continue;
+        }
+        std::string rawClose;
+        if (std::size_t open = Lexer::rawStringAt(s, i, &rawClose)) {
+            const std::size_t end = s.find(rawClose, i + open);
+            if (end == std::string::npos) {
+                out += s.substr(i);
+                if (trackComments) inRawString_ = rawClose;
+                return out;
+            }
+            out += s.substr(i, end + rawClose.size() - i);
+            i = end + rawClose.size();
             continue;
         }
         if (c == '"' || c == '\'') {
@@ -1246,7 +1300,8 @@ void Preprocessor::processFile(const std::string &path, int fileIndex) {
         std::size_t first = 0;
         while (first < line.size() &&
                std::isspace(static_cast<unsigned char>(line[first]))) first++;
-        if (!inBlockComment_ && first < line.size() && hashLen(line, first, false)) {
+        if (!inBlockComment_ && inRawString_.empty() && first < line.size() &&
+            hashLen(line, first, false)) {
             directive(line, shownFile, lineNo);
             continue;
         }
