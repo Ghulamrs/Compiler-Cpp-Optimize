@@ -273,9 +273,7 @@ static std::string developerShell() {
 #ifdef _WIN32
     const char *inside = std::getenv("VCToolsInstallDir");
     if (inside != nullptr && inside[0] != '\0') return std::string();
-    static bool asked = false;
-    static std::string cached;
-    if (!asked) { asked = true; cached = findVcvars(); }
+    static const std::string cached = findVcvars();   // asked from the tool pool: a static's initialiser is thread-safe
     return cached;
 #else
     return std::string();
