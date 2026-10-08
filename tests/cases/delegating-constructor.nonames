@@ -1,0 +1,3 @@
+x86_64-linux  Box<double>'s constructors are defined inside the class template - an out-of-line constructor of a class template is refused by name - so clang emits only the C2 a use asks for where cxx1 emits C1 beside it, the difference implicit-move.nonames records. Every other name agrees.
+x86_64-windows  S is polymorphic and its non-polymorphic Base sits after the vfptr: clang names Base's base-class descriptor ??_R17?0A@EA@Base@@8 where cxx1 writes ??_R4Base@@6B@. Pre-existing and not about delegation - measured on a three-line class with no delegating constructor, 2026-10-08.
+arm64-darwin  the same inline Box<double> constructors: cxx1 keeps a C2 clang does not emit.
