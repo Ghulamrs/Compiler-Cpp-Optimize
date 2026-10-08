@@ -148,7 +148,19 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     ) > "$LEGS/tms6747.log" 2>&1 &
     BG="$BG tms6747:$!"
     TW=$(date +%s)
-    ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" || STATUS=1
+    # **The project's masm and LINK go with the tree** (review D15): run-cases.cmd builds them and puts
+    # every case through -masm=masm as well as the GNU spelling, into winout\masm.
+    TOOLS='C:\cxx1\verify-tools'
+    MASMENV=""
+    if [ -d "$ROOT/../MASM/src" ] && [ -d "$ROOT/../LINK/src" ]; then
+        TT=$(mktemp -t cxx1tools).tgz
+        COPYFILE_DISABLE=1 tar -C "$ROOT/.." --no-xattrs -czf "$TT" --exclude '* [0-9]*' MASM/src LINK/src 2>/dev/null
+        scp -q -o BatchMode=yes "$TT" "$WINDOWS:C:\\cxx1\\tools.tgz" || STATUS=1
+        ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $TOOLS 2>nul & mkdir $TOOLS && tar -C $TOOLS -xzf C:\\cxx1\\tools.tgz" >/dev/null || STATUS=1
+        rm -f "$TT"
+        MASMENV="set CXX1_MASM_SRC=$TOOLS\\MASM&& set CXX1_LINK_SRC=$TOOLS\\LINK&& "
+    fi
+    ssh -o BatchMode=yes "$WINDOWS" "$MASMENV$REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" || STATUS=1
     # The two-half programs, linked across the boundary with cl both ways:
     # the ABI at the seam, which nothing compiled by cxx1 alone can see.
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\winlink-check.cmd $REMOTE" || STATUS=1
@@ -183,6 +195,19 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
             echo "  $n: output differs"
             tr -d '\r' < "$got" | diff - "$e" | head -6
             fail=$((fail + 1))
+        fi
+    done
+    # **The same cases through -masm=masm**, assembled and linked by the project's own tools.
+    for e in "$ROOT"/tests/cases/*.expected; do
+        n=$(basename "$e" .expected)
+        case "$n" in *" "[0-9]*) continue;; esac
+        nt="$ROOT/tests/cases/$n.notarget"
+        if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then continue; fi
+        got="$OUT/winout/masm/$n.out"
+        if [ -f "$got" ] && tr -d '\r' < "$got" | diff -q - "$e" >/dev/null; then
+            pass=$((pass + 1))
+        else
+            echo "  $n (-masm=masm): did not run, or output differs"; fail=$((fail + 1))
         fi
     done
     # The refusals. What is checked is the same thing tests/run.sh checks -
@@ -229,7 +254,7 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     done
     # **The cases again at -O2**: run.sh and the loop above build at -O0, and five wrong answers of the x86
     # optimizer stood under a green verify-three for that reason (2026-10-07). Recorded output only.
-    ssh -o BatchMode=yes "$WINDOWS" "set CXX1_CASES_FLAGS=-O2&& $REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" >/dev/null || STATUS=1
+    ssh -o BatchMode=yes "$WINDOWS" "${MASMENV}set CXX1_CASES_FLAGS=-O2&& $REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" >/dev/null || STATUS=1
     OUT2=$(mktemp -d)
     scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/verify/winout" "$OUT2"
     p2=0; f2=0
@@ -238,11 +263,13 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
         case "$n" in *" "[0-9]*) continue;; esac
         nt="$ROOT/tests/cases/$n.notarget"
         if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then continue; fi
-        if [ -f "$OUT2/winout/$n.out" ] && tr -d '\r' < "$OUT2/winout/$n.out" | diff -q - "$e" >/dev/null; then
-            p2=$((p2 + 1))
-        else
-            echo "  $n at -O2: did not run, or output differs"; f2=$((f2 + 1))
-        fi
+        for sp in "" masm/; do
+            if [ -f "$OUT2/winout/$sp$n.out" ] && tr -d '\r' < "$OUT2/winout/$sp$n.out" | diff -q - "$e" >/dev/null; then
+                p2=$((p2 + 1))
+            else
+                echo "  $n at -O2${sp:+ (-masm=masm)}: did not run, or output differs"; f2=$((f2 + 1))
+            fi
+        done
     done
     echo "windows cases at -O2: $p2 passed, $f2 failed"
     fail=$((fail + f2))
