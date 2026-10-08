@@ -1165,7 +1165,7 @@ bool Driver::compile(const Job &job) {
     TypeTable types;
 
     auto t0 = Clock::now();
-    Source src = Preprocessor(job.input, searchPath_, macrosFor()).run();
+    Source src = Preprocessor(job.input, searchPath_, macros_).run();
     auto t1 = Clock::now();
 
     std::vector<Token> tokens = Lexer(src).tokenize();
@@ -1328,6 +1328,7 @@ bool Driver::compileCaught(const Job &job) {
 // verdict is given after the threads are joined, never by an exit from inside one (review P1).
 bool Driver::runJobs() {
     unsigned n = threadCount();
+    macros_ = macrosFor();
 
     if (timing_)
         std::fprintf(stderr, "%s: %zu jobs on %u thread%s\n", program_.c_str(),

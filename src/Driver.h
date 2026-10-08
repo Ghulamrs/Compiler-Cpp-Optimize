@@ -100,4 +100,6 @@ private:
     std::string asmCompress_;
     // -rts=: empty for the choice made at the link, "ti" for TI's rts6740, else RTS6x's directory or .lib.
     std::string rtsChoice_;
+    // The predefined macros, made once on the main thread: __DATE__ and __TIME__ call localtime (review P4).
+    std::vector<std::pair<std::string, std::string> > macros_;
 };
