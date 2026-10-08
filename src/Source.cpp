@@ -3,6 +3,13 @@
 #include <cstdio>
 #include <cstdlib>
 
+std::mutex &diagnosticLock() {
+    static std::mutex m;
+    return m;
+}
+
+void compileFailed() { throw CompileFailed(); }
+
 Source::Source(std::string name, std::string text)
     : name_(std::move(name)), text_(std::move(text)) {
     if (text_.empty() || text_.back() != '\n') text_.push_back('\n');
@@ -21,8 +28,11 @@ Source::Source(std::string name, std::string text, std::vector<std::string> file
 Source Source::fromFile(const std::string &path) {
     std::FILE *fp = std::fopen(path.c_str(), "rb");
     if (!fp) {
-        std::fprintf(stderr, "cannot open %s\n", path.c_str());
-        std::exit(1);
+        {
+            std::lock_guard<std::mutex> hold(diagnosticLock());
+            std::fprintf(stderr, "cannot open %s\n", path.c_str());
+        }
+        compileFailed();
     }
     std::string buf;
     char chunk[4096];
@@ -127,6 +137,9 @@ void Source::fail(std::size_t pos, const std::string &message) const {
         text += (text_[i] == '\t') ? '\t' : ' ';
     text += "^\n";
 
-    std::fwrite(text.data(), 1, text.size(), stderr);
-    std::exit(1);
+    {
+        std::lock_guard<std::mutex> hold(diagnosticLock());
+        std::fwrite(text.data(), 1, text.size(), stderr);
+    }
+    compileFailed();
 }

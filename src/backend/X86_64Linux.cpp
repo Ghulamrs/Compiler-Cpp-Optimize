@@ -31,7 +31,7 @@ int LinuxX86_64Target::sizeOf(Kind k) const {
     case Kind::Pointer: case Kind::NullPtr:                                    return 8;
     default:
         std::fprintf(stderr, "target: no size for this type yet\n");
-        std::exit(1);
+        compileFailed();
     }
 }
 
@@ -281,7 +281,7 @@ void X86_64Linux::msCopyToSlot(const Type *t, int slot, const char *from) {
 void X86_64Linux::unsupported(const char *what) {
     std::fprintf(stderr, "codegen: %s is not supported yet by the %s backend\n",
                  what, target_.name());
-    std::exit(1);
+    compileFailed();
 }
 
 int X86_64Linux::takeSlot(bool sse, int &ints, int &sses) const {
@@ -319,7 +319,7 @@ void X86_64Linux::genAddr(const Expr &e) {
         if (m->isBitField()) {
             std::fprintf(stderr, "codegen: '%s' is a bit-field and has no address\n",
                          m->name().c_str());
-            std::exit(1);
+            compileFailed();
         }
         genAddr(m->object());
         if (m->offset() != 0) a_->ins("add", imm(m->offset()), reg("%rax"));
@@ -342,7 +342,7 @@ void X86_64Linux::genAddr(const Expr &e) {
         return;
     }
     std::fprintf(stderr, "codegen: this has no address\n");
-    std::exit(1);
+    compileFailed();
 }
 
 void X86_64Linux::load(const Type *t) {
@@ -816,7 +816,7 @@ void X86_64Linux::genX87Binary(const Binary &n) {
     case BinOp::Ge: set = "setae"; break;
     default:
         std::fprintf(stderr, "codegen: that operator has no floating form\n");
-        std::exit(1);
+        compileFailed();
     }
 
     if (swapped) a_->ins("fxch", reg("%st(1)"));
@@ -866,7 +866,7 @@ void X86_64Linux::genFloatBinary(const Binary &n) {
     case BinOp::Ge: set = "setae"; break;
     default:
         std::fprintf(stderr, "codegen: that operator has no floating form\n");
-        std::exit(1);
+        compileFailed();
     }
 
     if (swapped) a_->ins(std::string("ucomi") + sfx, reg("%xmm0"), reg("%xmm1"));
@@ -960,7 +960,7 @@ void X86_64Linux::visit(const Binary &n) {
     case BinOp::Ge: set = sign ? "setge" : "setae"; break;
     default:
         std::fprintf(stderr, "codegen: unhandled binary operator\n");
-        std::exit(1);
+        compileFailed();
     }
     a_->ins("cmp", reg(d), reg(a));
     a_->ins(set, reg("%al"));
@@ -1661,7 +1661,7 @@ void X86_64Linux::emit(const Function &fn) {
     if (depth_ != 0 || tempDepth_ != 0) {
         std::fprintf(stderr, "codegen: stack depth %d and %d temporaries at the end of %s\n",
                      depth_, tempDepth_, fn.name().c_str());
-        std::exit(1);
+        compileFailed();
     }
     finishChunk();
 }

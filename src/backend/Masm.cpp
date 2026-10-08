@@ -15,7 +15,7 @@ namespace {
 [[noreturn]] void give_up(const std::string &what, const std::string &why) {
     std::fprintf(stderr, "%s: masm: %s\n  for: %s\n", program::kName, why.c_str(),
                  what.c_str());
-    std::exit(1);
+    compileFailed();
 }
 
 bool isReservedInMasm(const std::string &name) {

@@ -90,6 +90,8 @@ private:
     void standardIncludeDirectories(const std::string &argv0);
     bool quiet_ = false;
     bool saysDone_ = false;  // a compile was begun, and the line saying it finished is wanted
+    // One job, its diagnostic caught: false where it failed, its half-written output removed.
+    bool compileCaught(const Job &job);
     // --compress or --no_compress, handed to asm6x for tms6747; empty is asm6x's default, compressed.
     std::string asmCompress_;
 };

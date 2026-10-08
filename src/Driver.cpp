@@ -1264,6 +1264,17 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
     return true;
 }
 
+bool Driver::compileCaught(const Job &job) {
+    try {
+        return compile(job);
+    } catch (const CompileFailed &) {
+        if (!job.output.empty()) std::remove(job.output.c_str());
+        return false;
+    }
+}
+
+// **Every job runs to its end, a failed one included**, so each file's diagnostic is printed; the
+// verdict is given after the threads are joined, never by an exit from inside one (review P1).
 bool Driver::runJobs() {
     unsigned n = threadCount();
 
@@ -1275,12 +1286,13 @@ bool Driver::runJobs() {
         // **The same line for one thread**, because saying so is the point: below `kThreadFrom`
         // files this compiler does the work in the thread it was started on, and a report that
         // showed threads it did not use would be worse than none. `-j n` overrides the threshold.
+        bool all = true;
         for (const Job &job : jobs_) {
             if (!quiet_ && jobs_.size() > 1)
                 std::fprintf(stderr, "  [thread 1] %s\n", job.input.c_str());
-            if (!compile(job)) return false;
+            if (!compileCaught(job)) all = false;
         }
-        return true;
+        return all;
     }
 
     std::atomic<std::size_t> next{0};
@@ -1296,10 +1308,11 @@ bool Driver::runJobs() {
             for (;;) {
                 std::size_t i = next.fetch_add(1);
                 if (i >= jobs_.size()) return;
-                if (!quiet_)
-                    std::fprintf(stderr, "  [thread %u] %s\n", t + 1,
-                                 jobs_[i].input.c_str());
-                if (!compile(jobs_[i])) { ok.store(false); return; }
+                if (!quiet_) {
+                    std::lock_guard<std::mutex> hold(diagnosticLock());
+                    std::fprintf(stderr, "  [thread %u] %s\n", t + 1, jobs_[i].input.c_str());
+                }
+                if (!compileCaught(jobs_[i])) ok.store(false);
             }
         });
     }

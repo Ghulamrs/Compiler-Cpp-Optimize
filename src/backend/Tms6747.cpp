@@ -5,6 +5,7 @@
 
 #include "../Abi.h"
 #include "../Ast.h"
+#include "../Source.h"
 
 #include <cctype>
 #include <cstdio>
@@ -37,7 +38,7 @@ int Tms6747Target::sizeOf(Kind k) const {
     case Kind::Pointer: case Kind::NullPtr:              return 4;
     default:
         std::fprintf(stderr, "target: no size for this type yet (tms6747)\n");
-        std::exit(1);
+        compileFailed();
     }
 }
 int Tms6747Target::alignOf(Kind k) const { return sizeOf(k); }
@@ -81,7 +82,7 @@ std::unique_ptr<CodeGen> Tms6747Backend::codegen(std::ostream &sink, Syntax) con
 void Tms6747::unsupported(const char *what) {
     std::fprintf(stderr, "codegen: %s is not supported yet by the tms6747 backend\n",
                  what);
-    std::exit(1);
+    compileFailed();
 }
 
 // A 32-bit constant in two halves: MVKL takes the low 16 (sign extended), MVKH
@@ -243,7 +244,7 @@ int Tms6747::placed(int key) const {
     std::map<int, int>::const_iterator it = place_.find(key);
     if (it == place_.end()) {
         std::fprintf(stderr, "codegen: frame slot %d of %s was reached by the second walk and not the first\n", key, functionName_.c_str());
-        std::exit(1);
+        compileFailed();
     }
     return it->second;
 }
@@ -667,7 +668,7 @@ void Tms6747::genAddr(const Expr &e) {
         if (m->isBitField()) {
             std::fprintf(stderr, "codegen: '%s' is a bit-field and has no address\n",
                          m->name().c_str());
-            std::exit(1);
+            compileFailed();
         }
         genAddr(m->object());
         addOffset(m->offset());

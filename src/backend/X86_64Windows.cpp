@@ -2,6 +2,8 @@
 #include "X86_64Linux.h"
 #include "Masm.h"
 
+#include "../Source.h"
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -24,7 +26,7 @@ int WindowsX86_64Target::sizeOf(Kind k) const {
     case Kind::Pointer: case Kind::NullPtr:                                    return 8;
     default:
         std::fprintf(stderr, "target: no size for this type yet\n");
-        std::exit(1);
+        compileFailed();
     }
 }
 

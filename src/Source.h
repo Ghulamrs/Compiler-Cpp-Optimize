@@ -1,7 +1,14 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
+
+// A diagnostic has been written and this translation unit is abandoned; the driver catches it per job.
+struct CompileFailed {};
+// Every diagnostic is written whole under this lock, so two jobs' messages never interleave.
+std::mutex &diagnosticLock();
+[[noreturn]] void compileFailed();
 
 // Thrown by fail() inside a trial, and caught by whoever began it.
 struct SubstitutionFailure {
