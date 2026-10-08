@@ -1046,9 +1046,6 @@ void Parser::topLevel(Program &program) {
             } else if (const Member *m = memberOf->findMember(entry)) {
                 if (memberExprs.count(entry))
                     src_.fail(epos, "'" + entry + "' is initialised twice");
-                if (m->type->isConst())
-                    src_.fail(epos, "a const member in an initialiser list is "
-                                    "not supported yet");
                 // **`: m()` value-initialises the member** - [class.base.init] hands
                 // the empty pair to [dcl.init]/8: a scalar zeroes, a class with no
                 // constructor zeroes leaf by leaf, a user-provided one runs alone.
@@ -1125,6 +1122,16 @@ void Parser::topLevel(Program &program) {
                 if (one == nullptr && memberOf->kind() != Kind::Union)
                     one = constructMember(d.qualifier, memberOf, *m,
                                           thisOffset_, none, d.pos, false);
+                // [class.base.init]/8: a const or reference member the list leaves out
+                // is ill-formed, since nothing after this can give it a value.
+                if (one == nullptr && memberOf->kind() != Kind::Union &&
+                    (m->type->isReference() ||
+                     (m->type->isConst() && !constDefaultInitialisable(m->type))))
+                    src_.fail(d.pos, "this constructor of '" + d.qualifier +
+                                     "' does not initialise its " +
+                                     (m->type->isReference() ? "reference" : "const") +
+                                     " member '" + m->name + "', and nothing after "
+                                     "it can - name it in the initialiser list");
                 if (one != nullptr) memberInits.push_back(std::move(one));
                 continue;
             }

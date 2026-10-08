@@ -226,8 +226,6 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserType.cpp:672`
 - **befriending one member function of another class** —
   `src/parser/ParserType.cpp:684`
-- **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:980`
 - **a delegating constructor** — `src/parser/ParserTopLevel.cpp:1027`
 - **a scoped enumeration**, `enum class` — an enumeration is an int that
   remembers its name here, where a scoped one is a distinct type whose
