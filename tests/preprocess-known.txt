@@ -1,0 +1,2 @@
+preprocessor-shift  cpp11 refuses `#if (1 << 100)` by name and clang warns: a shift past the width is undefined, so the condition is not a constant expression ([expr.const]/2) - the refusal is CLAUDE.md's C-04 decision
+stringize-whitespace  cpp11 writes `#x` of the character literal ' ' as "\' \'", where [cpp.stringize]/2 inserts a backslash before " and \ only - clang writes "' '"; the string's value is the same, the spelling is not (measured 2026-10-08, WS-D's preprocessor)

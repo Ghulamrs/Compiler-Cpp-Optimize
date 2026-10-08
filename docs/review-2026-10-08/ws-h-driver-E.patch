@@ -1,0 +1,39 @@
+diff --git a/src/Driver.cpp b/src/Driver.cpp
+index 776867a..2c31ae9 100644
+--- a/src/Driver.cpp
++++ b/src/Driver.cpp
+@@ -932,6 +932,8 @@ bool Driver::parseArguments(int argc, char **argv) {
+                 return false;
+             }
+             addMacroEdit(text, undef);
++        } else if (std::strcmp(argv[i], "-E") == 0) {
++            preprocessOnly_ = true;
+         } else if (std::strcmp(argv[i], "-S") == 0) {
+             assemblyOnly_ = true;
+         } else if (std::strcmp(argv[i], "-c") == 0) {
+@@ -973,6 +975,13 @@ bool Driver::parseArguments(int argc, char **argv) {
+ 
+     if (inputs.empty()) { usage(argv[0]); return false; }
+ 
++    // -E: each input after phase 4, on stdout, and nothing compiled.
++    if (preprocessOnly_) {
++        for (const std::string &in : inputs)
++            std::fputs(Preprocessor(in, searchPath_, macrosFor()).run().text().c_str(), stdout);
++        std::exit(0);
++    }
++
+     // **The project's own masm and LINK when they are beside this program, and no spelling asked
+     // for**: they take COMDAT and a throw, so clang is wanted only for -g's line table.
+     if (hostIsWindows() && !syntaxNamed_ && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
+diff --git a/src/Driver.h b/src/Driver.h
+index 6b7519b..33756b9 100644
+--- a/src/Driver.h
++++ b/src/Driver.h
+@@ -28,6 +28,7 @@ private:
+     bool toStdout_ = false;
+     bool timing_ = false;
+     bool assemblyOnly_ = false;
++    bool preprocessOnly_ = false;
+     bool debug_ = false;
+     int optimize_ = 0;
+     bool forSize_ = false;      // -Os: -O1, the smaller code chosen where a backend offers the choice
