@@ -5,32 +5,40 @@ code in this repository.
 
 ## Two languages, and they are not the same one
 
-**`src/` is ISO C++14. The language `cxx1` compiles is C++11 — minus the list
-in `docs/EXCLUSIONS.md`, and with no C++ standard library at all.** Keep the
-two languages apart in every sentence you write about this project, because
-almost every confusing question here comes from conflating them.
+**`src/` is ISO C++14. The language `cxx1` compiles is C++03 with C++11
+extensions — the list of what it does not take is `docs/EXCLUSIONS.md`, and
+the library is the subset in `include/`.** Keep the two languages apart in
+every sentence you write about this project, because almost every confusing
+question here comes from conflating them.
 
 The consequence worth stating up front: **this compiler can never compile
-itself**, and that is deliberate rather than a gap. A C++11 compiler cannot
-read C++14 source. Self-hosting is not a milestone here and offering it as one
-is a mistake — see "How correctness is established" for what replaces it.
+itself**, and that is deliberate rather than a gap. A compiler of this language
+cannot read C++14 source. Self-hosting is not a milestone here and offering it
+as one is a mistake — see "How correctness is established" for what replaces it.
 
-**The subset is not a footnote, and "C++11" on its own was a claim this
-compiler cannot support.** Some of that has since been answered — `dynamic_cast`
-works on all three targets, conversion functions exist, and `include/` holds a
-real library: `<string>`, `<vector>`, `<map>`, `<set>`, `<algorithm>`,
-`<utility>`, the five C wrappers, and the stream family `<iostream>`,
-`<ostream>`, `<istream>`, `<sstream>`, `<fstream>`, `<ios>`, `<cstdio>`. What
-remains is still a subset, and a large one: the library is sized to what has
-been asked of it rather than to the standard, `<memory>` and
-`<initializer_list>` are not there, and `docs/EXCLUSIONS.md` runs to a hundred
-entries. An ordinary conforming C++98 program may still not compile here, and a
-reader who took the headline at its word would meet that with nowhere to look.
-`docs/EXCLUSIONS.md` is the list — **101 refusal sites**, derived from
-the source by `tools/exclusions` rather than written by hand, and
-`tools/exclusions --check docs/EXCLUSIONS.md` reports every refusal the
-document does not cite. This is the tree's own rule 5 — *a claim with no oracle
-is not allowed to be believed* — applied to the first sentence of this file.
+**The headline said "C++11 minus the list" until 2026-10-08, and that was a
+claim the compiler could not support.** The critical review of that day
+(`CppOptimize-critical-review_1.md`, answered by
+`docs/REVIEW-PLAN-2026-10-08.md`) put 122 probes of C++11 features through it
+and 56 were refused - `enum class`, `override`/`final`, `= default`/`= delete`,
+delegating and inheriting constructors, alias declarations, forwarding
+references, list-initialisation in expressions among them: about half of what
+C++11 added to C++03, and under a fifth of its library. What is here of C++11
+is real and measured - `auto`, `decltype`, lambdas with every capture, rvalue
+references and move, variadic type packs, `static_assert`, `constexpr`
+functions, `nullptr`, range-based `for`, `noexcept`, `dynamic_cast`, `typeid`,
+`char16_t`/`char32_t`, `alignas` - and `include/` holds 31 headers, a library
+sized to what has been asked of it rather than to the standard. The headline
+goes back to "C++11" when every feature in the review's Rec 1 has landed and
+the probe grid says so (`tools/feature-sweep`), and not before.
+`docs/EXCLUSIONS.md` is the list — **the number of refusal sites is the one
+`tools/exclusions --count` prints**, 131 on 2026-10-08, derived from the source
+rather than written by hand; `tools/exclusions --check docs/EXCLUSIONS.md`
+reports every refusal the document does not cite and every citation that has
+gone, and `make test` fails on either. It read "101 refusal sites" here while
+the tool said 131 and the document 130, which is the tree's own rule 5 — *a
+claim with no oracle is not allowed to be believed* — failing on the first
+paragraph of this file; the number is the tool's now, in one place.
 
 `-std=c++14 -Wall -Wextra -Werror -pedantic` in the `Makefile`. A Mac cannot
 enforce C++14: Apple's libc++ hands you `std::string_view` in C++14 mode, so a

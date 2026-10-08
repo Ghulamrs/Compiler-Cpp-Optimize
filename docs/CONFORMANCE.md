@@ -636,3 +636,30 @@ what rts6740 does (VM6747 fix-c1b), so the case carries a `.notarget` for
 this target and `tools/c6747/release-check` holds TI's measured answer
 (`tools/c6747/programs/throw-pointer-base-adjust.ti.expected`), which will
 say so if either runtime ever changes.
+
+## A name declared after a template is found inside it
+
+[temp.res]/9 looks a non-dependent name up where the template is *defined*,
+and [temp.dep.candidate] gives a dependent call only argument-dependent lookup
+at the instantiation. cxx1 instantiates by replaying the template's tokens with
+the parameters bound, so every name in the body is looked up at the
+instantiation - MSVC's model before two-phase lookup - and a function declared
+*after* the template binds here where clang says it is "neither visible in the
+template definition nor found by argument-dependent lookup":
+
+```cpp
+template <class T> int use(T t) { return later(t); }
+int later(int n) { return n + 4; }
+int main() { return use(3); }       // clang refuses; cxx1 returns 7
+```
+
+This is the decision CLAUDE.md records under "Decisions already taken" and in
+the rung-5 plan - a dependent AST is a second parser and a second lookup pass,
+and the trade was taken knowingly - and it is an over-acceptance, so it is on
+this page and not in `docs/EXCLUSIONS.md`. `tests/open/two-phase-lookup-late-name.cpp`
+counts it; the oracle for it must be asked with `-fno-delayed-template-parsing`
+on a Windows-hosted clang, whose MSVC default turns two-phase lookup off and
+accepts the program too. What a conforming answer would cost: a parse of each
+template body into a tree carrying "dependent" on every name, with lookup at
+definition for the rest - the rewrite the rung-5 plan declined, and the one to
+revisit first if templates ever feel wrong.

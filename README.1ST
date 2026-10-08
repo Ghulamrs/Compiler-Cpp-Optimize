@@ -1,4 +1,4 @@
-©2026 G. R. Akhtar - ISO C++ 11
+©2026 G. R. Akhtar - C++03 with C++11 extensions
 ==========================================
 
 READ THIS FIRST.  It is the whole of what a user of this compiler needs: how to
@@ -32,11 +32,18 @@ Options, in full:
     -D n[=v]      define a macro; -DN alone means -DN=1
     -U n          undefine one, including one of the target's own
     -j <n>        how many files are compiled at once; -j 1 is serial
-    -arch <a>     x86_64-linux, x86_64-windows or arm64-darwin
-    -masm=<m>     x86_64-windows only: masm (ml64, the default) or gnu
+    -arch <a>     x86_64-linux, x86_64-windows, arm64-darwin or tms6747
+    -masm=<m>     x86_64-windows only: masm (the project's own masm and link,
+                  the default where they sit beside the compiler), gnu (clang,
+                  the default elsewhere and for -g), or ml64 (Microsoft's
+                  assembler, which links one translation unit per program)
+    -O0 -O1 -O2   how hard the optimizer works; -O0 is the default
+    -Os           -O1 choosing the smaller code where the two differ
     -g            write a line table, so a debugger can step through the
-                  source; x86_64-linux and arm64-darwin
+                  source: DWARF on x86_64-linux and arm64-darwin, CodeView on
+                  x86_64-windows in the gnu spelling; refused for tms6747
     -nologo       leave out the line printed before the work starts
+    -version      say which release this is and name its seal file
     -time         report how long each phase took
 
 Run it with no arguments for the same list.
@@ -45,7 +52,7 @@ Run it with no arguments for the same list.
 multi-file build then says how many source files it has and how many threads it
 is compiling them on, one line per file as each thread takes it:
 
-    ©2026 G. R. Akhtar - ISO C++ 11
+    ©2026 G. R. Akhtar - C++03 with C++11 extensions
     6 source files, 6 compilation threads
       [thread 1] main.cpp
       [thread 2] parser.cpp
@@ -101,15 +108,22 @@ before the two above.
 3.  WHAT IT ACCEPTS
 -------------------
 
-The language is **ISO C++11**, and a large part of it: classes, inheritance,
-virtual functions and vtables, templates including partial specialization,
-exceptions with `try`/`catch`/`throw`, lambdas and closures, references,
-operator overloading, namespaces, `auto`, `nullptr`, `static_assert`,
-`noexcept`, `constexpr` functions, range-based `for`, and the implicit special
-members with the rules that delete them.
+The language is **C++03 with C++11 extensions**: classes, inheritance, virtual
+functions and vtables, templates including partial specialization, exceptions
+with `try`/`catch`/`throw`, lambdas and closures, references, operator
+overloading, namespaces, `auto`, `decltype`, rvalue references and move,
+variadic type packs, `nullptr`, `static_assert`, `noexcept`, `constexpr`
+functions, range-based `for`, `dynamic_cast` and `typeid`, and the implicit
+special members with the rules that delete them.
 
-It is a *subset*, and the subset is written down rather than left to be
-discovered:
+It is **not ISO C++11**, and said so wrongly until 2026-10-08: an independent
+review that day put 122 probes of C++11 features through it and 56 were
+refused - `enum class`, `override` and `final`, `= default` and `= delete`,
+delegating constructors, `using X = T;`, forwarding references,
+list-initialisation calling a constructor, raw strings, `thread_local` among
+them - which is about half of what C++11 added to C++03, and under a fifth of
+its library. The headline goes back to C++11 when the list below says it may.
+The subset is written down rather than left to be discovered:
 
     docs/EXCLUSIONS.md      everything this compiler does not accept, each
                             entry with the source line that refuses it.
@@ -194,25 +208,30 @@ two header directories of section 2.
 6.  THIS RELEASE, AND ITS SEAL
 ------------------------------
 
-This is **version 1.4**, sealed **18-09-2026**.
+This is **version 1.6**, sealed **08-10-2026**.
 
     cxx1.exe -version            says both, and names the seal file
     cxx1-1.6.dat                 the seal: a CRC32 and a size per file
     tools/seal check             verifies every line of it
 
-The seal covers what the compiler *is*: every file under `src/`, `include/`,
-`lib/` and `examples/`, and the three files that decide how it is built -
-`Makefile`, `msvc\build.cmd` and `ide/generate.py`.  The head of the file says
-how many, and carries **one CRC32 over all of them**, so a single number
-identifies the release.
+The seal covers what the compiler *is*: every file under `src/`, `include/` and
+`lib/` - source code only, since 2026-10-05; the Makefile, `msvc\build.cmd` and
+`ide/generate.py` decide how it is built, not what it is, and are not sealed.
+The head of the file says how many, and carries **one CRC32 over all of them**,
+so a single number identifies the release.
 
 Nothing generated is in it - no object files, no `cxx1.exe`, no test output -
 and neither is documentation, which changes without the compiler changing.
 **`tools/seal check` answers with the files that differ and a non-zero status**,
-so a build script can gate on it; a seal nobody can check is decoration.
+so a build script can gate on it; a seal nobody can check is decoration. The
+version and date in this section, the banner lines quoted in this file and the
+heading of README.md's shortcomings list are written by `tools/version-lines`
+from `src/Version.h` - `tools/seal write` runs it first and `tools/seal check`
+fails on a stale one - because this section said 1.4 for two releases after the
+binary said otherwise.
 
 Known shortcomings of this version are listed in `README.md` under "Known
-shortcomings in 1.4", and the complete list of what the language does not
+shortcomings in 1.6", and the complete list of what the language does not
 accept is `docs/EXCLUSIONS.md`.
 
 
@@ -236,8 +255,8 @@ building something else.
 `Makefile.windows` builds one object per source like the other three, and
 `examples/build-win.cmd` runs the whole thing from a plain shell - it calls
 `vcvars64.bat` first, because that is where `link.exe` and `clang` are.  With
-`-masm=masm` it would need the single-translation-unit build `examples/unity.cpp`
-holds; section 7 says why.  Copy whichever fits, change the first three lines,
+`-masm=ml64` it would need the single-translation-unit build `examples/unity.cpp`
+holds; the end of this section says why.  Copy whichever fits, change the first three lines,
 and it builds any project of C++ sources in one directory:
 
     TARGET  := demo
@@ -272,7 +291,7 @@ so that the link step is the same program as the compile step.
 
     $ make one
     cxx1.exe demo.cpp report.cpp -o demo
-    ©2026 G. R. Akhtar - ISO C++ 11
+    ©2026 G. R. Akhtar - C++03 with C++11 extensions
     2 source files, 1 compilation thread
       [thread 1] demo.cpp
       [thread 1] report.cpp
@@ -291,10 +310,12 @@ then runs two programs that are already on the machine:
     compile to assembly  cxx1                     cxx1
     assemble             c++     (-c on the .s)   clang -target
                                                   x86_64-pc-windows-msvc -c
-                                                  (or ml64.exe /c /Fo, with
-                                                  -masm=masm)
+                                                  (the project's masm.exe where
+                                                  it sits beside cxx1, -masm=masm;
+                                                  or ml64.exe /c /Fo, -masm=ml64)
     link                 c++     (and -lm)        link.exe /subsystem:console
-                                                  with the UCRT libraries
+                                                  with the UCRT libraries (the
+                                                  project's link.exe beside masm)
 
 **"GNU spelling" is a syntax, not a toolchain.**  Nothing of MinGW, gcc or a
 GNU runtime is involved on Windows: clang reads the assembly, writes an
@@ -303,14 +324,16 @@ CRT exactly as it would an object from `cl`.  clang ships inside Visual Studio
 2022 as the optional "C++ Clang tools for Windows" component, or as the
 standalone LLVM installer.
 
-**Why it is the default there.**  Only that spelling can mark a definition
-COMDAT, and without one a program of more than one file does not link: a member
-function defined inside its class - `std::string`'s own, in this compiler's own
-`<string>` - is a strong symbol in every object that includes the header, and
-`ml64` has no directive that reaches the COMDAT bit at all.  It is also the only
-spelling that carries a line table, which `-g` already required.  `-masm=masm`
-is there for a machine with no clang, at the cost of one translation unit per
-program.
+**Why it is the default where there is no masm beside the compiler.**  A
+program of more than one file links only when each inline definition is marked
+COMDAT: a member function defined inside its class - `std::string`'s own, in
+this compiler's own `<string>` - is a strong symbol in every object that
+includes the header.  The `gnu` spelling marks it so through clang, and the
+`masm` spelling through the project's own masm, which reads a COMDAT the way cl
+writes one; Microsoft's `ml64` has no directive that reaches the bit at all, so
+`-masm=ml64` is there for a machine with neither, at the cost of one translation
+unit per program.  The `gnu` spelling is also the only one that carries a line
+table, so `-g` picks it.
 
 `c++` rather than `cc` on the Itanium targets, because `operator new` lives in
 the C++ runtime and the C driver links neither libc++ nor libstdc++.  On
