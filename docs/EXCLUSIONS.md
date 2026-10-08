@@ -110,6 +110,19 @@ It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
 — `src/parser/ParserTemplate.cpp:1061`.
 
+- **a C++11 standard header `include/` does not hold** is refused by name - "the
+  standard header <tuple> is not provided by this compiler yet" - where it had
+  been "cannot find". Forty-eight of [headers]' C++11 names are missing:
+  `<array>`, `<atomic>`, `<bitset>`, `<chrono>`, `<codecvt>`, `<complex>`,
+  `<condition_variable>`, `<deque>`, `<forward_list>`, `<functional>`, `<future>`,
+  `<iosfwd>`, `<iterator>`, `<list>`, `<locale>`, `<memory>`, `<mutex>`, `<queue>`,
+  `<random>`, `<ratio>`, `<regex>`, `<scoped_allocator>`, `<stack>`, `<streambuf>`,
+  `<strstream>`, `<system_error>`, `<thread>`, `<tuple>`, `<typeindex>`,
+  `<unordered_map>`, `<unordered_set>`, `<valarray>`, `<ccomplex>`, `<cerrno>`,
+  `<cfenv>`, `<cinttypes>`, `<ciso646>`, `<clocale>`, `<csetjmp>`, `<csignal>`,
+  `<cstdalign>`, `<cstdarg>`, `<cstdbool>`, `<ctgmath>`, `<ctime>`, `<cuchar>`,
+  `<cwchar>`, `<cwctype>`. `src/Preprocessor.cpp:1088`
+
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
 in this tree with that in front of it.
@@ -453,7 +466,7 @@ declaration order. What is left is the shapes where one object is many:
 ## Lexer and preprocessor
 
 - **GNU's named variadic macro parameter** — write `...` and use `__VA_ARGS__`.
-  `src/Preprocessor.cpp:926`
+  `src/Preprocessor.cpp:979`
 - **a raw string literal**, `R"(...)"`, `u8R`, `LR`, `uR` and `UR` — an
   ordinary `"..."` is a narrow string of char here. `L`, `u`, `U` and `u8`
   string literals and `u`/`U` character literals are read and work.

@@ -237,6 +237,9 @@ std::string Preprocessor::substitute(const Macro &m, const std::vector<std::stri
         }
     }
     const std::string kVaName = "__VA_ARGS__";
+    // [cpp.subst]/1: an argument is macro-replaced once, however often it is used.
+    std::vector<std::string> expanded(args.size() + 1);
+    std::vector<bool> done(args.size() + 1, false);
 
     const std::string &body = m.body;
     std::string out;
@@ -306,15 +309,23 @@ std::string Preprocessor::substitute(const Macro &m, const std::vector<std::stri
             while (i < body.size() && identCont(body[i])) i++;
             std::string name = body.substr(start, i - start);
             if (m.variadic && name == kVaName) {
-                std::vector<std::string> vaBusy = busy;
-                out += expandText(va, vaBusy, fileIndex, lineNo, false);
+                if (!done[args.size()]) {
+                    std::vector<std::string> vaBusy = busy;
+                    expanded[args.size()] = expandText(va, vaBusy, fileIndex, lineNo, false);
+                    done[args.size()] = true;
+                }
+                out += expanded[args.size()];
                 continue;
             }
             int p = indexOf(name);
             if (p < 0) { out += name; continue; }
-            std::vector<std::string> argBusy = busy;
-            out += expandText(args[static_cast<std::size_t>(p)], argBusy,
-                              fileIndex, lineNo, false);
+            const std::size_t k = static_cast<std::size_t>(p);
+            if (!done[k]) {
+                std::vector<std::string> argBusy = busy;
+                expanded[k] = expandText(args[k], argBusy, fileIndex, lineNo, false);
+                done[k] = true;
+            }
+            out += expanded[k];
             continue;
         }
         out += body[i++];
@@ -402,6 +413,7 @@ std::string Preprocessor::expandText(const std::string &s, std::vector<std::stri
         std::string name = s.substr(start, i - start);
 
         if (name == "__LINE__") { out += std::to_string(lineNo); continue; }
+        if (name == "__COUNTER__") { out += std::to_string(counter_++); continue; }
         if (name == "__FILE__") {
             // A Windows path is full of backslashes: escape them, and any quote, for the literal.
             out += '"';
@@ -493,7 +505,8 @@ std::string Preprocessor::resolveDefined(const std::string &expr, int fileIndex,
             i++;
         }
         // **These are defined, though no `#define` wrote them.**
-        out += (macros_.count(operand) || isHasPredicate(operand)) ? "1" : "0";
+        out += (macros_.count(operand) || isHasPredicate(operand) ||
+                isDynamicMacro(operand)) ? "1" : "0";
     }
     return out;
 }
@@ -523,6 +536,30 @@ static std::string spellAlternativeTokens(const std::string &expr) {
         out += primary ? primary : word;
     }
     return out;
+}
+
+// [headers] table 14's C++11 library headers and the C ones it lists beside them.
+bool Preprocessor::isStandardHeader(const std::string &name) {
+    static const char *const kAll[] = {
+        "algorithm", "array", "atomic", "bitset", "chrono", "codecvt", "complex",
+        "condition_variable", "deque", "exception", "forward_list", "fstream", "functional",
+        "future", "initializer_list", "iomanip", "ios", "iosfwd", "iostream", "istream",
+        "iterator", "limits", "list", "locale", "map", "memory", "mutex", "new", "numeric",
+        "ostream", "queue", "random", "ratio", "regex", "scoped_allocator", "set", "sstream",
+        "stack", "stdexcept", "streambuf", "string", "strstream", "system_error", "thread",
+        "tuple", "type_traits", "typeindex", "typeinfo", "unordered_map", "unordered_set",
+        "utility", "valarray", "vector", "cassert", "ccomplex", "cctype", "cerrno", "cfenv",
+        "cfloat", "cinttypes", "ciso646", "climits", "clocale", "cmath", "csetjmp", "csignal",
+        "cstdalign", "cstdarg", "cstdbool", "cstddef", "cstdint", "cstdio", "cstdlib",
+        "cstring", "ctgmath", "ctime", "cuchar", "cwchar", "cwctype", 0
+    };
+    for (int k = 0; kAll[k] != 0; k++) if (name == kAll[k]) return true;
+    return false;
+}
+
+// The macros no `#define` writes, whose value is computed where they are expanded.
+bool Preprocessor::isDynamicMacro(const std::string &name) {
+    return name == "__LINE__" || name == "__FILE__" || name == "__COUNTER__";
 }
 
 // **The `__has_*` predicates, resolved before expansion for `defined`'s
@@ -854,7 +891,7 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
         name = name.substr(0, e);
         // **`#ifdef __has_builtin` is a directive and not `defined()`**, and
         // libstdc++ guards its whole builtin layer with exactly that.
-        bool defined = macros_.count(name) != 0 || isHasPredicate(name);
+        bool defined = macros_.count(name) != 0 || isHasPredicate(name) || isDynamicMacro(name);
         bool want = (what == "ifdef") ? defined : !defined;
         bool on = emitting() && want;
         conds_.push_back(Cond{ on, on, false });
@@ -1047,6 +1084,10 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
 
         std::vector<std::string> tried;
         std::string path = resolveInclude(name, angled, fileIndex, tried);
+        if (path.empty() && angled && isStandardHeader(name))
+            fail(fileIndex, lineNo, line, nameStart, "the standard header <" + name +
+                 "> is not provided by this compiler yet - docs/EXCLUSIONS.md lists "
+                 "what is missing from include/");
         if (path.empty()) {
             std::string where;
             for (std::size_t k = 0; k < tried.size(); k++)
