@@ -31,7 +31,10 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-None is here now (open.sh counts), and both halves of the movement below are the point. **Five of
+One is here now (open.sh counts): two-phase-lookup-late-name, the over-acceptance
+the token-replay decision costs, kept so it is counted rather than described
+(docs/CONFORMANCE.md, "A name declared after a template is found inside it").
+Both halves of the movement below are the point. **Five of
 the original fourteen have been mended and moved out** with their .expected,
 which is the movement the rule above asks for: capture-default-this,
 polymorphic-class-template-zts, catch-return-end-catch, and then

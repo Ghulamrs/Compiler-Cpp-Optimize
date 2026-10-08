@@ -32,7 +32,8 @@ make
 
 Needs a C++14 compiler and nothing else. `clang++` on a Mac, `g++` on Linux;
 both are checked, and `cl` is the third, through `msvc\build.cmd` on the
-Windows box. `tools/verify-three` builds and tests on all three from the Mac.
+Windows box. `tools/verify-three` builds and tests on all three from the Mac,
+and runs the tms6747 leg on TI's own simulator from the Windows box.
 
 ## Use
 

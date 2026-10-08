@@ -3,7 +3,7 @@
 
 READ THIS FIRST.  It is the whole of what a user of this compiler needs: how to
 run it, where its headers come from, what it accepts, and how to build it from
-source on the three machines it targets.  Everything else in this tree is for
+source on the three machines it runs on.  Everything else in this tree is for
 whoever works *on* the compiler; this file is for whoever works *with* it.
 
 The program is `cxx1.exe` on every machine - Linux, macOS and Windows alike.
@@ -178,7 +178,8 @@ compiler's on the answers.
 5.  BUILDING THE COMPILER
 -------------------------
 
-From the source tree, on any of the three machines:
+From the source tree, on any of the three machines it builds on (its fourth
+target, tms6747, is cross-compiled from any of them):
 
     make                 build cxx1.exe with the host compiler
     make test            build and run the four suites
