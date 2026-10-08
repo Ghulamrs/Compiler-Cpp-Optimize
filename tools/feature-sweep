@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""The review's feature grid, as a tool: one probe per row, three counts.
+
+    tools/feature-sweep                      run every probe through cpp11
+    tools/feature-sweep --clang clang++      and validate each probe with clang first
+    tools/feature-sweep --list               print the probes and stop
+    CXX1=path/to/cpp11.exe                   the compiler under test (default ./cpp11.exe)
+
+The critical review of 2026-10-08 (`CppOptimize-critical-review_1.md`, section 2)
+put 122 probes of C++11 features through cpp11 and found 56 refused, which is
+what moved the headline from "C++11" to "C++03 with C++11 extensions". This is
+that grid kept as a program, so the headline can be re-measured rather than
+re-argued: `docs/REVIEW-PLAN-2026-10-08.md` section 5.2 reads its three counts
+at the release step and lets the headline go back only if they say so.
+
+Every probe is a complete program that is valid C++11, or one the standard
+refuses whose row says so (`expect="refuse"`: a C++14 form, which cpp11 must
+refuse *naming the version*). With `--clang` each probe is first compiled by
+clang `-std=c++11 -pedantic-errors -fsyntax-only`, and a probe clang answers
+differently from its row is reported as the sweep's own fault, not the
+compiler's - the sweep is only an oracle while its programs are. On a
+Windows-hosted clang pass `-fno-delayed-template-parsing` through CLANGFLAGS,
+or the two-phase-lookup row is accepted by the oracle too; and that clang has
+no C++11 library to offer (Microsoft's STL refuses `-std=c++11`, and there is
+no Darwin or Linux SDK on the box), so every probe that includes a header is
+reported as the oracle's fault there and is validated on the Mac instead -
+measured 2026-10-08, and why the fault list is printed rather than gated on.
+
+Each probe lands in one of three bins, and the plan's release step wants the
+third at zero:
+
+    compiles              cpp11 accepted it
+    refused by name       the message says "not supported yet" or names a standard version
+    refused naming nothing  a diagnostic about something else - the invisible bucket
+"""
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# tools/exclusions' marker words, plus a header the library lacks - "cannot find <memory>" names
+# what is missing as plainly as a refusal does.
+NAMED = re.compile(r"not supported|not implemented|is C\+\+1[0-9]|\byet\b|cannot find <", re.I)
+
+# (id, expect, source). expect is "accept" (valid C++11) or "refuse" (not C++11).
+PROBES = [
+    # [lex]
+    ("raw-string", "accept", 'const char *s = R"(a\\b)"; int main() { return s[1] == 92 ? 0 : 1; }'),
+    ("u8-string", "accept", 'const char *s = u8"ab"; int main() { return s[0] == 97 ? 0 : 1; }'),
+    ("char16-char32", "accept", 'char16_t a = u\'x\'; char32_t b = U\'y\'; int main() { return a + b > 0 ? 0 : 1; }'),
+    ("ucn", "accept", 'int caf\\u00e9 = 1; int main() { return caf\\u00e9 - 1; }'),
+    ("udl", "accept", 'long double operator"" _km(long double v) { return v * 1000.0L; } int main() { return (int)(1.5_km) == 1500 ? 0 : 1; }'),
+    ("long-long", "accept", 'int main() { unsigned long long v = 1ULL << 40; return v > 0 ? 0 : 1; }'),
+    ("digit-separator", "refuse", "int main() { return 1'000 - 1000; }"),
+    ("binary-literal", "refuse", "int main() { return 0b101 - 5; }"),
+    # [cpp]
+    ("pp-stringise-paste", "accept", '#define S(x) #x\n#define P(a,b) a##b\nint P(ma,in)() { return S(x)[0] == 120 ? 0 : 1; }'),
+    ("pp-va-args", "accept", '#define F(...) f(__VA_ARGS__)\nint f(int a, int b) { return a - b; }\nint main() { return F(1, 1); }'),
+    ("pp-if-line-error-once", "accept", '#pragma once\n#if 1 + 1 == 2\n#line 10\nint main() { return 0; }\n#else\n#error no\n#endif'),
+    # [dcl]
+    ("auto-object", "accept", 'int main() { auto x = 3; auto *p = &x; const auto &r = x; return *p - r; }'),
+    ("auto-from-braces", "accept", '#include <initializer_list>\nint main() { auto l = {1, 2}; return l.size() == 2 ? 0 : 1; }'),
+    ("decltype", "accept", 'struct S { int m; }; int main() { S s = {1}; decltype(s.m) x = 2; decltype((s)) r = s; return x - 2 + r.m - 1; }'),
+    ("decltype-auto", "refuse", 'int main() { decltype(auto) x = 1; return x - 1; }'),
+    ("constexpr-function", "accept", 'constexpr int fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); } static_assert(fact(5) == 120, "f"); int main() { return 0; }'),
+    ("constexpr-constructor", "accept", 'struct P { int x; constexpr P(int v) : x(v) {} }; constexpr P p(3); static_assert(p.x == 3, "p"); int main() { return 0; }'),
+    ("static-assert", "accept", 'template <class T> struct W { static_assert(sizeof(T) >= 1, "t"); }; W<int> w; int main() { return 0; }'),
+    ("alignas-class", "accept", 'struct alignas(16) A { char c; }; int main() { return alignof(A) == 16 && sizeof(A) == 16 ? 0 : 1; }'),
+    ("alignas-global", "accept", 'alignas(32) int g; int main() { return ((unsigned long long)&g & 31) == 0 ? 0 : 1; }'),
+    ("alignas-local", "accept", 'int main() { alignas(64) char buf[8]; buf[0] = 1; return buf[0] - 1; }'),
+    ("enum-class", "accept", 'enum class E : short { A, B }; int main() { E e = E::B; return e == E::B ? 0 : 1; }'),
+    ("enum-base", "accept", 'enum E : short { A, B }; int main() { return sizeof(E) == 2 ? 0 : 1; }'),
+    ("alias-declaration", "accept", 'using I = int; int main() { I x = 0; return x; }'),
+    ("alias-template", "accept", 'template <class T> using P = T *; int main() { int x = 0; P<int> p = &x; return *p; }'),
+    ("inline-namespace", "accept", 'namespace N { inline namespace V { int f() { return 0; } } } int main() { return N::f(); }'),
+    ("namespace-alias", "accept", 'namespace Long { int f() { return 0; } } namespace S = Long; int main() { return S::f(); }'),
+    ("attribute-unknown", "accept", '[[vendor::thing]] int f() { return 0; } int main() { return f(); }'),
+    ("attribute-noreturn", "accept", '[[noreturn]] void stop(); void stop() { for (;;) {} } int main() { return 0; }'),
+    ("noexcept", "accept", 'void f() noexcept {} int main() { return noexcept(f()) ? 0 : 1; }'),
+    ("throw-spec-dynamic", "accept", 'void f() throw(int) {} int main() { f(); return 0; }'),
+    ("override-final", "accept", 'struct B { virtual int f() { return 1; } virtual ~B() {} }; struct D final : B { int f() override { return 0; } }; int main() { D d; B *p = &d; return p->f(); }'),
+    ("default-delete", "accept", 'struct S { S() = default; S(const S &) = delete; int v; }; int main() { S s; s.v = 0; return s.v; }'),
+    ("delegating-constructor", "accept", 'struct S { int v; S(int a) : v(a) {} S() : S(0) {} }; int main() { S s; return s.v; }'),
+    ("inheriting-constructor", "accept", 'struct B { int v; B(int a) : v(a) {} }; struct D : B { using B::B; }; int main() { D d(0); return d.v; }'),
+    ("nsdmi", "accept", 'struct S { int a = 1; int b{2}; }; int main() { S s; return s.a + s.b - 3; }'),
+    ("thread-local", "accept", 'thread_local int t = 0; int main() { return t; }'),
+    ("trailing-return", "accept", 'auto f(int x) -> int { return x; } int main() { return f(0); }'),
+    ("friend-class", "accept", 'class A { int v; friend class B; public: A() : v(0) {} }; struct B { int get(const A &a) { return a.v; } }; int main() { A a; B b; return b.get(a); }'),
+    ("const-member-mem-init", "accept", 'struct S { const int k; S() : k(0) {} }; int main() { S s; return s.k; }'),
+    ("anonymous-union", "accept", 'struct S { union { int i; float f; }; }; int main() { S s; s.i = 0; return s.i; }'),
+    # [expr]
+    ("lambda-captures", "accept", 'struct S { int n; int go() { return [this]() { return n; }(); } }; int main() { int a = 1, b = 1; auto f = [a, &b]() -> int { return a - b; }; auto g = [=]() { return a - b; }; auto h = [&]() { return a - b; }; S s = {0}; return f() + g() + h() + s.go(); }'),
+    ("lambda-to-function-pointer", "accept", 'int main() { int (*p)(int) = [](int x) { return x; }; return p(0); }'),
+    ("init-capture", "refuse", 'int main() { int k = 1; auto f = [n = k]() { return n; }; return f() - 1; }'),
+    ("rvalue-ref-move", "accept", '#include <utility>\nstruct S { int *p; S() : p(new int(1)) {} S(S &&o) : p(o.p) { o.p = 0; } ~S() { delete p; } }; int main() { S a; S b(std::move(a)); return a.p == 0 && *b.p == 1 ? 0 : 1; }'),
+    ("forwarding-reference", "accept", 'template <class T> int f(T &&) { return 0; } int main() { int i = 0; return f(i) + f(1); }'),
+    ("list-init-constructor", "accept", 'struct P { int a, b; P(int x, int y) : a(x), b(y) {} }; int main() { P p{1, 2}; return p.a + p.b - 3; }'),
+    ("list-init-expression", "accept", 'struct P { int a, b; }; int take(P p) { return p.a + p.b; } int main() { return take(P{1, 2}) + take({1, 2}) - 6; }'),
+    ("list-init-new", "accept", 'struct P { int a, b; }; int main() { P *p = new P{1, 2}; int r = p->a + p->b - 3; delete p; return r; }'),
+    ("initializer-list-ctor", "accept", '#include <initializer_list>\nstruct V { int n; V(std::initializer_list<int> l) : n((int)l.size()) {} }; int sum(std::initializer_list<int> l) { return (int)l.size(); } int main() { V v{1, 2, 3}; return v.n + sum({1, 2, 3}) - 6; }'),
+    ("nullptr", "accept", 'int main() { int *p = nullptr; return p == nullptr ? 0 : 1; }'),
+    ("nullptr-t", "accept", '#include <cstddef>\nint f(std::nullptr_t) { return 0; } int main() { return f(nullptr); }'),
+    ("range-for-array", "accept", 'int main() { int a[3] = {1, 2, 3}; int s = 0; for (int x : a) s += x; for (const auto &x : a) s -= x; return s; }'),
+    ("range-for-class-iterator", "accept", 'struct It { int i; int operator*() const { return i; } It &operator++() { ++i; return *this; } bool operator!=(const It &o) const { return i != o.i; } }; struct R { It begin() const { It b = {0}; return b; } It end() const { It e = {3}; return e; } }; int main() { R r; int s = 0; for (int x : r) s += x; return s - 3; }'),
+    ("range-for-free-begin", "accept", 'struct R { int a[2]; }; int *begin(R &r) { return r.a; } int *end(R &r) { return r.a + 2; } int main() { R r = {{1, 2}}; int s = 0; for (int x : r) s += x; return s - 3; }'),
+    ("range-for-temporary", "accept", 'struct R { int a[2]; int *begin() { return a; } int *end() { return a + 2; } }; R make() { R r = {{1, 2}}; return r; } int main() { int s = 0; for (int x : make()) s += x; return s - 3; }'),
+    ("range-for-braced-list", "accept", '#include <initializer_list>\nint main() { int s = 0; for (int x : {1, 2}) s += x; return s - 3; }'),
+    ("variadic-type-pack", "accept", 'template <class... Ts> int count(Ts... ts) { return sizeof...(Ts) + sizeof...(ts) - 2 * sizeof...(Ts); } int main() { return count(1, 2.0, \'c\'); }'),
+    ("non-type-pack", "accept", 'template <int... Ns> struct Sum { static const int v = sizeof...(Ns); }; int main() { return Sum<1, 2, 3>::v - 3; }'),
+    ("explicit-conversion", "accept", 'struct S { explicit operator bool() const { return true; } }; int main() { S s; return s ? 0 : 1; }'),
+    ("static-cast-derived-ref", "accept", 'struct B { int v; }; struct D : B {}; int main() { D d; d.v = 0; B &b = d; return static_cast<D &>(b).v; }'),
+    # [temp]
+    ("partial-specialization", "accept", 'template <class T> struct Is { static const int v = 0; }; template <class T> struct Is<T *> { static const int v = 1; }; int main() { return Is<int *>::v - 1 + Is<int>::v; }'),
+    ("sfinae", "accept", 'template <bool B, class T = void> struct enable_if {}; template <class T> struct enable_if<true, T> { typedef T type; }; template <class T> typename enable_if<sizeof(T) == 4, int>::type f(T) { return 0; } int f(...) { return 1; } int main() { return f(1); }'),
+    ("angle-angle", "accept", 'template <class T> struct B { T v; }; int main() { B<B<int>> b; b.v.v = 0; return b.v.v; }'),
+    ("default-class-template-arg", "accept", 'template <class T = int> struct B { T v; }; int main() { B<> b; b.v = 0; return b.v; }'),
+    ("default-function-template-arg", "accept", 'template <class T = int> T zero() { return T(); } int main() { return zero(); }'),
+    ("member-function-template", "accept", 'struct S { template <int N> int get() const { return N; } }; int main() { S s; return s.get<0>(); }'),
+    ("explicit-specialization-function", "accept", 'template <class T> int f(T) { return 1; } template <> int f(int) { return 0; } int main() { return f(1); }'),
+    ("template-template-parameter", "accept", 'template <class T> struct Box { T v; }; template <template <class> class C> struct H { C<int> c; }; int main() { H<Box> h; h.c.v = 0; return h.c.v; }'),
+    ("extern-template", "accept", 'template <class T> T id(T t) { return t; } extern template int id<int>(int); int main() { return id(0); }'),
+    ("out-of-line-template-ctor", "accept", 'template <class T> struct B { T v; B(); }; template <class T> B<T>::B() : v() {} int main() { B<int> b; return b.v; }'),
+    ("two-phase-lookup", "refuse", 'template <class T> int use(T t) { return later(t); } int later(int n) { return n; } int main() { return use(0); }'),
+    # [class]
+    ("multiple-inheritance", "accept", 'struct A { int a; }; struct B { int b; }; struct C : A, B {}; int main() { C c; c.a = 0; c.b = 0; B *p = &c; return p->b + c.a; }'),
+    ("covariant-return", "accept", 'struct B { virtual B *self() { return this; } virtual ~B() {} }; struct D : B { D *self() { return this; } }; int main() { D d; B *p = &d; return p->self() == &d ? 0 : 1; }'),
+    ("abstract-class", "accept", 'struct A { virtual int f() = 0; virtual ~A() {} }; struct D : A { int f() { return 0; } }; int main() { D d; A &a = d; return a.f(); }'),
+    ("virtual-inheritance", "accept", 'struct V { int v; V() : v(0) {} }; struct A : virtual V {}; struct B : virtual V {}; struct D : A, B {}; int main() { D d; return d.v; }'),
+    ("union-nontrivial-member", "accept", 'struct S { int v; S() : v(0) {} }; union U { S s; int i; U() : s() {} ~U() {} }; int main() { U u; return u.s.v; }'),
+    ("ref-qualifier", "accept", 'struct S { int f() & { return 0; } }; int main() { S s; return s.f(); }'),
+    ("pointer-to-member", "accept", 'struct S { int d; int f() { return d; } virtual int g() { return d; } }; int main() { S s; s.d = 0; int S::*pd = &S::d; int (S::*pf)() = &S::f; int (S::*pg)() = &S::g; return s.*pd + (s.*pf)() + (s.*pg)(); }'),
+    # [except]
+    ("exceptions", "accept", '#include <cstdio>\nstruct E { int v; E(int a) : v(a) {} }; struct D : E { D() : E(2) {} }; struct G { ~G() { std::puts("g"); } }; int main() { try { G g; try { throw D(); } catch (const E &e) { if (e.v == 2) throw; } } catch (...) { return 0; } return 1; }'),
+    ("goto-out-of-handler", "accept", 'int main() { try { throw 1; } catch (int) { goto out; } return 1; out: return 0; }'),
+    ("function-try-block", "accept", 'int f() try { return 0; } catch (...) { return 1; } int main() { return f(); }'),
+    # RTTI and new
+    ("dynamic-cast-pointer", "accept", 'struct B { virtual ~B() {} }; struct D : B {}; int main() { D d; B *b = &d; return dynamic_cast<D *>(b) == &d && dynamic_cast<void *>(b) == &d ? 0 : 1; }'),
+    ("dynamic-cast-reference", "accept", 'struct B { virtual ~B() {} }; struct D : B {}; int main() { D d; B &b = d; D &r = dynamic_cast<D &>(b); return &r == &d ? 0 : 1; }'),
+    ("typeid", "accept", '#include <typeinfo>\nstruct B { virtual ~B() {} }; struct D : B {}; int main() { D d; B &b = d; return typeid(b) == typeid(D) ? 0 : 1; }'),
+    ("operator-new-class", "accept", '#include <cstdlib>\ntypedef decltype(sizeof 0) size_type; struct S { int v; static void *operator new(size_type n) { return std::malloc(n); } static void operator delete(void *p) { std::free(p); } }; int main() { S *s = new S; s->v = 0; int r = s->v; delete s; return r; }'),
+    ("placement-new", "accept", '#include <new>\nstruct S { int v; S() : v(0) {} }; int main() { char buf[sizeof(S)]; S *s = new (buf) S; int r = s->v; s->~S(); return r; }'),
+    # library
+    ("lib-string-vector-map", "accept", '#include <string>\n#include <vector>\n#include <map>\n#include <algorithm>\n#include <sstream>\nint main() { std::vector<int> v = {3, 1, 2}; std::sort(v.begin(), v.end()); std::map<std::string, int> m; m["a"] = v[0]; std::ostringstream o; o << m["a"]; return o.str() == "1" ? 0 : 1; }'),
+    ("lib-memory", "accept", '#include <memory>\nint main() { std::unique_ptr<int> p(new int(0)); return *p; }'),
+    ("lib-functional", "accept", '#include <functional>\nint main() { std::function<int(int)> f = [](int x) { return x; }; return f(0); }'),
+    ("lib-tuple-array", "accept", '#include <tuple>\n#include <array>\nint main() { std::array<int, 2> a = {{0, 1}}; std::tuple<int, int> t(a[0], a[1]); return std::get<0>(t); }'),
+    ("lib-unordered-map", "accept", '#include <unordered_map>\nint main() { std::unordered_map<int, int> m; m[1] = 0; return m[1]; }'),
+    ("lib-thread-atomic-chrono", "accept", '#include <atomic>\n#include <chrono>\nint main() { std::atomic<int> a(0); std::chrono::seconds s(0); return a.load() + (int)s.count(); }'),
+    ("lib-to-string-stoi", "accept", '#include <string>\nint main() { return std::stoi(std::to_string(0)); }'),
+]
+
+
+def run(cmd, src):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "probe.cpp")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src + "\n")
+        p = subprocess.run(cmd + [path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=d)
+        return p.returncode, p.stdout
+
+
+def main():
+    args = sys.argv[1:]
+    if "--list" in args:
+        for pid, expect, _ in PROBES:
+            print(f"{pid:32} {expect}")
+        return 0
+    clang = None
+    if "--clang" in args:
+        clang = args[args.index("--clang") + 1]
+    cxx1 = os.environ.get("CXX1", os.path.join(ROOT, "cpp11.exe"))
+    clangflags = os.environ.get("CLANGFLAGS", "").split()
+
+    bins = {"compiles": [], "refused by name": [], "refused naming nothing": []}
+    oracle_faults = []
+    for pid, expect, src in PROBES:
+        if clang:
+            rc, _ = run([clang, "-x", "c++", "-std=c++11", "-pedantic-errors", "-fsyntax-only"] + clangflags, src)
+            if (rc == 0) != (expect == "accept"):
+                oracle_faults.append(f"{pid}: clang {'accepts' if rc == 0 else 'refuses'} a probe the row says it should {'refuse' if expect == 'refuse' else 'accept'}")
+        rc, out = run([cxx1, "-nologo", "-S", "-arch", "x86_64-linux", "-o", "probe.s"], src)
+        if rc == 0:
+            bins["compiles"].append(pid)
+            verdict = "compiles" + ("" if expect == "accept" else "  <- the standard refuses this")
+        elif NAMED.search(out):
+            bins["refused by name"].append(pid)
+            verdict = "refused by name"
+        else:
+            bins["refused naming nothing"].append(pid)
+            verdict = "REFUSED NAMING NOTHING: " + " ".join(out.split())[:160]
+        print(f"{pid:32} {verdict}")
+
+    print()
+    for k in bins:
+        print(f"{k:24} {len(bins[k])}")
+    print(f"{'probes':24} {len(PROBES)}")
+    if oracle_faults:
+        print("\nthe sweep's own faults (the row and the oracle disagree):")
+        for f in oracle_faults:
+            print("  " + f)
+    return 1 if (bins["refused naming nothing"] or oracle_faults) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
