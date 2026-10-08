@@ -104,6 +104,8 @@ private:
         const Type *pattern = nullptr;
         // Defined inside its class, so [dcl.inline]/6 makes it inline and never the key function.
         bool inlineBody = false;
+        // `= delete` - [dcl.fct.def.delete]: ranked like any other candidate, and refused where chosen.
+        bool deleted = false;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -122,7 +124,12 @@ private:
         bool isFinal = false;              // [class.virtual]/4: no later override may take it
     };
     // `override` and `final` as written on one declaration, each with where it was written.
-    struct VirtSpecifiers { bool isOverride = false, isFinal = false; std::size_t overrideAt = 0, finalAt = 0; };
+    // A constructor rather than member initialisers: g++ refuses those in a default argument of the enclosing class.
+    struct VirtSpecifiers {
+        bool isOverride, isFinal;
+        std::size_t overrideAt, finalAt;
+        VirtSpecifiers() : isOverride(false), isFinal(false), overrideAt(0), finalAt(0) {}
+    };
     std::map<std::string, std::vector<VSlot> > vtables_;
     void checkOverrideReturn(const VSlot &s, const Type *returns, const std::string &cls,
                              const std::string &name, std::size_t pos) const;
@@ -2116,15 +2123,31 @@ private:
                             std::vector<long long> *values, std::string *why);
     // `using X = T;` is an alias declaration and not a using-declaration.
     void refuseAliasDeclaration();
-    // `= default` and `= delete` sit where `= 0` does, and a constructor
-    // reaches that position by a different door than a member function.
-    void refuseDefaultedOrDeleted();
     bool exceptionSpecification();
-    // ---- WS-C1 (review 2026-10-08): the virt-specifier-seq, read behind the exception specification ----
+    // ---- WS-C1 (review 2026-10-08): the virt-specifier-seq and `= default` / `= delete`, read behind the exception specification ----
     VirtSpecifiers pendingVirt_;
     void readVirtSpecifiers();
     VirtSpecifiers takeVirtSpecifiers() { VirtSpecifiers v = pendingVirt_; pendingVirt_ = VirtSpecifiers(); return v; }
     void refuseVirtSpecifiers(const char *what);
+    // `= default` or `= delete` after the declarator - [dcl.fct.def.default], [dcl.fct.def.delete] - for the declare* that follows.
+    enum class SpecialDef { None, Defaulted, Deleted };
+    SpecialDef pendingSpecial_ = SpecialDef::None;
+    std::size_t pendingSpecialAt_ = 0;
+    void readDefaultedOrDeleted();
+    SpecialDef takeSpecialDef() { SpecialDef s = pendingSpecial_; pendingSpecial_ = SpecialDef::None; return s; }
+    // A special member written `= default` is the implicit one, with the access it was written under.
+    struct DefaultedMember { bool is; Access access; DefaultedMember() : is(false), access(Access::Public) {} };
+    struct Defaulted { DefaultedMember defaultCtor, copyCtor, moveCtor, copyAssign, moveAssign, dtor; };
+    std::map<std::string, Defaulted> defaulted_;
+    void defaultedMember(DefaultedMember &m, Access access, std::size_t pos, const std::string &what);
+    void applyDefaultedAccess(const std::string &tag, const Type *type);
+    void refuseDeleted(const Signature &f, std::size_t pos) const;
+    Defaulted defaultedFor(const std::string &tag) const;
+    static bool deletedSpecial(const Signature *f) { return f != nullptr && f->deleted; }
+    static bool nonPublicDefault(const DefaultedMember &m) { return m.is && m.access != Access::Public; }
+    void declareDefaultedMoveAssign(const std::string &tag, const Type *type, std::size_t pos);
+    const Signature *moveAssignOf(const Type *cls) const;
+    // ---- end WS-C1 ----
     // Set by exceptionSpecification() at each place a parameter list can be closed, read and cleared by whichever declare* call follows.
     bool pendingNoexcept_ = false;
     // **Is the function being parsed declared `noexcept`?** [except.spec]/9.

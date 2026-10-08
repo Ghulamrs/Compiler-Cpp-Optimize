@@ -1076,6 +1076,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
         src_.fail(pos, why);
     }
     if (viable.size() == 1) {
+        refuseDeleted(functions_[viable[0]], pos);
         functions_[viable[0]].used = true;
         if (!functions_[viable[0]].isNoexcept) mayThrow_++;
         return functions_[viable[0]];
@@ -1098,6 +1099,8 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
             src_.fail(pos, why);
         }
     }
+    // [dcl.fct.def.delete]: a deleted candidate is ranked like any other and refused only where it wins.
+    refuseDeleted(functions_[viable[best]], pos);
     functions_[viable[best]].used = true;
     // **Every call is potentially-throwing unless the function promised
     // otherwise**, and this is the one place a call finds out which function it

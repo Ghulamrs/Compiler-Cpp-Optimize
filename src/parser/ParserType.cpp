@@ -611,7 +611,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 skipBracedBlock();
                 continue;
             }
-            refuseDefaultedOrDeleted();
             expect(";");
             continue;
         }
@@ -1017,9 +1016,26 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // **A `constexpr` member function is implicitly const in C++11.**
                 if (mquals.isConstexpr) constThis = true;
 
-                // **`= 0` is the pure-specifier**, and not an initialiser.
-                refuseDefaultedOrDeleted();
+                // **`= default` is for the copy and move assignment alone here** - [dcl.fct.def.default]/1 -
+                // and is the implicit one, so nothing is declared; `= delete` declares and stamps.
+                const SpecialDef special = takeSpecialDef();
+                if (special == SpecialDef::Defaulted) {
+                    const Type *self = tag.empty() ? nullptr : findTypedef(tag);
+                    const Type *p = d.type->params().size() == 1 ? d.type->params()[0] : nullptr;
+                    const bool ofSelf = p != nullptr && p->isReference() && self != nullptr &&
+                                        p->referent()->unqualified() == self->unqualified();
+                    if (d.name != "operator=" || !ofSelf || memberIsStatic)
+                        src_.fail(pendingSpecialAt_, "'" + d.name + "' is not a special member function, "
+                                                     "and only one of those may be defaulted - "
+                                                     "[dcl.fct.def.default]/1");
+                    Defaulted &df = defaulted_[tag];
+                    if (p->isRValueReference()) defaultedMember(df.moveAssign, access, d.pos, "the move assignment");
+                    else                        defaultedMember(df.copyAssign, access, d.pos, "the copy assignment");
+                    if (!consume(",")) break;
+                    continue;
+                }
 
+                // **`= 0` is the pure-specifier**, and not an initialiser.
                 bool isPure = false;
                 if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
                     !peekAt(1).isFloat && peekAt(1).value == 0) {
@@ -1054,6 +1070,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
                               isVirtual, memberIsStatic, isPure, virt);
+                if (special == SpecialDef::Deleted) {
+                    // A deleted virtual would leave its slot naming a function with no body.
+                    if (functions_.back().isVirtual)
+                        src_.fail(pendingSpecialAt_, "a deleted virtual function is not supported yet: "
+                                                     "its vtable slot would name a function that has no body");
+                    functions_.back().deleted = true;
+                }
                 if (!consume(",")) break;
                 continue;
             }

@@ -18,15 +18,61 @@ void Parser::refuseAliasDeclaration() {
                           "says the same thing here");
 }
 
-// **`= default` and `= delete` are C++11 and sit exactly where `= 0` does.**
-void Parser::refuseDefaultedOrDeleted() {
+// **`= default` and `= delete` sit exactly where `= 0` does**, after the virt-specifiers, and every
+// declare* that follows reads which one was written. Outside a class only `= delete` has a meaning.
+void Parser::readDefaultedOrDeleted() {
+    pendingSpecial_ = SpecialDef::None;
     if (!peek().is("=")) return;
     const bool def = peekAt(1).is("default");
     if (!def && !peekAt(1).is("delete")) return;
-    src_.fail(peek().pos, std::string("'= ") + (def ? "default" : "delete") +
-                          "' is not supported yet: a defaulted member is "
-                          "written with an empty body here, and a deleted one "
-                          "by declaring it private and never defining it");
+    pendingSpecialAt_ = peek().pos;
+    pendingSpecial_ = def ? SpecialDef::Defaulted : SpecialDef::Deleted;
+    at_ += 2;
+    if (def && classStack_.empty())
+        src_.fail(pendingSpecialAt_, "'= default' outside the class is not supported yet: a special "
+                                     "member defaulted on a later declaration is user-provided, where "
+                                     "one defaulted inside its class is the implicit one - write it there");
+}
+
+// [dcl.fct.def.delete]/2: a deleted function may not be used, and this is said where the use is.
+void Parser::refuseDeleted(const Signature &f, std::size_t pos) const {
+    if (!f.deleted) return;
+    const std::string name = f.owner.empty() ? f.name : f.owner + "::" + f.name;
+    if (f.implicit)
+        src_.fail(pos, "'" + name + "' is deleted - the compiler would write it, and [class.copy] deletes "
+                       "it: a move written '= default', or a base or member whose own is deleted");
+    src_.fail(pos, "'" + name + "' is deleted - it was declared '= delete', and a deleted function "
+                   "cannot be called, copied from or taken the address of");
+}
+
+// [dcl.fct.def.default]/1: only a special member may be defaulted, and once per class.
+void Parser::defaultedMember(DefaultedMember &m, Access access, std::size_t pos, const std::string &what) {
+    if (m.is) src_.fail(pos, what + " is defaulted twice");
+    m.is = true;
+    m.access = access;
+}
+
+// What the class wrote `= default` on, or nothing.
+Parser::Defaulted Parser::defaultedFor(const std::string &tag) const {
+    std::map<std::string, Defaulted>::const_iterator it = defaulted_.find(tag);
+    return it != defaulted_.end() ? it->second : Defaulted();
+}
+
+// The implicit member a `= default` stands for was declared public; it takes the access it was written under.
+void Parser::applyDefaultedAccess(const std::string &tag, const Type *type) {
+    std::map<std::string, Defaulted>::const_iterator it = defaulted_.find(tag);
+    if (it == defaulted_.end()) return;
+    const Defaulted &df = it->second;
+    if (const Signature *f = defaultConstructorOf(type))
+        if (df.defaultCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.defaultCtor.access;
+    if (const Signature *f = copyConstructorOf(type))
+        if (df.copyCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.copyCtor.access;
+    if (const Signature *f = moveConstructorOf(type))
+        if (df.moveCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.moveCtor.access;
+    if (const Signature *f = copyAssignOf(type))
+        if (df.copyAssign.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.copyAssign.access;
+    if (const Signature *f = destructorOf(type))
+        if (df.dtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.dtor.access;
 }
 
 bool Parser::staticAssertion() {
@@ -92,6 +138,7 @@ bool Parser::exceptionSpecification() {
         noexc = true;
     }
     readVirtSpecifiers();
+    readDefaultedOrDeleted();
     return noexc;
 }
 

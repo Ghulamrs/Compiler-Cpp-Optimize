@@ -232,10 +232,14 @@ SFINAE and variadic packs. What is left:
 - **a scoped enumeration**, `enum class` — an enumeration is an int that
   remembers its name here, where a scoped one is a distinct type whose
   enumerators are reached through it. `src/parser/ParserType.cpp:1374`
-- **`= default` and `= delete`** — a defaulted member is written with an empty
-  body here, and a deleted one by declaring it private and never defining it.
-  A constructor and a member function reach that position by different doors,
-  so one helper answers for both. `src/parser/ParserConst.cpp:26`
+- **`= default` outside the class** — a special member defaulted on a later
+  declaration is user-provided, where one defaulted inside its class is the
+  implicit one; write it inside. `src/parser/ParserConst.cpp:32`
+- **a deleted destructor** — every place an object of the class is destroyed
+  would have to refuse it, and only calls are checked.
+  `src/parser/ParserClass.cpp:138`
+- **a deleted virtual function** — its vtable slot would name a function that
+  has no body. `src/parser/ParserType.cpp:1078`
 - **a ref-qualifier**, `f() &` or `f() &&` — the object's value category does
   not choose an overload here. `src/parser/ParserType.cpp:966`
 - **a `constexpr` constructor** — the constant evaluator folds a call to a
