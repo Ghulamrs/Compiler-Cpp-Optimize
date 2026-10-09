@@ -149,6 +149,26 @@ the box at the branch tip**: `run-cases.cmd` both spellings -O0 with the branch 
 the three commits emits code, so 0 changed is the expectation), `winlink-check`. Merge order is
 unchanged: LINK `review/f-windows` (now at `fa03281`) before this branch's Windows leg.
 
+### Recipe to complete the box gate later (box down since ~06:55 on 2026-10-09; wound up on instruction)
+
+All three branches are on origin: cpp11 `review/f-windows`, LINK `review/f-windows` (`fa03281`,
+LINK 1.1), MASM `review/f-windows` (`66baab1`, tests only, unchanged). On the box, `cmd.exe`:
+
+1. `cd /d C:\cxx1\rtsdiv\ws-f && git fetch origin && git checkout -q review/f-windows && git reset -q --hard origin/review/f-windows && msvc\build.cmd` -
+   and the same in `..\ws-f-masm` and `..\ws-f-link`, each built by cl from its tree (LINK must be `fa03281`
+   or later: the SECREL/TLS fix `e8d51b5` is what the 8 static-local cases need).
+2. `tools\windows\run-cases.cmd` with the branch masm and LINK on PATH, default (both spellings),
+   -O0: expect GNU 379 printed / 0 failed, 226 refusals / 0; MASM 379 / 0, 226 / 0. Then
+   `set CXX1_CASES_FLAGS=-O2` and again (skipped: budget this sitting).
+3. MASM's `tests\windows\cpp11.cmd` and `tests\run.sh` (Git bash); LINK's `tests\windows\cpp11.cmd`,
+   `probes.sh`, `bad.sh` - all as recorded in the first sitting (the two Git-bash-only differences there
+   are known: MASM's CRLF `errors.txt`, LINK's `absolute-path-input`).
+4. `tests\emit.sh --record` at `cc210bb` then at the tip: expect 0 of 1582 changed (the three commits
+   since `4df8afc` emit nothing); re-record the MASM golden (`-masm=masm`, 379 files) and expect the
+   75 already classified and no more.
+5. `tools\windows\winlink-check.cmd`; `tests\tms6747.sh` -O0/-O2 both legs (`CXX1_FLAGS`, not any
+   other name); `tools\windows\names-overload.cmd` - all skipped this sitting (budget).
+
 ## Draft CLAUDE.md sections
 
 **"The MASM spelling under the suite, and the two linker faults it found."** The project's masm
