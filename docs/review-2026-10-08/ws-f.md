@@ -34,7 +34,7 @@ their trees) and on the Linux box (`~/ride-5.1/ws-f`, g++ 11.5). The Mac edited 
 | R9, F38 | design notes below |
 | WS-A's Driver findings | `--help`, the `-g` refusal, `-version`'s PST, the examples' banner - all in `0b5541e` |
 
-## Gates, measured (Windows box; the build at `4df8afc` plus the uncommitted P4 harness, i.e. everything but `ab7939e` and `66ed5f1`)
+## Gates, measured (Windows box; the build at `4df8afc` plus the uncommitted P4 harness, i.e. everything but `ab7939e` and `66ed5f1`) - superseded by the third sitting's table at the tip, below
 
 - Windows cases, `run-cases.cmd` both spellings, the project's masm and the **fixed** LINK
   (built from LINK `review/f-windows`): **-O0** GNU 379 printed their output / 0 failed, 226
@@ -168,6 +168,42 @@ LINK 1.1), MASM `review/f-windows` (`66baab1`, tests only, unchanged). On the bo
    75 already classified and no more.
 5. `tools\windows\winlink-check.cmd`; `tests\tms6747.sh` -O0/-O2 both legs (`CXX1_FLAGS`, not any
    other name); `tools\windows\names-overload.cmd` - all skipped this sitting (budget).
+
+## Third sitting, 2026-10-09 (Fable 5.1): the box gate at the tip - green, ready to merge
+
+The Windows box came back and every step of the recipe above but the budget-skipped ones ran on
+it at **cpp11 `eca971c`, MASM `66baab1`, LINK `fa03281`** (the three box clones take their
+`origin` from bundles in `C:\cxx1\rtsdiv`, not from GitHub - `wsf.bundle`, `masm.bundle`,
+`link.bundle`, re-made from the pushed tips and copied over; a `git fetch origin` there fetches
+nothing newer than the bundle). The cpp11 clone and the MASM/LINK ones were built by cl from the
+reset trees (`msvc\build.cmd`; run-cases.cmd's own cl build of masm and link into `winout-tools`;
+MASM's `tests\windows\build.cmd`; LINK's `cpp11.cmd` build).
+
+| gate | result |
+| --- | --- |
+| `run-cases.cmd` both spellings, -O0, branch masm + LINK 1.1 | GNU **379 printed / 0 failed, 226 refusals / 0**; MASM **379 / 0, 226 / 0**; 23 skipped by `.notarget` |
+| emit golden, `--record` at `cc210bb` then the tip | **0 of 1582 changed**, 0 added, 0 removed |
+| MASM golden (`-S -arch x86_64-windows -masm=masm`, every x86_64-windows case incl. the two `.part` units: 381 files) | **75 changed**; of the 839 changed lines, after removing `SEGMENT`/`ENDS` renames (`.data`/`.bss`/`.rdata` -> `_DATA`/`_BSS`/`CONST`) and `EXTERN $LNleave$...` removals, **0 remain** - the first sitting's classification, nothing more |
+| `winlink-check.cmd` | member-pointer-models, overload-slots, this-return: **ab and ba all match** `.expected` |
+| MASM `tests\windows\cpp11.cmd` | 4 programs rc=0, CPP11-DONE |
+| MASM `tests/run.sh` (Git bash) | every encoding and refusal as recorded; cpp11.sh "4 programs, every one assembled, code identical to ml64"; the one diff is `errors.txt` CRLF vs LF, text identical (known, first sitting) |
+| LINK `tests\windows\cpp11.cmd` | 7 programs both ran, rc 0/0, CPP11-DONE |
+| LINK `tests/run.sh` (Git bash) | **10 matched, 9 known, 0 differed, 0 skipped** |
+| LINK `tests/bad.sh` (Git bash) | 3 ok; `absolute-path-input` FAIL - the known Git-bash-only one (its POSIX path reaches the linker as a switch) |
+
+**Two things the Git-bash beds on the box need, written down because both read as failures:**
+`python3` on the box's PATH is the WindowsApps alias stub ("Python was not found") - put a
+`python3` wrapper over `C:\Users\GRA\AppData\Local\Programs\Python\Python312\python.exe`
+in front; and `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'`, or Git bash rewrites LINK's
+`/nodefaultlib` into `C:/Program Files/Git/nodefaultlib` and every probe fails to link.
+`C:\cxx1\rtsdiv\beds2.sh` is the bed script with both.
+
+**Skipped on instruction (budget):** -O2 run-cases, `tms6747.sh`, `names-overload.cmd`,
+LINK's `probes.sh` (the oracle recorder; `run.sh`'s references are checked in). No Linux box.
+No defect found; nothing in F's files changed this sitting.
+
+**Ready to merge**: LINK `review/f-windows` (`fa03281`, LINK 1.1) first, then MASM
+`review/f-windows` (`66baab1`, tests only) and cpp11 `review/f-windows`.
 
 ## Draft CLAUDE.md sections
 
