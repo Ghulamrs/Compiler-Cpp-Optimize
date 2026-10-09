@@ -39,7 +39,7 @@ void Parser::parseArguments(std::vector<ExprPtr> &args) {
                 continue;
             }
         }
-        args.push_back(assign());
+        if (!expandPackPattern(args)) args.push_back(assign());
         if (consume(")")) break;
         expect(",");
     }

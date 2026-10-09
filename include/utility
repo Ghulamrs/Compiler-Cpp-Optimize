@@ -8,6 +8,7 @@
 #define _CXX1_UTILITY
 
 #include <cstddef>
+#include <type_traits>
 
 namespace std {
 
@@ -39,33 +40,25 @@ void swap(T &a, T &b) {
     b = held;
 }
 
-// **move and forward - [forward].** Each is a cast and nothing else: `move`
-// names its argument as an rvalue, so an overload on `T &&` is chosen and a
-// move constructor or assignment runs. Written as two overloads, on `T &` and
-// on `T &&`, rather than the standard's one on a forwarding reference: this
-// compiler deduces `T` from a `T &&` parameter as the argument's type without
-// [temp.deduct.call]/3's `T &` for an lvalue, and has no reference collapsing
-// to make that work, so the one-overload spelling takes no lvalue - and an
-// lvalue is what `move` is for (the cl review's A22). `forward<T>` follows
-// the same shape; a forwarding reference of the program's own still cannot
-// be written (CONFORMANCE).
+// **move and forward - [forward].** Each is a cast and nothing else, written as the
+// standard writes them: `move` takes a forwarding reference, so an lvalue deduces T as
+// `U &` and the parameter collapses to `U &`, and names its argument as an rvalue;
+// `forward<T>` hands an argument on with the value category T carries, `T &&` collapsing
+// to `U &` for an lvalue's T and staying `U &&` for an rvalue's. The second `forward` is
+// [forward]/4's: an rvalue may be forwarded as an rvalue and never as an lvalue.
 template <class T>
-T &&move(T &t) {
+typename remove_reference<T>::type &&move(T &&t) {
+    return static_cast<typename remove_reference<T>::type &&>(t);
+}
+
+template <class T>
+T &&forward(typename remove_reference<T>::type &t) {
     return static_cast<T &&>(t);
 }
 
 template <class T>
-T &&move(T &&t) {
-    return static_cast<T &&>(t);
-}
-
-template <class T>
-T &&forward(T &t) {
-    return static_cast<T &&>(t);
-}
-
-template <class T>
-T &&forward(T &&t) {
+T &&forward(typename remove_reference<T>::type &&t) {
+    static_assert(!is_lvalue_reference<T>::value, "an rvalue cannot be forwarded as an lvalue");
     return static_cast<T &&>(t);
 }
 

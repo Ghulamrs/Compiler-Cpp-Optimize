@@ -338,6 +338,9 @@ private:
         // template is only declared has to describe itself the way it was declared.
         bool classKey = false;
         bool defined = false;
+        // `template <class T> using Ptr = T *;` - kept with the class templates, its type-id at aliasAt.
+        bool isAlias = false;
+        std::size_t aliasAt = 0;
         std::size_t start = 0;
         // The token after the `>` that closed the parameter list, which is
         // where the declaration proper begins. Instantiating is re-reading
@@ -351,6 +354,8 @@ private:
             std::size_t start = 0;
             std::string member;    // "get", or the class's name for a ctor
             bool destructor = false;
+            // A constructor, replayed like a held inline one from `start`, the `Box` after `Box<T>::`.
+            bool constructor = false;
             // **A static data member, not a member function.**
             bool isData = false;
         };
@@ -665,6 +670,22 @@ private:
                    std::vector<long long> *values, std::string *why) const;
     // An argument's type as a parameter sees it.
     const Type *decayedType(const Type *a) const;
+    // ---- WS-E1 (review 2026-10-08): forwarding references, F30, F31, F34, alias templates ----
+
+    // An argument's type for deduction: an lvalue of type U goes as `U &` ([temp.deduct.call]/3).
+    const Type *deductionArgType(const Expr &e) const;
+    // Is this pattern parameter `T &&` with T a bare template parameter - a forwarding reference?
+    static bool forwardingReference(const Type *pattern);
+    // `[const] Ts [& | &&] ...`: the tokens it takes (0 if it is not one), where Ts is, and how a member is wrapped.
+    std::size_t packDeclarator(int *wrap, std::size_t *nameAt) const;
+    const Type *wrapPackMember(const Type *member, int wrap);
+    // `f(g(a)...)`, `std::forward<A>(a)...`: one argument per member, the pattern read once for each.
+    bool expandPackPattern(std::vector<ExprPtr> &args);
+    // `template <> int twice<int>(int)` - F31.
+    bool functionExplicitSpecialization(std::size_t pos);
+    // A deduction left parameter `i` unbound: its default, if it has one, replayed with the earlier ones bound.
+    bool defaultTemplateArgument(const TemplateDecl &decl, std::size_t i,
+                                 std::vector<const Type *> *binding, std::vector<long long> *values);
     // ---- Rung 7.1: `auto` ----
     // [dcl.spec.auto] deduces a variable's `auto` **as if by template argument deduction
     // from a call**, so deduceOne does the work and Kind::Deduced stands in.

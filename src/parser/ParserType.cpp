@@ -2216,7 +2216,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // and there is nothing on the other side of it, a reference being no object to
     // point at. **`&&` binds like `&`**, differing only in what it will take.
     if (consume("&&")) {
-        base = types_.rvalueReferenceTo(base);
+        base = base->isReference() ? base : types_.rvalueReferenceTo(base);  // [dcl.ref]/6 collapsing
         if (peek().is("&") || peek().is("&&"))
             src_.fail(peek().pos, "there is no reference to a reference");
         if (peek().is("*"))
@@ -2224,7 +2224,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         return declarator(base, nameOptional, insideParens);
     }
     if (consume("&")) {
-        base = types_.referenceTo(base);
+        base = types_.referenceTo(base->isReference() ? base->referent() : base);
         if (peek().is("&") || peek().is("&&"))
             src_.fail(peek().pos, "there is no reference to a reference");
         if (peek().is("*"))

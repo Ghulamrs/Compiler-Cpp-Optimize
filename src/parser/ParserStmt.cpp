@@ -29,7 +29,9 @@ bool Parser::atParenInitialiser() {
     const std::size_t save = at_;
     at_++;                                    // the '('
     // **A parameter list begins with a decl-specifier-seq**, and that is the whole question.
-    const bool pack = peek().kind == TokenKind::Ident && peekAt(1).is("...");
+    int wrap = 0;
+    std::size_t nameAt = 0;
+    const bool pack = (peek().kind == TokenKind::Ident && peekAt(1).is("...")) || packDeclarator(&wrap, &nameAt) != 0;
     // `auto` among them: a parameter declared with it is C++14 and is refused
     // by name where the parameter list is read, which only happens if this
     // says parameter list.
@@ -619,9 +621,10 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(")");
 
     const Type *rt = range->type();
-    if (d.type->kind() == Kind::RValueRef)
-        src_.fail(d.pos, "an rvalue reference in a range-based 'for' is not "
-                         "supported yet - write 'const T &' or 'T &'");
+    // `auto &&` deduces `T &` from the lvalue `*__b`; a `T &&` written out cannot bind one.
+    if (d.type->kind() == Kind::RValueRef && !mentionsDeduced(d.type))
+        src_.fail(d.pos, "'" + d.name + "' is '" + d.type->describe() + "', and each element "
+                         "is an lvalue - an rvalue reference cannot bind to one");
 
     // **The two ends of the loop, and the only thing the two kinds of range
     // disagree about.**
@@ -674,7 +677,7 @@ StmtPtr Parser::rangeForStatement(int scope) {
 
     const Type *elem = elemPtr->pointee();
     if (mentionsDeduced(d.type))
-        d.type = deduceAutoFrom(d.type, elem, d.name, d.pos);
+        d.type = deduceAutoFrom(d.type, types_.referenceTo(elem), d.name, d.pos);   // `*__b` is an lvalue
 
     // `__b != __e`
     ExprPtr atB(Var::local(bName, bSlot));
@@ -791,7 +794,7 @@ ExprPtr Parser::whileConditionDeclaration() {
                               "to test");
     ExprPtr init = decay(assign());
     if (mentionsDeduced(d.type))
-        d.type = deduceAutoFrom(d.type, init->type(), d.name, d.pos);
+        d.type = deduceAutoFrom(d.type, deductionArgType(*init), d.name, d.pos);
     // A class would have to be constructed and destroyed once per turn, and the construction is
     // written where the test is - so it is refused here and not in an `if`, where the object is
     // built once and the ordinary declaration path does all of it.
