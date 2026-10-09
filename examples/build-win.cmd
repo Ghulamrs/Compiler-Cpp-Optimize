@@ -1,7 +1,7 @@
 @echo off
 REM Build this example on Windows, with NMAKE and Makefile.windows.
 REM
-REM ©2026 G. R. Akhtar - ISO C++ 11
+REM ©2026 G. R. Akhtar - C++03 with C++11 extensions
 REM
 REM **Run it by its full path and with no `cmd /c` in front.** ml64 and link
 REM reach PATH only after vcvars64.bat, which this calls - and a chain of

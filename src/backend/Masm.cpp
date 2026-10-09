@@ -4,6 +4,8 @@
 #include "../Name.h"
 #include "../optimizer/OptIr.h"
 
+#include "../Source.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <ostream>
@@ -15,7 +17,7 @@ namespace {
 [[noreturn]] void give_up(const std::string &what, const std::string &why) {
     std::fprintf(stderr, "%s: masm: %s\n  for: %s\n", program::kName, why.c_str(),
                  what.c_str());
-    std::exit(1);
+    compileFailed();
 }
 
 bool isReservedInMasm(const std::string &name) {
@@ -468,8 +470,10 @@ void MasmSpelling::weakDefinition(const std::string &name) {
 // ALIGN() the simplified .DATA, .CONST and .DATA? (PARA, 16) cannot give an
 // `alignas(64)` object; its name carries the alignment, since attributes may not change.
 void MasmSpelling::openDataBlock(int align) {
-    std::string name = seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata";
     const bool comdat = !pendingComdat_.empty();
+    // A COMDAT's block takes the classic name its section is made from: `.data` alone is the .DATA directive.
+    std::string name = comdat ? (seg_ == Bss ? "_BSS" : seg_ == Data ? "_DATA" : "CONST")
+                              : (seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata");
     if (!comdat) name += "$a" + std::to_string(align);
     o_ += std::string("\n") + name + " SEGMENT" + (seg_ == Const ? " READONLY" : "") +
           " ALIGN(" + std::to_string(align < 16 ? 16 : align) + ")" +
@@ -686,6 +690,8 @@ void MasmCodeGen::funcletLeave(const std::string &label) {
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
+    // Written here as raw text, so said to be defined: an early exit's `jmp $LNleave$` made it an EXTERN otherwise.
+    masm_.predefine({ sym, "$LNbeg$" + sym, "$LNpush$" + sym, "$LNprolog$" + sym, "$LNleave$" + sym, "$LNend$" + sym });
     // The text around the body: the head, then the body as written out, then the tail with the unwind data.
     std::string head, f;
     // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
@@ -841,6 +847,8 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 // the COFF path makes in coffRecord. For ml64, which cannot say COMDAT, the records share one plain segment: `first` opens it, and the others follow in it.
 std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
                                 bool first, bool writable) {
+    // ml64 refuses a segment reopened with another ALIGN (A2015), and .xdata$x is opened at 8 and at 4.
+    if (!masm_.comdat() && std::string(segment) == ".xdata$x") align = 8;
     const std::string open = std::string(segment) + (writable ? " SEGMENT ALIGN(" : " SEGMENT READONLY ALIGN(") +
                              std::to_string(align) + ") 'DATA'";
     if (!masm_.comdat()) return first ? open + "\n" : std::string();

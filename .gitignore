@@ -9,6 +9,8 @@ tests/out-*/
 # hand each time. See CLAUDE.md on building inside ~/Documents.
 cxx1 *.exe
 obj-msvc/
+obj-tsan/
+winout-tools/
 cxx1-msvc.exe
 
 # What the two IDE projects write beside themselves. `ide/build` is MSBuild's,

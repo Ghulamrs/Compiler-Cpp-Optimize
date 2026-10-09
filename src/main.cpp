@@ -30,7 +30,14 @@ int main(int argc, char **argv) {
     if (status == 0 && driver.saysDone()) {
         for (const std::string &file : driver.produced())
             if (!file.empty()) std::fprintf(stderr, "%s\n", fullName(file).c_str());
-        std::fprintf(stderr, "%s: compilation completed successfully - 0 errors\n", program::kName);
+        // A file compiled below the -O asked for is said again here, not left to a note further up (review D12).
+        const int downgraded = driver.volatileDowngrades();
+        if (downgraded > 0)
+            std::fprintf(stderr, "%s: compilation completed successfully - 0 errors, %d file%s compiled without -O "
+                         "because %s 'volatile'\n", program::kName, downgraded, downgraded == 1 ? "" : "s",
+                         downgraded == 1 ? "it uses" : "they use");
+        else
+            std::fprintf(stderr, "%s: compilation completed successfully - 0 errors\n", program::kName);
     }
     return status;
 }

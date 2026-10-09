@@ -42,6 +42,9 @@ SIM6747=$(find_tool "${SIM6747:-}" ../SIM6747/sim6747.exe "$(command -v sim6747 
 RTSLIB="${RTSLIB:-rts6x.lib}"
 if [ "$RTSLIB" = rts6x.lib ]; then TIRTS="${TIRTS:-../RTS6x/build}"; else TIRTS="${TIRTS:-${C6747_EHLIB:-$HOME/c6747-lib}}"; fi
 CXX1_FLAGS="${CXX1_FLAGS:-}"   # -O1 or -O2 runs the corpus through the C6000 optimizer
+# Every pass that vows its edits only shrink liveness is held to the vow (review V9; under 1% of the
+# compile time, measured 2026-10-07); -O0 never reaches the optimizer. CPP11_C6XLIVECHECK= turns it off.
+if [ "${CPP11_C6XLIVECHECK-1}" = "" ]; then unset CPP11_C6XLIVECHECK; else export CPP11_C6XLIVECHECK="${CPP11_C6XLIVECHECK:-1}"; fi
 OUT=tests/out-tms6747
 # One case by name, or all of them; a worker is handed the name it was asked for after --one.
 if [ "${1:-}" = --one ]; then only=$2; else only="${1:-}"; fi

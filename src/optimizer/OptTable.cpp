@@ -147,9 +147,12 @@ const Cond kConds[] = {
 }
 
 const Opcode &opcodeOf(const std::string &m) {
-    static std::map<std::string, const Opcode *> index;
-    if (index.empty())
-        for (const Opcode &o : kTable) index[o.name] = &o;
+    // Built once by a static's initialiser, which C++11 makes thread-safe; filled lazily, two jobs raced (review P4).
+    static const std::map<std::string, const Opcode *> index = [] {
+        std::map<std::string, const Opcode *> made;
+        for (const Opcode &o : kTable) made[o.name] = &o;
+        return made;
+    }();
     const auto it = index.find(m);
     if (it != index.end()) return *it->second;
     if (!conditionOf(m).empty()) return m[0] == 'j' ? kJcc : kSetcc;

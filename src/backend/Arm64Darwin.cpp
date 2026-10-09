@@ -29,7 +29,7 @@ int DarwinArm64Target::sizeOf(Kind k) const {
     case Kind::Pointer: case Kind::NullPtr:                                    return 8;
     default:
         std::fprintf(stderr, "target: no size for this type yet\n");
-        std::exit(1);
+        compileFailed();
     }
 }
 
@@ -72,7 +72,7 @@ static int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 void Arm64Darwin::unsupported(const char *what) {
     std::fprintf(stderr, "codegen: %s is not supported yet by the arm64-darwin "
                          "backend\n", what);
-    std::exit(1);
+    compileFailed();
 }
 
 std::string Arm64Darwin::label(const char *kind, int id) const {
@@ -217,7 +217,7 @@ void Arm64Darwin::genAddr(const Expr &e) {
             std::fprintf(stderr,
                          "codegen: '%s' is a bit-field and has no address\n",
                          m->name().c_str());
-            std::exit(1);
+            compileFailed();
         }
         genAddr(m->object());
         addOffset(m->offset());

@@ -147,7 +147,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
 void Driver::usage(char *file) {
     std::fprintf(stderr,
         "usage: %s <file.cpp> [more.cpp ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
-        "               [-I dir] [-j n] [-arch a] [-masm=m] [-O0|-O1|-O2|-Os] [-g] [-time]\n"
+        "               [-I dir] [-j n] [-arch a] [-masm=m] [-rts=r] [-O0|-O1|-O2|-Os] [-g] [-time]\n"
         "       with neither -S nor -c the inputs are compiled, assembled and\n"
         "         linked into a program, named by -o, or a.out - a.exe on a\n"
         "         Windows host; several inputs\n"
@@ -170,6 +170,11 @@ void Driver::usage(char *file) {
         "         CPP11_TILIB one holding rts6740_elf_eh.lib); its code uses the\n"
         "         C64x+ 16-bit compact instructions, as TI's cl6x does, and\n"
         "         --no_compress writes every instruction in 32 bits\n"
+        "       -rts= picks the tms6747 run-time library: a directory holding\n"
+        "         RTS6x's rts6x.lib (or the .lib itself), or 'ti' for TI's\n"
+        "         rts6740. Unsaid: RTS6x from RTS6X or lib/rts6x-tms6747\n"
+        "         beside this program - as RIDE links - unless CPP11_TI or\n"
+        "         CPP11_TILIB names TI's; TI's otherwise; the link says which\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'masm' is\n"
         "         the default where this project's masm.exe is beside this\n"
         "         program (RIDE's bin), assembled by it and linked by the\n"
@@ -185,7 +190,9 @@ void Driver::usage(char *file) {
         "         on tms6747 a division by a constant stays a call, no\n"
         "         entry test is duplicated ahead of the frame; elsewhere -O1\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
-        "         and step through it; x86_64-linux and arm64-darwin only\n"
+        "         and step through it: DWARF on x86_64-linux and arm64-darwin,\n"
+        "         CodeView on x86_64-windows in the gnu spelling (linked with\n"
+        "         /debug into a PDB); refused for tms6747 and for -masm=masm/ml64\n"
         "       -nologo leaves out the line this compiler prints before it\n"
         "         starts, which a build script may not want\n"
         "       -version says which release this is, and which seal file\n"
@@ -266,9 +273,7 @@ static std::string developerShell() {
 #ifdef _WIN32
     const char *inside = std::getenv("VCToolsInstallDir");
     if (inside != nullptr && inside[0] != '\0') return std::string();
-    static bool asked = false;
-    static std::string cached;
-    if (!asked) { asked = true; cached = findVcvars(); }
+    static const std::string cached = findVcvars();   // asked from the tool pool: a static's initialiser is thread-safe
     return cached;
 #else
     return std::string();
@@ -523,7 +528,9 @@ std::string Driver::tiLinker() const {
         if (exe.good()) return dir + "lnk6x.exe";
         return dir + "lnk6x";
     }
-    return "lnk6x";
+    std::string own = besideProgram(program_, "lnk6x.exe");
+    if (own.empty()) own = besideProgram(program_, "lnk6x");
+    return own.empty() ? std::string("lnk6x") : own;
 }
 
 // The per-job folders the temporaries sit in, removed once their files are.
@@ -728,12 +735,44 @@ bool Driver::linkTi() {
     const std::string sep = hostIsWindows() ? "\\" : "/";
     std::vector<std::string> libraryDirs;
     const char *ti = std::getenv(program::env("TI").c_str());
-    if (ti != nullptr && ti[0] != '\0') libraryDirs.push_back(std::string(ti) + sep + "lib");
     const char *tilib = std::getenv(program::env("TILIB").c_str());
-    if (tilib != nullptr && tilib[0] != '\0') libraryDirs.push_back(tilib);
-    std::string rts = "rts6740_elf.lib";
-    for (const std::string &d : libraryDirs)
-        if (fileExists(d + sep + "rts6740_elf_eh.lib")) rts = "rts6740_elf_eh.lib";
+    const bool tiNamed = (ti != nullptr && ti[0] != '\0') || (tilib != nullptr && tilib[0] != '\0');
+    // **RTS6x, the project's own runtime, as RIDE links it** (review D9): -rts= names it or asks for TI's;
+    // else RTS6X, or lib/rts6x-tms6747 beside this program, unless CPP11_TI or CPP11_TILIB names TI's.
+    std::string ours, rts;
+    if (rtsChoice_ != "ti") {
+        std::string want = rtsChoice_;
+        const char *env = std::getenv("RTS6X");
+        if (want.empty() && !tiNamed && env != nullptr && env[0] != '\0') want = env;
+        if (want.empty() && !tiNamed) {
+            const std::string beside = besideProgram(program_, ("lib" + sep + "rts6x-tms6747" + sep + "rts6x.lib").c_str());
+            if (!beside.empty()) want = beside.substr(0, beside.size() - std::strlen("rts6x.lib") - 1);
+        }
+        if (!want.empty()) {
+            const bool named = want.size() > 4 && want.compare(want.size() - 4, 4, ".lib") == 0;
+            const std::size_t cut = want.find_last_of("/\\");
+            ours = named ? (cut == std::string::npos ? std::string(".") : want.substr(0, cut)) : want;
+            rts = named ? want.substr(cut == std::string::npos ? 0 : cut + 1) : std::string("rts6x.lib");
+            if (!fileExists(ours + sep + rts)) {
+                std::fprintf(stderr, "%s: no %s in %s - -rts= names RTS6x's directory or its .lib, "
+                                     "or -rts=ti asks for TI's rts6740\n", program_.c_str(), rts.c_str(), ours.c_str());
+                return false;
+            }
+        }
+    }
+    if (!ours.empty()) {
+        libraryDirs.push_back(ours);
+    } else {
+        if (ti != nullptr && ti[0] != '\0') libraryDirs.push_back(std::string(ti) + sep + "lib");
+        if (tilib != nullptr && tilib[0] != '\0') libraryDirs.push_back(tilib);
+        rts = "rts6740_elf.lib";
+        for (const std::string &d : libraryDirs)
+            if (fileExists(d + sep + "rts6740_elf_eh.lib")) rts = "rts6740_elf_eh.lib";
+    }
+    if (!quiet_)
+        std::fprintf(stderr, "%s: linking against %s%s%s\n", program_.c_str(),
+                     ours.empty() ? "TI's " : "RTS6x, ", ours.empty() ? rts.c_str() : (ours + sep + rts).c_str(),
+                     ours.empty() && libraryDirs.empty() ? ", on lnk6x's own search path" : "");
 
     std::string command = shellQuote(tiLinker()) + " -mv6740 --abi=eabi";
     for (const std::string &d : libraryDirs) command += " -i " + shellQuote(d);
@@ -746,10 +785,11 @@ bool Driver::linkTi() {
     if (rc != 0) {
         std::fprintf(stderr, "%s: the linker failed - the command was:\n  %s\n",
                      program_.c_str(), command.c_str());
-        std::fprintf(stderr, "  lnk6x and rts6740_elf.lib are TI's, under CCS's C6000 "
-                             "compiler directory: CPP11_TI names it, CPP11_TILIB a "
-                             "directory holding rts6740_elf_eh.lib, CPP11_LD the "
-                             "linker itself.\n");
+        if (ours.empty())
+            std::fprintf(stderr, "  rts6740_elf.lib is TI's, under CCS's C6000 "
+                                 "compiler directory: CPP11_TI names it, CPP11_TILIB a "
+                                 "directory holding rts6740_elf_eh.lib, CPP11_LD the "
+                                 "linker; -rts= names RTS6x in its place.\n");
         return false;
     }
     return true;
@@ -942,10 +982,12 @@ bool Driver::parseArguments(int argc, char **argv) {
                    std::strcmp(argv[i], "--version") == 0) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
-            // The time is the build's, on the last line only; a release build's clock is Asia/Karachi.
-            std::printf("%s\nVersion %s, sealed %s\nBuilt %s PST\n", CXX1_BANNER,
+            // __DATE__ and __TIME__ are the build machine's local clock, whose zone is not known here.
+            std::printf("%s\nVersion %s, sealed %s\nBuilt %s, the build machine's local time\n", CXX1_BANNER,
                         CXX1_VERSION, CXX1_SEAL_DATE, buildStamp().c_str());
             std::exit(0);
+        } else if (std::strncmp(argv[i], "-rts=", 5) == 0 && argv[i][5] != '\0') {
+            rtsChoice_ = argv[i] + 5;
         } else if (std::strcmp(argv[i], "--no_compress") == 0 || std::strcmp(argv[i], "--compress") == 0) {
             asmCompress_ = argv[i];
         } else if (std::strcmp(argv[i], "-nologo") == 0) {
@@ -995,6 +1037,11 @@ bool Driver::parseArguments(int argc, char **argv) {
         return false;
     }
 
+    if (debug_ && std::strcmp(backend_->name(), "tms6747") == 0) {
+        std::fprintf(stderr, "%s: -g is not supported yet for tms6747 - its code generator writes no "
+                             "line table; compile without -g\n", argv[0]);
+        return false;
+    }
     if (debug_ && !backend_->emitsLineTable(syntax_)) {
         std::fprintf(stderr,
                      "%s: -g asks where each line of C++ went, and this compiler "
@@ -1116,7 +1163,7 @@ bool Driver::compile(const Job &job) {
     TypeTable types;
 
     auto t0 = Clock::now();
-    Source src = Preprocessor(job.input, searchPath_, macrosFor()).run();
+    Source src = Preprocessor(job.input, searchPath_, macros_).run();
     auto t1 = Clock::now();
 
     std::vector<Token> tokens = Lexer(src).tokenize();
@@ -1130,10 +1177,12 @@ bool Driver::compile(const Job &job) {
     // type system drops the qualifier, so an optimizer would take a volatile
     // read for a plain one and keep it in a register or delete it.
     const int level = program.usesVolatile ? 0 : optimize_;
-    if (optimize_ > 0 && program.usesVolatile)
+    if (optimize_ > 0 && program.usesVolatile) {
+        volatileDowngrades_++;
         std::fprintf(stderr, "%s: %s uses 'volatile', which this compiler cannot keep apart "
                      "from plain memory; compiled without -O%d\n", program_.c_str(),
                      job.input.c_str(), optimize_);
+    }
 
     bool ok = true;
     if (job.output.empty()) {
@@ -1264,8 +1313,20 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
     return true;
 }
 
+bool Driver::compileCaught(const Job &job) {
+    try {
+        return compile(job);
+    } catch (const CompileFailed &) {
+        if (!job.output.empty()) std::remove(job.output.c_str());
+        return false;
+    }
+}
+
+// **Every job runs to its end, a failed one included**, so each file's diagnostic is printed; the
+// verdict is given after the threads are joined, never by an exit from inside one (review P1).
 bool Driver::runJobs() {
     unsigned n = threadCount();
+    macros_ = macrosFor();
 
     if (timing_)
         std::fprintf(stderr, "%s: %zu jobs on %u thread%s\n", program_.c_str(),
@@ -1275,12 +1336,13 @@ bool Driver::runJobs() {
         // **The same line for one thread**, because saying so is the point: below `kThreadFrom`
         // files this compiler does the work in the thread it was started on, and a report that
         // showed threads it did not use would be worse than none. `-j n` overrides the threshold.
+        bool all = true;
         for (const Job &job : jobs_) {
             if (!quiet_ && jobs_.size() > 1)
                 std::fprintf(stderr, "  [thread 1] %s\n", job.input.c_str());
-            if (!compile(job)) return false;
+            if (!compileCaught(job)) all = false;
         }
-        return true;
+        return all;
     }
 
     std::atomic<std::size_t> next{0};
@@ -1296,10 +1358,11 @@ bool Driver::runJobs() {
             for (;;) {
                 std::size_t i = next.fetch_add(1);
                 if (i >= jobs_.size()) return;
-                if (!quiet_)
-                    std::fprintf(stderr, "  [thread %u] %s\n", t + 1,
-                                 jobs_[i].input.c_str());
-                if (!compile(jobs_[i])) { ok.store(false); return; }
+                if (!quiet_) {
+                    std::lock_guard<std::mutex> hold(diagnosticLock());
+                    std::fprintf(stderr, "  [thread %u] %s\n", t + 1, jobs_[i].input.c_str());
+                }
+                if (!compileCaught(jobs_[i])) ok.store(false);
             }
         });
     }

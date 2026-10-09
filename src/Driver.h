@@ -2,6 +2,7 @@
 
 #include "backend/Backend.h"
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,8 @@ public:
     bool saysDone() const { return saysDone_; }
     // What this run made, for the line above the one that says it finished: the program, the objects or the assembly.
     std::vector<std::string> produced() const;
+    // How many files were compiled without the -O asked for because they write `volatile`.
+    int volatileDowngrades() const { return volatileDowngrades_.load(); }
     int run(int argc, char **argv);
 
 private:
@@ -90,6 +93,13 @@ private:
     void standardIncludeDirectories(const std::string &argv0);
     bool quiet_ = false;
     bool saysDone_ = false;  // a compile was begun, and the line saying it finished is wanted
+    std::atomic<int> volatileDowngrades_{0};
+    // One job, its diagnostic caught: false where it failed, its half-written output removed.
+    bool compileCaught(const Job &job);
     // --compress or --no_compress, handed to asm6x for tms6747; empty is asm6x's default, compressed.
     std::string asmCompress_;
+    // -rts=: empty for the choice made at the link, "ti" for TI's rts6740, else RTS6x's directory or .lib.
+    std::string rtsChoice_;
+    // The predefined macros, made once on the main thread: __DATE__ and __TIME__ call localtime (review P4).
+    std::vector<std::pair<std::string, std::string> > macros_;
 };
