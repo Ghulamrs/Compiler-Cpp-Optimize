@@ -1,10 +1,12 @@
 # WS-F - the Windows MASM path, the driver, parallel safety: handover
 
 Branch `review/f-windows` from main `cc210bb` (WS-A merged), 2026-10-08, executor Claude Opus 5.5,
-under `docs/REVIEW-PLAN-2026-10-08.md` section 4 "WS-F". Two more branches of the same name, both
-local and unpushed: **MASM** `review/f-windows` (tests only, `66baab1`) and **LINK**
-`review/f-windows` (**two `src/` fixes** and its bed, `e8d51b5`, `c5548c7`) - the plan expected
-tests only there; a real fault was found in LINK and is said below. Nothing was pushed or merged.
+under `docs/REVIEW-PLAN-2026-10-08.md` section 4 "WS-F". Two more branches of the same name: **MASM**
+`review/f-windows` (tests only, `66baab1`) and **LINK** `review/f-windows` (**two `src/` fixes**, its
+bed, and the 1.1 reseal: `e8d51b5`, `c5548c7`, `fa03281`) - the plan expected tests only there; a
+real fault was found in LINK and is said below. All three branches are on origin under their own
+names (allowed); nothing was merged. **Second sitting 2026-10-09, Claude Fable 5.1**: P4 finished,
+the LINK version bump, and the gates below re-measured where the box allowed - see "Second sitting".
 
 Builds and tests ran on the Windows box (`C:\cxx1\rtsdiv\ws-f`, `ws-f-masm`, `ws-f-link`,
 `core.autocrlf=false`, `msvc\build.cmd`; the project's masm and LINK built there by cl from
@@ -27,7 +29,7 @@ their trees) and on the Linux box (`~/ride-5.1/ws-f`, g++ 11.5). The Mac edited 
 | D12 | **fixed** `0b5541e`: the success line says `0 errors, N file(s) compiled without -O because they use 'volatile'` when it happened |
 | P1 | **fixed** `a6078a2`: `Source::fail`, `Source::fromFile` and the four backends' refusals throw `CompileFailed` after writing under `diagnosticLock()`; `compileCaught` catches it per job, removes the half-written output; every job runs, the verdict is after `join()`. **`Preprocessor::fail` still calls `std::exit(1)`** - `src/Preprocessor.cpp` is WS-D's; the one-line change is `std::exit(1)` -> `compileFailed()` (and lock the write) |
 | P2 | **fixed** `4be1374`: `static const int t = ...` |
-| P4 | **done** `2a4ff01`: `make tsan` (g++ `-fsanitize=thread`, libtsan by rpath - no `libtsan.so.0` on the box's loader path) and `tools/tsan-check`. **It found a real race**, fixed `ab7939e`: `__DATE__`/`__TIME__` call `localtime` (and `tzset`) from every worker thread; the macros are now made once on the main thread. Result at the end |
+| P4 | **done** `2a4ff01`, `ab7939e`, `66ed5f1`, `5fd897a`: `make tsan` and `tools/tsan-check`. **It found two real races** - `__DATE__`/`__TIME__` calling `localtime`/`tzset` from every worker (the macros are made once on the main thread now) and `OptTable.cpp`'s opcode index filled lazily by two jobs at once (a static's initialiser now, with Driver's vcvars cache). **Run clean on the Mac with all three fixes built, 2026-10-09** - the one measurement of this workstream taken on the Mac, by the main session's instruction: the Linux box is withdrawn and the Windows box's cl has no `-fsanitize=thread`; Apple clang has it. Numbers under "Second sitting" |
 | V9 | **done** `e2b4a7f`: `tests/tms6747.sh` exports `CPP11_C6XLIVECHECK=1` (`CPP11_C6XLIVECHECK=` unsets it) |
 | R9, F38 | design notes below |
 | WS-A's Driver findings | `--help`, the `-g` refusal, `-version`'s PST, the examples' banner - all in `0b5541e` |
@@ -92,12 +94,60 @@ of `make tsan` after both fixes, `run.sh` -O0/-O2 with the g++ build, `make test
 
 - **Done and gated**: everything in the table above through `4df8afc`, MASM `66baab1`, LINK
   `e8d51b5`/`c5548c7`.
-- **Done, built nowhere**: `ab7939e` (macros once on the main thread) and `66ed5f1` (two statics
-  made by initialiser) - small, reviewed by reading, not compiled or run on either box.
-- **Half done**: P4 (above); `winlink-check` not run.
+- **Done, built and run on the Mac only** (second sitting): `ab7939e`, `66ed5f1`, `5fd897a` - the
+  TSAN build and `tools/tsan-check` clean; not yet built by cl on the box.
+- **Not run**: `winlink-check`; the -O2 runs, `tms6747.sh`, `names.sh`/`overload.sh` at the tip
+  (skipped: budget; the box was down).
 - **Untouched**: nothing else in WS-F's list. Nothing is running on the Windows box.
 - **Merge order for the main session**: LINK `review/f-windows` before this branch's verify-three
   leg, or the MASM pass's 8 static-local cases fail under master LINK.
+
+## Second sitting, 2026-10-09 (Fable 5.1): P4 finished, LINK 1.1, the gates
+
+**Budget**: the main session asked for an economical close - TSAN, the box's `run-cases.cmd` at
+-O0 with the branch MASM/LINK plus their beds, the LINK bump, the note; -O2, `tms6747.sh`,
+`names.sh`/`overload.sh` and `winlink-check` **skipped: budget**.
+
+**P4 under ThreadSanitizer, on the Mac** - `make tsan` built `obj-tsan/cpp11.exe` with Apple clang
+21 `-fsanitize=thread` from the branch at `66ed5f1` plus the harness fix, and `tools/tsan-check`
+reported:
+
+    run.sh: 627 passed, 0 failed (400 printed their recorded output, 226 refused as recorded)  - every compile -j 4
+    x86_64-linux 400 of 400, x86_64-windows 379 of 379, arm64-darwin 400 of 400, tms6747 395 of 395
+        files written by one -j 4 -O2 compile per target
+    two failing files: 2 diagnostics, exit 1
+    tsan-check: clean - no ThreadSanitizer report
+
+So the two races the first (Linux, pre-fix) run found are gone and no third appeared. The harness
+itself had two faults, fixed in `5fd897a`: the `tsan` target linked `libtsan.so.0` from
+`$(CXX) -print-file-name`, which clang answers with the bare name (the link step is guarded now,
+the rpath kept); and the pool step counted the `.s` files in a directory it `cd`ed into, while `-S`
+writes each beside its source - the first Mac run said `0 of 400` for a pool that had written all
+400 into `tests/cases/`. They are moved out and counted there now. **Why the Mac**: the plan put
+TSAN on the Linux box, which the user withdrew mid-round; the Windows box's cl has no thread
+sanitizer; the Mac's clang does, and nothing else in this workstream ran there.
+
+**Text gates, on the branch (host-independent)**: `tools/comment-lines` 0 groups over the cap;
+`tools/exclusions --check docs/EXCLUSIONS.md` 131 sites, 0 uncited, 0 stale; `tools/seal check`
+13 sealed files differ - Driver.cpp/.h, Source.cpp/.h, Masm.cpp, C6xPipe.cpp, OptTable.cpp and
+main.cpp changed here, Version.h, the four backends and X86_64Windows.cpp by WS-A's merge under
+this branch - expected until the 1.7 reseal.
+
+**LINK 1.1** (`fa03281` on LINK `review/f-windows`): `tools/seal.json` 1.0 -> 1.1, `link-1.0.dat`
+removed, `link-1.1.dat` written by its `tools/seal write` (6 files, DB133712), `check` 0 differ.
+LINK names its version nowhere in `src/` or its project file, so that is the whole bump - done as
+lnk6x 1.1 was, less the `--version` line LINK has not got. **MASM stays 1.0**: `tools/seal check`
+on its branch reads 11 files, 0 differ (tests only).
+
+**The Windows box was unreachable for the whole sitting** - `ssh windows` "Host is down", polled
+for twenty minutes - so every box gate stands at the first sitting's numbers (above, measured at
+`4df8afc` plus the then-uncommitted P4 harness): the three commits since (`ab7939e`, `66ed5f1`,
+`5fd897a`) touch Driver.cpp, Driver.h, OptTable.cpp, the Makefile's tsan target and tsan-check,
+and the first two are now proved by the Mac build and the TSAN suite run (627/0). **Still owed on
+the box at the branch tip**: `run-cases.cmd` both spellings -O0 with the branch MASM and LINK
+1.1, MASM's `tests/run.sh`, LINK's `probes.sh`/`bad.sh`, the emit golden re-record (nothing in
+the three commits emits code, so 0 changed is the expectation), `winlink-check`. Merge order is
+unchanged: LINK `review/f-windows` (now at `fa03281`) before this branch's Windows leg.
 
 ## Draft CLAUDE.md sections
 
@@ -111,8 +161,12 @@ EH and COMDAT objects. The ml64 dialect refused every throw (A2015, `.xdata$x` a
 
 **"-rts and the runtime named."** As RIDE: RTS6x beside the compiler unless TI's is named.
 
-**"A worker never exits."** `CompileFailed` per job; every file's diagnostic; verdict after join.
-TSAN found `localtime` and a lazily filled static map shared by the jobs.
+**"A worker never exits, and what ThreadSanitizer found in the pool."** `CompileFailed` per job;
+every file's diagnostic; verdict after join. `make tsan` + `tools/tsan-check` (run.sh at `-j 4`,
+every case in one -j 4 compile per target, two failing files): it found `localtime`/`tzset` under
+`__DATE__`/`__TIME__` from every worker, and a lazily filled opcode map two jobs wrote at once -
+both are made once now, and the run is clean (627/0, four pools, no report). TSAN ran on the Mac,
+the one measurement taken there, because the box's cl has no sanitizer.
 
 
 ## Design note R9: why the C6000 optimizer is a text pass, and what `Mir` would have to carry
