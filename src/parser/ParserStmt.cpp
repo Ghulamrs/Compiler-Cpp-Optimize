@@ -1695,6 +1695,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 StmtPtr Parser::statementBody() {
     // A static_assert declares nothing, so the statement it becomes is empty.
     if (staticAssertion()) return StmtPtr(new Block({}));
+    if (attributedDeclarationAhead()) return declaration();
 
     // **`using namespace N;` inside a block**, the same directive as the one at file
     // scope, differing only in when it stops applying: at the end of this block, which

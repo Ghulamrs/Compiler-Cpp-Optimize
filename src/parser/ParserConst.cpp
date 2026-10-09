@@ -26,7 +26,10 @@ bool Parser::aliasDeclaration(const std::string &prefix) {
     if (t->unqualified()->kind() == Kind::Deduced)
         src_.fail(typeAt, "an alias declaration names a type, and 'auto' deduces one from an "
                           "initialiser it does not have");
-    const Declared d = declarator(t, true);
+    // `using F = int(int);` - a function type, whose parameter list no declarator reads.
+    Declared d{ "", t, typeAt, 0, "" };
+    if (peek().is("(") && !atParenInitialiser()) typedefFunctionSuffix(d);
+    else d = declarator(t, true);
     if (!d.name.empty())
         src_.fail(d.pos, "an alias declaration names a type, and '" + d.name + "' would declare something "
                          "of that type - write 'using " + name + " = T;' with T a type alone");
@@ -38,6 +41,23 @@ bool Parser::aliasDeclaration(const std::string &prefix) {
                        typedefs_[had->second].type->describe() + "' and is now '" + d.type->describe() + "'");
     typedefIndex_[key] = typedefs_.size();
     typedefs_.push_back(TypedefName{ key, d.type });
+    return true;
+}
+
+// [temp.explicit]/2: `extern template` promises a definition elsewhere, and every specialization here is
+// mergeable (weak, COMDAT), so the one it would suppress folds with that one - read and dropped.
+bool Parser::externTemplateDeclaration() {
+    if (!peek().is("extern") || !peekAt(1).is("template")) return false;
+    const std::size_t pos = peek().pos;
+    at_ += 2;
+    int depth = 0;
+    for (;; at_++) {
+        if (peek().kind == TokenKind::End) src_.fail(pos, "this 'extern template' declaration never ends");
+        if (peek().is("(") || peek().is("[") || peek().is("{")) depth++;
+        else if (peek().is(")") || peek().is("]") || peek().is("}")) depth--;
+        else if (depth == 0 && peek().is(";")) break;
+    }
+    at_++;
     return true;
 }
 

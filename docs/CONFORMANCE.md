@@ -663,3 +663,22 @@ accepts the program too. What a conforming answer would cost: a parse of each
 template body into a tree carrying "dependent" on every name, with lookup at
 definition for the rest - the rewrite the rung-5 plan declined, and the one to
 revisit first if templates ever feel wrong.
+
+## `extern template` suppresses nothing
+
+[temp.explicit]/10 says an explicit instantiation declaration suppresses the
+implicit instantiation of the entity it names in that translation unit, the
+definition being promised elsewhere. cpp11 reads `extern template struct S<int>;`
+and `extern template int f<int>(int);` and instantiates on use exactly as if
+the line were not there. What that costs: the specialization is emitted in
+this unit too, as a mergeable definition (`.weak` on ELF,
+`.weak_def_can_be_hidden` on Mach-O, a COMDAT section on COFF), so a program
+that provides the promised definition elsewhere links and runs correctly, with
+the linker keeping one copy - measured by `tests/cases/extern-template.cpp`
+and its `.part.cpp`, which instantiate the same specializations in two units.
+The visible difference is in the symbol list: clang emits none of the suppressed
+members in the declaring unit and cpp11 emits them all, which
+`extern-template.nonames` records. Honouring the declaration means a table of
+suppressed specializations consulted where a use would instantiate, and a
+refusal where the promised definition never appears; it is recorded here rather
+than built because nothing observable but the object's size depends on it.

@@ -2126,7 +2126,10 @@ private:
     // ---- WS-C2 (review 2026-10-08): attributes read and ignored, [dcl.attr.grammar]/5 ----
     bool skipAttributes();
     void skipBalanced();
+    bool attributedDeclarationAhead();
     std::size_t lastAttributeEnd_ = static_cast<std::size_t>(-1);
+    // `extern template ...;` is read and suppresses nothing: true if one was read.
+    bool externTemplateDeclaration();
     bool exceptionSpecification();
     // ---- WS-C1 (review 2026-10-08): the virt-specifier-seq and `= default` / `= delete`, read behind the exception specification ----
     VirtSpecifiers pendingVirt_;

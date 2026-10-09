@@ -152,6 +152,7 @@ void Parser::topLevel(Program &program) {
     const bool direct = directLinkage_;
     directLinkage_ = false;
     if (linkageSpecification()) return;
+    if (externTemplateDeclaration()) return;
     if (templateDeclaration()) return;
 
     StorageClass sc;
