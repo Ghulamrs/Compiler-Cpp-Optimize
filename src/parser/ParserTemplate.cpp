@@ -1243,7 +1243,7 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
     if (initialiserNames(name))
         src_.fail(pos, "'" + name + "' is declared 'auto' and names itself in its "
                        "own initialiser - its type is what that initialiser "
-                       "decides, so there is none yet to use");
+                       "decides, so there is none to use");
 
     const std::size_t resume = at_;
     if (paren) at_++;
