@@ -190,8 +190,9 @@ open: $(TARGET)
 
 # **The thread pool under ThreadSanitizer** (review P4): the same sources built with
 # -fsanitize=thread into obj-tsan/, then tools/tsan-check - run.sh with -j 4, every case in one
-# compile per target, and two failing files at once. g++ has it (the Linux box has no clang), with
-# libtsan.so under its own directory and no libtsan.so.0 beside it: the link names one, by rpath.
+# compile per target, and two failing files at once. Apple clang and g++ both have it; g++ keeps
+# libtsan.so under its own directory with no libtsan.so.0 beside it, so there the link names one by
+# rpath - clang prints the bare name for a library it has not got, and the link step is skipped.
 TSANDIR  = obj-tsan
 TSANOBJS = $(patsubst src/%.cpp,$(TSANDIR)/%.o,$(SRCS))
 $(TSANDIR)/%.o: src/%.cpp
@@ -199,7 +200,7 @@ $(TSANDIR)/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -fsanitize=thread -MMD -MP -c $< -o $@
 $(TSANDIR)/cpp11.exe: $(TSANOBJS)
 	@mkdir -p $(TSANDIR)/lib
-	@ln -sf $(realpath $(shell $(CXX) -print-file-name=libtsan.so)) $(TSANDIR)/lib/libtsan.so.0
+	@lib=$$($(CXX) -print-file-name=libtsan.so); [ ! -f "$$lib" ] || ln -sf "$$(realpath "$$lib")" $(TSANDIR)/lib/libtsan.so.0
 	$(CXX) $(CXXFLAGS) -fsanitize=thread -Wl,-rpath,$(CURDIR)/$(TSANDIR)/lib -o $@ $(TSANOBJS)
 -include $(TSANOBJS:.o=.d)
 tsan: $(TSANDIR)/cpp11.exe

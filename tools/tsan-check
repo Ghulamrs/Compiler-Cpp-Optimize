@@ -35,8 +35,10 @@ for target in x86_64-linux x86_64-windows arm64-darwin tms6747; do
         if [ -f "tests/cases/$b.notarget" ] && grep -q "^$target\b" "tests/cases/$b.notarget"; then continue; fi
         echo "$c"
     done > "$T/all/$target.list"
-    ( cd "$T/all/$target" && "$TSAN" -nologo -j 4 -S -O2 -arch "$target" $(sed "s|^|$OLDPWD/|" "$T/all/$target.list") ) \
+    "$TSAN" -nologo -j 4 -S -O2 -arch "$target" $(cat "$T/all/$target.list") \
         > "$T/all/$target.log" 2>&1 || { echo "tsan-check: the $target pool failed - $T/all/$target.log"; fail=1; }
+    # -S writes each .s beside its source; they are moved out of tests/cases and counted there
+    for s in tests/cases/*.s; do [ -f "$s" ] && mv "$s" "$T/all/$target/"; done
     echo "$target: $(ls "$T/all/$target" | wc -l | tr -d ' ') of $(wc -l < "$T/all/$target.list" | tr -d ' ') files written by one -j 4 compile"
 done
 
