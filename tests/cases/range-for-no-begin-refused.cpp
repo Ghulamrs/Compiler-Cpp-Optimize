@@ -1,12 +1,10 @@
 // A range-based `for` over a class with no `begin` and `end`, refused.
 //
-// [stmt.ranged]/1 looks the two up as **members** first, and only if neither is
-// found does it look for free `begin(r)` and `end(r)` by argument-dependent
-// lookup. cxx1 does the member half and refuses the fallback by name, so this
-// class - which has neither - stops here rather than at a message about the
-// free functions it does not look for.
-//
-// clang refuses it too, for the same shape and a longer message.
+// [stmt.ranged]/1 looks the two up as members first, and where neither is
+// found, as free `begin(r)` and `end(r)` by argument-dependent lookup. This
+// class has neither, so the loop has nothing to walk - clang refuses it too:
+// "invalid range expression of type 'Plain'; no viable 'begin' function
+// available" at 16:16.
 
 struct Plain { int x; };
 

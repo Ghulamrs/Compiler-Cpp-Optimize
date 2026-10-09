@@ -682,6 +682,10 @@ private:
                                std::vector<StmtPtr> &setup, int *bSlot,
                                int *eSlot, std::string *bName,
                                std::string *eName);
+    StmtPtr initRangeLocal(const std::string &name, const Type *t, int off, ExprPtr init,
+                           std::size_t pos);
+    // Where a range-for's own objects became alive: a statement index and how many then.
+    std::vector<std::pair<std::size_t, std::size_t> > rangeBuilt_;
     // The argument list at a use: `<int, 3>` read into types and values.
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,

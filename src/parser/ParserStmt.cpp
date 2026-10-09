@@ -534,27 +534,37 @@ const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
     const Type *rangeType = range->type();
     const Type *cls = rangeType->unqualified();
 
-    // **A temporary range needs its lifetime extended and this does not do
-    // that.**
-    if (!isGlvalue(*range))
-        src_.fail(rpos, "the range here is a temporary, and a range-based "
-                        "'for' binds the range to a reference that keeps it "
-                        "alive for the whole loop - which is not supported "
-                        "yet. Name it in a variable first and loop over that");
+    // A temporary range is what `auto &&__range` binds and keeps alive to the loop's end,
+    // [class.temporary]/5: here it is built into a slot of its own, destroyed after the loop.
+    if (isGlvalue(*range)) {
+        extendTemporary(*range, ".rt" + std::to_string(refTemps_++));
+    } else {
+        const std::string tName = ".rt" + std::to_string(refTemps_++);
+        const int tSlot = declare(tName, cls, rpos);
+        setup.push_back(initRangeLocal(tName, cls, tSlot, std::move(range), rpos));
+        rangeBuilt_.push_back(std::make_pair(setup.size(), alive_.size()));
+        range.reset(Var::local(tName, tSlot));
+        range->setType(cls);
+        rangeType = cls;
+    }
 
-    if (findMemberOwner(cls, "begin") == nullptr ||
-        findMemberOwner(cls, "end") == nullptr)
-        src_.fail(rpos, "'" + cls->describe() + "' has no 'begin' and 'end' "
-                        "member function, and a free 'begin(r)' and 'end(r)' "
-                        "found by argument-dependent lookup - which is what a "
-                        "range-based 'for' falls back to - is not supported "
-                        "yet");
+    // [stmt.ranged]/1: members if the class has either, else `begin(r)` and `end(r)`
+    // found by argument-dependent lookup.
+    const bool members = findMemberOwner(cls, "begin") != nullptr ||
+                         findMemberOwner(cls, "end") != nullptr;
+    // Lookup by the argument alone: the class's own namespace, or the global one.
+    const std::string::size_type cut = cls->tag().rfind("::");
+    const std::string scope = cls->inNamespace() && cut != std::string::npos
+                            ? cls->tag().substr(0, cut + 2) : std::string();
+    if (!members && (!hasFunctionNamed(scope + "begin") || !hasFunctionNamed(scope + "end")))
+        src_.fail(rpos, "'" + cls->describe() + "' has no 'begin' and 'end', as "
+                        "members or as functions found by argument-dependent lookup, "
+                        "so a range-based 'for' has nothing to walk");
 
     // `R *__r = &range;`
     const Type *rangePtr = types_.pointerTo(rangeType);
-    *bSlot = declare(".rr" + std::to_string(refTemps_), rangePtr, rpos);
     const std::string rName = ".rr" + std::to_string(refTemps_++);
-    const int rSlot = *bSlot;
+    const int rSlot = declare(rName, rangePtr, rpos);
     ExprPtr held(Var::local(rName, rSlot));
     held->setType(rangePtr);
     ExprPtr addr(new Unary('&', std::move(range)));
@@ -562,9 +572,9 @@ const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
     ExprPtr keep(new Assign(std::move(held), std::move(addr)));
     keep->setType(rangePtr);
     setup.push_back(StmtPtr(new ExprStmt(std::move(keep))));
+    rangeBuilt_.push_back(std::make_pair(setup.size(), alive_.size()));
 
-    // `*__r`, rebuilt for each call: an ExprPtr is used up by the one that
-    // takes it, and `memberCallWith` takes the object's address itself.
+    // `*__r`, rebuilt for each call: an ExprPtr is used up by the one that takes it.
     auto object = [&]() {
         ExprPtr p(Var::local(rName, rSlot));
         p->setType(rangePtr);
@@ -572,44 +582,69 @@ const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
         o->setType(rangeType);
         return o;
     };
+    auto end = [&](const char *which) -> ExprPtr {
+        if (members)
+            return memberCallWith(object(), rangeType, which, rpos, std::vector<ExprPtr>());
+        std::vector<ExprPtr> args;
+        args.push_back(object());
+        const Signature sig = resolveOverload(scope + which, args, rpos);
+        return completeCall(scope + which, sig.symbol, nullptr, sig.returns, sig.params,
+                            sig.variadic, rpos, std::move(args), false);
+    };
 
-    ExprPtr first = memberCallWith(object(), rangeType, "begin", rpos,
-                                   std::vector<ExprPtr>());
-    const Type *iter = first->type();
-
-    // **The iterator has to be a pointer, and every one in `include/` is.**
-    if (!iter->isPointer())
-        src_.fail(rpos, "'" + cls->describe() + "::begin()' returns '" +
-                        iter->describe() + "', and a range-based 'for' over a "
-                        "class whose iterator is not a pointer is not "
-                        "supported yet - the loop would have to call its "
-                        "'operator!=', 'operator++' and 'operator*'");
-
-    *bSlot = declare(".rb" + std::to_string(refTemps_), iter, rpos);
+    ExprPtr first = end("begin");
+    const Type *iter = first->type()->unqualified();
+    if (!iter->isPointer() && !iter->isStructOrUnion())
+        src_.fail(rpos, "'begin' of '" + cls->describe() + "' returns '" +
+                        iter->describe() + "', which is neither a pointer nor a "
+                        "class an iterator can be");
     *bName = ".rb" + std::to_string(refTemps_++);
-    ExprPtr b(Var::local(*bName, *bSlot));
-    b->setType(iter);
-    ExprPtr startAt(new Assign(std::move(b), std::move(first)));
-    startAt->setType(iter);
-    setup.push_back(StmtPtr(new ExprStmt(std::move(startAt))));
+    *bSlot = declare(*bName, iter, rpos);
+    setup.push_back(initRangeLocal(*bName, iter, *bSlot, std::move(first), rpos));
+    rangeBuilt_.push_back(std::make_pair(setup.size(), alive_.size()));
 
-    ExprPtr last = memberCallWith(object(), rangeType, "end", rpos,
-                                  std::vector<ExprPtr>());
-    if (last->type() != iter)
-        src_.fail(rpos, "'" + cls->describe() + "::begin()' and 'end()' return "
+    ExprPtr last = end("end");
+    if (last->type()->unqualified() != iter)
+        src_.fail(rpos, "'begin' and 'end' of '" + cls->describe() + "' return "
                         "different types, '" + iter->describe() + "' and '" +
-                        last->type()->describe() + "', so there is nothing the "
-                        "loop can compare");
-
-    *eSlot = declare(".re" + std::to_string(refTemps_), iter, rpos);
+                        last->type()->describe() + "' - C++11's range-based 'for' "
+                        "wants one type for both; C++17 relaxed that");
     *eName = ".re" + std::to_string(refTemps_++);
-    ExprPtr e(Var::local(*eName, *eSlot));
-    e->setType(iter);
-    ExprPtr stopAt(new Assign(std::move(e), std::move(last)));
-    stopAt->setType(iter);
-    setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
-
+    *eSlot = declare(*eName, iter, rpos);
+    setup.push_back(initRangeLocal(*eName, iter, *eSlot, std::move(last), rpos));
+    rangeBuilt_.push_back(std::make_pair(setup.size(), alive_.size()));
     return iter;
+}
+
+// One of the range-for's own variables initialised from `init`: a pointer stored, a class
+// built as `T v = init;` would be - by the call itself where it returns through a slot -
+// and alive from here so the loop's end destroys it, and so does a `return` inside.
+StmtPtr Parser::initRangeLocal(const std::string &name, const Type *t, int off,
+                               ExprPtr init, std::size_t pos) {
+    std::vector<StmtPtr> out;
+    Call *made = dynamic_cast<Call *>(init.get());
+    const bool owns = t->isStructOrUnion() &&
+                      (t->nonTrivialCopy() || destructorOf(t) != nullptr);
+    if (made != nullptr && owns && made->type()->unqualified() == t &&
+        returnsIndirectly(t, made->hasThis())) {
+        claimCallResult(*made, off);
+        out.push_back(StmtPtr(new ExprStmt(std::move(init))));
+    } else if (owns && hasConstructors(t->tag())) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(init));
+        out.push_back(constructLocal(Declared{ name, t, pos, 0, std::string() }, off,
+                                     std::move(args), true));
+    } else {
+        ExprPtr target(Var::local(name, off));
+        target->setType(t);
+        ExprPtr store(new Assign(std::move(target), convert(std::move(init), t)));
+        store->setType(t);
+        out.push_back(StmtPtr(new ExprStmt(std::move(store))));
+    }
+    flushTemporaries(out);
+    if (t->isStructOrUnion() && destructorOf(t) != nullptr)
+        alive_.push_back(Alive{ name, off, t });
+    return StmtPtr(new Block(std::move(out)));
 }
 
 StmtPtr Parser::rangeForStatement(int scope) {
@@ -641,6 +676,8 @@ StmtPtr Parser::rangeForStatement(int scope) {
     std::vector<StmtPtr> setup;
     int bSlot = 0, eSlot = 0;
     std::string bName, eName;
+    const std::size_t aliveMark = alive_.size();
+    rangeBuilt_.clear();
 
     if (rt->unqualified()->isStructOrUnion()) {
         elemPtr = classRangeEnds(std::move(range), rpos, setup,
@@ -684,47 +721,67 @@ StmtPtr Parser::rangeForStatement(int scope) {
         setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
     }
 
-    const Type *elem = elemPtr->pointee();
+    const std::vector<std::pair<std::size_t, std::size_t> > ownBuilt = rangeBuilt_;
+    // A class iterator is walked by its own `!=`, `++` and `*`, [stmt.ranged]/1;
+    // a pointer by the built-in ones.
+    const bool classIter = elemPtr->isStructOrUnion();
+    auto iterVar = [&](const std::string &n, int slot) {
+        ExprPtr v(Var::local(n, slot));
+        v->setType(elemPtr);
+        return v;
+    };
+    ExprPtr deref;
+    if (classIter) {
+        ExprPtr it = iterVar(bName, bSlot);
+        deref = overloadedUnary("*", it, rpos);
+        if (deref == nullptr)
+            src_.fail(rpos, "the iterator '" + elemPtr->describe() + "' has no "
+                            "'operator*', which a range-based 'for' reads each element with");
+    } else {
+        deref.reset(new Unary('*', iterVar(bName, bSlot)));
+        deref->setType(elemPtr->pointee());
+    }
+    const Type *elem = deref->type();
     if (mentionsDeduced(d.type))
         d.type = deduceAutoFrom(d.type, elem, d.name, d.pos);
 
     // `__b != __e`
-    ExprPtr atB(Var::local(bName, bSlot));
-    atB->setType(elemPtr);
-    ExprPtr atE(Var::local(eName, eSlot));
-    atE->setType(elemPtr);
-    ExprPtr cond = comparison(BinOp::Ne, std::move(atB), std::move(atE), rpos);
+    ExprPtr cond = comparison(BinOp::Ne, iterVar(bName, bSlot), iterVar(eName, eSlot), rpos);
 
-    // `__b = __b + 1`
-    ExprPtr stepFrom(Var::local(bName, bSlot));
-    stepFrom->setType(elemPtr);
-    ExprPtr one(new Num(1LL));
-    one->setType(types_.get(target_.sizeType()));
-    ExprPtr next = arithmetic(BinOp::Add, std::move(stepFrom), std::move(one),
-                              rpos);
-    ExprPtr stepTo(Var::local(bName, bSlot));
-    stepTo->setType(elemPtr);
-    ExprPtr step(new Assign(std::move(stepTo), std::move(next)));
-    step->setType(elemPtr);
+    // `++__b`, or `__b = __b + 1` for a pointer
+    ExprPtr step;
+    if (classIter) {
+        ExprPtr it = iterVar(bName, bSlot);
+        step = overloadedUnary("++", it, rpos);
+        if (step == nullptr)
+            src_.fail(rpos, "the iterator '" + elemPtr->describe() + "' has no "
+                            "prefix 'operator++', which a range-based 'for' steps with");
+    } else {
+        ExprPtr one(new Num(1LL));
+        one->setType(types_.get(target_.sizeType()));
+        ExprPtr next = arithmetic(BinOp::Add, iterVar(bName, bSlot), std::move(one), rpos);
+        step.reset(new Assign(iterVar(bName, bSlot), std::move(next)));
+        step->setType(elemPtr);
+    }
 
     // The body, with the loop variable built from `*__b` in front of it.
     enterScope();
     const int inner = enterBlock();
     const int vSlot = declare(d.name, d.type, d.pos, quals.alignAs);
-    ExprPtr through(Var::local(bName, bSlot));
-    through->setType(elemPtr);
     ExprPtr take;
     if (d.type->isReference()) {
         // **`T &x : a` binds x to the element** - [stmt.ranged]/1 - so the
-        // slot holds `__b` itself, read through as every reference is.
+        // slot holds the element's address, read through as every reference is.
         const Type *slotType = types_.pointerTo(d.type->referent());
         ExprPtr var(Var::local(d.name, vSlot));
         var->setType(slotType);
-        take.reset(new Assign(std::move(var), convert(std::move(through), slotType)));
+        ExprPtr where = classIter
+            ? bindReference(d.type, std::move(deref), d.pos, "'" + d.name + "'")
+            : convert(iterVar(bName, bSlot), slotType);
+        take.reset(new Assign(std::move(var), std::move(where)));
         take->setType(slotType);
     } else {
-        ExprPtr at(new Unary('*', std::move(through)));
-        at->setType(elem);
+        ExprPtr at = std::move(deref);
         ExprPtr var(Var::local(d.name, vSlot));
         var->setType(d.type);
         take.reset(new Assign(std::move(var), convert(std::move(at), d.type)));
@@ -749,6 +806,25 @@ StmtPtr Parser::rangeForStatement(int scope) {
                      StmtPtr(inside));
     f->setScope(scope);
     setup.push_back(StmtPtr(f));
+    // The range temporary and the iterators die after the loop, in the reverse order,
+    // and on the way out of an exception too - a cleanup region from where each was built.
+    if (alive_.size() != aliveMark) {
+        if (target_.microsoftNames() && inHandlerBody_)
+            src_.fail(rpos, "a range-based 'for' whose range or iterator has a destructor, "
+                            "inside a 'catch' handler, is not supported yet for "
+                            "x86_64-windows - a cleanup there is a funclet, and the "
+                            "handler is one already");
+        std::vector<std::pair<std::size_t, std::size_t> > built;
+        for (std::size_t i = 0; i < ownBuilt.size(); i++)
+            if (ownBuilt[i].second > aliveMark &&
+                (built.empty() || built.back().second != ownBuilt[i].second))
+                built.push_back(ownBuilt[i]);
+        emitDestructors(setup, aliveMark, rpos);
+        setup = target_.microsoftNames()
+                    ? wrapMsCleanups(std::move(setup), built, aliveMark, rpos)
+                    : wrapCleanups(std::move(setup), built, aliveMark, rpos);
+        alive_.resize(aliveMark);
+    }
 
     leaveBlock();
     leaveScope();

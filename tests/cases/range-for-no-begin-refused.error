@@ -1,1 +1,1 @@
-has no 'begin' and 'end' member function
+has no 'begin' and 'end', as members or as functions found by argument-dependent lookup
