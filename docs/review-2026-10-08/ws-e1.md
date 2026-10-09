@@ -55,16 +55,19 @@ run-cases.cmd -O2, tms6747.sh -O2, run.sh -O2.
 | `tools/exclusions --check docs/EXCLUSIONS.md` | 130 sites, 103 uncited, 99 stale at 335ac4d (base 2955c0b: 131 / 116 / 112). **No E1 file is uncited or stale**: every ParserTemplate.cpp, ParserInternal.h and include/utility refusal is cited and live. The remaining 103/99 are the inherited stale document (WS-A regenerates it); not rewritten here. The one ParserTemplate.cpp line the tool still counted, the self-naming `auto` of [dcl.spec.auto]/3 (base `:1077`), refuses ill-formed C++11 and belongs in neither document - its message said "none yet to use" and the bare-"yet" rule matched it; reworded in 335ac4d, the `.error` case unchanged. |
 | `make comments` (`tools/comment-lines`) | 0 groups over the cap |
 | `tools/seal check` | seal 1.6: 155 files, 9 differ - include/utility, Parser.h, ParserClass.cpp, ParserExprCall.cpp, ParserOverload.cpp, ParserStmt.cpp, ParserTemplate.cpp, ParserTopLevel.cpp, ParserType.cpp: exactly E1's edits (the three owned files and the six outside edits listed above). Expected until the 1.7 reseal. |
-| `tests/run.sh` -O0 on the box | **blocked**: Windows box unreachable (see below) |
-| emit golden diff against 2955c0b | **blocked**: the golden is on the box |
-| `tests/names.sh`, `tests/overload.sh` on the box | **blocked**; at bdda175 every new case agreed with clang on all three targets or carries a measured `.nonames` |
-| E1's cases run on the box, -O0 and -O2, beside clang | **blocked**; every mended item has a case already (table above), none had to be written |
+| `tests/run.sh` -O0 on the box (8e6591a, cxx1-msvc.exe, Git bash) | **388 of 388 `.expected` cases pass, every `.error` case passes.** run.sh itself printed 225 / 407: it compares bytewise and the CRT writes CRLF, so every `.expected` case "failed" on identical text, and the 19 other failures are `.notarget x86_64-windows` cases run.sh does not skip on that host (`volatile-object`, the virtual-base ones). Re-judged with the CR stripped (`scratch/rediff.sh`): 388 / 0 / 0 missing. run-cases.cmd is the Windows runner for a reason. |
+| emit golden diff against 2955c0b | `emit.sh: 1618 passed, 0 failed`; **golden - 4 of 1582 files changed, 36 added, 0 removed**. The 36 are the nine new cases on four targets. The 4 are `std-move-and-forward` on x86_64-linux, x86_64-windows, arm64-darwin and tms6747 - the one existing case that calls `std::move`/`std::forward` (the recipe's "nothing existing calls them" was wrong) - and every changed line in all four is a symbol: `_Z4moveI3BufEOT_RS1_` to `_Z4moveIR3BufEONSt16remove_referenceIT_E4typeEOS3_`, `_Z7forwardIiEOT_RS0_` to `_Z7forwardIiEOT_RNSt16remove_referenceIS0_E4typeE`, `??$move@UBuf@@@@...` to `??$move@AEAUBuf@@@@...` - the real `<utility>` signature, T deduced as `Buf &` and the return `remove_reference<T>::type &&`, at every call, label and section that names it. Line counts identical on all four, no instruction moved. Read in full. |
+| `tests/names.sh`, `tests/overload.sh` on the box (VS LLVM clang, `tools/windows/names-overload.cmd`) | **names.sh 407 passed, 6 failed; overload.sh 31 agreed, 0 differed.** The six are `compare-with-zero`, `ternary-index-after-remake` (clang-only `memcpy`/`memset`), `pipelined-data-exit`, `pipelined-reduction` (`main.lengths` against `_ZZ4mainE7lengths`, the static-local naming divergence), `ifdef-comment`, `using-declaration-chain` (skipped for `<cstdio>`, counted) - **the same six, and only those six, fail on the 2955c0b base tree with its own cxx1-msvc.exe on the same box: 398 / 6 / 31 / 0.** None is a template case; all nine new E1 cases agree with clang (`std-move-and-forward` included, with its renamed symbols). |
+| E1's cases run on the box, -O0 and -O2, beside clang | **All ten pass** (`scratch/e1cases.sh`): the nine with `.expected` compiled by cxx1-msvc.exe at -O0 and at -O2, run, output identical to `.expected`; each also built by VS clang++ `-std=c++11` and printing the same - except `forwarding-reference`, which includes `<utility>` and MSVC's own `<utility>` is not C++11-clean under that clang (`deduced return types are a C++14 extension` in its `<type_traits>`); at `-std=c++14` clang's output is the `.expected`. `range-for-rvalue-reference-refused`: cxx1 refuses with the `.error` text, clang `-std=c++11 -pedantic-errors` refuses it too. |
 | run-cases.cmd -O0 | 610/1 at bdda175, the one being the since-deleted template-explicit-function.error; not re-run at 335ac4d |
 | run-cases.cmd -O2, tms6747.sh -O0/-O2, Compiler++ build, examples/ build, run.sh -O2 | skipped: budget |
 | MASM spelling | waits for F |
+| **Verdict** | **Ready to merge** (after C1/D/E2, per the outside-edits list above): every gate in the 2026-10-09 scope is green or classified, and the one emit change outside the new cases is the `<utility>` signature the workstream exists to put there. |
 | Linux box (g++ build, run.sh, tms6747.sh) | skipped on the user's instruction |
 
-**The Windows box was down for the whole of the 2026-10-09 session.** `ssh windows` and
+**Finished 2026-10-09, later the same day, once the box came back** (clone C:\cxx1\rtsdiv\ws-e1 at 8e6591a - its `origin` is a local clone, so the branch was fetched from GitHub by URL; stale uncommitted copies of E1's files left by the 2026-10-08 scp were discarded first, the golden itself untouched; no stray `run-cases.cmd -O2` was running). The paragraph below is the morning's record and stands as written.
+
+**The Windows box was down for the morning of the 2026-10-09 session.** `ssh windows` and
 `ping 192.168.100.84` from 06:55 to 07:20: "Operation timed out", then "Host is down"; the ARP
 entry incomplete on en0; the hostname does not resolve. Past the plan's ~20-minute block, so
 recorded and the box-bound gates left as blocked rather than run anywhere else (the Mac does
@@ -78,6 +81,9 @@ names.sh and overload.sh under Git bash with VS LLVM first on PATH; and the ten 
 by hand at -O0 and -O2, output beside their `.expected`.
 
 ## Stopped here, 2026-10-09
+
+Afternoon: every box-bound gate above is run and in the table; the branch is ready to merge.
+Nothing was fixed in E1's files - no gate asked for it. Morning's record follows.
 
 Done: the three source-level gates (exclusions on E1's files, comments, seal) and the one
 reword they asked for. Blocked by the box: everything that builds or runs. The
