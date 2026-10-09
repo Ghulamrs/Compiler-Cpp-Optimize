@@ -42,29 +42,48 @@ the ill-formed-binding message, not "not supported yet".
   specialization whose key equals its constructor key is indexed once.
 - `ParserExprCall.cpp` `parseArguments`: one call to `expandPackPattern`.
 
-## Gates (Windows PC only)
+## Gates
 
-- Windows cases, GNU spelling: -O0 610/1 at bdda175, the one being the stale
-  template-explicit-function.error, now deleted; -O2 run of bdda175 still in flight when stopped
-  (the previous full -O2 run, before F31/F07b, was 386/0).
-- names: every new case agrees with clang on all three targets or carries a measured `.nonames`;
-  the full names.sh/overload.sh run was not done.
-- emit golden: recorded at 2955c0b in C:\cxx1\rtsdiv\ws-e1\tests\out-emit.golden; the diff was
-  not run - not read.
-- Not run: Compiler++ build, examples/ build, tms6747.sh, `make comments` on the box (Mac
-  `tools/comment-lines`: 0), exclusions --check is not 0/0 (the document was stale before; the
-  ParserTemplate.cpp citations are now all live).
-- Linux box: all gates skipped on the user's instruction (g++ build, run.sh -O0/-O2,
-  tms6747.sh). A clone was made at ~/ride-5.1/ws-e1 (2dd633b) before the instruction; nothing
-  built or run there.
+Scope on 2026-10-09 (user, via the coordinator): the weekly budget being nearly spent, the
+gate is run.sh -O0, the emit golden diff, names.sh + overload.sh, exclusions --check, make
+comments, seal check, and the E1 cases themselves compiled and run on the box at -O0 and -O2
+beside clang's output. Skipped on that instruction: Compiler++ build, examples/ build,
+run-cases.cmd -O2, tms6747.sh -O2, run.sh -O2.
 
-## Stopped here
+| gate | result |
+| --- | --- |
+| `tools/exclusions --check docs/EXCLUSIONS.md` | 130 sites, 103 uncited, 99 stale at 335ac4d (base 2955c0b: 131 / 116 / 112). **No E1 file is uncited or stale**: every ParserTemplate.cpp, ParserInternal.h and include/utility refusal is cited and live. The remaining 103/99 are the inherited stale document (WS-A regenerates it); not rewritten here. The one ParserTemplate.cpp line the tool still counted, the self-naming `auto` of [dcl.spec.auto]/3 (base `:1077`), refuses ill-formed C++11 and belongs in neither document - its message said "none yet to use" and the bare-"yet" rule matched it; reworded in 335ac4d, the `.error` case unchanged. |
+| `make comments` (`tools/comment-lines`) | 0 groups over the cap |
+| `tools/seal check` | seal 1.6: 155 files, 9 differ - include/utility, Parser.h, ParserClass.cpp, ParserExprCall.cpp, ParserOverload.cpp, ParserStmt.cpp, ParserTemplate.cpp, ParserTopLevel.cpp, ParserType.cpp: exactly E1's edits (the three owned files and the six outside edits listed above). Expected until the 1.7 reseal. |
+| `tests/run.sh` -O0 on the box | **blocked**: Windows box unreachable (see below) |
+| emit golden diff against 2955c0b | **blocked**: the golden is on the box |
+| `tests/names.sh`, `tests/overload.sh` on the box | **blocked**; at bdda175 every new case agreed with clang on all three targets or carries a measured `.nonames` |
+| E1's cases run on the box, -O0 and -O2, beside clang | **blocked**; every mended item has a case already (table above), none had to be written |
+| run-cases.cmd -O0 | 610/1 at bdda175, the one being the since-deleted template-explicit-function.error; not re-run at 335ac4d |
+| run-cases.cmd -O2, tms6747.sh -O0/-O2, Compiler++ build, examples/ build, run.sh -O2 | skipped: budget |
+| MASM spelling | waits for F |
+| Linux box (g++ build, run.sh, tms6747.sh) | skipped on the user's instruction |
 
-Done: all five items implemented with cases. Half done: the gate. Untouched: emit golden diff,
-names.sh/overload.sh full runs, Compiler++ and examples builds, tms6747.sh, MASM spelling.
-Still running on the Windows box when stopped: `run-cases.cmd` at -O2 in C:\cxx1\rtsdiv\ws-e1
-(writes winout\, nothing else). C:\cxx1\rtsdiv\ws-e1-base is a worktree at 2955c0b with its own
-cxx1-msvc.exe, for base comparisons.
+**The Windows box was down for the whole of the 2026-10-09 session.** `ssh windows` and
+`ping 192.168.100.84` from 06:55 to 07:20: "Operation timed out", then "Host is down"; the ARP
+entry incomplete on en0; the hostname does not resolve. Past the plan's ~20-minute block, so
+recorded and the box-bound gates left as blocked rather than run anywhere else (the Mac does
+not build or test, the Linux box is excluded). To finish the gate when the box is back, in
+C:\cxx1\rtsdiv\ws-e1 (`git fetch origin review/e1-templates && git checkout 335ac4d`, then
+`msvc\build.cmd`): `tasklist` first for the stray `run-cases.cmd -O2` of 2026-10-08;
+`tests/run.sh` -O0 under Git bash; `tests/emit.sh` and read every file the golden at 2955c0b
+reports changed (the two F23 cases forwarding-* and the `std::forward`/`move` in `<utility>`
+are the expected movers - nothing existing calls them; any other change is to be read);
+names.sh and overload.sh under Git bash with VS LLVM first on PATH; and the ten cases above
+by hand at -O0 and -O2, output beside their `.expected`.
+
+## Stopped here, 2026-10-09
+
+Done: the three source-level gates (exclusions on E1's files, comments, seal) and the one
+reword they asked for. Blocked by the box: everything that builds or runs. The
+2026-10-08 state - items landed, -O0 cases 610/1 with the one stale refusal since deleted -
+stands as the last measurement. Head 335ac4d, pushed to origin/review/e1-templates so the box
+can fetch it.
 
 ## Draft CLAUDE.md sections (for the main session)
 
