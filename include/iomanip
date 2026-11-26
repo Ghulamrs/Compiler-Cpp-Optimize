@@ -1,29 +1,92 @@
-// <iomanip> - the manipulators that take an argument.
+// <iomanip> - [std.manip] and [ext.manip]: the manipulators that take an argument.
 //
-// setw, setprecision and setfill are not functions the stream dispatches like
-// endl; each carries a value, so each is a small object a stream knows how to
-// take. `os << setw(8)` builds one and the `operator<<` for it writes the value
-// into the stream's own state - which is where <ostream> keeps width, precision
-// and fill. Nothing is formatted here; these only set what the next insertion
-// reads. The no-argument float manipulators (fixed, scientific) are <ostream>'s.
+// Each returns a small object a stream's << or >> applies. put_time and get_time are the stream's locale's
+// time_put and time_get facets', put_money and get_money its money_put's and money_get's.
 #ifndef _CXX1_IOMANIP
 #define _CXX1_IOMANIP
 
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <istream>
+#include <locale>
 #include <ostream>
+#include <string>
 
 namespace std {
 
-struct _Setw { int n; };
-struct _Setprecision { int n; };
-struct _Setfill { char c; };
+struct __cxx1_setw { int n; };
+struct __cxx1_setprecision { int n; };
+template <class C> struct __cxx1_setfill { C c; };
+struct __cxx1_setiosflags { ios_base::fmtflags set, mask; };
 
-inline _Setw         setw(int n)         { _Setw s;         s.n = n; return s; }
-inline _Setprecision setprecision(int n) { _Setprecision s; s.n = n; return s; }
-inline _Setfill      setfill(char c)     { _Setfill s;      s.c = c; return s; }
+inline __cxx1_setw setw(int n) { __cxx1_setw s = { n }; return s; }
+inline __cxx1_setprecision setprecision(int n) { __cxx1_setprecision s = { n }; return s; }
+template <class C> __cxx1_setfill<C> setfill(C c) { __cxx1_setfill<C> s = { c }; return s; }
+inline __cxx1_setiosflags setiosflags(ios_base::fmtflags mask) { __cxx1_setiosflags s = { mask, mask }; return s; }
+inline __cxx1_setiosflags resetiosflags(ios_base::fmtflags mask) { __cxx1_setiosflags s = { 0, mask }; return s; }
+inline __cxx1_setiosflags setbase(int base) {
+    __cxx1_setiosflags s = { base == 8 ? ios_base::oct : base == 10 ? ios_base::dec : base == 16 ? ios_base::hex : 0,
+                             ios_base::basefield };
+    return s;
+}
 
-inline ostream &operator<<(ostream &os, _Setw m)         { os.width_ = m.n; return os; }
-inline ostream &operator<<(ostream &os, _Setprecision m) { os.prec_  = m.n; return os; }
-inline ostream &operator<<(ostream &os, _Setfill m)      { os.fill_ = m.c; return os; }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_setw m) { os.width(m.n); return os; }
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, __cxx1_setw m) { in.width(m.n); return in; }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_setprecision m) { os.precision(m.n); return os; }
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, __cxx1_setprecision m) { in.precision(m.n); return in; }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_setfill<C> m) { os.fill(m.c); return os; }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_setiosflags m) { os.setf(m.set, m.mask); return os; }
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, __cxx1_setiosflags m) { in.setf(m.set, m.mask); return in; }
+
+// [ext.manip]/8-9: through the time_put facet, in a sentry, a failure being badbit.
+template <class C> struct __cxx1_put_time { const tm *t; const C *fmt; };
+template <class C> __cxx1_put_time<C> put_time(const tm *t, const C *fmt) { __cxx1_put_time<C> p = { t, fmt }; return p; }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_put_time<C> p) {
+    typename basic_ostream<C, Tr>::sentry ok(os);
+    if (!ok) return os;
+    typedef ostreambuf_iterator<C, Tr> It;
+    if (use_facet<time_put<C, It> >(os.getloc()).put(It(os), os, os.fill(), p.t, p.fmt, p.fmt + Tr::length(p.fmt)).failed())
+        os.setstate(ios_base::badbit);
+    return os;
+}
+
+// [ext.manip]/10-11: through the time_get facet.
+template <class C> struct __cxx1_get_time { tm *t; const C *fmt; };
+template <class C> __cxx1_get_time<C> get_time(tm *t, const C *fmt) { __cxx1_get_time<C> g = { t, fmt }; return g; }
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, __cxx1_get_time<C> g) {
+    typename basic_istream<C, Tr>::sentry ok(in);
+    if (!ok) return in;
+    typedef istreambuf_iterator<C, Tr> It;
+    ios_base::iostate err = ios_base::goodbit;
+    use_facet<time_get<C, It> >(in.getloc()).get(It(in), It(), in, err, g.t, g.fmt, g.fmt + Tr::length(g.fmt));
+    in.setstate(err);
+    return in;
+}
+
+// [ext.manip]/2-7: through the money_put and money_get facets.
+template <class M> struct __cxx1_put_money { const M *v; bool intl; };
+template <class M> __cxx1_put_money<M> put_money(const M &v, bool intl = false) { __cxx1_put_money<M> p = { &v, intl }; return p; }
+template <class C, class Tr, class M> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &os, __cxx1_put_money<M> p) {
+    typename basic_ostream<C, Tr>::sentry ok(os);
+    if (!ok) return os;
+    typedef ostreambuf_iterator<C, Tr> It;
+    if (use_facet<money_put<C, It> >(os.getloc()).put(It(os), p.intl, os, os.fill(), *p.v).failed())
+        os.setstate(ios_base::badbit);
+    return os;
+}
+template <class M> struct __cxx1_get_money { M *v; bool intl; };
+template <class M> __cxx1_get_money<M> get_money(M &v, bool intl = false) { __cxx1_get_money<M> g = { &v, intl }; return g; }
+template <class C, class Tr, class M> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, __cxx1_get_money<M> g) {
+    typename basic_istream<C, Tr>::sentry ok(in);
+    if (!ok) return in;
+    typedef istreambuf_iterator<C, Tr> It;
+    ios_base::iostate err = ios_base::goodbit;
+    use_facet<money_get<C, It> >(in.getloc()).get(It(in), It(), g.intl, in, err, *g.v);
+    in.setstate(err);
+    return in;
+}
 
 }  // namespace std
 

@@ -65,7 +65,9 @@ static const char *const kWindowsMacros[] = {
 };
 const char *const *X86_64WindowsBackend::identityMacros() const { return kWindowsMacros; }
 
-bool X86_64WindowsBackend::emitsLineTable(Syntax syntax) const { return syntax == Syntax::Gnu; }
+// A line table in the gnu spelling (`.cv_loc`, for clang) and in the MASM one (`.FILE` and `.LINE`,
+// for GRIDE's masm - 1.29); ml64 has no such words.
+bool X86_64WindowsBackend::emitsLineTable(Syntax syntax) const { return syntax != Syntax::Ml64; }
 
 std::unique_ptr<CodeGen> X86_64WindowsBackend::codegen(std::ostream &sink,
                                                       Syntax syntax) const {

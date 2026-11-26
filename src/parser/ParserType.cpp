@@ -14,20 +14,48 @@
 // already a type. **In a pattern the answer is a dependent member and not a
 // lookup**; elsewhere it is looked up, and not finding it is what SFINAE is made of.
 const Type *Parser::memberTypeWalk(const Type *t) {
-    while (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
-        const std::string member = peekAt(1).text;
+    t = realizeMemberClass(t);
+    while (peek().is("::") && (peekAt(1).kind == TokenKind::Ident ||
+                               (peekAt(1).is("template") && peekAt(2).kind == TokenKind::Ident))) {
+        // `Outer<T>::template Inner<int>` - [temp.names]/4's keyword before a member template's name.
+        const std::size_t named = peekAt(1).is("template") ? 2 : 1;
+        const std::string member = peekAt(named).text;
         if (patternOnly_ && dependentType(t)) {
-            at_ += 2;
+            at_ += named + 1;
+            if (named == 2 && peek().is("<")) skipTemplateArguments();
             t = types_.dependentMember(t, member);
             continue;
         }
         if (!t->isStructOrUnion()) break;
+        t = realizeMemberClass(t, true);
+        // [temp.mem]/1: `W<char>::N<double>`, a member class or alias template of the class reached.
+        if (peekAt(named + 1).is("<")) {
+            if (const TemplateDecl *mct = memberClassTemplateOf(t, member)) {
+                const TemplateDecl decl = *mct;
+                const std::size_t tpos = peekAt(named).pos;
+                // [temp.names]/4, unless the qualifier is the class being read - the current instantiation.
+                if (named == 1 && qualifierDependsOnParameter(at_) && !insideClass(t->unqualified()))
+                    src_.fail(tpos, "'" + member + "' is a member template of a class that depends on a template "
+                                    "parameter, and naming it with arguments there needs 'template' in front - "
+                                    "[temp.names]/4");
+                checkMemberTemplateAccess(decl, tpos);
+                at_ += named + 1;
+                t = instantiateClass(decl, tpos);
+                continue;
+            }
+        }
+        if (named == 2)
+            src_.fail(peekAt(2).pos, "'" + member + "' is not a member class template of '" + t->tag() + "'");
         const Type *found = lookupInClass(t, member);
         // A member that exists and is not a type reads differently from a name the class lacks.
         // Inside sizeof or decltype this only tells parenHoldsTypeId the operand is an expression.
         if (found == nullptr && t->findMember(member) != nullptr)
             src_.fail(peekAt(1).pos, "'" + member + "' is a data member of '" + t->tag() +
                                      "', not a type");
+        // [temp.res]/3: `typename` says the name it qualifies is a type, and a static member is not one.
+        if (found == nullptr && typenameNamed_ && t->findStaticMember(member) != nullptr)
+            src_.fail(peekAt(1).pos, "'" + t->tag() + "::" + member + "' is a static member, not a type - "
+                                     "'typename' in front of it says it names one");
         // A static data member reached through a template's argument list,
         // `Box<int>::count`, is the refusal EXCLUSIONS names - not a missing
         // type (the cl review's A23); a typedef for the instantiation reaches it.
@@ -40,15 +68,47 @@ const Type *Parser::memberTypeWalk(const Type *t) {
         if (found == nullptr)
             src_.fail(peekAt(1).pos, "'" + t->tag() + "' has no member type "
                                      "called '" + member + "'");
+        if (!currentFunction_.empty()) checkMemberTypeAccess(t, member, peekAt(1).pos);
         at_ += 2;
-        t = found;
+        t = realizeMemberClass(found);
     }
     return t;
 }
 
+Parser::Packs Parser::instantiatingPacks() const {
+    Packs out;
+    for (const TemplateParam &p : instantiatingParams_) {
+        PackMembers members;
+        const auto pb = packs_.find(p.name);
+        if (p.isPack && pb != packs_.end()) {
+            members = PackMembers(pb->second.types);
+            members.values = pb->second.values;
+        }
+        out.push_back(members);
+    }
+    return out;
+}
+
+// The attributes of a class or an enumeration, after its key: `struct [[x]] S`. C++11's own two appertain to a
+// function or a parameter and to nothing else ([dcl.attr.noreturn]/1, [dcl.attr.depend]/1), so here they are
+// refused (1.80: `struct [[noreturn]] S;` was read and passed over); one this compiler does not know is ignored.
+void Parser::skipTypeAttributes(const char *what) {
+    const std::size_t from = at_;
+    const std::size_t noreturnWas = noreturnAt_;
+    if (!skipAttributes()) return;
+    for (std::size_t i = from + 2; i < at_; i++)
+        if ((tokens_[i].is("noreturn") || tokens_[i].is("carries_dependency")) &&
+            (tokens_[i - 1].is("[") || tokens_[i - 1].is(",")) && !tokens_[i + 1].is("::"))
+            src_.fail(tokens_[i].pos, "the attribute '" + tokens_[i].text + "' cannot be applied to " + what +
+                                      " - [dcl.attr.noreturn]/1 and [dcl.attr.depend]/1 give it to a function "
+                                      "or a parameter");
+    noreturnAt_ = noreturnWas;
+}
+
 const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     const char *what = isClass ? "class" : (kind == Kind::Struct ? "struct" : "union");
-    skipAttributes();
+    const std::size_t headAt = at_;
+    skipTypeAttributes(isClass ? "a class" : (kind == Kind::Struct ? "a struct" : "a union"));
     std::size_t pos = peek().pos;
     // `#pragma pack(n)` in force here caps every alignment the layout reads.
     const int pack = src_.packAt(pos);
@@ -77,6 +137,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         int depth = 0;
         for (; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
             const Token &t = tokens_[i];
+            if (depth > 0 && (t.is("(") || t.is("["))) { i = groupCloseAt(i); continue; }
             if (t.is("<")) depth++;
             else if (t.is(">")) depth--;
             else if (t.is(">>")) depth -= 2;
@@ -169,9 +230,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         type->setLocalName(tag);
         type->setSpecialization(specializationOf, instantiatingArgs_);
         type->setTemplateNamespace(instantiatingNamespace_);
-        // **The injected class name.** Inside `Holder`'s own body the word `Holder`
-        // means this specialization and not the template, which is what makes
-        // `const Holder &` a legal parameter there. Registered as a member type.
+        // **Injected class name**: `Holder` in its body is this specialization
         declareTypeName(tag + "::" + specializationOf, type);
     }
     // A class in a namespace: the manglers want the name without the
@@ -194,9 +253,38 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         type->setLocalName(local);
         type->setLocalOwner(localOwner);
         localClassOwner_[tag] = localOwner;
+        if (currentClass_ != nullptr) localClassScope_[tag] = currentClass_;
         localTypes_[local] = type;
     }
     if (!tag.empty()) declareTypeName(tag, type);
+
+    // **[temp.inst]/1: a member class of a specialization being instantiated is declared, not defined** - its
+    // tokens and this instantiation's bindings are kept for realizeMemberClass, and its body stepped over.
+    if (defining && within != nullptr && within->isSpecialization() && !within->isComplete() &&
+        !instantiatingParams_.empty() && specializationOf.empty() && !introduced && localOwner.empty() &&
+        !tag.empty() && !anonProper && realizingMember_ != tag && !type->isComplete()) {
+        std::size_t close = at_;
+        while (close < tokens_.size() && tokens_[close].kind != TokenKind::End && !tokens_[close].is("{")) close++;
+        for (int depth = 0; close < tokens_.size() && tokens_[close].kind != TokenKind::End; close++) {
+            if (tokens_[close].is("{")) depth++;
+            else if (tokens_[close].is("}") && --depth == 0) break;
+        }
+        if (close + 1 < tokens_.size() && tokens_[close + 1].is(";")) {
+            LazyMemberClass lazy;
+            lazy.start = headAt;
+            lazy.kind = kind;
+            lazy.isClass = isClass;
+            lazy.owner = within;
+            lazy.params = instantiatingParams_;
+            lazy.binding = instantiatingBinding_;
+            lazy.values = instantiatingValues_;
+            lazy.packs = instantiatingPacks();
+            lazy.namespaces = namespaceStack_;
+            lazyMemberClasses_[tag] = lazy;
+            at_ = close + 1;
+            return type;
+        }
+    }
 
     // `class Derived : public Base {` - the base-clause, which may name more than
     // one. Default access is private for a class and public for a struct. Bases are
@@ -216,7 +304,33 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             else if (peek().is("private"))   { how = Access::Private;   at_++; }
             if (!isVirtualBase && peek().is("virtual")) { isVirtualBase = true; at_++; }
 
+            // `: Bs...`, `: Base<Ts>...` - [temp.variadic]/4: one base per member of the pack, each read from a
+            // copy of the pattern with the pack bound to that member.
+            std::size_t packEnd = 0, members = 0;
+            {
+                int depth = 0;
+                std::size_t e = at_;
+                for (; e < tokens_.size() && tokens_[e].kind != TokenKind::End; e++) {
+                    const Token &t = tokens_[e];
+                    if (t.is("(") || t.is("[") || t.is("<")) depth++;
+                    else if (t.is(")") || t.is("]") || t.is(">")) depth--;
+                    else if (t.is(">>")) depth -= 2;
+                    else if (depth <= 0 && (t.is(",") || t.is("{"))) break;
+                }
+                bool any = false;
+                for (std::size_t i = at_; e > at_ + 1 && tokens_[e - 1].is("...") && i + 1 < e; i++) {
+                    const auto pk = tokens_[i].kind == TokenKind::Ident ? packs_.find(tokens_[i].text) : packs_.end();
+                    if (pk == packs_.end()) continue;
+                    if (any && pk->second.types.size() != members)
+                        src_.fail(tokens_[e - 1].pos, "the packs expanded by this '...' have different lengths");
+                    members = pk->second.types.size();
+                    any = true;
+                }
+                if (any) packEnd = e;
+            }
+            auto readBase = [&]() {
             std::size_t bpos = peek().pos;
+            const std::size_t bfrom = at_;
             // **Read the base as a type rather than as a name.** A base may be
             // written `A<T>`, which findTypedef cannot answer; specifiers() already
             // knows how to turn one into a type, and a pattern is never parsed.
@@ -231,9 +345,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             } else {
                 baseName = expectIdent("a base class name");
             }
+            // [temp.variadic]/5: a pack of bases is written with the '...' that expands it.
+            if (packEnd == 0 && !baseName.empty() && packs_.count(baseName) != 0)
+                src_.fail(bpos, "'" + baseName + "' is a parameter pack, and here it is written without the "
+                                "'...' that expands it");
             if (b == nullptr || !b->isStructOrUnion())
                 src_.fail(bpos, "'" + baseName + "' is not a class, so it "
                                 "cannot be a base");
+            realizeMemberClass(b, true);
             if (!b->isComplete())
                 src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
                                 "class has to be complete, because the derived "
@@ -241,7 +360,41 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (b->isFinal())
                 src_.fail(bpos, "'" + baseName + "' is marked 'final' and cannot "
                                 "be a base class - [class]/3");
+            // [class.union]/2: a union is never a base, and has none. [class.mi]/3: a class is a direct base once.
+            if (b->kind() == Kind::Union)
+                src_.fail(bpos, "'" + baseName + "' is a union, and a union cannot be a base class - "
+                                "[class.union]/2");
+            if (kind == Kind::Union)
+                src_.fail(bpos, std::string("a union cannot have a base class - [class.union]/2"));
+            for (const WrittenBase &had : written)
+                if (had.type == b)
+                    src_.fail(bpos, "'" + baseName + "' is named twice as a direct base class - [class.mi]/3");
             written.push_back(WrittenBase{ b, how, isVirtualBase });
+            // [temp.dep]/3: a base written with a template parameter is not searched by unqualified lookup.
+            for (std::size_t k = bfrom; k < at_ && !instantiatingParams_.empty(); k++)
+                for (const TemplateParam &p : instantiatingParams_)
+                    if (tokens_[k].kind == TokenKind::Ident && tokens_[k].text == p.name &&
+                        std::find(dependentBases_[type].begin(), dependentBases_[type].end(), b) ==
+                            dependentBases_[type].end())
+                        dependentBases_[type].push_back(b);
+            };
+            if (packEnd != 0) {
+                const std::size_t from = at_;
+                for (std::size_t m = 0; m < members; m++) {
+                    std::vector<Shadow> undo;
+                    struct Unbind {
+                        Parser *p; std::vector<Shadow> *u;
+                        ~Unbind() { p->unbindTemplateParameters(*u); }
+                    } unbind{ this, &undo };
+                    bindPatternMember(from, packEnd, m, &undo);
+                    readBase();
+                    if (peek().kind != TokenKind::End)
+                        src_.fail(peek().pos, "this pack expansion's pattern is not one base class");
+                }
+                at_ = packEnd;
+            } else {
+                readBase();
+            }
             if (!consume(",")) break;
         }
     }
@@ -280,12 +433,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (!written[bi].isVirtual && written[bi].type->hasVptr())
                 primary = written[bi].type;
     type->setPrimaryBase(primary);
+    // **cl lays every base with a vfptr before the rest**, in the order written - `X : E, I1, I2` has
+    // I1 at 0, I2 at 16, E at 32 (Phase 6, measured) - and the first of them lends the class its table.
+    const bool msOrder = target_.microsoftNames();
     std::vector<std::size_t> layOrder;
     for (std::size_t bi = 0; bi < written.size(); bi++)
-        if (!written[bi].isVirtual && written[bi].type == primary)
+        if (!written[bi].isVirtual && (msOrder ? written[bi].type->polymorphic() : written[bi].type == primary))
             layOrder.push_back(bi);
     for (std::size_t bi = 0; bi < written.size(); bi++)
-        if (!written[bi].isVirtual && written[bi].type != primary)
+        if (!written[bi].isVirtual && (msOrder ? !written[bi].type->polymorphic() : written[bi].type != primary))
             layOrder.push_back(bi);
     std::vector<int> baseAt(written.size(), 0);
     // cl's two flags, carried by the last base or class-typed member laid and
@@ -319,15 +475,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         const std::size_t bi = layOrder[li];
         const Type *b = written[bi].type;
         const Access how = written[bi].access;
-        // **cl lays every base with a vfptr before the rest**, wherever it was
-        // written - `struct PX : E1, PV` has PV at 0 - which is not laid here. The
-        // vtable code refuses it only when the class adds a virtual of its own.
-        if (target_.microsoftNames() && bi != 0 && b->polymorphic())
-            src_.fail(pos, "'" + tag + "' has virtual functions in a base "
-                           "that is not the first, and the Microsoft ABI "
-                           "lays that out differently - the base with the "
-                           "vfptr goes first, wherever it was written. Not "
-                           "supported yet; it is measured for Itanium only");
 
         // Each base starts where the last one's data ended, aligned to its own requirement.
         long long byteCursor = (bitCursor + 7) / 8;
@@ -398,7 +545,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // The base at offset 0 hands its slots down in order, and an override
         // in this class replaces one rather than appending - declareMember
         // does that.
-        const bool atZero = primary != nullptr ? b == primary : bi == 0;
+        const bool atZero = primary != nullptr ? b == primary : msOrder ? li == 0 : bi == 0;
         if (!tag.empty() && atZero && b->polymorphic()) {
             vtables_[tag] = vtables_[b->tag()];
             ownSlotsFrom_[tag] = vtables_[tag].size();
@@ -418,6 +565,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // direct base as written, a virtual one as met, then those behind it.
         static void of(const Type *t, std::vector<const Type *> &out,
                        std::vector<Access> &how, Access through) {
+            if (!t->hasVirtualBase()) return;     // nothing behind it, and a chain of bases asks at every class
             const std::vector<const Type::BaseSpec *> bs = t->directBases();
             for (std::size_t i = 0; i < bs.size(); i++) {
                 Access a = (bs[i]->access == Access::Private ||
@@ -459,18 +607,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     vaccess[k] = written[bi].access;
                 }
 
-    // **A polymorphic virtual base is refused for the Microsoft ABI**: cl
-    // reaches its functions through vtordisp fields and thunks measured for
-    // no class yet, and the Itanium machinery below is not that.
-    if (target_.microsoftNames())
-        for (std::size_t bi = 0; bi < vbases.size(); bi++)
-            if (vbases[bi]->polymorphic())
-                src_.fail(pos, "'" + tag + "' has a virtual base '" +
-                               vbases[bi]->tag() + "' with virtual functions, "
-                               "and the Microsoft ABI dispatches through that "
-                               "base with vtordisp fields and thunks of its "
-                               "own - not supported for this target yet; the "
-                               "Itanium targets and the C6000 compile it");
     // **Recorded now, at no offset yet**, so that a member function declared
     // below is seen to override one of theirs; where each sits is settled
     // once the non-virtual part is measured.
@@ -507,6 +643,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     const std::size_t ownFrom = members.size();
 
     while (!peek().is("}")) {
+        const ReadingAt reading(this, &memberAt_);
+        if (consume(";")) continue;     // a member-declaration of nothing, which [class.mem]'s grammar allows
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
 
         // **A member function template.**
@@ -521,12 +659,149 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(peek().pos, "explicit instantiation in a class is not "
                                       "supported yet");
             templateParameters(mt.params);
-            refuseAfterPack(mt.params);
+            // [temp.param]/11: a member function template's pack may be followed by a parameter with a default -
+            // `template <class U, class... V, class = enable_if<...>>`; a member class template's by none (below).
+            {
+                bool after = false, defaulted = true;
+                for (const TemplateParam &q : mt.params) {
+                    if (after && q.defBegin == 0 && !q.isPack) defaulted = false;
+                    after = after || q.isPack;
+                }
+                if (!defaulted) refuseAfterPack(mt.params);
+            }
+            // `template <class R> constexpr explicit duration(const R &)` is read as `explicit constexpr`, as a
+            // member that is no template is below.
+            if (peek().is("constexpr") && peekAt(1).is("explicit")) std::swap(tokens_[at_], tokens_[at_ + 1]);
             mt.afterParams = at_;
             mt.pos = peek().pos;
-            if (peek().is("struct") || peek().is("class") || peek().is("union"))
-                src_.fail(peek().pos, "a member class template is not supported "
-                                      "yet - only member function templates are");
+            // **A friend template** - [temp.friend]/1 (R12): `template <class U> friend class H;`
+            // befriends every specialization of H, `template <class T> friend int tpeek(const B &);`
+            // every one of tpeek.
+            if (peek().is("friend")) {
+                at_++;
+                if (peek().is("class") || peek().is("struct")) {
+                    at_++;
+                    friendClasses_[tag].push_back("template " + expectIdent("the class template to befriend"));
+                    expect(";");
+                    continue;
+                }
+                std::string fname;
+                const std::size_t friendFrom = at_;
+                int fdepth = 0;
+                for (std::size_t i = at_; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
+                    // `operator/`, `operator()`: an operator's name is the keyword and what follows it.
+                    if (fdepth == 0 && tokens_[i].is("operator")) {
+                        fname = "operator";
+                        if (tokens_[i + 1].is("(") && tokens_[i + 2].is(")")) fname += "()";
+                        else if (tokens_[i + 1].is("[") && tokens_[i + 2].is("]")) fname += "[]";
+                        else fname += tokens_[i + 1].text;
+                        break;
+                    }
+                    if (fdepth == 0 && tokens_[i].is("(")) break;
+                    if (tokens_[i].is("<")) fdepth++;
+                    else if (tokens_[i].is(">")) fdepth--;
+                    else if (fdepth == 0 && tokens_[i].kind == TokenKind::Ident) fname = tokens_[i].text;
+                }
+                if (fname.empty()) src_.fail(mt.pos, "this friend template names nothing to befriend");
+                bool friendBody = false;
+                for (int depth = 0; peek().kind != TokenKind::End && !(depth == 0 && peek().is(";")); at_++) {
+                    if (depth == 0 && peek().is("{")) { friendBody = true; break; }
+                    if (peek().is("(")) depth++;
+                    else if (peek().is(")")) depth--;
+                }
+                friends_[tag].push_back("template " + fname);
+                if (!friendBody) { expect(";"); continue; }
+                // **Defined here**: a function template of the class's namespace, found by argument-dependent
+                // lookup ([namespace.memdef]/3), read in this class with a class template's parameters bound as
+                // this specialization has them ([temp.friend], [class.friend]/6-7; 1.82: "not supported yet").
+                TemplateDecl fd;
+                fd.params = mt.params;
+                fd.start = mt.start;
+                fd.afterParams = friendFrom;
+                fd.pos = mt.pos;
+                fd.name = fname;
+                fd.ns = namespacePrefix();
+                fd.isClass = false;
+                fd.defined = true;
+                fd.friendOf = tag;
+                fd.classParams = instantiatingParams_;
+                fd.classBinding = instantiatingBinding_;
+                fd.classValues = instantiatingValues_;
+                fd.classPacks = instantiatingPacks();
+                fnTemplates_[fname].push_back(fd);
+                if (templates_.find(fname) == templates_.end()) templates_[fname] = fd;
+                skipBracedBlock();
+                continue;
+            }
+            // **A member alias template** - [temp.alias] inside a class (R12), named through it: `S::M<int>`.
+            // A class template's keeps the class's arguments, bound again wherever it is used.
+            if (peek().is("using")) {
+                TemplateDecl alias;
+                alias.params = mt.params;
+                alias.start = mt.start;
+                alias.pos = mt.pos;
+                alias.ownerTag = tag;
+                alias.ownerLocal = local;
+                alias.memberAccess = access;
+                alias.classParams = instantiatingParams_;
+                alias.classBinding = instantiatingBinding_;
+                alias.classValues = instantiatingValues_;
+                alias.classPacks = instantiatingPacks();
+                at_++;
+                alias.name = tag + "::" + expectIdent("the alias template's name");
+                alias.afterParams = mt.afterParams;
+                expect("=");
+                alias.aliasAt = at_;
+                alias.isAlias = alias.isClass = alias.defined = true;
+                alias.ns = namespacePrefix();
+                if (templates_.count(alias.name) != 0 && instantiatingParams_.empty())
+                    src_.fail(alias.pos, "'" + alias.name + "' is already a template");
+                for (int depth = 0; peek().kind != TokenKind::End && !(depth == 0 && peek().is(";")); at_++) {
+                    if (peek().is("(") || peek().is("{")) depth++;
+                    else if (peek().is(")") || peek().is("}")) depth--;
+                }
+                expect(";");
+                templates_[alias.name] = alias;
+                continue;
+            }
+            // **A member class template** - [temp.mem]/1, `allocator::rebind`: kept as the alias is, and
+            // instantiated as a class nested in this one.
+            if (peek().is("struct") || peek().is("class") || peek().is("union")) {
+                if (!type->localOwner().empty())
+                    src_.fail(mt.pos, "a local class cannot have a member template - [temp.mem]/2");
+                refuseAfterPack(mt.params);
+                TemplateDecl mc;
+                mc.params = mt.params;
+                mc.start = mt.start;
+                mc.afterParams = mt.afterParams;
+                mc.pos = mt.pos;
+                mc.isClass = true;
+                mc.classKey = peek().is("class");
+                mc.ns = namespacePrefix();
+                mc.ownerTag = tag;
+                mc.ownerLocal = local;
+                mc.memberAccess = access;
+                mc.classParams = instantiatingParams_;
+                mc.classBinding = instantiatingBinding_;
+                mc.classValues = instantiatingValues_;
+                mc.classPacks = instantiatingPacks();
+                at_++;
+                skipAttributes();
+                const std::string mcName = expectIdent("the member class template's name");
+                if (peek().is("<"))
+                    src_.fail(peek().pos, "a partial specialization of a member class template is not "
+                                          "supported yet");
+                mc.name = tag + "::" + mcName;
+                at_ = mc.afterParams;
+                mc.defined = skipTemplatedDefinition();
+                if (!mc.defined)
+                    src_.fail(mc.pos, "a member class template declared here and defined outside its class "
+                                      "is not supported yet - define it inside");
+                if (templates_.count(mc.name) != 0 && instantiatingParams_.empty())
+                    src_.fail(mc.pos, "'" + mc.name + "' is already a template");
+                templates_[mc.name] = mc;
+                continue;
+            }
             // The member's name: the identifier at depth 0 immediately before
             // the parameter list's '(' - the return type's own '<...>' is nested.
             std::string mname;
@@ -542,11 +817,32 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     else if (tokens_[i + 1].is("[") && i + 2 < tokens_.size() &&
                              tokens_[i + 2].is("]"))
                         mname = "operator[]";
+                    // `template <class T> operator T *()`: a conversion's name is the type it
+                    // deduces, so every such one is kept under one key (R6).
+                    else if (tokens_[i + 1].kind != TokenKind::Punct &&
+                             tokens_[i + 1].kind != TokenKind::Str &&
+                             !tokens_[i + 1].is("new") && !tokens_[i + 1].is("delete"))
+                        mname = conversionTemplateKey();
                     else
                         mname = "operator" + tokens_[i + 1].text;
                     break;
                 }
-                if (depth == 0 && t.is("(")) break;
+                if (depth == 0 && t.is("(")) {
+                    // `static void (*f())(void *)`: a declarator in parentheses, whose name is the identifier
+                    // its own parameter list follows (1.82: "a member function template needs a name").
+                    if (tokens_[i + 1].is("*") || tokens_[i + 1].is("&") || tokens_[i + 1].is("&&")) {
+                        int inner = 0;
+                        for (std::size_t j = i; j + 1 < tokens_.size(); j++) {
+                            if (tokens_[j].is("(")) inner++;
+                            else if (tokens_[j].is(")")) { if (--inner == 0) break; }
+                            else if (tokens_[j].kind == TokenKind::Ident && tokens_[j + 1].is("(")) {
+                                mname = tokens_[j].text;
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
                 if (depth == 0 && t.is(";")) break;
                 if (t.is("<") || t.is("(") || t.is("[")) depth++;
                 else if (t.is(">") || t.is(")") || t.is("]")) depth--;
@@ -554,11 +850,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             }
             if (mname.empty())
                 src_.fail(mt.pos, "a member function template needs a name");
+            // [temp.mem]/2-3: no member template in a local class, and none that is virtual or a destructor.
+            if (!type->localOwner().empty())
+                src_.fail(mt.pos, "a local class cannot have a member template - [temp.mem]/2");
+            for (std::size_t i = at_, depth = 0; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
+                const Token &t = tokens_[i];
+                if (depth == 0 && (t.is("(") || t.is(";"))) break;
+                if (t.is("<") || t.is("[")) depth++;
+                else if ((t.is(">") || t.is("]")) && depth > 0) depth--;
+                else if (depth == 0 && t.is("virtual"))
+                    src_.fail(t.pos, "a member function template cannot be virtual - [temp.mem]/3");
+                else if (depth == 0 && t.is("~"))
+                    src_.fail(t.pos, "a destructor cannot be a member template - [temp.mem]/2");
+            }
             // **A constructor template is named by the class's own name** - `template <size_t K>
             // CMatrix<M, N>(const CVector<K> &)` - and keyed with the other constructors.
             if (mname == local) {
-                if (peek().is("explicit"))
-                    src_.fail(mt.pos, "an 'explicit' constructor template is not supported yet");
                 mt.isConstructor = true;
                 mname = localOf(tag);
             }
@@ -567,18 +874,19 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             mt.memberAccess = access;
             mt.ownerTag = tag;
             mt.ownerType = nullptr;    // filled at instantiation from the tag
+            // Its signature names its namespace's types from a call anywhere: `Q(Tag2, A)` in N, called from main.
+            mt.ns = namespacePrefix();
             // A member of a class template: capture the class's own parameters
             // and this instantiation's binding, so both layers bind at replay.
             mt.classParams = instantiatingParams_;
             mt.classBinding = instantiatingBinding_;
             mt.classValues = instantiatingValues_;
+            mt.classPacks = instantiatingPacks();
             at_ = mt.afterParams;
             mt.defined = skipTemplatedDefinition();
-            if (!mt.defined)
-                src_.fail(mt.pos, "a member function template declared inside "
-                                  "its class must be defined there too - an "
-                                  "out-of-line member template is not supported "
-                                  "yet");
+            // [temp.mem]/1: declared here and defined outside - or nowhere, the sizeof idiom's `test` -
+            // a declaration until its definition is read (outOfLineMemberTemplate).
+            if (!mt.defined) applyOutOfLineMemberTemplate(&mt);
             memberTemplates_[tag + "::" + mname].push_back(mt);
             continue;
         }
@@ -588,7 +896,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // overload set into the derived class's own, and neither is an alias.
         if (peek().is("using") && tag.empty() && peekAt(2).is("="))
             src_.fail(peek().pos, "an alias declaration needs a class with a name - this one is anonymous");
-        if (aliasDeclaration(tag + "::")) continue;
+        const std::string aliasName = peekAt(1).text;
+        if (aliasDeclaration(tag + "::")) {
+            memberTypeAccess_[tag + "::" + aliasName] = access;
+            continue;
+        }
         // **`using B::B;` inherits B's constructors**, [class.inhctor] - recorded here, declared once the class is complete.
         if (peek().is("using") && !tag.empty()) {
             std::size_t e = at_ + 1;
@@ -617,12 +929,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 continue;
             }
         }
-        if (peek().is("using"))
-            src_.fail(peek().pos, "a using-declaration inside a class is not "
-                                  "supported yet - it redeclares a base member "
-                                  "here rather than naming it, which changes "
-                                  "access and overload resolution; one at "
-                                  "namespace scope works");
+        if (peek().is("using")) {
+            classUsingDeclaration(tag, type, access);
+            continue;
+        }
 
         // Where this member's declaration begins.
         std::size_t itemStart = at_;
@@ -630,9 +940,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // Set when a body was held and stepped over.
         bool heldBody = false;
 
-        // **`explicit`, and the replay must not start at it** - the same rule
-        // `virtual` follows a few lines down: a held body is re-read through the
-        // out-of-line path, where C++ does not write the keyword.
+        // **`explicit`: the replay must not start at it** (as `virtual`): an
+        // out-of-line re-read does not write it. `constexpr explicit` is put
+        // in the order read here, for every replay of these tokens.
+        if (peek().is("constexpr") && peekAt(1).is("explicit")) std::swap(tokens_[at_], tokens_[at_ + 1]);
         bool isExplicit = false;
         const std::size_t explicitAt = peek().pos;
         if (peek().is("explicit")) { isExplicit = true; at_++; itemStart = at_; }
@@ -663,6 +974,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             if (constexprCtorAhead && functions_.size() > sigAt) constexprCtorSymbols_.insert(functions_[sigAt].symbol);
+            // [dcl.constexpr]/4: the definition's parameter types are literal types.
+            if (constexprCtorAhead && functions_.size() > sigAt && !type->isSpecialization() &&
+                (peek().is("{") || peek().is(":") || peek().is("try")))
+                for (const Type *p : functions_[sigAt].params)
+                    if (plainlyNotLiteral(p))
+                        src_.fail(cpos, "this 'constexpr' constructor's parameter type '" + p->describe() +
+                                        "' is not a literal type - [dcl.constexpr]/4");
             isExplicit = false;
             refuseVirtSpecifiers("a constructor");
             if (peek().is("{") || peek().is(":") || peek().is("try")) {
@@ -677,11 +995,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
-        // **`explicit` on a conversion function is C++11**: carried to the member's Signature,
-        // where conversionFunction leaves it out of a copy-initialisation (1.28; until then it was
-        // read and recorded nowhere, so `bool b = f` took it).
-        if (isExplicit && peek().is("operator") &&
-            peekAt(1).kind != TokenKind::Punct) {
+        // **`explicit` on a conversion function is C++11**: carried to the
+        // Signature, where conversionFunction leaves it out of copy-init;
+        // a specifier may stand between (explicit constexpr operator bool).
+        std::size_t opAt = 0;
+        while (peekAt(opAt).is("constexpr") || peekAt(opAt).is("inline")) opAt++;
+        if (isExplicit && peekAt(opAt).is("operator") &&
+            peekAt(opAt + 1).kind != TokenKind::Punct) {
             pendingExplicitConversion_ = true;
             isExplicit = false;
         }
@@ -765,12 +1085,49 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (fsc != StorageNone)
                 src_.fail(fpos, "a friend declaration takes no storage class - "
                                 "the function it names is somebody else's");
+            // [class.friend]/3: `friend T;` befriends the class T names, and does nothing where it names none.
+            if (consume(";")) {
+                if (fbase->unqualified()->isStructOrUnion()) friendClasses_[tag].push_back(fbase->unqualified()->tag());
+                continue;
+            }
             Declared fd = declarator(fbase);
-            if (!fd.qualifier.empty())
-                src_.fail(fd.pos, "befriending one member function of another "
-                                  "class is not supported yet - '" +
-                                  fd.qualifier + "::" + fd.name + "' would have "
-                                  "to be found before that class is complete");
+            // `constexpr` makes no return type const, as the definition's replay reads it (1.82: a constexpr
+            // hidden friend returning its class was "declared to return 'const struct P'").
+            if (fquals.isConstexpr && fd.type != nullptr && !fd.type->isFunction()) fd.type = types_.withoutConst(fd.type);
+            // `friend int B::peek(const A &) const;` - [class.friend]/4: a member of a class declared
+            // before, found by its parameters and cv as a definition outside B would find it.
+            if (!fd.qualifier.empty()) {
+                const Type *other = findTypedef(fd.qualifier);
+                if (other == nullptr || !other->unqualified()->isStructOrUnion() || !other->isComplete())
+                    src_.fail(fd.pos, "'" + fd.qualifier + "' is not a class defined before this friend "
+                                      "declaration, so it has no member '" + fd.name + "' to befriend");
+                std::vector<const Type *> fparams;
+                bool fvariadic = false;
+                parameterTypes(fparams, fvariadic);
+                bool fconst = false, fvolatile = false;
+                while (peek().is("const") || peek().is("volatile")) {
+                    if (consume("const")) fconst = true;
+                    else if (consume("volatile")) fvolatile = true;
+                }
+                const RefQual fref = refQualifier();
+                exceptionSpecification();
+                const std::string key = other->unqualified()->tag() + "::" + fd.name;
+                const Signature *found = nullptr;
+                if (const std::vector<std::size_t> *set = overloadsOf(key))
+                    for (std::size_t k : *set) {
+                        const Signature &f = functions_[k];
+                        if (f.owner == other->unqualified()->tag() && f.constThis == fconst &&
+                            f.volatileThis == fvolatile && f.refThis == fref && f.variadic == fvariadic &&
+                            sameParameters(f.params, fparams))
+                            found = &f;
+                    }
+                if (found == nullptr)
+                    src_.fail(fd.pos, "'" + fd.qualifier + "' declares no member '" + fd.name + "' with these "
+                                      "parameters and qualifiers for this friend declaration to name");
+                friends_[tag].push_back(found->symbol);
+                expect(";");
+                continue;
+            }
             if (!peek().is("("))
                 src_.fail(fd.pos, "a friend declaration declares a function, "
                                   "and '" + fd.name + "' is not one - a friend "
@@ -779,14 +1136,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             std::vector<const Type *> fparams;
             bool fvariadic = false;
             parameterTypes(fparams, fvariadic);
+            pendingNoexcept_ = exceptionSpecification();
             if (peek().is("const"))
                 src_.fail(peek().pos, "'const' here would say the function has "
                                       "a 'this' to leave alone, and a friend "
                                       "is not a member function");
             const bool friendHasBody = peek().is("{");
             const std::size_t fsigAt = functions_.size();
+            friendDeclaration_ = true;
             declareFunction(fd.name, fd.type, fparams, fvariadic, false, fd.pos,
                             false);
+            friendDeclaration_ = false;
+            if (functions_.size() > fsigAt && functions_[fsigAt].pos == fd.pos) functions_[fsigAt].hiddenFriend = true;
             // **A friend defined here is held and replayed as a free
             // function.** [class.friend]/6 makes such a definition implicitly
             // inline, which is what a replay produces anyway.
@@ -794,6 +1155,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 PendingBody held{ tag, friendStart, std::string(), fd.name,
                                   signatureAddedUnder(fd.name, fsigAt) };
                 held.freeFunction = true;
+                held.friendNamespace = namespaceStack_;
+                // In a namespace the signature went under the namespace's key, not the bare name.
+                if (held.which == PendingBody::npos() && functions_.size() > fsigAt) held.which = fsigAt;
                 pendingBodies_.push_back(held);
             }
             // **The grant is to this function, not to its name.** Recording
@@ -814,7 +1178,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // read here rather than in `specifiers` because it names no type and
         // nothing outside a class body may write it.
         const bool isMutable = consume("mutable");
+        const std::size_t enumsBefore = enums_.size();
+        const std::size_t specFrom = at_;
         const Type *base = specifiers(&msc, &mquals);
+        if (wasEnum)
+            for (std::size_t e = enumsBefore; e < enums_.size(); e++) enums_[e].access = access;
 
         // **A typedef inside a class names a type and declares no member.** It is
         // keyed "S::value", the same qualified key a nested class uses, so it is
@@ -827,13 +1195,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (tag.empty())
                 src_.fail(peek().pos, "a typedef needs a class with a name - "
                                       "this one is anonymous");
+            const bool definesClass = typedefDefinesClass(specFrom, at_);
             do {
                 Declared td = declarator(base);
                 typedefFunctionSuffix(td);
                 if (td.name.empty())
                     src_.fail(td.pos, "this typedef names nothing");
                 declareTypeName(tag + "::" + td.name, td.type);
-                if (td.type->tag().empty()) td.type->nameForLinkage(tag + "::" + td.name, td.name, type, false);
+                memberTypeAccess_[tag + "::" + td.name] = access;
+                if (definesClass && td.type->tag().empty()) td.type->nameForLinkage(tag + "::" + td.name, td.name, type, false);
             } while (consume(","));
             expect(";");
             continue;
@@ -966,12 +1336,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             }
 
             Declared d = declarator(base);
+            if (fnPointerSpec_ == 1) noexceptPointers_.insert(tag + "::" + d.name);
 
             // A reference member has to be bound when the object is made, so it is
             // refused by name rather than laid out as a pointer. **Only where it is a
             // member at all**: `int &get()` is a function and d.type is its return.
             const bool memberIsFunction = peek().is("(") || d.paramsAt != 0 ||
                                           d.type->isFunction();
+            // **`int (*f())(int);` and `int (C::*g())();`**: a member function that returns a pointer to
+            // function or to member function has its parameter list inside the declarator's own parentheses.
+            // The list is read from there, and the declaration goes on after the whole declarator (1.79: such
+            // a member was a data member that then met a body, "expected ';'", or was declared with no
+            // parameters, so its definition outside the class matched nothing).
+            std::size_t memberResumeAt = 0;
+            if (d.paramsAt != 0 && !peek().is("(")) {
+                memberResumeAt = at_;
+                at_ = d.paramsAt;
+            }
 
             // [class.union]/5: what an anonymous union may not hold, each refused at the name clang points at;
             // a member whose class has special members of its own is the unrestricted union, not built.
@@ -994,17 +1375,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      "its own - a union holding one is not supported yet: [class.union]/2 "
                                      "would delete the enclosing class's own special members");
                 anonUnionMemberPos_[type].push_back(d.pos);
-            } else if (kind == Kind::Union && !memberIsFunction && msc != StorageStatic) {
-                const Type *mc = d.type->unqualified();
-                while (mc->isArray()) mc = mc->pointee()->unqualified();
-                if (mc->isStructOrUnion() && !mc->tag().empty() &&
-                    (hasConstructors(mc->tag()) || destructorOf(mc) != nullptr ||
-                     copyConstructorOf(mc) != nullptr || moveConstructorOf(mc) != nullptr ||
-                     copyAssignOf(mc) != nullptr || moveAssignOf(mc) != nullptr))
-                    src_.fail(d.pos, "'" + d.name + "' is a member of a union, and its class '" +
-                                     mc->tag() + "' has a constructor, destructor or assignment of its "
-                                     "own - a union holding one is not supported yet: [class.union]/2 "
-                                     "would delete the union's own special members");
             }
 
             // **[dcl.stc]/9 names what `mutable` may not be applied to**, and
@@ -1041,13 +1411,19 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // **A static member is not part of the object**, so it leaves the
             // layout untouched and the cursor where it was.
             if (msc == StorageStatic && !peek().is("(")) {
-                declareStaticMember(tag, type, d, access, mquals.isVolatile, mquals.isThreadLocal,
+                // [class.local]/4: a local class - or one nested in it - has no static data member.
+                for (const Type *c = type; c != nullptr; c = c->enclosing())
+                    if (!c->unqualified()->localOwner().empty())
+                        src_.fail(d.pos, "'" + d.name + "' is a static data member of the local class '" +
+                                         local + "', and a local class cannot have one - [class.local]/4");
+                d.type = constexprObjectType(d.type, mquals);
+                declareStaticMember(tag, type, d, access, mquals.isThreadLocal,
                                     mquals.isConstexpr);
                 if (!consume(",")) break;
                 continue;
             }
             // [dcl.stc]/4: a static data member may be thread_local; nothing else in a class may.
-            refuseThreadLocalHere(mquals.isThreadLocal, d.pos);
+            refuseThreadLocalHere(mquals.isThreadLocal || mquals.threadLocalAsStatic, d.pos);
 
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
@@ -1056,6 +1432,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 if (!d.type->isInteger())
                     src_.fail(d.pos, "a bit-field must have an integer type, not '" +
                                      d.type->describe() + "'");
+                if (mquals.alignAs != 0)
+                    src_.fail(d.pos, "'alignas' cannot be applied to the bit-field '" + d.name + "' - "
+                                     "[dcl.align]/1");
                 long long unitBits = d.type->size(target_) * 8;
                 if (w < 0)
                     src_.fail(cpos, "'" + d.name + "' has a bit-field width of " +
@@ -1133,28 +1512,27 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 const std::size_t paramsOpen = at_;
                 const Type *writtenReturn = d.type;
                 parameterTypes(mparams, mvariadic);
+                if (memberResumeAt != 0) at_ = memberResumeAt;
                 skipAttributes();
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
-                bool constThis = false;
-                if (consume("const")) constThis = true;
-                // `f() volatile` and `f() const volatile`: the cv on `this` is
-                // half of a member function's identity on both ABIs, and this
-                // one is not in the type system - so it is refused, not read.
-                if (peek().is("volatile"))
-                    src_.fail(peek().pos,
-                              "a 'volatile' member function is not supported yet "
-                              "- the qualifier on 'this' is part of the name on "
-                              "both ABIs, and 'volatile' is not in this "
-                              "compiler's type system");
+                // `f() const`, `f() volatile`, `f() const volatile` in either order: the cv on `this`
+                // is part of a member function's identity on both ABIs, [dcl.fct]/6.
+                bool constThis = false, volatileThis = false;
+                for (;;) {
+                    if (consume("const")) { constThis = true; continue; }
+                    if (consume("volatile")) { volatileThis = sawVolatile(); continue; }
+                    break;
+                }
                 // [dcl.fct]/6: the ref-qualifier, after the cv - `f() &`, `f() const &&`.
                 const std::size_t refAt = peek().pos;
                 const RefQual refThis = refQualifier();
                 // [class.static]/1: a static member function has no `this`, so
                 // there is nothing for either of these to qualify.
-                if (memberIsStatic && constThis)
+                if (memberIsStatic && (constThis || volatileThis))
                     src_.fail(d.pos, "'" + d.name + "' is a static member "
-                                     "function and has no 'this', so 'const' "
-                                     "has nothing to qualify");
+                                     "function and has no 'this', so '" +
+                                     (constThis ? "const" : "volatile") + "' has nothing to qualify");
+                pendingVolatileThis_ = volatileThis;
                 if (memberIsStatic && refThis != RefQual::None)
                     src_.fail(refAt, "static member function '" + d.name + "' cannot have a "
                                      "ref-qualifier - it has no 'this' for one to qualify");
@@ -1167,6 +1545,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     refuseTrailingBase(writtenReturn, d.pos);
                     d.type = types_.functionType(readTrailingReturn(paramsOpen),
                                                  d.type->params(), mvariadic);
+                } else if (mentionsDeduced(writtenReturn)) {
+                    src_.fail(d.pos, "a function's return type cannot be deduced - `auto` "
+                                     "there is C++14, and this compiler is C++11");
                 }
                 // [class.virtual]/4: `override` and `final` mark a virtual member function, which a static one is never.
                 if (memberIsStatic) refuseVirtSpecifiers("a static member function");
@@ -1177,6 +1558,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // **`= default` is for the copy and move assignment alone here** - [dcl.fct.def.default]/1 -
                 // and is the implicit one, so nothing is declared; `= delete` declares and stamps.
                 const SpecialDef special = takeSpecialDef();
+                // [class.conv.fct]/1: a conversion function takes no parameter and is written with no return type.
+                if (isConversionName(d.name)) {
+                    if (!d.type->params().empty())
+                        src_.fail(d.pos, "a conversion function takes no parameters - [class.conv.fct]/1");
+                    std::size_t k = itemStart;
+                    while (tokens_[k].is("virtual") || tokens_[k].is("inline") || tokens_[k].is("explicit") ||
+                           tokens_[k].is("constexpr") || tokens_[k].is("friend"))
+                        k++;
+                    if (!tokens_[k].is("operator"))
+                        src_.fail(d.pos, "a conversion function is written with no return type - its name says "
+                                         "what it returns, [class.conv.fct]/1");
+                }
                 if (special == SpecialDef::Defaulted) {
                     const Type *self = tag.empty() ? nullptr : findTypedef(tag);
                     const Type *p = d.type->params().size() == 1 ? d.type->params()[0] : nullptr;
@@ -1215,6 +1608,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     declareMember(tag, d, constThis, refThis, access,
                                   kind == Kind::Union, isVirtual, memberIsStatic,
                                   isPure, virt);
+                    if (functions_.back().isVirtual) checkOverride(type, functions_.back(), false, d.pos);
                     pendingBodies_.push_back(PendingBody{
                         tag, itemStart, local, tag + "::" + d.name,
                         signatureAddedUnder(tag + "::" + d.name, sigAt) });
@@ -1228,11 +1622,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, refThis, access, kind == Kind::Union,
                               isVirtual, memberIsStatic, isPure, virt);
+                if (functions_.back().isVirtual)
+                    checkOverride(type, functions_.back(), special == SpecialDef::Deleted, d.pos);
                 if (special == SpecialDef::Deleted) {
-                    // A deleted virtual would leave its slot naming a function with no body.
-                    if (functions_.back().isVirtual)
-                        src_.fail(pendingSpecialAt_, "a deleted virtual function is not supported yet: "
-                                                     "its vtable slot would name a function that has no body");
+                    // A deleted virtual's slot holds the runtime's trap, as a pure one's does.
+                    if (functions_.back().isVirtual) {
+                        const std::string sym = functions_.back().symbol;
+                        deletedVirtuals_.insert(sym);
+                        for (VSlot &s : vtables_[tag])
+                            if (s.symbol == sym) s.symbol = deletedVirtualSymbol();
+                    }
                     functions_.back().deleted = true;
                 }
                 if (!consume(",")) break;
@@ -1243,6 +1642,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(d.pos, "'virtual' describes a function, and '" +
                                  d.name + "' is a data member");
 
+            realizeMemberClass(d.type, true);
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
             checkNotAbstract(d.type, d.pos, "the member '" + d.name + "'");
@@ -1294,20 +1694,29 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "initializing multiple members of union");
                 consume("=");
                 // `= {}` and `= {0}` zero the member, [dcl.init.list]/3; `{v}` on a scalar is the
-                // value, narrowing checked at the replay; a list for a class or an array is refused.
+                // value, narrowing checked at the replay; a list for a class or an array is built
+                // there as a local's would be. A reference takes one value.
                 if (peek().is("{")) {
                     const bool zeroing = peekAt(1).is("}") ||
                         (peekAt(1).kind == TokenKind::Num && !peekAt(1).isFloat && peekAt(1).value == 0 &&
                          peekAt(2).is("}"));
-                    const Type *inner = d.type;
-                    while (inner->isArray()) inner = inner->pointee();
-                    if (!zeroing && (d.type->isReference() || d.type->isArray() ||
-                                     inner->unqualified()->isStructOrUnion()))
-                        src_.fail(peek().pos, "a braced member initialiser with "
-                                              "values on a class, an array or a "
-                                              "reference is not supported yet - "
-                                              "'= {}' and '= {0}' zero an array, "
-                                              "and a scalar member takes '{v}'");
+                    if (!zeroing && d.type->isReference())
+                        src_.fail(peek().pos, "a braced member initialiser on a reference is not "
+                                              "supported yet - write '= v'");
+                    // [dcl.init.list]/7 holds whether or not a constructor ever reads it: a literal is
+                    // checked here, where nothing else in the class need be known.
+                    const std::size_t lit = peekAt(1).is("-") ? 2 : 1;
+                    if (!d.type->isReference() && d.type->isScalar() && peekAt(lit).kind == TokenKind::Num &&
+                        peekAt(lit + 1).is("}")) {
+                        const std::size_t save = at_;
+                        at_++;
+                        {
+                            Discarded held(this);
+                            ExprPtr v = assign();
+                            checkNarrowing(d.type, *v, d.pos, "'" + d.name + "'");
+                        }
+                        at_ = save;
+                    }
                 }
                 memberInit_[tag + "::" + d.name] = at_;
                 skipMemberInitialiser();
@@ -1329,6 +1738,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // declared or inherited - because `dynamic_cast` and `typeid` hang off it.
     if (anyVirtual || (base != nullptr && base->polymorphic()))
         type->setPolymorphic(true);
+    if (target_.microsoftNames())
+        for (std::size_t bi = 0; bi < vbases.size(); bi++)
+            if (vbases[bi]->polymorphic()) type->setPolymorphic(true);
 
     // **A written virtual base earns a vptr as surely as a virtual function
     // does**, and does not thereby make the class polymorphic: the vptr is
@@ -1343,7 +1755,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (target_.microsoftNames() && kind != Kind::Union) {
         const Type *firstNv = nullptr;
         for (std::size_t bi = 0; bi < written.size(); bi++) {
-            if (written[bi].isVirtual) continue;
+            if (written[bi].isVirtual || !written[bi].type->polymorphic()) continue;
             if (firstNv == nullptr) firstNv = written[bi].type;
         }
         const bool inheritsVfptr = firstNv != nullptr && firstNv->polymorphic();
@@ -1410,9 +1822,30 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (anyVirtualBase)
         type->setNvDataSize(static_cast<int>((totalBits + 7) / 8));
 
+    // **cl's vtordisp (/vd1)**: four bytes in front of a virtual base a base of this class had one for,
+    // or one whose function this class overrides while declaring a constructor or a destructor (M3).
+    std::set<const Type *> vtordisps;
+    if (target_.microsoftNames()) {
+        for (const Type::BaseSpec &b : type->bases()) {
+            if (!b.direct) continue;
+            std::map<std::string, std::set<const Type *> >::const_iterator theirs = msVtordisp_.find(b.type->tag());
+            if (theirs != msVtordisp_.end()) vtordisps.insert(theirs->second.begin(), theirs->second.end());
+        }
+        const Signature *dt = nullptr;
+        if (const std::vector<std::size_t> *set = overloadsOf(destructorKey(tag))) dt = &functions_[(*set)[0]];
+        if (hasConstructors(tag) || (dt != nullptr && !dt->implicit))
+            for (std::map<std::string, MsVbaseAdjust>::const_iterator it = msVbaseAdjust_.begin();
+                 it != msVbaseAdjust_.end(); ++it) {
+                const bool special = it->first.compare(0, 3, "??1") == 0 || it->first.compare(0, 4, "??_G") == 0;
+                if (it->second.cls == tag && !special && msPure_.count(it->first) == 0)
+                    vtordisps.insert(it->second.vbase);
+            }
+        if (!vtordisps.empty()) msVtordisp_[tag] = vtordisps;
+    }
     for (std::size_t bi = 0; bi < vbases.size(); bi++) {
         const Type *b = vbases[bi];
-        const long long byteCursor = (totalBits + 7) / 8;
+        long long byteCursor = (totalBits + 7) / 8;
+        if (vtordisps.count(b) != 0) byteCursor += 4;
         const int balign = Packed::to(b->align(target_), pack);
         const int at = static_cast<int>(alignTo(static_cast<int>(byteCursor), balign));
         const std::vector<Member> &inherited = b->members();
@@ -1433,6 +1866,34 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         totalBits = static_cast<long long>(at + b->nvDataSize()) * 8;
         if (balign > widest) widest = balign;
     }
+    // **An override of a virtual base's function is entered at that base**, laid only now (M3).
+    if (target_.microsoftNames())
+        for (std::map<std::string, MsVbaseAdjust>::const_iterator it = msVbaseAdjust_.begin();
+             it != msVbaseAdjust_.end(); ++it) {
+            if (it->second.cls != tag) continue;
+            for (const Type::BaseSpec &b : type->bases())
+                if (b.isVirtual && b.type->unqualified() == it->second.vbase)
+                    msThisAdjust_[it->first] = b.offset + it->second.within;
+        }
+
+    // **Every vbtable pointer the complete object holds** (cl's most-derived
+    // constructor stores them): the virtual bases', and each non-virtual
+    // base's after its first, which is shared with the base and its table.
+    if (target_.microsoftNames() && kind != Kind::Union && anyVirtualBase && !type->vbptrs().empty()) {
+        const std::vector<Type::BaseSpec> laid = type->bases();
+        for (std::size_t bi = 0; bi < laid.size(); bi++) {
+            const Type::BaseSpec &b = laid[bi];
+            if (!b.isVirtual && msVbptrAt >= 0) continue;
+            const std::vector<Type::VbPtr> theirs = b.type->vbptrs();
+            for (std::size_t q = b.isVirtual ? 0 : 1; q < theirs.size(); q++) {
+                // Only its non-virtual part's: its own virtual bases are this class's, laid down
+                // elsewhere here, and in this list once each as such.
+                if (b.type->hasVirtualBase() && theirs[q].offset >= b.type->nvDataSize()) continue;
+                const Type *holder = q == 0 || theirs[q].base == nullptr ? b.type : theirs[q].base;
+                type->addVbptr(b.offset + theirs[q].offset, theirs[q].owner, holder, b.type);
+            }
+        }
+    }
 
     // **An empty class is legal in C++ and has size 1**, so that two objects of it
     // have different addresses - and it changes the numbers only: returning here once
@@ -1445,6 +1906,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                        "compiler can lay out: its members need " +
                        std::to_string((totalBits + 7) / 8) + " bytes, past "
                        "the 2147483647 an object here is measured in");
+    // [dcl.align]/5: what the class's own specifiers ask for is no weaker than what its members need.
+    if (classAlign != 0 && classAlign < widest)
+        src_.fail(pos, "'alignas(" + std::to_string(classAlign) + ")' is weaker than the " +
+                       std::to_string(widest) + " this " + what + "'s members need - [dcl.align]/5");
     if (classAlign > widest) widest = classAlign;
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     if (sizeFloor > size) size = static_cast<int>(alignTo(static_cast<int>(sizeFloor), widest));
@@ -1465,13 +1930,19 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (noData) empties.push_back(Type::EmptyAt{ type, 0 });
     type->setEmptySubobjects(empties);
     type->complete(members, size, align);
-    // Held bodies are read now, class complete, so a body may name a later member; taken out of the vector first,
-    // since a body may define a class with held bodies. A specialization also takes its nested classes' bodies,
-    // [temp.inst]/2; **so does any class** (1.27, item 3): a nested one waits for the outermost, [class.mem]/2.
+    // `int (C::*f())();` written inside C: its type was made before C's model was known (1.79).
+    types_.settleMemberFunctionPointers(type, target_);
+    // and a member's `noexcept(e)` that named a member below it is read now (CWG 1330, 1.80)
+    settleDeferredSpecs(type);
+    // Held bodies are read now, the class complete, so one may name a member
+    // below it; nested classes' wait for the outermost ([temp.inst]/2,
+    // [class.mem]/2), a member template's specialization keeps its own.
     bool nestedInOpen = false;
-    for (std::size_t i = 0; i < classStack_.size() && !nestedInOpen; i++)
+    for (std::size_t i = 0; i < classStack_.size() && !nestedInOpen && specializationOf.empty(); i++)
         for (const Type *e = type->enclosing(); e != nullptr; e = e->enclosing())
-            if (e->unqualified() == classStack_[i]->unqualified() && classStack_[i] != type) nestedInOpen = true;
+            if (e->unqualified() == classStack_[i]->unqualified() && classStack_[i] != type &&
+                !classStack_[i]->isComplete())
+                nestedInOpen = true;
     const bool takesNested = !nestedInOpen;
     auto ownBody = [&](const PendingBody &b) {
         if (nestedInOpen) return false;
@@ -1513,6 +1984,36 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         const std::vector<VSlot> &slots = vtables_[tag];
         for (std::size_t i = 0; i < slots.size(); i++)
             if (slots[i].pure) { type->setAbstract(true); break; }
+        // On Microsoft a later base's pure virtual stays in that base's table, not this class's.
+        if (target_.microsoftNames() && type->polymorphic())
+            for (const MsVftable &t : msVftables(type))
+                for (const VSlot &s : t.slots)
+                    if (s.pure) type->setAbstract(true);
+        // On Itanium too, a later base's table is not merged into this class's: its pure virtual stays unless
+        // this class or another base overrides it. A destructor always has an overrider.
+        const auto overrides = [](const VSlot &a, const VSlot &pure) {
+            return !a.pure && a.name == pure.name && a.params == pure.params && a.constThis == pure.constThis &&
+                   a.volatileThis == pure.volatileThis && a.refThis == pure.refThis;
+        };
+        for (const Type::BaseSpec &one : type->bases()) {
+            if (target_.microsoftNames() || !one.direct) continue;
+            for (const VSlot &s : vtables_[one.type->unqualified()->tag()]) {
+                if (!s.pure || s.name == "~") continue;
+                bool taken = false;
+                for (const VSlot &mine : vtables_[tag]) taken = taken || overrides(mine, s);
+                if (const std::vector<std::size_t> *own = overloadsOf(tag + "::" + s.name))
+                    for (std::size_t k : *own) {
+                        const Signature &f = functions_[k];
+                        taken = taken || (f.owner == tag && f.params == s.params && f.constThis == s.constThis &&
+                                          f.volatileThis == s.volatileThis && f.refThis == s.refThis);
+                    }
+                for (const Type::BaseSpec &other : type->bases())
+                    if (other.direct && other.type != one.type)
+                        for (const VSlot &theirs : vtables_[other.type->unqualified()->tag()])
+                            taken = taken || overrides(theirs, s);
+                if (!taken) type->setAbstract(true);
+            }
+        }
     }
     // A class with a virtual base needs a table though it has no virtual
     // function: the table is where the offset to that base is kept.
@@ -1522,6 +2023,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     } else if (type->hasVptr()) {
         emitVtable(type, tag, pos);
     }
+    declareUsingMembers(tag);
+    checkMemberDefaults(type);
     // **A specialization's member bodies are not replayed here.** This is in the
     // middle of whatever asked for the class, and a replay goes through topLevel,
     // which clears the locals; they are handed to the pass that defines them.
@@ -1535,7 +2038,47 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         pendingBodies_.insert(pendingBodies_.end(), mine.begin(), mine.end());
     else
         replayInlineBodies(std::move(mine));
+    // `struct { int a; } anon_s;` - no tag and none from a typedef yet: named after its first declarator.
+    if (tag.empty() && !anonProper && currentFunction_.empty()) {
+        std::size_t k = 0;
+        while (peekAt(k).is("*") || peekAt(k).is("&") || peekAt(k).is("&&") || peekAt(k).is("const") ||
+               peekAt(k).is("volatile") || peekAt(k).is("("))
+            k++;
+        if (peekAt(k).kind == TokenKind::Ident)
+            type->nameUnnamed((within != nullptr ? within->tag() + "::" : namespacePrefix()) + "<unnamed-type-" +
+                                  peekAt(k).text + ">",
+                              unnamedTypes_++);
+    }
     return type;
+}
+
+bool Parser::typedefDefinesClass(std::size_t from, std::size_t to) const {
+    for (std::size_t i = from; i < to && i < tokens_.size(); i++) {
+        if (!tokens_[i].is("struct") && !tokens_[i].is("class") && !tokens_[i].is("union")) continue;
+        std::size_t k = i + 1;
+        // Attributes and `alignas(...)` may stand between the class-key and the body.
+        for (;;) {
+            if (k + 1 < to && tokens_[k].is("[") && tokens_[k + 1].is("[")) {
+                int depth = 0;
+                for (; k < to; k++) {
+                    if (tokens_[k].is("[")) depth++;
+                    else if (tokens_[k].is("]") && --depth == 0) { k++; break; }
+                }
+                continue;
+            }
+            if (k < to && tokens_[k].is("alignas")) {
+                int depth = 0;
+                for (k++; k < to; k++) {
+                    if (tokens_[k].is("(")) depth++;
+                    else if (tokens_[k].is(")") && --depth == 0) { k++; break; }
+                }
+                continue;
+            }
+            break;
+        }
+        if (k < to && (tokens_[k].is("{") || tokens_[k].is(":"))) return true;
+    }
+    return false;
 }
 
 // [dcl.align]/5: an alignment weaker than the type's own is ill-formed, not
@@ -1554,7 +2097,21 @@ int Parser::alignasSpecifier() {
     expect("alignas");
     expect("(");
     long long asked;
-    if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
+    // [dcl.align]/4: `alignas(Ts...)` is one alignas per member, the strictest of them taking effect.
+    const auto pk = peek().kind == TokenKind::Ident && peekAt(1).is("...") && peekAt(2).is(")")
+                        ? packs_.find(peek().text) : packs_.end();
+    if (pk != packs_.end()) {
+        at_ += 2;
+        asked = 1;
+        if (!pk->second.standsForItself())
+            for (std::size_t k = 0; k < pk->second.types.size(); k++) {
+                const long long one = pk->second.isValue ? pk->second.values[k] : pk->second.types[k]->align(target_);
+                if (one < 0 || one > 4096 || (one & (one - 1)) != 0)
+                    src_.fail(pos, "an alignment must be a power of two up to 4096, and " + std::to_string(one) +
+                                   " is not");
+                if (one > asked) asked = one;
+            }
+    } else if ([this] { std::size_t save = at_; bool t = atTypeName(); at_ = save; return t; }()) {
         StorageClass sc;
         const Type *t = declarator(specifiers(&sc), true).type;
         asked = t->align(target_);
@@ -1575,7 +2132,7 @@ const Type *Parser::enumSpecifier() {
     // it converts to nothing without a cast (refuseScopedConversion, refuseScopedOperand).
     const bool scoped = peek().is("class") || peek().is("struct");
     if (scoped) at_++;
-    skipAttributes();
+    skipTypeAttributes("an enumeration");
 
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
@@ -1585,16 +2142,14 @@ const Type *Parser::enumSpecifier() {
 
     // **An enum-base fixes the underlying type** - `enum E : unsigned char` -
     // and with it the enumeration's size, signedness and the type of each
-    // enumerator; [dcl.enum]/5 wants an integral type that is not bool.
+    // enumerator; [dcl.enum]/2 wants an integral type, and bool is one (1.80: `enum E : bool` was refused).
     const Type *underlying = nullptr;
     if (consume(":")) {
         std::size_t upos = peek().pos;
         StorageClass usc;
         underlying = specifiers(&usc)->unqualified();
-        if (!underlying->isInteger() || underlying->kind() == Kind::Bool ||
-            underlying->isEnumeration())
-            src_.fail(upos, "an enum-base must be an integral type other than "
-                            "bool, and '" + underlying->describe() + "' is not");
+        if (!underlying->isInteger() || underlying->isEnumeration())
+            src_.fail(upos, "an enum-base must be an integral type, and '" + underlying->describe() + "' is not");
     }
     // [dcl.enum]/5: a scoped enumeration without one is fixed at int.
     if (scoped && underlying == nullptr) underlying = types_.intType();
@@ -1620,6 +2175,11 @@ const Type *Parser::enumSpecifier() {
             src_.fail(pos, "'" + tag + "' was declared before as a different enumeration - a "
                            "redeclaration repeats 'class' and the enum-base exactly");
         if (scoped) self->setScoped();
+        else if (underlying != nullptr) self->setFixedUnderlying();
+        // -g: shown under the class's whole name, `geo::Box<int>::Kind` - the tag has the class's tag alone (1.29).
+        if (within != nullptr) self->setDisplayTag(within->displayTag() + "::" + tag);
+        // and mangled through the class, a specialization's `?$Box@H@` included (1.29)
+        if (within != nullptr) self->setEnumScope(within);
         declareTypeName(prefix + tag, self);
     }
     // [dcl.enum]/5: an enumerator has its enumeration's type once the enum is complete, so
@@ -1634,6 +2194,9 @@ const Type *Parser::enumSpecifier() {
             if (!peek().is(";") && !peek().is(","))
                 src_.fail(peek().pos, "an opaque enumeration declaration ends at its name or "
                                       "enum-base - '" + tag + "' is declared, not used, here");
+        } else if (peek().is(";") && !tag.empty()) {
+            src_.fail(pos, "'enum " + tag + ";' declares an unscoped enumeration with no enum-base, which "
+                           "cannot be opaque - [dcl.enum]/3; write 'enum " + tag + " : int;'");
         }
         return valueType != nullptr ? valueType : types_.intType();
     }
@@ -1750,6 +2313,7 @@ bool Parser::skipAttributes() {
             const bool args = peek().is("(");
             if (args && !scoped && (name == "noreturn" || name == "carries_dependency"))
                 src_.fail(peek().pos, "the attribute '" + name + "' takes no argument list");
+            if (!scoped && name == "noreturn") noreturnAt_ = apos;
             if (args) skipBalanced();
             if (!scoped && name == "deprecated")
                 src_.fail(apos, "the attribute '[[deprecated]]' is C++14, and this compiler is C++11 - "
@@ -1764,19 +2328,31 @@ bool Parser::skipAttributes() {
     return any;
 }
 
-// `[[x]] int y;` in a block is a declaration with an attribute; `[[x]] return 0;` is a statement
-// with one, which only a declaration's reader takes here - so the second is refused by name.
+// `[[x]] int y;` in a block is a declaration with an attribute, left for the declaration's reader;
+// `[[x]] return 0;` is a statement with one, [stmt.stmt]/1, read past here and the statement after
+// it read as if it had none - except C++11's two, which appertain to functions alone.
 bool Parser::attributedDeclarationAhead() {
     if (!peek().is("[") || !peekAt(1).is("[")) return false;
     const std::size_t save = at_;
     skipAttributes();
     const bool declares = atDeclarationStart();
-    at_ = save;
-    if (!declares)
-        src_.fail(peek().pos, "an attribute on a statement is not supported yet - [dcl.attr.grammar] lets "
-                              "one stand before any statement, and this compiler reads them before a "
-                              "declaration only");
-    return true;
+    if (declares) {
+        at_ = save;
+        return true;
+    }
+    for (std::size_t i = save + 2; i < at_; i++)
+        if ((tokens_[i].is("noreturn") || tokens_[i].is("carries_dependency")) &&
+            (tokens_[i - 1].is("[") || tokens_[i - 1].is(",")) && !tokens_[i + 1].is("::"))
+            src_.fail(tokens_[i].pos, "the attribute '" + tokens_[i].text + "' cannot be applied to a "
+                                      "statement - [dcl.attr.noreturn]/1 and [dcl.attr.depend]/1 give it "
+                                      "to a function or a parameter");
+    return false;
+}
+
+void Parser::refuseNoreturnObject(const std::string &name) {
+    if (noreturnAt_ != 0)
+        src_.fail(noreturnAt_, "'noreturn' attribute only applies to functions, and '" + name +
+                               "' is a variable - [dcl.attr.noreturn]/1");
 }
 
 // From an opening bracket of any kind to the one that closes it, nesting counted.
@@ -1792,69 +2368,66 @@ void Parser::skipBalanced() {
 }
 
 // The specifiers are read without their qualifiers here, and specifiers() folds the
-// const in afterwards. It reads 'const' in two places - before the type name and
-// after it - and both must be collected before the type can be built.
+// cv in afterwards. It reads 'const' and 'volatile' in two places - before the type
+// name and after it - and both must be collected before the type can be built.
 const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     Qualifiers discard;
     if (quals == nullptr) quals = &discard;
+    fnPointerSpec_ = 0;              // a new declaration: its declarator says its own
+    // A constructor template replayed from its class, `template <class Y> explicit P(Y *)`: the keyword was
+    // read there, and instantiateMemberTemplate gives the specialization it.
+    if (memberTemplateInst_ && !inlineOwner_.empty() && peek().is("explicit")) at_++;
+    // [temp.inst]/1: a typedef at namespace or block scope names a specialization without needing it complete -
+    // `struct Value; typedef std::pair<std::string, Value> Member;` (1.82: "'second' has an incomplete type").
+    struct TypedefSpecifiers {
+        Parser *p; bool was, defer;
+        ~TypedefSpecifiers() { p->typedefSpecifiers_ = was; p->typedefDefer_ = defer; }
+    } typedefSpecifiers{ this, typedefSpecifiers_, typedefDefer_ };
+    if (peek().is("typedef") && classStack_.empty() && classesInstantiating_ == 0)
+        typedefSpecifiers_ = typedefDefer_ = true;
     const Type *t = unqualifiedSpecifiers(storage, quals);
-    if (quals->isVolatile) refuseVolatileUnderADeclarator(*storage);
-    return quals->isConst ? types_.withConst(t) : t;
+    // **A cv-qualifier after a type's name is the same cv-qualifier** ([dcl.type]/1: the decl-specifiers come
+    // in any order): `T const &`, `std::size_t const n`, `S volatile s`. unqualifiedSpecifiers reads them after a
+    // built-in type in its own loop, but returns as soon as it has a class, a typedef, a template parameter or a
+    // qualified name - and before 1.67 the `const` written after one was left for the declarator, which wanted a
+    // name and said "expected a name".
+    while (cvSpecifier(quals)) {}
+    if (quals->isConst) t = types_.withConst(t);
+    if (quals->isVolatile) t = types_.withVolatile(t);
+    return t;
 }
 
-// Marks the file as one the optimizer must leave alone, and keeps where the first `volatile` was (the
-// token just consumed); always true.
+// **One `const` and one `volatile` among a declaration's specifiers** ([dcl.type]/2): written twice - `const int
+// const`, `S volatile volatile` - is ill-formed, before or after the type's name alike; a typedef that already
+// holds one is not a second (`typedef const int CI; CI const x;`), since what it holds is in its type, not in quals.
+// True when it read one.
+bool Parser::cvSpecifier(Qualifiers *quals) {
+    if (peek().is("const")) {
+        if (quals->constWritten)
+            src_.fail(peek().pos, "'const' is written twice among this declaration's specifiers, [dcl.type]/2");
+        at_++;
+        quals->isConst = quals->constWritten = true;
+        return true;
+    }
+    if (peek().is("volatile")) {
+        if (quals->isVolatile)
+            src_.fail(peek().pos, "'volatile' is written twice among this declaration's specifiers, [dcl.type]/2");
+        at_++;
+        quals->isVolatile = sawVolatile();
+        return true;
+    }
+    return false;
+}
+
+// **`volatile` is in the type system, yet its file is compiled without -O**:
+// the passes do not yet tell volatile accesses apart (Program::usesVolatile).
+// Marks the file and keeps where the first `volatile` was; always true.
 bool Parser::sawVolatile() {
     if (current_ != nullptr) {
         if (!current_->usesVolatile && at_ > 0) current_->volatileAt = src_.where(tokens_[at_ - 1].pos);
         current_->usesVolatile = true;
     }
     return true;
-}
-
-// **`volatile` is read and dropped, and this is the line where that stops
-// being honest.** There is no volatile in this type system; on an object that
-// costs nothing only while the file is not optimised - see Program::usesVolatile.
-void Parser::refuseVolatilePointer() {
-    src_.fail(peek().pos,
-              "a 'volatile' pointer - 'T *volatile' - is not supported yet: cl "
-              "writes 'REAH' where a plain pointer is 'PEAH', and 'volatile' is "
-              "not in this compiler's type system");
-}
-
-// **A variable's name carries its cv on the Microsoft ABI and not on Itanium**, measured: `volatile
-// int g;` is `?g@@3HC` on cl where a plain int is `?g@@3HA`, and `_Z`-nothing on both Itanium
-// targets, which do not decorate a variable at all.
-void Parser::refuseVolatileWithLinkage(bool written, bool internal,
-                                       std::size_t pos) {
-    if (!written || internal || !target_.microsoftNames()) return;
-    src_.fail(pos, "a 'volatile' object with external linkage is not supported "
-                   "yet for x86_64-windows: cl decorates its name with the "
-                   "qualifier - '?g@@3HC' where a plain int is '?g@@3HA' - and "
-                   "'volatile' is not in this compiler's type system. The two "
-                   "Itanium targets do not decorate a variable's name, so it is "
-                   "accepted there");
-}
-
-void Parser::refuseVolatileUnderADeclarator(StorageClass storage) {
-    // `volatile int (*p)[3]` hides its star behind a parenthesis.
-    const bool pointerNext =
-        peek().is("*") || peek().is("&") || peek().is("&&") ||
-        (peek().is("(") && (peekAt(1).is("*") || peekAt(1).is("&") ||
-                            peekAt(1).is("&&")));
-    if (pointerNext)
-        src_.fail(peek().pos,
-                  "a pointer or reference to a 'volatile' type is not supported "
-                  "yet - the qualifier is not in this compiler's type system, so "
-                  "this would be named 'int *' where clang writes 'PVi' and cl "
-                  "writes 'PECH'. A 'volatile' object of its own is read and "
-                  "written here as it should be, and is not refused");
-    if (storage == StorageTypedef)
-        src_.fail(peek().pos,
-                  "a typedef of a 'volatile' type is not supported yet - the "
-                  "qualifier is not in this compiler's type system, and a name "
-                  "for it would carry it past the refusal a written "
-                  "'volatile T *' meets");
 }
 
 const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals) {
@@ -1872,6 +2445,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                 int depth = 0;
                 for (;;) {
                     if (peekAt(j).kind == TokenKind::End) break;
+                    if (depth > 0 && (peekAt(j).is("(") || peekAt(j).is("["))) { j = groupCloseAt(at_ + j) - at_ + 1; continue; }
                     if (peekAt(j).is("<")) depth++;
                     else if (peekAt(j).is(">>")) depth -= 2;
                     else if (peekAt(j).is(">")) depth--;
@@ -1897,28 +2471,53 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     }
 
     lastAttributeEnd_ = static_cast<std::size_t>(-1);
+    // [dcl.stc]/1: one storage class to a declaration, `thread_local` beside `static` or `extern` the
+    // exception; [dcl.typedef]/1 puts `typedef` with none of them. `auto` is a type here, not one of them:
+    // beside a storage class it is held here, so `static auto f() -> int` stays static.
+    bool autoType = false;
+    auto storageClass = [&](StorageClass sc) {
+        const Token &word = peek();
+        if ((*storage != StorageNone && *storage != StorageAuto) ||
+            (quals->isThreadLocal && sc != StorageStatic && sc != StorageExtern))
+            src_.fail(word.pos, "'" + word.text + "' is a second storage class in this declaration, which "
+                                "has at most one - and 'thread_local' only beside 'static' or 'extern', [dcl.stc]/1");
+        if (*storage == StorageAuto) autoType = true;
+        at_++;
+        *storage = sc;
+    };
     for (;;) {
+        // The same after a specifier: `constexpr operator T() const` (tp25).
+        if (peek().is("operator") && peekAt(1).kind != TokenKind::Punct) {
+            const std::size_t resume = at_;
+            operatorName();
+            const Type *to = conversionTarget_;
+            conversionTarget_ = nullptr;
+            at_ = resume;
+            if (to != nullptr) return to;
+        }
         if (peek().is("alignas")) {
             int a = alignasSpecifier();
             if (a > quals->alignAs) quals->alignAs = a;
             continue;
         }
         if (skipAttributes()) continue;
-        if (consume("static"))  { *storage = StorageStatic; continue; }
-        if (consume("extern"))  { *storage = StorageExtern; continue; }
+        if (peek().is("static"))  { storageClass(StorageStatic); continue; }
+        if (peek().is("extern"))  { storageClass(StorageExtern); continue; }
         // [dcl.stc]/4: `thread_local`, beside `static` or `extern` or alone. The C6000 has no
-        // thread storage at all - cl6x 8.2.2 knows no such word - so it is refused there by name.
+        // thread storage at all - cl6x 8.2.2 knows no such word - and runs one thread, so there the
+        // object is the one static copy (Qualifiers::threadLocalAsStatic).
         if (peek().is("thread_local")) {
-            if (!target_.hasThreadStorage())
-                src_.fail(peek().pos, "'thread_local' is not supported yet on " + std::string(target_.name()) +
-                                      ": TI's cl6x has no thread-local storage, and a program for the "
-                                      "C6000 is one thread");
+            if (quals->isThreadLocal || quals->threadLocalAsStatic || *storage == StorageRegister ||
+                *storage == StorageTypedef)
+                src_.fail(peek().pos, "'thread_local' is a second storage class in this declaration, which has "
+                                      "at most one - and 'thread_local' only beside 'static' or 'extern', [dcl.stc]/1");
             at_++;
-            quals->isThreadLocal = true;
+            if (target_.hasThreadStorage()) quals->isThreadLocal = true;
+            else                            quals->threadLocalAsStatic = true;
             continue;
         }
-        if (consume("typedef")) { *storage = StorageTypedef; continue; }
-        if (consume("const"))    { quals->isConst = true; continue; }
+        if (peek().is("typedef")) { storageClass(StorageTypedef); continue; }
+        if (peek().is("const")) { cvSpecifier(quals); continue; }
         // **`constexpr` on an object is `const` plus a demand.** [dcl.constexpr]
         // makes the object const and the rest of the compiler wants to know nothing
         // else, which is why almost nothing downstream mentions constexpr at all.
@@ -1927,7 +2526,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             quals->isConstexpr = true;
             continue;
         }
-        if (consume("volatile")) { quals->isVolatile = sawVolatile(); continue; }
+        if (peek().is("volatile")) { cvSpecifier(quals); continue; }
         // **`inline` is a hint about linkage, not about the type.** It makes a function's
         // definition mergeable across translation units; nothing else downstream needs it.
         // `inline namespace` at file scope is topLevel's; here it is one in a class or block.
@@ -1935,14 +2534,18 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             src_.fail(peek().pos, "a namespace is defined at namespace scope, and this one is "
                                   "inside a class or a function");
         if (consume("inline")) { quals->isInline = true; continue; }
-        if (consume("register")) { *storage = StorageRegister; continue; }
-        if (consume("auto"))     { *storage = StorageAuto; continue; }
+        if (peek().is("register")) { storageClass(StorageRegister); continue; }
+        if (consume("auto")) {
+            if (*storage == StorageNone) *storage = StorageAuto;
+            else autoType = true;
+            continue;
+        }
         break;
     }
 
     // `auto S::f() -> T`: after `auto` a qualified declarator-id, not a type, [dcl.fct]/2.
-    if (*storage == StorageAuto && autoBeforeQualifiedName()) {
-        *storage = StorageNone;
+    if ((*storage == StorageAuto || autoType) && autoBeforeQualifiedName()) {
+        if (*storage == StorageAuto) *storage = StorageNone;
         return quals->isConst ? types_.withConst(types_.deducedType()) : types_.deducedType();
     }
     // wchar_t is a type of its own in C++, not the typedef C makes it.
@@ -1965,8 +2568,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // It tells a parser that a dependent qualified name is a type, which matters only
     // where a body is parsed before its arguments; this one replays at instantiation.
     bool sawTypename = false;
+    struct TypenameScope {
+        bool &flag; bool was;
+        ~TypenameScope() { flag = was; }
+    } typenameScope{ typenameNamed_, typenameNamed_ };
+    typenameNamed_ = false;
     if (consume("typename")) {
         sawTypename = true;
+        typenameNamed_ = true;
         if (peek().kind != TokenKind::Ident)
             src_.fail(peek().pos, "'typename' introduces a qualified type "
                                   "name, and this is not one");
@@ -1985,10 +2594,22 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
 
     // A class template with its arguments *is* a type. A function template
     // named where a type was expected is not, and is refused by name.
+    // [basic.lookup.unqual]/7: a member class template is found in its class before anything outside it.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("<"))
+        if (const TemplateDecl *mct = memberClassTemplate(peek().text)) {
+            const TemplateDecl decl = *mct;
+            const std::size_t tpos = peek().pos;
+            at_++;
+            return memberTypeWalk(instantiateClass(decl, tpos));
+        }
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
         peekAt(1).is("<")) {
         const TemplateDecl decl = findTemplate(peek().text)->second;
         if (!decl.isClass) refuseTemplateId();
+        if (!templateReachable(decl, peek().text))
+            src_.fail(peek().pos, "'" + peek().text + "' is a template of the namespace '" + decl.ns.substr(0, decl.ns.size() - 2) +
+                                  "', and nothing brings it here - [basic.lookup.unqual]; write '" + decl.ns + peek().text +
+                                  "', or a using-declaration");
         const std::size_t tpos = peek().pos;
         at_++;
         const Type *cls = instantiateClass(decl, tpos);
@@ -1996,7 +2617,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         return memberTypeWalk(cls);
     }
 
-    if (peek().is("decltype")) return decltypeSpecifier();
+    // `decltype(d)::period` - [dcl.type.simple]/4's specifier as a nested-name-specifier, its member type.
+    if (peek().is("decltype")) {
+        const Type *t = decltypeSpecifier();
+        if (peek().is("::") && peekAt(1).kind == TokenKind::Ident && t->unqualified()->isStructOrUnion())
+            return memberTypeWalk(t->unqualified());
+        return t;
+    }
+    if (peek().is("__underlying_type")) return underlyingTypeSpecifier();
 
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
@@ -2009,19 +2637,30 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         if (peekAt(1).is("::") && peekAt(2).kind == TokenKind::Ident) {
             std::string q = peek().text;
             const Type *found = nullptr;
+            std::string foundAs;
             std::size_t consumed = 0;
             // **`std::vector<int>` - a class template named qualified.**
             std::string tmpl;
             std::size_t tmplConsumed = 0;
+            // And `S::In<int>`, a member class template of the class the prefix names.
+            const Type *scope = findTypedef(q);
+            const TemplateDecl *member = nullptr;
             for (std::size_t k = 1; peekAt(k).is("::") &&
                                     peekAt(k + 1).kind == TokenKind::Ident;
                  k += 2) {
-                q += "::" + peekAt(k + 1).text;
+                const std::string piece = peekAt(k + 1).text;
+                q += "::" + piece;
+                const TemplateDecl *m = peekAt(k + 2).is("<") ? memberClassTemplateOf(scope, piece) : nullptr;
                 if (const Type *n = findTypedef(q)) {
                     found = n;
+                    foundAs = q;
                     consumed = k + 2;
+                    scope = n;
+                } else {
+                    scope = scope != nullptr && scope->isStructOrUnion() ? lookupInClass(scope, piece) : nullptr;
                 }
-                if (peekAt(k + 2).is("<") && isClassTemplate(q)) {
+                if (m != nullptr || (peekAt(k + 2).is("<") && isClassTemplate(q) && templateQualifiedBy(q))) {
+                    member = m;
                     tmpl = q;
                     tmplConsumed = k + 2;
                 }
@@ -2029,8 +2668,9 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             if (tmplConsumed > consumed) {
                 const std::size_t tpos = peek().pos;
                 at_ += tmplConsumed;
-                const Type *cls = instantiateClass(findTemplate(tmpl)->second,
-                                                   tpos);
+                const TemplateDecl decl = member != nullptr ? *member : findTemplate(tmpl)->second;
+                if (member != nullptr) checkMemberTemplateAccess(decl, peekAt(tmplConsumed - 1).pos);
+                const Type *cls = instantiateClass(decl, tpos);
                 return memberTypeWalk(cls);
             }
             if (found != nullptr) {
@@ -2044,6 +2684,9 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                                                ? "private" : "protected") +
                                           " in '" +
                                           found->enclosing()->tag() + "'");
+                if (!currentFunction_.empty())
+                    checkMemberTypeAccess(findTypedef(foundAs.substr(0, foundAs.rfind("::"))),
+                                          peekAt(consumed - 1).text, peekAt(consumed - 1).pos);
                 at_ += consumed;
                 // `std::string::size_type`: what the prefix names may be a typedef for a class.
                 return memberTypeWalk(found);
@@ -2059,6 +2702,13 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // when a member, a local or a namespace has taken the name it wants - `::Lexer *lexer;` inside
     // a `cc::Parser` that also knows a `Lexer`.
     if (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        const std::map<std::string, TemplateDecl>::const_iterator named = findTemplate("::" + peekAt(1).text);
+        if (peekAt(2).is("<") && named != templates_.end() && named->second.isClass && named->second.ns.empty()) {
+            const TemplateDecl decl = named->second;
+            const std::size_t tpos = peekAt(1).pos;
+            at_ += 2;
+            return memberTypeWalk(instantiateClass(decl, tpos));
+        }
         if (const Type *t = findGlobalTypedef(peekAt(1).text)) {
             at_ += 2;
             return memberTypeWalk(t);
@@ -2073,13 +2723,13 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         // below consumes one, so without this the loop spins forever on
         // `typedef long T;`. Inherited from Compiler-C, where it hangs too.
         if (peek().kind == TokenKind::Ident) break;
-        if (consume("const"))         { quals->isConst = true; continue; }
+        if (peek().is("const"))       { cvSpecifier(quals); continue; }
         if (consume("constexpr")) {
             quals->isConst = true;
             quals->isConstexpr = true;
             continue;
         }
-        if (consume("volatile"))      { quals->isVolatile = sawVolatile(); continue; }
+        if (peek().is("volatile"))    { cvSpecifier(quals); continue; }
         if (consume("float"))         isFloat++;
         else if (consume("double"))   isDouble++;
         else if (consume("void"))     isVoid++;
@@ -2125,8 +2775,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // **In C++11 `auto` is a type specifier, not the storage class C90 made it.** This
     // parser still reads it as one, so reaching here having consumed it is exactly
     // where a type was to be deduced: the storage class is dropped, a stand-in given.
-    if (*storage == StorageAuto) {
-        *storage = StorageNone;
+    if (*storage == StorageAuto || autoType) {
+        if (*storage == StorageAuto) *storage = StorageNone;
         const Type *deduced = types_.deducedType();
         return quals->isConst ? types_.withConst(deduced) : deduced;
     }
@@ -2306,10 +2956,24 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
                               "elements are objects, and a reference is not "
                               "one");
     std::vector<long long> dims;
+    std::vector<const DepExpr *> expressed;
     // `[[` is an attribute after the bound, [dcl.attr.grammar]/6, and never a bound of its own.
     while (!(peek().is("[") && peekAt(1).is("[")) && consume("[")) {
+        expressed.resize(dims.size() + 1, nullptr);
         if (consume("]")) { dims.push_back(-1); skipAttributes(); continue; }
         std::size_t dpos = peek().pos;
+        // **`char (*)[sizeof(T) == 4]` while a signature is read as a pattern** - [temp.dep.constexpr]: a
+        // bound over the parameters is kept as the expression, and read again with the arguments bound.
+        if (patternOnly_ && !(peek().kind == TokenKind::Ident && peekAt(1).is("]")) && dependentAhead(false)) {
+            const std::size_t from = at_;
+            DepExpr tree = *dependentExpression(false, true);
+            tree.text = depText(from, at_);
+            expressed.back() = types_.intern(tree);
+            dims.push_back(0);
+            expect("]");
+            skipAttributes();
+            continue;
+        }
         // **`T (&)[N]` while a signature is read for deduction**: a bare name that
         // is a pattern non-type parameter is a reference to it, as in `V<N>`, and
         // what deduceOne binds from the argument's length.
@@ -2336,6 +3000,17 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
         if (dims[i] == -1)
             src_.fail(pos, "only the first dimension may be left empty - the "
                            "others decide how far one step moves");
+    // [dcl.array]/1: the element type is not void, a function type or an abstract class.
+    if (!dims.empty()) {
+        if (base->unqualified()->isVoid())
+            src_.fail(pos, "there is no array of 'void' - [dcl.array]/1");
+        if (base->isFunction())
+            src_.fail(pos, "there is no array of functions - [dcl.array]/1; an array of pointers to "
+                           "them is written 'R (*a[N])(params)'");
+        if (base->unqualified()->isStructOrUnion() && base->unqualified()->abstract())
+            src_.fail(pos, "there is no array of '" + base->unqualified()->describe() + "', an abstract "
+                           "class - [dcl.array]/1 with [class.abstract]/3");
+    }
 
     // **An object this compiler cannot measure is refused where it is written** - every size is a
     // signed 32-bit count, checked by division so the check cannot overflow. **Not in a pattern**,
@@ -2347,7 +3022,8 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
                            "out: " + std::to_string(dims[i]) + " elements of " +
                            std::to_string(elem) + " bytes is past the "
                            "2147483647 an object here is measured in");
-        base = types_.arrayOf(base, dims[i]);
+        base = i < expressed.size() && expressed[i] != nullptr ? types_.dependentArrayOf(base, expressed[i])
+                                                               : types_.arrayOf(base, dims[i]);
     }
     return base;
 }
@@ -2370,7 +3046,6 @@ static std::string conversionSpelling(const Type *t) {
 // comes back is the whole of it - "operator+" - because that is the name the
 // declaration carries on. **Everything this will not take, it refuses by name.**
 std::string Parser::operatorName() {
-    const std::size_t pos = peek().pos;
     at_++;                                    // `operator`
 
     // The two that are written as a *pair* of tokens. `operator()` has to be
@@ -2388,8 +3063,6 @@ std::string Parser::operatorName() {
         expect("]");
         return "operator" + spelling + "[]";
     }
-    if (spelling == "->*")
-        src_.fail(pos, "'operator->*' is not supported yet");
     // **[over.literal]/1: `operator "" _km`**, or `""_km` with the suffix run onto the quotes.
     if (peek().kind == TokenKind::Str) {
         const Token &q = peek();
@@ -2422,8 +3095,7 @@ std::string Parser::operatorName() {
             if (consume("*")) {
                 to = types_.pointerTo(to);
                 while (peek().is("const") || peek().is("volatile")) {
-                    if (peek().is("volatile")) refuseVolatilePointer();
-                    to = types_.withConst(to);
+                    to = peek().is("volatile") && sawVolatile() ? types_.withVolatile(to) : types_.withConst(to);
                     at_++;
                 }
                 continue;
@@ -2451,7 +3123,7 @@ std::string Parser::operatorName() {
 void Parser::checkOperatorDeclarable(const std::string &name,
                                      const std::vector<const Type *> &params,
                                      bool member, std::size_t pos,
-                                     bool internal) {
+                                     bool internal, const Type *returns) {
     if (!literalSuffix(name).empty()) {
         checkLiteralOperator(name, params, member, pos);
         return;
@@ -2476,6 +3148,14 @@ void Parser::checkOperatorDeclarable(const std::string &name,
             src_.fail(pos, "'" + name + "' must take " +
                            std::string(sized ? "a size_t" : "a 'void *'") +
                            " first - [basic.stc.dynamic.allocation]");
+        // And give back `void *`, or nothing from a deallocation function - /1 of both clauses.
+        if (returns != nullptr &&
+            !(sized ? returns->isPointer() && returns->pointee() == types_.get(Kind::Void)
+                    : returns == types_.get(Kind::Void)))
+            src_.fail(pos, "'" + name + "' must return " +
+                           std::string(sized ? "'void *'" : "'void'") + ", and this returns '" +
+                           returns->describe() + "' - [basic.stc.dynamic." +
+                           (sized ? "allocation" : "deallocation") + "]/1");
         // The library's placement pair - `(size_t, void *)`, `(void *, void
         // *)` - may be declared, as <new> declares it; `new (p) T` builds at
         // p without calling it, which is what that pair does.
@@ -2486,9 +3166,7 @@ void Parser::checkOperatorDeclarable(const std::string &name,
             if (second->isReference() && second->pointee()->unqualified()->isStructOrUnion() &&
                 second->pointee()->unqualified()->tag() == "std::nothrow_t") return;
         }
-        // Any further parameters are placement ones - [expr.new]/14 reaches
-        // them from `new (a, b) T`, and a deallocation's from [expr.new]/20.
-        return;
+        return;  // further parameters are placement ones ([expr.new]/14, /20)
     }
 
     // **[over.oper]/6: a non-member operator needs a class or an enumeration
@@ -2512,9 +3190,20 @@ void Parser::checkOperatorDeclarable(const std::string &name,
     // `this` is the first operand of a member operator and is not in the list.
     const std::size_t operands = params.size() + (member ? 1 : 0);
 
+    // [over.oper]/8: no default arguments but on the call operator; [over.inc]/1: postfix's extra one is an int.
+    if (spelling != "()")
+        for (std::size_t i = 0; i < pendingDefaults_.size(); i++)
+            if (pendingDefaults_[i] != 0)
+                src_.fail(pos, "'" + name + "' cannot have a default argument - [over.oper]/8 allows one "
+                               "on 'operator()' alone");
+    if (operands == 2 && (spelling == "++" || spelling == "--") &&
+        params.back()->unqualified()->kind() != Kind::Int)
+        src_.fail(pos, "the parameter of a postfix '" + name + "' must be of type 'int', and this is '" +
+                       params.back()->describe() + "' - [over.inc]/1");
+
     static const char *const binary[] = {
         "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>",
-        "==", "!=", "<", "<=", ">", ">="
+        "==", "!=", "<", "<=", ">", ">=", "&&", "||", ",", "->*"
     };
     if (operands == 2)
         for (const char *k : binary)
@@ -2632,7 +3321,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         for (;;) {
             if (skipAttributes()) continue;
             if (consume("const"))    { base = types_.withConst(base); continue; }
-            if (peek().is("volatile")) refuseVolatilePointer();
+            if (consume("volatile")) { sawVolatile(); base = types_.withVolatile(base); continue; }
             break;
         }
     }
@@ -2640,6 +3329,8 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // A reference binds after every star - `int *&r` is a reference to a pointer -
     // and there is nothing on the other side of it, a reference being no object to
     // point at. **`&&` binds like `&`**, differing only in what it will take.
+    if ((peek().is("&") || peek().is("&&")) && base->unqualified()->isVoid())
+        src_.fail(peek().pos, "cannot form a reference to 'void' - [dcl.ref]/1");
     if (consume("&&")) {
         skipAttributes();
         base = base->isReference() ? base : types_.rvalueReferenceTo(base);  // [dcl.ref]/6 collapsing
@@ -2668,7 +3359,23 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                                   " &' is what qualifies what it refers to");
     }
 
-    if (peek().is("(")) {
+    // [dcl.name]: with the name left out, a parenthesis inside a parenthesised declarator may open the parameter
+    // list the name would have stood before - `int (*(double))(double)`, a function taking a double that returns a
+    // pointer to a function - and it does where a parameter can start: at `)`, at `...`, at a type. (Until 1.75 it
+    // was read as one more parenthesised declarator, and such a type-id was "expected )".) The same after a
+    // pointer operator outside any parenthesis: `int *(int)` and `const char *()` are functions returning a
+    // pointer (1.80: `std::is_same<decltype(f), const char *()>` read its second argument as a pointer).
+    bool parametersOfNoName = false;
+    if (peek().is("(") && nameOptional && (insideParens || base->isPointer()) && !atParenDeclarator()) {
+        if (peekAt(1).is(")") || peekAt(1).is("...")) parametersOfNoName = true;
+        else {
+            const std::size_t back = at_;
+            at_++;
+            parametersOfNoName = atTypeName();
+            at_ = back;
+        }
+    }
+    if (peek().is("(") && !parametersOfNoName) {
         std::size_t open = at_;
         const Nesting deep(this, peek().pos, "parenthesised declarator");
         at_++;
@@ -2676,15 +3383,34 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         // inside the parentheses points at something, so what follows them is a parameter
         // list, not an array bound. The class may be nested: `(Nest::In::*m)` (A20).
         std::size_t q = 0;
-        while (peekAt(q).kind == TokenKind::Ident && peekAt(q + 1).is("::")) q += 2;
+        while (peekAt(q).kind == TokenKind::Ident) {
+            std::size_t r = q + 1;
+            // `int (Box<int>::*f)()`: a template-id's arguments are passed over to its `::`.
+            if (peekAt(r).is("<")) {
+                int angle = 0;
+                for (; at_ + r < tokens_.size(); r++) {
+                    const Token &t = peekAt(r);
+                    if (angle > 0 && (t.is("(") || t.is("["))) { r = groupCloseAt(at_ + r) - at_; continue; }
+                    if (t.is("<")) angle++;
+                    else if (t.is(">")) angle--;
+                    else if (t.is(">>")) angle -= 2;
+                    else if (t.is(";") || t.is("{") || t.kind == TokenKind::End) break;
+                    if (angle <= 0) break;
+                }
+                if (angle != 0) break;
+                r++;
+            }
+            if (!peekAt(r).is("::")) break;
+            q = r + 1;
+        }
         const bool wrapsMemberPointer = q > 0 && peekAt(q).is("*");
         // `int (&f)(int)` likewise: a reference to a function, its parameter list outside.
         bool wrapsAPointer = peek().is("*") || peek().is("&") || peek().is("&&") ||
                              wrapsMemberPointer;
 
-        // **To the matching ')' by counting brackets**: the declarator inside was read once here and again below,
-        // so `int (((x)))` cost 2^N for N parentheses (review of 1.25, fix 5). Balanced in any well-formed
-        // declarator; one that never closes is read the old way, so it is refused where and as it was.
+        // **To the matching ')' by counting brackets**: reading the inner
+        // declarator twice doubled per level (2^N for `int (((x)))`); one that
+        // never closes is read the old way, refused where and as it was.
         std::size_t close = open;
         int depth = 0;
         for (; close < tokens_.size() && tokens_[close].kind != TokenKind::End; close++) {
@@ -2702,15 +3428,17 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             std::vector<const Type *> params;
             bool variadic = false;
             parameterTypes(params, variadic);
-            // **`int (S::*f)() const` is a different type and is refused by name.** A
-            // function type here carries no constness, so taking the word would make
-            // a pointer that could hold a non-const member and be called on a const.
-            if (wrapsMemberPointer && peek().is("const"))
-                src_.fail(peek().pos, "a pointer to a *const* member function "
-                                      "is not supported yet - the constness of "
-                                      "'this' is not part of a function type "
-                                      "here, so this one cannot be told from "
-                                      "the other");
+            // **`int (S::*f)() const` - [dcl.fct]/6: the cv-qualifier-seq is the function
+            // type's**, so the pointer holds a const member and is called on a const object.
+            unsigned cv = 0;
+            while (wrapsMemberPointer && (peek().is("const") || peek().is("volatile"))) {
+                if (consume("const")) cv |= Type::kThisConst;
+                else if (consume("volatile") && sawVolatile()) cv |= Type::kThisVolatile;
+            }
+            if (!wrapsMemberPointer && (peek().is("const") || peek().is("volatile")))
+                src_.fail(peek().pos, "a pointer or reference to a function type cannot "
+                                      "have a '" + peek().text + "' qualifier - only a "
+                                      "non-static member function can, [dcl.fct]/6");
             // `int (S::*)() &` - the ref-qualifier is the function type's, [dcl.fct]/6; a
             // pointer or reference to a non-member function type may not carry one.
             if (!wrapsMemberPointer && (peek().is("&") || peek().is("&&")))
@@ -2718,7 +3446,8 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                                       "have a '" + peek().text + "' qualifier - only a "
                                       "non-static member function can, [dcl.fct]/6");
             const RefQual ref = refQualifier();
-            outer = types_.functionType(base, std::move(params), variadic, ref);
+            fnPointerSpec_ = skipExceptionSpecification();
+            outer = types_.functionType(base, std::move(params), variadic, ref, cv);
         } else {
             outer = arraySuffix(base, posOuter);
         }
@@ -2763,9 +3492,15 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                     src_.fail(peek().pos, "'" + cls->tag() + "' is a type here, "
                                           "and a declaration needs a name after "
                                           "it");
-                at_++;
-                qualifier = cls->tag();
-                name = declaredName("a member name");
+                if (peekAt(1).is("*")) {
+                    // `int Box<int>::*p`: the loop below reads `::*` after the class's own name.
+                    qualifier.clear();
+                    name = cls->tag();
+                } else {
+                    at_++;
+                    qualifier = cls->tag();
+                    name = declaredName("a member name");
+                }
             }
         }
     }
@@ -2791,14 +3526,20 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         if (peekAt(1).is("*")) {
             const std::string of = qualifier.empty() ? name
                                                      : qualifier + "::" + name;
+            // `M C::*` with C a template parameter is a pattern, deduced from `&S::m` (R15).
             const Type *cls = findTypedef(of);
-            if (cls == nullptr || !cls->isStructOrUnion())
+            if (cls == nullptr || !(cls->isStructOrUnion() || cls->kind() == Kind::TemplateParam))
                 src_.fail(pos, "'" + of + "' is not a class, so '" + of +
                                "::*' names no member of anything");
             at_ += 2;                              // the '::' and the '*'
             // cl sizes a member pointer by the class's inheritance model, and an
             // incomplete class takes the three-field "unspecified" form: refused.
-            if (target_.microsoftNames() && !cls->isComplete())
+            // Not the class being defined: its bases are read, and the pointer's size is asked for when the
+            // class is complete - `int Outer::*pick();` as a member of Outer (1.79: refused with the rest).
+            bool beingDefined = currentClass_ != nullptr && currentClass_->unqualified() == cls->unqualified();
+            for (const Type *open : classStack_)
+                beingDefined = beingDefined || (open != nullptr && open->unqualified() == cls->unqualified());
+            if (target_.microsoftNames() && !cls->isComplete() && !beingDefined)
                 src_.fail(pos, "'" + of + "::*' before '" + of + "' is complete - "
                                "the Microsoft ABI sizes a pointer to a member by "
                                "the class's inheritance model, and an incomplete "
@@ -2806,6 +3547,10 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                                "model, 12 and 24 bytes). Not supported yet; "
                                "define the class first");
             const Type *mp;
+            // [dcl.mptr]/3: a pointer to member does not point at a member of reference type, nor of 'void'.
+            if (base->isReference() || base->unqualified()->isVoid())
+                src_.fail(pos, "'" + base->describe() + " " + of + "::*' - a pointer to member cannot point "
+                               "at a member of type '" + base->describe() + "', [dcl.mptr]/3");
             if (base->isFunction()) {
                 mp = types_.memberFunctionPointerTo(cls, base, target_);
             } else {
@@ -2813,7 +3558,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             }
             for (;;) {
                 if (consume("const"))    { mp = types_.withConst(mp); continue; }
-                if (peek().is("volatile")) refuseVolatilePointer();
+                if (consume("volatile")) { sawVolatile(); mp = types_.withVolatile(mp); continue; }
                 break;
             }
             return declarator(mp, nameOptional, insideParens);
@@ -2823,6 +3568,20 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         bool destructor = consume("~");
         name = declaredName("a member name after '::'");
         if (destructor) name = "~" + name;
+        // `int n::B2<int>::*p`: a namespace's class template with its arguments, then `::*` after the class.
+        if (!destructor && peek().is("<")) {
+            auto tmpl = findTemplate(qualifier + "::" + name);
+            if (tmpl != templates_.end() && tmpl->second.isClass) {
+                const std::size_t back = at_;
+                const Type *cls = instantiateClass(tmpl->second, pos);
+                if (peek().is("::") && peekAt(1).is("*")) {
+                    qualifier.clear();
+                    name = cls->tag();
+                } else {
+                    at_ = back;
+                }
+            }
+        }
     }
     // `int b::f()` inside `namespace a`: the qualifier's first name is found innermost first, `a::b`.
     if (!qualifier.empty() && !namespaces_.count(qualifier)) {
@@ -2869,11 +3628,16 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     skipAttributes();
 
     std::size_t paramsAt = 0;
-    if (insideParens && peek().is("(")) {
+    if ((insideParens || (parametersOfNoName && name.empty())) && peek().is("(")) {
         paramsAt = at_;
         std::vector<const Type *> ignored;
         bool ignoredVariadic = false;
         parameterTypes(ignored, ignoredVariadic);
+        // A name-less one has no declaration to make its function type from the list: it is made here.
+        if (parametersOfNoName && name.empty()) {
+            t = types_.functionType(t, std::move(ignored), ignoredVariadic);
+            paramsAt = 0;
+        }
     }
 
     return Declared{ name, t, pos, paramsAt, qualifier };
@@ -2910,6 +3674,7 @@ bool Parser::ownArgsThenParen() const {
     for (std::size_t i = 1;; i++) {
         const Token &t = peekAt(i);
         if (t.kind == TokenKind::End || t.is(";") || t.is("{")) return false;
+        if (depth > 0 && (t.is("(") || t.is("["))) { i = groupCloseAt(at_ + i) - at_; continue; }
         if (t.is("<")) depth++;
         else if (t.is(">")) depth--;
         else if (t.is(">>")) depth -= 2;

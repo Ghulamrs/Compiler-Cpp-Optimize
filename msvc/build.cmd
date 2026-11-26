@@ -1,5 +1,5 @@
 @echo off
-REM Build cxx3.exe with MSVC.
+REM Build cxx1.exe with MSVC.
 REM
 REM The third toolchain, and it is here for what it refuses rather than for
 REM what it produces: a shadowed local or a narrowing MSVC rejects at its own
@@ -47,10 +47,11 @@ cl /nologo /std:c++14 /permissive- /EHsc /W4 /WX /O2 ^
    /wd4996 /wd4267 /wd4244 /wd4456 /wd4146 ^
    /I"%HERE%compat" /I"%ROOT%\src" ^
    /D_CRT_SECURE_NO_WARNINGS ^
-   /DCXX1_INCLUDE_DIR="\"%ROOTFWD%/lib\"" ^
+   /DCXX1_INCLUDE_DIR="\"%ROOTFWD%/../../include/c\"" ^
+   /DCXX1_WIN_INCLUDE_DIR="\"%ROOTFWD%/../../include/win\"" ^
    /DCXX1_CXX_INCLUDE_DIR="\"%ROOTFWD%/include\"" ^
-   /Fo"%ROOT%\obj-msvc\\" /Fe"%ROOT%\cxx3-msvc.exe" ^
+   /Fo"%ROOT%\obj-msvc\\" /Fe"%ROOT%\cxx1-msvc.exe" ^
    "%ROOT%\src\*.cpp" "%ROOT%\src\parser\*.cpp" "%ROOT%\src\backend\*.cpp" "%ROOT%\src\optimizer\*.cpp"
 if errorlevel 1 ( echo build.cmd: FAILED & exit /b 1 )
-echo build.cmd: cxx3-msvc.exe built
+echo build.cmd: cxx1-msvc.exe built
 endlocal

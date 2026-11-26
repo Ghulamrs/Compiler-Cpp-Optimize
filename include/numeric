@@ -1,11 +1,12 @@
-// <numeric> - the numeric algorithms, as much as has been asked for.
+// <numeric> - [numeric.ops], the generalized numeric operations.
 //
-// accumulate is the one this exercise uses: a left fold over a range with a
-// running total. Both forms - the default `+` and a caller's binary operation -
-// are here, because [numeric.ops.accumulate] defines the first in terms of the
-// second and a program may reach for either.
+// Each comes in the form [numeric.ops] defines with `+`, `*` or `-` and the form that takes the
+// caller's operation instead. An accumulator is the value type of the input, held from the first
+// element, so partial_sum and adjacent_difference read each element once.
 #ifndef _CXX1_NUMERIC
 #define _CXX1_NUMERIC
+
+#include <utility>   // move
 
 namespace std {
 
@@ -19,6 +20,73 @@ template <class InputIt, class T, class BinaryOp>
 T accumulate(InputIt first, InputIt last, T init, BinaryOp op) {
     for (; first != last; ++first) init = op(init, *first);
     return init;
+}
+
+template <class InputIt1, class InputIt2, class T>
+T inner_product(InputIt1 first1, InputIt1 last1, InputIt2 first2, T init) {
+    for (; first1 != last1; ++first1, ++first2) init = init + *first1 * *first2;
+    return init;
+}
+
+template <class InputIt1, class InputIt2, class T, class BinaryOp1, class BinaryOp2>
+T inner_product(InputIt1 first1, InputIt1 last1, InputIt2 first2, T init, BinaryOp1 op1, BinaryOp2 op2) {
+    for (; first1 != last1; ++first1, ++first2) init = op1(init, op2(*first1, *first2));
+    return init;
+}
+
+template <class InputIt, class OutputIt>
+OutputIt partial_sum(InputIt first, InputIt last, OutputIt result) {
+    if (first == last) return result;
+    auto sum = *first;
+    *result = sum;
+    while (++first != last) {
+        sum = sum + *first;
+        *++result = sum;
+    }
+    return ++result;
+}
+
+template <class InputIt, class OutputIt, class BinaryOp>
+OutputIt partial_sum(InputIt first, InputIt last, OutputIt result, BinaryOp op) {
+    if (first == last) return result;
+    auto sum = *first;
+    *result = sum;
+    while (++first != last) {
+        sum = op(sum, *first);
+        *++result = sum;
+    }
+    return ++result;
+}
+
+template <class InputIt, class OutputIt>
+OutputIt adjacent_difference(InputIt first, InputIt last, OutputIt result) {
+    if (first == last) return result;
+    auto before = *first;
+    *result = before;
+    while (++first != last) {
+        auto value = *first;
+        *++result = value - before;
+        before = std::move(value);
+    }
+    return ++result;
+}
+
+template <class InputIt, class OutputIt, class BinaryOp>
+OutputIt adjacent_difference(InputIt first, InputIt last, OutputIt result, BinaryOp op) {
+    if (first == last) return result;
+    auto before = *first;
+    *result = before;
+    while (++first != last) {
+        auto value = *first;
+        *++result = op(value, before);
+        before = std::move(value);
+    }
+    return ++result;
+}
+
+template <class ForwardIt, class T>
+void iota(ForwardIt first, ForwardIt last, T value) {
+    for (; first != last; ++first, ++value) *first = value;
 }
 
 }  // namespace std

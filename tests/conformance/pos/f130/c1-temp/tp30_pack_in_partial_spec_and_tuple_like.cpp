@@ -1,0 +1,5 @@
+#include <cstdio>
+template <class... Ts> struct Tup; template <> struct Tup<> { static const int n = 0; }; template <class H, class... T> struct Tup<H, T...> { H h; Tup<T...> t; static const int n = 1 + Tup<T...>::n; };
+template <int I, class Tp> struct Get; template <class H, class... T> struct Get<0, Tup<H, T...>> { static H &get(Tup<H, T...> &t) { return t.h; } }; template <int I, class H, class... T> struct Get<I, Tup<H, T...>> { static auto get(Tup<H, T...> &t) -> decltype(Get<I - 1, Tup<T...>>::get(t.t)) { return Get<I - 1, Tup<T...>>::get(t.t); } };
+template <class T, class... Rest> struct Contains; template <class T> struct Contains<T> { static const bool v = false; }; template <class T, class... Rest> struct Contains<T, T, Rest...> { static const bool v = true; }; template <class T, class U, class... Rest> struct Contains<T, U, Rest...> { static const bool v = Contains<T, Rest...>::v; };
+int main() { Tup<int, char, double> t; Get<0, Tup<int, char, double>>::get(t) = 1; Get<2, Tup<int, char, double>>::get(t) = 2.5; std::printf("%d %d %g %d %d\n", t.n, t.h, t.t.t.h, (int)Contains<char, int, char>::v, (int)Contains<long, int, char>::v); return 0; }

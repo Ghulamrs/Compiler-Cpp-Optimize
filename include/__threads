@@ -1,0 +1,203 @@
+// <__threads> - what <atomic>, <mutex>, <condition_variable>, <thread> and <future> take from the operating
+// system: a lock, a condition variable, a thread and a clock to wait by.
+//
+// Windows' slim reader/writer lock and condition variable are one pointer each and zero when unlocked,
+// so a std::mutex is constexpr-constructible over them. POSIX's are pthread's, held in storage of their size
+// with each C library's static initialiser. The functions are declared in a namespace of this header's own
+// ([dcl.link]/6 makes them C's functions still), with the struct tags lib/windows.h uses, so the two agree
+// where a program includes both. The C6747 has one thread and no scheduler: its lock is nothing.
+#ifndef _CXX1_THREADS
+#define _CXX1_THREADS
+
+#include <cstddef>
+
+#if defined(_WIN32)
+struct _RTL_SRWLOCK;
+struct _RTL_CONDITION_VARIABLE;
+struct _SECURITY_ATTRIBUTES;
+#endif
+
+namespace std {
+namespace __cxx1_os {
+
+#if defined(_WIN32)
+extern "C" {
+void AcquireSRWLockExclusive(::_RTL_SRWLOCK *lock);
+void ReleaseSRWLockExclusive(::_RTL_SRWLOCK *lock);
+unsigned char TryAcquireSRWLockExclusive(::_RTL_SRWLOCK *lock);
+int SleepConditionVariableSRW(::_RTL_CONDITION_VARIABLE *cv, ::_RTL_SRWLOCK *lock, unsigned long milliseconds, unsigned long flags);
+void WakeConditionVariable(::_RTL_CONDITION_VARIABLE *cv);
+void WakeAllConditionVariable(::_RTL_CONDITION_VARIABLE *cv);
+void *CreateThread(::_SECURITY_ATTRIBUTES *attributes, unsigned long long stackSize, unsigned long (*start)(void *),
+                   void *parameter, unsigned long flags, unsigned long *threadId);
+unsigned long WaitForSingleObject(void *handle, unsigned long milliseconds);
+int CloseHandle(void *handle);
+unsigned long GetCurrentThreadId(void);
+int SwitchToThread(void);
+void Sleep(unsigned long milliseconds);
+unsigned long GetActiveProcessorCount(unsigned short group);
+}
+
+struct lock_word {
+    void *p;
+    constexpr lock_word() : p(0) {}
+    ::_RTL_SRWLOCK *srw() { return reinterpret_cast< ::_RTL_SRWLOCK *>(&p); }
+    void lock() { AcquireSRWLockExclusive(srw()); }
+    bool try_lock() { return TryAcquireSRWLockExclusive(srw()) != 0; }
+    void unlock() { ReleaseSRWLockExclusive(srw()); }
+};
+struct cond_word {
+    void *p;
+    constexpr cond_word() : p(0) {}
+    // Waits at most `ms` milliseconds (~0ul for ever); false when the time ran out.
+    bool wait(lock_word &l, unsigned long ms) {
+        return SleepConditionVariableSRW(reinterpret_cast< ::_RTL_CONDITION_VARIABLE *>(&p), l.srw(), ms, 0) != 0;
+    }
+    void notify_one() { WakeConditionVariable(reinterpret_cast< ::_RTL_CONDITION_VARIABLE *>(&p)); }
+    void notify_all() { WakeAllConditionVariable(reinterpret_cast< ::_RTL_CONDITION_VARIABLE *>(&p)); }
+};
+typedef void *thread_handle;
+typedef unsigned long thread_id;
+inline thread_id current_thread() { return GetCurrentThreadId(); }
+inline void yield_now() { SwitchToThread(); }
+inline void sleep_ms(unsigned long ms) { Sleep(ms); }
+inline unsigned processors() { return static_cast<unsigned>(GetActiveProcessorCount(0xffff)); }
+struct start_box { void (*run)(void *); void *arg; };
+inline unsigned long thread_entry(void *p) {
+    start_box *b = static_cast<start_box *>(p);
+    void (*run)(void *) = b->run;
+    void *arg = b->arg;
+    delete b;
+    run(arg);
+    return 0;
+}
+// Starts run(arg) on a new thread; false when the system could not.
+inline bool start_thread(thread_handle *h, thread_id *id, void (*run)(void *), void *arg) {
+    start_box *b = new start_box;
+    b->run = run;
+    b->arg = arg;
+    *h = CreateThread(0, 0, thread_entry, b, 0, id);
+    if (*h == 0) { delete b; return false; }
+    return true;
+}
+inline void join_thread(thread_handle h) { WaitForSingleObject(h, 0xFFFFFFFFul); CloseHandle(h); }
+inline void detach_thread(thread_handle h) { CloseHandle(h); }
+
+#elif defined(__linux__) || defined(__APPLE__)
+extern "C" {
+int pthread_mutex_lock(void *m);
+int pthread_mutex_trylock(void *m);
+int pthread_mutex_unlock(void *m);
+int pthread_cond_wait(void *c, void *m);
+int pthread_cond_timedwait(void *c, void *m, const void *abstime);
+int pthread_cond_signal(void *c);
+int pthread_cond_broadcast(void *c);
+int pthread_create(unsigned long *t, const void *attr, void *(*start)(void *), void *arg);
+int pthread_join(unsigned long t, void **result);
+int pthread_detach(unsigned long t);
+unsigned long pthread_self(void);
+int sched_yield(void);
+int usleep(unsigned int microseconds);
+long sysconf(int name);
+int clock_gettime(int clock, void *now);
+}
+#if defined(__APPLE__)
+static const long long mutex_sig = 0x32AAABA7, cond_sig = 0x3CB0B1BB;
+static const int nprocessors_onln = 58;
+#else
+static const long long mutex_sig = 0, cond_sig = 0;
+static const int nprocessors_onln = 84;
+#endif
+struct lock_word {
+    long long sig, rest[7];
+    constexpr lock_word() : sig(mutex_sig), rest() {}
+    void lock() { pthread_mutex_lock(this); }
+    bool try_lock() { return pthread_mutex_trylock(this) == 0; }
+    void unlock() { pthread_mutex_unlock(this); }
+};
+struct cond_word {
+    long long sig, rest[5];
+    constexpr cond_word() : sig(cond_sig), rest() {}
+    bool wait(lock_word &l, unsigned long ms) {
+        if (ms == ~0ul) return pthread_cond_wait(this, &l) == 0;
+        struct { long long s; long n; } now = { 0, 0 };
+        clock_gettime(0, &now);
+        now.s += static_cast<long long>(ms / 1000);
+        now.n += static_cast<long>(ms % 1000) * 1000000L;
+        if (now.n >= 1000000000L) { now.s++; now.n -= 1000000000L; }
+        return pthread_cond_timedwait(this, &l, &now) == 0;
+    }
+    void notify_one() { pthread_cond_signal(this); }
+    void notify_all() { pthread_cond_broadcast(this); }
+};
+typedef unsigned long thread_handle;
+typedef unsigned long thread_id;
+inline thread_id current_thread() { return pthread_self(); }
+inline void yield_now() { sched_yield(); }
+inline void sleep_ms(unsigned long ms) { usleep(static_cast<unsigned>(ms) * 1000u); }
+inline unsigned processors() { const long n = sysconf(nprocessors_onln); return n > 0 ? static_cast<unsigned>(n) : 0; }
+struct start_box { void (*run)(void *); void *arg; };
+inline void *thread_entry(void *p) {
+    start_box *b = static_cast<start_box *>(p);
+    void (*run)(void *) = b->run;
+    void *arg = b->arg;
+    delete b;
+    run(arg);
+    return 0;
+}
+inline bool start_thread(thread_handle *h, thread_id *id, void (*run)(void *), void *arg) {
+    start_box *b = new start_box;
+    b->run = run;
+    b->arg = arg;
+    if (pthread_create(h, 0, thread_entry, b) != 0) { delete b; return false; }
+    *id = *h;
+    return true;
+}
+inline void join_thread(thread_handle h) { pthread_join(h, 0); }
+inline void detach_thread(thread_handle h) { pthread_detach(h); }
+
+#else
+// One thread and nothing to wait for: the lock is held by its only user, and a wait is a timeout.
+struct lock_word {
+    constexpr lock_word() {}
+    void lock() {}
+    bool try_lock() { return true; }
+    void unlock() {}
+};
+struct cond_word {
+    constexpr cond_word() {}
+    bool wait(lock_word &, unsigned long) { return false; }
+    void notify_one() {}
+    void notify_all() {}
+};
+typedef int thread_handle;
+typedef unsigned long thread_id;
+inline thread_id current_thread() { return 1; }
+inline void yield_now() {}
+inline void sleep_ms(unsigned long) {}
+inline unsigned processors() { return 1; }
+inline bool start_thread(thread_handle *, thread_id *, void (*)(void *), void *) { return false; }
+inline void join_thread(thread_handle) {}
+inline void detach_thread(thread_handle) {}
+#endif
+
+// The one lock every std::atomic and call_once shares: a function's static, so one object in the program.
+inline lock_word &global_lock() {
+    static lock_word l;
+    return l;
+}
+inline cond_word &global_cond() {
+    static cond_word c;
+    return c;
+}
+struct global_guard {
+    global_guard() { global_lock().lock(); }
+    ~global_guard() { global_lock().unlock(); }
+    global_guard(const global_guard &) = delete;
+    void operator=(const global_guard &) = delete;
+};
+
+}  // namespace __cxx1_os
+}  // namespace std
+
+#endif

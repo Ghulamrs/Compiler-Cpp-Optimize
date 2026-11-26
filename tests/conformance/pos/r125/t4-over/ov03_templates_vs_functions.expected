@@ -1,0 +1,6 @@
+int T T
+T T* T
+T& const T& T&
+spec<int> T T
+T,T T,U T,T
+T const T* T

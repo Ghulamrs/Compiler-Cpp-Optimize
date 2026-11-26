@@ -1,0 +1,222 @@
+// <unordered_set> - [unord.set], [unord.multiset]: a set and a multiset kept by hash, over <__hashtable>. An
+// element is its own key and may not change, so iterator and const_iterator both read it const.
+#ifndef _CXX1_UNORDERED_SET
+#define _CXX1_UNORDERED_SET
+
+#include <cstddef>
+#include <initializer_list>
+#include <utility>
+#include <functional>
+#include <__allocator>
+#include <__hashtable>
+
+namespace std {
+
+template <class Key, class Hash, class Pred, class Alloc, bool Unique> class __cxx1_unordered_set_base {
+protected:
+    typedef __cxx1_hashtable<Key, __cxx1_key_self<Key>, Hash, Pred, Alloc, Unique> table;
+    table t_;
+
+public:
+    typedef Key key_type;
+    typedef Key value_type;
+    typedef Hash hasher;
+    typedef Pred key_equal;
+    typedef Alloc allocator_type;
+    typedef value_type &reference;
+    typedef const value_type &const_reference;
+    typedef value_type *pointer;
+    typedef const value_type *const_pointer;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef typename table::const_iterator iterator;
+    typedef typename table::const_iterator const_iterator;
+    typedef typename table::const_local_iterator local_iterator;
+    typedef typename table::const_local_iterator const_local_iterator;
+
+    explicit __cxx1_unordered_set_base(size_type n, const Hash &h, const Pred &e, const Alloc &a) : t_(n, h, e, a) {}
+    __cxx1_unordered_set_base(const __cxx1_unordered_set_base &o, const Alloc &a) : t_(o.t_, a) {}
+    __cxx1_unordered_set_base(__cxx1_unordered_set_base &&o, const Alloc &a) : t_(std::move(o.t_), a) {}
+    __cxx1_unordered_set_base(const __cxx1_unordered_set_base &o) : t_(o.t_) {}
+    __cxx1_unordered_set_base(__cxx1_unordered_set_base &&o) : t_(std::move(o.t_)) {}
+    __cxx1_unordered_set_base &operator=(const __cxx1_unordered_set_base &o) {
+        t_ = o.t_;
+        return *this;
+    }
+    __cxx1_unordered_set_base &operator=(__cxx1_unordered_set_base &&o) {
+        t_ = std::move(o.t_);
+        return *this;
+    }
+
+    allocator_type get_allocator() const noexcept { return t_.get_allocator(); }
+    bool empty() const noexcept { return t_.empty(); }
+    size_type size() const noexcept { return t_.size(); }
+    size_type max_size() const noexcept { return t_.max_size(); }
+    iterator begin() const noexcept { return t_.begin(); }
+    iterator end() const noexcept { return t_.end(); }
+    const_iterator cbegin() const noexcept { return t_.begin(); }
+    const_iterator cend() const noexcept { return t_.end(); }
+
+    iterator erase(const_iterator pos) { return t_.erase(pos); }
+    size_type erase(const key_type &k) { return t_.eraseKey(k); }
+    iterator erase(const_iterator first, const_iterator last) { return t_.erase(first, last); }
+    void clear() noexcept { t_.clear(); }
+
+    hasher hash_function() const { return t_.hash_function(); }
+    key_equal key_eq() const { return t_.key_eq(); }
+    const_iterator find(const key_type &k) const { return t_.find(k); }
+    size_type count(const key_type &k) const { return t_.count(k); }
+    pair<const_iterator, const_iterator> equal_range(const key_type &k) const { return t_.equal_range(k); }
+
+    size_type bucket_count() const noexcept { return t_.bucket_count(); }
+    size_type max_bucket_count() const noexcept { return t_.max_bucket_count(); }
+    size_type bucket_size(size_type n) const { return t_.bucket_size(n); }
+    size_type bucket(const key_type &k) const { return t_.bucket(k); }
+    const_local_iterator begin(size_type n) const { return t_.begin(n); }
+    const_local_iterator end(size_type n) const { return t_.end(n); }
+    const_local_iterator cbegin(size_type n) const { return t_.begin(n); }
+    const_local_iterator cend(size_type n) const { return t_.end(n); }
+    float load_factor() const noexcept { return t_.load_factor(); }
+    float max_load_factor() const noexcept { return t_.max_load_factor(); }
+    void max_load_factor(float z) { t_.max_load_factor(z); }
+    void rehash(size_type n) { t_.rehash(n); }
+    void reserve(size_type n) { t_.reserve(n); }
+
+    bool __cxx1_equal(const __cxx1_unordered_set_base &o) const { return t_.equals(o.t_); }
+};
+
+template <class Key, class Hash = hash<Key>, class Pred = equal_to<Key>, class Alloc = allocator<Key> >
+class unordered_set : public __cxx1_unordered_set_base<Key, Hash, Pred, Alloc, true> {
+    typedef __cxx1_unordered_set_base<Key, Hash, Pred, Alloc, true> base;
+
+public:
+    typedef typename base::size_type size_type;
+    typedef typename base::value_type value_type;
+    typedef typename base::iterator iterator;
+    typedef typename base::const_iterator const_iterator;
+
+    explicit unordered_set(size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(), const Alloc &a = Alloc())
+        : base(n, h, e, a) {}
+    template <class It>
+    unordered_set(It first, It last, size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(),
+                  const Alloc &a = Alloc())
+        : base(n, h, e, a) {
+        insert(first, last);
+    }
+    explicit unordered_set(const Alloc &a) : base(11, Hash(), Pred(), a) {}
+    unordered_set(const unordered_set &o) : base(o) {}
+    unordered_set(unordered_set &&o) : base(std::move(o)) {}
+    unordered_set(const unordered_set &o, const Alloc &a) : base(o, a) {}
+    unordered_set(unordered_set &&o, const Alloc &a) : base(std::move(o), a) {}
+    unordered_set(initializer_list<value_type> il, size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(),
+                  const Alloc &a = Alloc())
+        : base(n, h, e, a) {
+        insert(il.begin(), il.end());
+    }
+    unordered_set &operator=(const unordered_set &o) {
+        base::operator=(o);
+        return *this;
+    }
+    unordered_set &operator=(unordered_set &&o) {
+        base::operator=(std::move(o));
+        return *this;
+    }
+    unordered_set &operator=(initializer_list<value_type> il) {
+        this->clear();
+        insert(il.begin(), il.end());
+        return *this;
+    }
+
+    template <class... A> pair<iterator, bool> emplace(A &&... a) {
+        pair<typename base::table::iterator, bool> r = this->t_.emplace(std::forward<A>(a)...);
+        return pair<iterator, bool>(r.first, r.second);
+    }
+    template <class... A> iterator emplace_hint(const_iterator, A &&... a) { return emplace(std::forward<A>(a)...).first; }
+    pair<iterator, bool> insert(const value_type &v) {
+        pair<typename base::table::iterator, bool> r = this->t_.insertValue(v);
+        return pair<iterator, bool>(r.first, r.second);
+    }
+    pair<iterator, bool> insert(value_type &&v) {
+        pair<typename base::table::iterator, bool> r = this->t_.insertValue(std::move(v));
+        return pair<iterator, bool>(r.first, r.second);
+    }
+    iterator insert(const_iterator, const value_type &v) { return insert(v).first; }
+    iterator insert(const_iterator, value_type &&v) { return insert(std::move(v)).first; }
+    template <class It> void insert(It first, It last) {
+        for (; first != last; ++first) this->t_.insertValue(*first);
+    }
+    void insert(initializer_list<value_type> il) { insert(il.begin(), il.end()); }
+    void swap(unordered_set &o) { this->t_.swap(o.t_); }
+};
+
+template <class Key, class Hash = hash<Key>, class Pred = equal_to<Key>, class Alloc = allocator<Key> >
+class unordered_multiset : public __cxx1_unordered_set_base<Key, Hash, Pred, Alloc, false> {
+    typedef __cxx1_unordered_set_base<Key, Hash, Pred, Alloc, false> base;
+
+public:
+    typedef typename base::size_type size_type;
+    typedef typename base::value_type value_type;
+    typedef typename base::iterator iterator;
+    typedef typename base::const_iterator const_iterator;
+
+    explicit unordered_multiset(size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(), const Alloc &a = Alloc())
+        : base(n, h, e, a) {}
+    template <class It>
+    unordered_multiset(It first, It last, size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(),
+                       const Alloc &a = Alloc())
+        : base(n, h, e, a) {
+        insert(first, last);
+    }
+    explicit unordered_multiset(const Alloc &a) : base(11, Hash(), Pred(), a) {}
+    unordered_multiset(const unordered_multiset &o) : base(o) {}
+    unordered_multiset(unordered_multiset &&o) : base(std::move(o)) {}
+    unordered_multiset(const unordered_multiset &o, const Alloc &a) : base(o, a) {}
+    unordered_multiset(unordered_multiset &&o, const Alloc &a) : base(std::move(o), a) {}
+    unordered_multiset(initializer_list<value_type> il, size_type n = 11, const Hash &h = Hash(), const Pred &e = Pred(),
+                       const Alloc &a = Alloc())
+        : base(n, h, e, a) {
+        insert(il.begin(), il.end());
+    }
+    unordered_multiset &operator=(const unordered_multiset &o) {
+        base::operator=(o);
+        return *this;
+    }
+    unordered_multiset &operator=(unordered_multiset &&o) {
+        base::operator=(std::move(o));
+        return *this;
+    }
+    unordered_multiset &operator=(initializer_list<value_type> il) {
+        this->clear();
+        insert(il.begin(), il.end());
+        return *this;
+    }
+
+    template <class... A> iterator emplace(A &&... a) { return this->t_.emplace(std::forward<A>(a)...).first; }
+    template <class... A> iterator emplace_hint(const_iterator, A &&... a) { return emplace(std::forward<A>(a)...); }
+    iterator insert(const value_type &v) { return this->t_.insertValue(v).first; }
+    iterator insert(value_type &&v) { return this->t_.insertValue(std::move(v)).first; }
+    iterator insert(const_iterator, const value_type &v) { return insert(v); }
+    iterator insert(const_iterator, value_type &&v) { return insert(std::move(v)); }
+    template <class It> void insert(It first, It last) {
+        for (; first != last; ++first) this->t_.insertValue(*first);
+    }
+    void insert(initializer_list<value_type> il) { insert(il.begin(), il.end()); }
+    void swap(unordered_multiset &o) { this->t_.swap(o.t_); }
+};
+
+template <class K, class H, class P, class A>
+inline bool operator==(const unordered_set<K, H, P, A> &x, const unordered_set<K, H, P, A> &y) { return x.__cxx1_equal(y); }
+template <class K, class H, class P, class A>
+inline bool operator!=(const unordered_set<K, H, P, A> &x, const unordered_set<K, H, P, A> &y) { return !x.__cxx1_equal(y); }
+template <class K, class H, class P, class A>
+inline bool operator==(const unordered_multiset<K, H, P, A> &x, const unordered_multiset<K, H, P, A> &y) { return x.__cxx1_equal(y); }
+template <class K, class H, class P, class A>
+inline bool operator!=(const unordered_multiset<K, H, P, A> &x, const unordered_multiset<K, H, P, A> &y) { return !x.__cxx1_equal(y); }
+template <class K, class H, class P, class A>
+inline void swap(unordered_set<K, H, P, A> &x, unordered_set<K, H, P, A> &y) { x.swap(y); }
+template <class K, class H, class P, class A>
+inline void swap(unordered_multiset<K, H, P, A> &x, unordered_multiset<K, H, P, A> &y) { x.swap(y); }
+
+}  // namespace std
+
+#endif

@@ -1,0 +1,105 @@
+// <ratio> - [ratio]: compile-time rational arithmetic. A ratio is reduced to lowest terms with a positive
+// denominator; the arithmetic is done on intmax_t and refuses an overflow ([ratio.arithmetic]/2 makes it
+// ill-formed) by a static_assert rather than wrapping.
+#ifndef _CXX1_RATIO
+#define _CXX1_RATIO
+
+#include <cstdint>
+#include <type_traits>
+
+namespace std {
+
+template <intmax_t X> struct __cxx1_static_abs { static const intmax_t value = X < 0 ? -X : X; };
+template <intmax_t X> struct __cxx1_static_sign { static const intmax_t value = X < 0 ? -1 : 1; };
+template <intmax_t A, intmax_t B> struct __cxx1_static_gcd { static const intmax_t value = __cxx1_static_gcd<B, A % B>::value; };
+template <intmax_t A> struct __cxx1_static_gcd<A, 0> { static const intmax_t value = __cxx1_static_abs<A>::value; };
+template <> struct __cxx1_static_gcd<0, 0> { static const intmax_t value = 1; };
+
+// The product and the sum, each checked against intmax_t's range before it is formed.
+template <intmax_t A, intmax_t B> struct __cxx1_safe_mul {
+    static const intmax_t max = INTMAX_MAX;
+    static_assert(A == 0 || B == 0 || __cxx1_static_abs<A>::value <= max / __cxx1_static_abs<B>::value,
+                  "overflow in a ratio's arithmetic - [ratio.arithmetic]/2");
+    static const intmax_t value = A * B;
+};
+template <intmax_t A, intmax_t B> struct __cxx1_safe_add {
+    static_assert((B >= 0 && A <= INTMAX_MAX - B) || (B < 0 && A >= INTMAX_MIN - B),
+                  "overflow in a ratio's arithmetic - [ratio.arithmetic]/2");
+    static const intmax_t value = A + B;
+};
+
+template <intmax_t N, intmax_t D = 1> class ratio {
+    static_assert(D != 0, "a ratio's denominator may not be zero - [ratio.ratio]/1");
+    static_assert(N != INTMAX_MIN && D != INTMAX_MIN, "a ratio's terms must be representable negated - [ratio.ratio]/1");
+    static const intmax_t gcd_ = __cxx1_static_gcd<N, D>::value;
+
+public:
+    static constexpr intmax_t num = __cxx1_static_sign<D>::value * N / gcd_;
+    static constexpr intmax_t den = __cxx1_static_abs<D>::value / gcd_;
+    typedef ratio<num, den> type;
+};
+template <intmax_t N, intmax_t D> constexpr intmax_t ratio<N, D>::num;
+template <intmax_t N, intmax_t D> constexpr intmax_t ratio<N, D>::den;
+
+// [ratio.arithmetic]
+template <class R1, class R2> struct __cxx1_ratio_add {
+    static const intmax_t g = __cxx1_static_gcd<R1::den, R2::den>::value;
+    typedef typename ratio<__cxx1_safe_add<__cxx1_safe_mul<R1::num, R2::den / g>::value,
+                                           __cxx1_safe_mul<R2::num, R1::den / g>::value>::value,
+                           __cxx1_safe_mul<R1::den, R2::den / g>::value>::type type;
+};
+template <class R1, class R2> struct __cxx1_ratio_multiply {
+    static const intmax_t g1 = __cxx1_static_gcd<R1::num, R2::den>::value;
+    static const intmax_t g2 = __cxx1_static_gcd<R2::num, R1::den>::value;
+    typedef typename ratio<__cxx1_safe_mul<R1::num / g1, R2::num / g2>::value,
+                           __cxx1_safe_mul<R1::den / g2, R2::den / g1>::value>::type type;
+};
+template <class R1, class R2> using ratio_add = typename __cxx1_ratio_add<R1, R2>::type;
+template <class R1, class R2> using ratio_subtract = typename __cxx1_ratio_add<R1, ratio<-R2::num, R2::den> >::type;
+template <class R1, class R2> using ratio_multiply = typename __cxx1_ratio_multiply<R1, R2>::type;
+template <class R1, class R2> using ratio_divide = typename __cxx1_ratio_multiply<R1, ratio<R2::den, R2::num> >::type;
+
+// [ratio.comparison]: compared by cross products where they fit, by continued fractions where they would not.
+template <class R1, class R2> struct ratio_equal : integral_constant<bool, R1::num == R2::num && R1::den == R2::den> {};
+template <class R1, class R2> struct ratio_not_equal : integral_constant<bool, !ratio_equal<R1, R2>::value> {};
+template <intmax_t N1, intmax_t D1, intmax_t N2, intmax_t D2, bool = (N1 / D1 != N2 / D2), bool = (N2 % D2 == 0)>
+struct __cxx1_ratio_less_cf;
+template <intmax_t N1, intmax_t D1, intmax_t N2, intmax_t D2, bool Z>
+struct __cxx1_ratio_less_cf<N1, D1, N2, D2, true, Z> : integral_constant<bool, (N1 / D1 < N2 / D2)> {};
+template <intmax_t N1, intmax_t D1, intmax_t N2, intmax_t D2>
+struct __cxx1_ratio_less_cf<N1, D1, N2, D2, false, true> : integral_constant<bool, false> {};
+template <intmax_t N1, intmax_t D1, intmax_t N2, intmax_t D2>
+struct __cxx1_ratio_less_cf<N1, D1, N2, D2, false, false>
+    : integral_constant<bool, N1 % D1 == 0 ? true : __cxx1_ratio_less_cf<D2, N2 % D2, D1, (N1 % D1 == 0 ? 1 : N1 % D1)>::value> {};
+template <class R1, class R2, bool = (R1::num < 0), bool = (R2::num < 0)> struct __cxx1_ratio_less
+    : __cxx1_ratio_less_cf<R1::num, R1::den, R2::num, R2::den> {};
+template <class R1, class R2> struct __cxx1_ratio_less<R1, R2, true, false> : integral_constant<bool, true> {};
+template <class R1, class R2> struct __cxx1_ratio_less<R1, R2, false, true> : integral_constant<bool, false> {};
+template <class R1, class R2> struct __cxx1_ratio_less<R1, R2, true, true>
+    : __cxx1_ratio_less_cf<-R2::num, R2::den, -R1::num, R1::den> {};
+template <class R1, class R2> struct ratio_less : integral_constant<bool, __cxx1_ratio_less<R1, R2>::value> {};
+template <class R1, class R2> struct ratio_less_equal : integral_constant<bool, !ratio_less<R2, R1>::value> {};
+template <class R1, class R2> struct ratio_greater : integral_constant<bool, ratio_less<R2, R1>::value> {};
+template <class R1, class R2> struct ratio_greater_equal : integral_constant<bool, !ratio_less<R1, R2>::value> {};
+
+// [ratio.si]: yocto, zepto, zetta and yotta need more than 64 bits and are left out, as [ratio.si]/1 allows.
+typedef ratio<1, 1000000000000000000LL> atto;
+typedef ratio<1, 1000000000000000LL> femto;
+typedef ratio<1, 1000000000000LL> pico;
+typedef ratio<1, 1000000000LL> nano;
+typedef ratio<1, 1000000LL> micro;
+typedef ratio<1, 1000LL> milli;
+typedef ratio<1, 100LL> centi;
+typedef ratio<1, 10LL> deci;
+typedef ratio<10LL, 1> deca;
+typedef ratio<100LL, 1> hecto;
+typedef ratio<1000LL, 1> kilo;
+typedef ratio<1000000LL, 1> mega;
+typedef ratio<1000000000LL, 1> giga;
+typedef ratio<1000000000000LL, 1> tera;
+typedef ratio<1000000000000000LL, 1> peta;
+typedef ratio<1000000000000000000LL, 1> exa;
+
+}  // namespace std
+
+#endif

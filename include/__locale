@@ -1,0 +1,967 @@
+// <__locale> - [locales]: the locale, and the facets every stream needs - ctype, codecvt, numpunct, collate.
+//
+// A locale shares a table of facets indexed by each facet type's locale::id. The "C" locale is the only named
+// one: "C", "POSIX" and "" name it. Its standard facets are made the first time one is asked for, so a facet is
+// declared in the header that can define it (num_get and num_put beside the streams) and still belongs to every
+// locale that has not replaced it.
+#ifndef _CXX1___LOCALE
+#define _CXX1___LOCALE
+
+#include <cctype>
+#include <climits>
+#include <clocale>
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <cwchar>
+#include <cwctype>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <typeinfo>
+#include <__threads>
+
+namespace std {
+
+class locale;
+template <class Facet> const Facet &use_facet(const locale &loc);
+template <class Facet> bool has_facet(const locale &loc) noexcept;
+
+// What a standard facet is and how the "C" locale makes it: specialized beside each standard facet.
+template <class Facet> struct __cxx1_standard_facet {
+    static const bool is = false;
+    static Facet *make() { return 0; }
+};
+
+struct __cxx1_locale_rep;
+
+class locale {
+public:
+    // [locale.facet]: a facet made with refs 0 is deleted with the last locale holding it; one made with refs 1
+    // is the program's to delete.
+    class facet {
+        friend class locale;
+        friend struct __cxx1_locale_rep;
+        size_t refs_;
+        size_t uses_;
+
+    protected:
+        explicit facet(size_t refs = 0) : refs_(refs), uses_(0) {}
+        virtual ~facet() {}
+
+    public:
+        // The category a standard facet belongs to, for locale(other, one, cats); a program's own has none.
+        static const int __cxx1_category = 0;
+        facet(const facet &) = delete;
+        void operator=(const facet &) = delete;
+    };
+    // [locale.id]: each facet type's index in every locale, given out the first time the type is asked for.
+    class id {
+        friend class locale;
+        size_t index_;
+
+    public:
+        id() {}
+        void operator=(const id &) = delete;
+        id(const id &) = delete;
+        size_t __cxx1_index() {
+            if (index_ == 0) {
+                std::__cxx1_os::global_guard g;
+                if (index_ == 0) index_ = ++counter();
+            }
+            return index_;
+        }
+
+    private:
+        static size_t &counter() {
+            static size_t n = 0;
+            return n;
+        }
+    };
+
+    typedef int category;
+    static const category none = 0;
+    static const category collate = 0x010;
+    static const category ctype = 0x020;
+    static const category monetary = 0x040;
+    static const category numeric = 0x080;
+    static const category time = 0x100;
+    static const category messages = 0x200;
+    static const category all = collate | ctype | monetary | numeric | time | messages;
+
+    locale() noexcept;
+    locale(const locale &other) noexcept;
+    explicit locale(const char *std_name);
+    explicit locale(const string &std_name);
+    locale(const locale &other, const char *std_name, category cats);
+    locale(const locale &other, const string &std_name, category cats);
+    template <class Facet> locale(const locale &other, Facet *f);
+    locale(const locale &other, const locale &one, category cats);
+    ~locale();
+    const locale &operator=(const locale &other) noexcept;
+
+    template <class Facet> locale combine(const locale &other) const;
+    string name() const;
+    // Which table this locale reads: a stream's cached facet is still good while this has not changed.
+    const void *__cxx1_key() const noexcept { return rep_; }
+    bool operator==(const locale &other) const;
+    bool operator!=(const locale &other) const { return !(*this == other); }
+    template <class charT, class traits, class Allocator>
+    bool operator()(const basic_string<charT, traits, Allocator> &s1, const basic_string<charT, traits, Allocator> &s2) const;
+
+    static locale global(const locale &loc);
+    static const locale &classic();
+
+    // The facet at an index, the "C" locale's where this one has none; null where neither has it.
+    const facet *__cxx1_find(size_t index) const;
+    // The "C" locale's standard facet at an index, made now if it has not been.
+    const facet *__cxx1_standard(size_t index, facet *(*make)(), int cat) const;
+
+private:
+    explicit locale(__cxx1_locale_rep *r) : rep_(r) {}
+    static __cxx1_locale_rep *classicRep();
+    static locale &globalLocale();
+    static bool cName(const char *name) { return name != 0 && (std::strcmp(name, "C") == 0 || std::strcmp(name, "POSIX") == 0 || name[0] == 0); }
+    static void refuseName(const char *name) {
+        if (!cName(name))
+            throw runtime_error(string("locale: '") + (name != 0 ? name : "(null)") +
+                                "' is not a locale this implementation has - \"C\" is the only one");
+    }
+    void replaceCategories(const locale &from, category cats);
+
+    __cxx1_locale_rep *rep_;
+};
+
+// The table: facets by index, each with its category. `base` is the "C" locale's table, read where this one has
+// nothing at an index; the "C" locale's own has none.
+struct __cxx1_locale_rep {
+    size_t uses;
+    size_t size;
+    locale::facet **facets;
+    int *cats;
+    string name;
+    __cxx1_locale_rep *base;
+
+    __cxx1_locale_rep() : uses(1), size(0), facets(0), cats(0), name("C"), base(0) {}
+    ~__cxx1_locale_rep() {
+        for (size_t i = 0; i < size; i++) drop(facets[i]);
+        delete[] facets;
+        delete[] cats;
+    }
+    static void hold(locale::facet *f) {
+        if (f != 0) f->uses_++;
+    }
+    static void drop(locale::facet *f) {
+        if (f != 0 && --f->uses_ == 0 && f->refs_ == 0) delete f;
+    }
+    void grow(size_t n) {
+        if (n <= size) return;
+        locale::facet **nf = new locale::facet *[n];
+        int *nc = new int[n];
+        for (size_t i = 0; i < n; i++) {
+            nf[i] = i < size ? facets[i] : 0;
+            nc[i] = i < size ? cats[i] : 0;
+        }
+        delete[] facets;
+        delete[] cats;
+        facets = nf;
+        cats = nc;
+        size = n;
+    }
+    void put(size_t index, locale::facet *f, int cat) {
+        grow(index + 1);
+        hold(f);
+        drop(facets[index]);
+        facets[index] = f;
+        cats[index] = cat;
+    }
+    __cxx1_locale_rep *copy() const {
+        __cxx1_locale_rep *r = new __cxx1_locale_rep;
+        r->grow(size);
+        for (size_t i = 0; i < size; i++) {
+            hold(facets[i]);
+            r->facets[i] = facets[i];
+            r->cats[i] = cats[i];
+        }
+        r->name = name;
+        r->base = base != 0 ? base : const_cast<__cxx1_locale_rep *>(this);
+        return r;
+    }
+};
+
+inline __cxx1_locale_rep *locale::classicRep() {
+    static __cxx1_locale_rep *r = new __cxx1_locale_rep;
+    return r;
+}
+inline locale &locale::globalLocale() {
+    static locale *g = new locale(classic());
+    return *g;
+}
+inline const locale &locale::classic() {
+    static const locale *c = new locale(classicRep());
+    return *c;
+}
+// The global locale is made before the lock is taken: making it copies the "C" locale, which takes the lock.
+inline locale::locale() noexcept {
+    locale &global = globalLocale();
+    std::__cxx1_os::global_guard g;
+    rep_ = global.rep_;
+    rep_->uses++;
+}
+inline locale::locale(const locale &other) noexcept : rep_(other.rep_) {
+    std::__cxx1_os::global_guard g;
+    rep_->uses++;
+}
+inline locale::locale(const char *std_name) {
+    refuseName(std_name);
+    std::__cxx1_os::global_guard g;
+    rep_ = classicRep();
+    rep_->uses++;
+}
+inline locale::locale(const string &std_name) {
+    refuseName(std_name.c_str());
+    std::__cxx1_os::global_guard g;
+    rep_ = classicRep();
+    rep_->uses++;
+}
+inline locale::locale(const locale &other, const char *std_name, category cats) {
+    refuseName(std_name);
+    std::__cxx1_os::global_guard g;
+    rep_ = other.rep_->copy();
+    replaceCategories(classic(), cats);
+    if (other.rep_->name != "C") rep_->name = "*";
+}
+inline locale::locale(const locale &other, const string &std_name, category cats) {
+    refuseName(std_name.c_str());
+    std::__cxx1_os::global_guard g;
+    rep_ = other.rep_->copy();
+    replaceCategories(classic(), cats);
+    if (other.rep_->name != "C") rep_->name = "*";
+}
+inline locale::locale(const locale &other, const locale &one, category cats) {
+    std::__cxx1_os::global_guard g;
+    rep_ = other.rep_->copy();
+    replaceCategories(one, cats);
+    if (!(other.rep_->name == "C" && one.rep_->name == "C")) rep_->name = "*";
+}
+template <class Facet> locale::locale(const locale &other, Facet *f) {
+    classicRep();
+    if (f == 0) {
+        std::__cxx1_os::global_guard g;
+        rep_ = other.rep_;
+        rep_->uses++;
+        return;
+    }
+    const size_t index = Facet::id.__cxx1_index();
+    std::__cxx1_os::global_guard g;
+    rep_ = other.rep_->copy();
+    rep_->put(index, f, Facet::__cxx1_category);
+    rep_->name = "*";
+}
+inline locale::~locale() {
+    __cxx1_locale_rep *dead = 0;
+    {
+        std::__cxx1_os::global_guard g;
+        if (--rep_->uses == 0 && rep_ != classicRep()) dead = rep_;
+    }
+    delete dead;
+}
+inline const locale &locale::operator=(const locale &other) noexcept {
+    __cxx1_locale_rep *dead = 0;
+    {
+        std::__cxx1_os::global_guard g;
+        other.rep_->uses++;
+        if (--rep_->uses == 0 && rep_ != classicRep()) dead = rep_;
+        rep_ = other.rep_;
+    }
+    delete dead;
+    return *this;
+}
+// A category's facets taken from `from`: this table's own of those categories dropped, then `from`'s own put in.
+inline void locale::replaceCategories(const locale &from, category cats) {
+    for (size_t i = 0; i < rep_->size; i++)
+        if ((rep_->cats[i] & cats) != 0) {
+            __cxx1_locale_rep::drop(rep_->facets[i]);
+            rep_->facets[i] = 0;
+            rep_->cats[i] = 0;
+        }
+    if (from.rep_ == classicRep()) return;
+    for (size_t i = 0; i < from.rep_->size; i++)
+        if (from.rep_->facets[i] != 0 && (from.rep_->cats[i] & cats) != 0) rep_->put(i, from.rep_->facets[i], from.rep_->cats[i]);
+}
+template <class Facet> locale locale::combine(const locale &other) const {
+    if (!has_facet<Facet>(other)) throw runtime_error("locale::combine: the other locale has no such facet");
+    return locale(*this, const_cast<Facet *>(&use_facet<Facet>(other)));
+}
+inline string locale::name() const {
+    std::__cxx1_os::global_guard g;
+    return rep_->name;
+}
+inline bool locale::operator==(const locale &other) const {
+    if (rep_ == other.rep_) return true;
+    std::__cxx1_os::global_guard g;
+    return rep_->name != "*" && rep_->name == other.rep_->name;
+}
+// [locale.statics]/1: the global locale replaced, and the C library's set to it where it has a name. `was` holds
+// the previous one, so its count does not reach 0 here.
+inline locale locale::global(const locale &loc) {
+    locale was;
+    locale &cur = globalLocale();
+    string named;
+    {
+        std::__cxx1_os::global_guard g;
+        loc.rep_->uses++;
+        cur.rep_->uses--;
+        cur.rep_ = loc.rep_;
+        named = loc.rep_->name;
+    }
+    if (named != "*") std::setlocale(LC_ALL, named.c_str());
+    return was;
+}
+inline const locale::facet *locale::__cxx1_find(size_t index) const {
+    std::__cxx1_os::global_guard g;
+    for (const __cxx1_locale_rep *r = rep_; r != 0; r = r->base)
+        if (index < r->size && r->facets[index] != 0) return r->facets[index];
+    return 0;
+}
+inline const locale::facet *locale::__cxx1_standard(size_t index, facet *(*make)(), int cat) const {
+    __cxx1_locale_rep *c = classicRep();
+    {
+        std::__cxx1_os::global_guard g;
+        if (index < c->size && c->facets[index] != 0) return c->facets[index];
+    }
+    facet *f = make();
+    std::__cxx1_os::global_guard g;
+    if (index < c->size && c->facets[index] != 0) {
+        delete f;
+        return c->facets[index];
+    }
+    c->put(index, f, cat);
+    return f;
+}
+
+template <class Facet> locale::facet *__cxx1_make_standard_facet() { return __cxx1_standard_facet<Facet>::make(); }
+
+// The id of an explicit specialization's facet - ctype<char>, the codecvts - as a template's static member, so each
+// program has one however many units include this.
+template <class Facet> struct __cxx1_facet_id {
+    static locale::id id;
+};
+template <class Facet> locale::id __cxx1_facet_id<Facet>::id;
+
+// [locale.global.templates]
+template <class Facet> const Facet &use_facet(const locale &loc) {
+    const size_t index = Facet::id.__cxx1_index();
+    const locale::facet *f = loc.__cxx1_find(index);
+    if (f == 0 && __cxx1_standard_facet<Facet>::is)
+        f = loc.__cxx1_standard(index, &__cxx1_make_standard_facet<Facet>, Facet::__cxx1_category);
+    if (f == 0) throw bad_cast();
+    return static_cast<const Facet &>(*f);
+}
+template <class Facet> bool has_facet(const locale &loc) noexcept {
+    return __cxx1_standard_facet<Facet>::is || loc.__cxx1_find(Facet::id.__cxx1_index()) != 0;
+}
+
+// [category.ctype]
+class ctype_base {
+public:
+    typedef unsigned short mask;
+    static const mask space = 0x001;
+    static const mask print = 0x002;
+    static const mask cntrl = 0x004;
+    static const mask upper = 0x008;
+    static const mask lower = 0x010;
+    static const mask alpha = 0x020;
+    static const mask digit = 0x040;
+    static const mask punct = 0x080;
+    static const mask xdigit = 0x100;
+    static const mask blank = 0x200;
+    static const mask alnum = alpha | digit;
+    static const mask graph = alnum | punct;
+};
+
+// The classification of one character in the "C" locale, wide or narrow.
+inline ctype_base::mask __cxx1_classify(unsigned long c) {
+    ctype_base::mask m = 0;
+    if (c > 0x7f) return m;
+    const int b = static_cast<int>(c);
+    if (std::isspace(b)) m |= ctype_base::space;
+    if (std::isprint(b)) m |= ctype_base::print;
+    if (std::iscntrl(b)) m |= ctype_base::cntrl;
+    if (std::isupper(b)) m |= ctype_base::upper;
+    if (std::islower(b)) m |= ctype_base::lower;
+    if (std::isalpha(b)) m |= ctype_base::alpha;
+    if (std::isdigit(b)) m |= ctype_base::digit;
+    if (std::ispunct(b)) m |= ctype_base::punct;
+    if (std::isxdigit(b)) m |= ctype_base::xdigit;
+    if (b == ' ' || b == '\t') m |= ctype_base::blank;
+    return m;
+}
+
+template <class charT> class ctype : public locale::facet, public ctype_base {
+public:
+    typedef charT char_type;
+    static const int __cxx1_category = locale::ctype;
+    explicit ctype(size_t refs = 0) : locale::facet(refs) {}
+
+    bool is(mask m, charT c) const { return do_is(m, c); }
+    const charT *is(const charT *low, const charT *high, mask *vec) const { return do_is(low, high, vec); }
+    const charT *scan_is(mask m, const charT *low, const charT *high) const { return do_scan_is(m, low, high); }
+    const charT *scan_not(mask m, const charT *low, const charT *high) const { return do_scan_not(m, low, high); }
+    charT toupper(charT c) const { return do_toupper(c); }
+    const charT *toupper(charT *low, const charT *high) const { return do_toupper(low, high); }
+    charT tolower(charT c) const { return do_tolower(c); }
+    const charT *tolower(charT *low, const charT *high) const { return do_tolower(low, high); }
+    charT widen(char c) const { return do_widen(c); }
+    const char *widen(const char *low, const char *high, charT *to) const { return do_widen(low, high, to); }
+    char narrow(charT c, char dfault) const { return do_narrow(c, dfault); }
+    const charT *narrow(const charT *low, const charT *high, char dfault, char *to) const {
+        return do_narrow(low, high, dfault, to);
+    }
+    static locale::id id;
+
+protected:
+    ~ctype() {}
+    virtual bool do_is(mask m, charT c) const { return (__cxx1_classify(static_cast<unsigned long>(c)) & m) != 0; }
+    virtual const charT *do_is(const charT *low, const charT *high, mask *vec) const {
+        for (; low != high; ++low, ++vec) *vec = __cxx1_classify(static_cast<unsigned long>(*low));
+        return high;
+    }
+    virtual const charT *do_scan_is(mask m, const charT *low, const charT *high) const {
+        while (low != high && !do_is(m, *low)) ++low;
+        return low;
+    }
+    virtual const charT *do_scan_not(mask m, const charT *low, const charT *high) const {
+        while (low != high && do_is(m, *low)) ++low;
+        return low;
+    }
+    virtual charT do_toupper(charT c) const { return c >= charT('a') && c <= charT('z') ? charT(c - 'a' + 'A') : c; }
+    virtual const charT *do_toupper(charT *low, const charT *high) const {
+        for (; low != high; ++low) *low = do_toupper(*low);
+        return high;
+    }
+    virtual charT do_tolower(charT c) const { return c >= charT('A') && c <= charT('Z') ? charT(c - 'A' + 'a') : c; }
+    virtual const charT *do_tolower(charT *low, const charT *high) const {
+        for (; low != high; ++low) *low = do_tolower(*low);
+        return high;
+    }
+    virtual charT do_widen(char c) const { return charT(static_cast<unsigned char>(c)); }
+    virtual const char *do_widen(const char *low, const char *high, charT *dest) const {
+        for (; low != high; ++low, ++dest) *dest = do_widen(*low);
+        return high;
+    }
+    virtual char do_narrow(charT c, char dfault) const {
+        return static_cast<unsigned long>(c) < 0x80 ? static_cast<char>(c) : dfault;
+    }
+    virtual const charT *do_narrow(const charT *low, const charT *high, char dfault, char *dest) const {
+        for (; low != high; ++low, ++dest) *dest = do_narrow(*low, dfault);
+        return high;
+    }
+};
+template <class charT> locale::id ctype<charT>::id;
+template <> struct __cxx1_standard_facet<ctype<wchar_t> > {
+    static const bool is = true;
+    static ctype<wchar_t> *make() { return new ctype<wchar_t>(1); }
+};
+
+// [facet.ctype.special]: char's, by a table of 256 masks - the "C" locale's unless the program gives one.
+template <> class ctype<char> : public locale::facet, public ctype_base, public __cxx1_facet_id<ctype<char> > {
+public:
+    typedef char char_type;
+    static const int __cxx1_category = locale::ctype;
+    static const size_t table_size = 256;
+
+    explicit ctype(const mask *tab = 0, bool del = false, size_t refs = 0)
+        : locale::facet(refs), tab_(tab != 0 ? tab : classic_table()), del_(tab != 0 && del) {}
+
+    bool is(mask m, char c) const { return (tab_[static_cast<unsigned char>(c)] & m) != 0; }
+    const char *is(const char *low, const char *high, mask *vec) const {
+        for (; low != high; ++low, ++vec) *vec = tab_[static_cast<unsigned char>(*low)];
+        return high;
+    }
+    const char *scan_is(mask m, const char *low, const char *high) const {
+        while (low != high && !is(m, *low)) ++low;
+        return low;
+    }
+    const char *scan_not(mask m, const char *low, const char *high) const {
+        while (low != high && is(m, *low)) ++low;
+        return low;
+    }
+    char toupper(char c) const { return do_toupper(c); }
+    const char *toupper(char *low, const char *high) const { return do_toupper(low, high); }
+    char tolower(char c) const { return do_tolower(c); }
+    const char *tolower(char *low, const char *high) const { return do_tolower(low, high); }
+    char widen(char c) const { return do_widen(c); }
+    const char *widen(const char *low, const char *high, char *to) const { return do_widen(low, high, to); }
+    char narrow(char c, char dfault) const { return do_narrow(c, dfault); }
+    const char *narrow(const char *low, const char *high, char dfault, char *to) const {
+        return do_narrow(low, high, dfault, to);
+    }
+    const mask *table() const noexcept { return tab_; }
+    static const mask *classic_table() noexcept {
+        static mask t[table_size];
+        static bool made = false;
+        if (!made) {
+            for (size_t i = 0; i < table_size; i++) t[i] = __cxx1_classify(i);
+            made = true;
+        }
+        return t;
+    }
+
+protected:
+    ~ctype() {
+        if (del_) delete[] tab_;
+    }
+    virtual char do_toupper(char c) const { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; }
+    virtual const char *do_toupper(char *low, const char *high) const {
+        for (; low != high; ++low) *low = do_toupper(*low);
+        return high;
+    }
+    virtual char do_tolower(char c) const { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+    virtual const char *do_tolower(char *low, const char *high) const {
+        for (; low != high; ++low) *low = do_tolower(*low);
+        return high;
+    }
+    virtual char do_widen(char c) const { return c; }
+    virtual const char *do_widen(const char *low, const char *high, char *to) const {
+        std::memcpy(to, low, static_cast<size_t>(high - low));
+        return high;
+    }
+    virtual char do_narrow(char c, char) const { return c; }
+    virtual const char *do_narrow(const char *low, const char *high, char, char *to) const {
+        std::memcpy(to, low, static_cast<size_t>(high - low));
+        return high;
+    }
+
+private:
+    const mask *tab_;
+    bool del_;
+};
+template <> struct __cxx1_standard_facet<ctype<char> > {
+    static const bool is = true;
+    static ctype<char> *make() { return new ctype<char>(0, false, 1); }
+};
+
+template <class charT> class ctype_byname : public ctype<charT> {
+public:
+    typedef typename ctype<charT>::mask mask;
+    explicit ctype_byname(const char *name, size_t refs = 0) : ctype<charT>(refs) { check(name); }
+    explicit ctype_byname(const string &name, size_t refs = 0) : ctype<charT>(refs) { check(name.c_str()); }
+
+protected:
+    ~ctype_byname() {}
+
+private:
+    static void check(const char *name) { locale l(name); (void)l; }
+};
+template <> class ctype_byname<char> : public ctype<char> {
+public:
+    explicit ctype_byname(const char *name, size_t refs = 0) : ctype<char>(0, false, refs) { locale l(name); (void)l; }
+    explicit ctype_byname(const string &name, size_t refs = 0) : ctype<char>(0, false, refs) { locale l(name); (void)l; }
+
+protected:
+    ~ctype_byname() {}
+};
+
+// [locale.codecvt]
+class codecvt_base {
+public:
+    enum result { ok, partial, error, noconv };
+};
+
+// UTF-8 for the conversions of char16_t, char32_t and <codecvt>: one code point read or written at a time.
+// Reading answers the code point, or -1 for an ill-formed sequence, -2 for one cut short.
+inline long __cxx1_utf8_read(const char *&from, const char *end, unsigned long maxcode) {
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(from);
+    const unsigned char *e = reinterpret_cast<const unsigned char *>(end);
+    const unsigned char c = *p;
+    unsigned long cp;
+    int extra;
+    if (c < 0x80) { cp = c; extra = 0; }
+    else if (c < 0xC2) return -1;
+    else if (c < 0xE0) { cp = c & 0x1F; extra = 1; }
+    else if (c < 0xF0) { cp = c & 0x0F; extra = 2; }
+    else if (c < 0xF5) { cp = c & 0x07; extra = 3; }
+    else return -1;
+    if (e - p < extra + 1) return -2;
+    for (int i = 1; i <= extra; i++) {
+        if ((p[i] & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (p[i] & 0x3F);
+    }
+    if ((extra == 2 && cp < 0x800) || (extra == 3 && cp < 0x10000) || (cp >= 0xD800 && cp <= 0xDFFF) || cp > maxcode)
+        return -1;
+    from += extra + 1;
+    return static_cast<long>(cp);
+}
+// Writing answers the bytes it took, 0 where there is no room, -1 for no code point.
+inline int __cxx1_utf8_write(unsigned long cp, char *&to, char *end) {
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return -1;
+    const int n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (end - to < n) return 0;
+    unsigned char *q = reinterpret_cast<unsigned char *>(to);
+    if (n == 1) q[0] = static_cast<unsigned char>(cp);
+    else if (n == 2) { q[0] = static_cast<unsigned char>(0xC0 | (cp >> 6)); q[1] = static_cast<unsigned char>(0x80 | (cp & 0x3F)); }
+    else if (n == 3) {
+        q[0] = static_cast<unsigned char>(0xE0 | (cp >> 12));
+        q[1] = static_cast<unsigned char>(0x80 | ((cp >> 6) & 0x3F));
+        q[2] = static_cast<unsigned char>(0x80 | (cp & 0x3F));
+    } else {
+        q[0] = static_cast<unsigned char>(0xF0 | (cp >> 18));
+        q[1] = static_cast<unsigned char>(0x80 | ((cp >> 12) & 0x3F));
+        q[2] = static_cast<unsigned char>(0x80 | ((cp >> 6) & 0x3F));
+        q[3] = static_cast<unsigned char>(0x80 | (cp & 0x3F));
+    }
+    to += n;
+    return n;
+}
+
+template <class internT, class externT, class stateT> class codecvt : public locale::facet, public codecvt_base {
+public:
+    typedef internT intern_type;
+    typedef externT extern_type;
+    typedef stateT state_type;
+    static const int __cxx1_category = locale::ctype;
+    explicit codecvt(size_t refs = 0) : locale::facet(refs) {}
+
+    result out(stateT &state, const internT *from, const internT *from_end, const internT *&from_next, externT *to,
+               externT *to_end, externT *&to_next) const {
+        return do_out(state, from, from_end, from_next, to, to_end, to_next);
+    }
+    result unshift(stateT &state, externT *to, externT *to_end, externT *&to_next) const {
+        return do_unshift(state, to, to_end, to_next);
+    }
+    result in(stateT &state, const externT *from, const externT *from_end, const externT *&from_next, internT *to,
+              internT *to_end, internT *&to_next) const {
+        return do_in(state, from, from_end, from_next, to, to_end, to_next);
+    }
+    int encoding() const noexcept { return do_encoding(); }
+    bool always_noconv() const noexcept { return do_always_noconv(); }
+    int length(stateT &state, const externT *from, const externT *end, size_t max) const {
+        return do_length(state, from, end, max);
+    }
+    int max_length() const noexcept { return do_max_length(); }
+    static locale::id id;
+
+protected:
+    ~codecvt() {}
+    // The general template copies each element as it is.
+    virtual result do_out(stateT &, const internT *from, const internT *from_end, const internT *&from_next, externT *to,
+                          externT *to_end, externT *&to_next) const {
+        while (from != from_end && to != to_end) *to++ = static_cast<externT>(*from++);
+        from_next = from;
+        to_next = to;
+        return from == from_end ? ok : partial;
+    }
+    virtual result do_unshift(stateT &, externT *to, externT *, externT *&to_next) const {
+        to_next = to;
+        return noconv;
+    }
+    virtual result do_in(stateT &, const externT *from, const externT *from_end, const externT *&from_next, internT *to,
+                         internT *to_end, internT *&to_next) const {
+        while (from != from_end && to != to_end) *to++ = static_cast<internT>(*from++);
+        from_next = from;
+        to_next = to;
+        return from == from_end ? ok : partial;
+    }
+    virtual int do_encoding() const noexcept { return 1; }
+    virtual bool do_always_noconv() const noexcept { return false; }
+    virtual int do_length(stateT &, const externT *from, const externT *end, size_t max) const {
+        const size_t n = static_cast<size_t>(end - from);
+        return static_cast<int>(n < max ? n : max);
+    }
+    virtual int do_max_length() const noexcept { return 1; }
+};
+template <class internT, class externT, class stateT> locale::id codecvt<internT, externT, stateT>::id;
+
+// [locale.codecvt]/3: char to char converts nothing.
+template <> class codecvt<char, char, mbstate_t> : public locale::facet, public codecvt_base,
+                                                  public __cxx1_facet_id<codecvt<char, char, mbstate_t> > {
+public:
+    typedef char intern_type;
+    typedef char extern_type;
+    typedef mbstate_t state_type;
+    static const int __cxx1_category = locale::ctype;
+    explicit codecvt(size_t refs = 0) : locale::facet(refs) {}
+    result out(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, char *to, char *to_end,
+               char *&to_next) const {
+        return do_out(st, from, from_end, from_next, to, to_end, to_next);
+    }
+    result unshift(mbstate_t &st, char *to, char *to_end, char *&to_next) const { return do_unshift(st, to, to_end, to_next); }
+    result in(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, char *to, char *to_end,
+              char *&to_next) const {
+        return do_in(st, from, from_end, from_next, to, to_end, to_next);
+    }
+    int encoding() const noexcept { return do_encoding(); }
+    bool always_noconv() const noexcept { return do_always_noconv(); }
+    int length(mbstate_t &st, const char *from, const char *end, size_t max) const { return do_length(st, from, end, max); }
+    int max_length() const noexcept { return do_max_length(); }
+
+protected:
+    ~codecvt() {}
+    virtual result do_out(mbstate_t &, const char *from, const char *, const char *&from_next, char *to, char *,
+                          char *&to_next) const {
+        from_next = from;
+        to_next = to;
+        return noconv;
+    }
+    virtual result do_unshift(mbstate_t &, char *to, char *, char *&to_next) const {
+        to_next = to;
+        return noconv;
+    }
+    virtual result do_in(mbstate_t &, const char *from, const char *, const char *&from_next, char *to, char *,
+                         char *&to_next) const {
+        from_next = from;
+        to_next = to;
+        return noconv;
+    }
+    virtual int do_encoding() const noexcept { return 1; }
+    virtual bool do_always_noconv() const noexcept { return true; }
+    virtual int do_length(mbstate_t &, const char *from, const char *end, size_t max) const {
+        const size_t n = static_cast<size_t>(end - from);
+        return static_cast<int>(n < max ? n : max);
+    }
+    virtual int do_max_length() const noexcept { return 1; }
+};
+template <> struct __cxx1_standard_facet<codecvt<char, char, mbstate_t> > {
+    static const bool is = true;
+    static codecvt<char, char, mbstate_t> *make() { return new codecvt<char, char, mbstate_t>(1); }
+};
+
+// The wide execution character set to the narrow one, [locale.codecvt]/3: char16_t (UTF-16), char32_t
+// (UTF-32) and wchar_t (UTF-16 where it is 2 bytes, UTF-32 where 4) to UTF-8, on every target and in every
+// locale this library makes - the C library's mbrtowc is not asked, so a program's wide streams read and
+// write the same bytes everywhere.
+template <class C> class __cxx1_utf8_codecvt : public locale::facet, public codecvt_base {
+public:
+    typedef C intern_type;
+    typedef char extern_type;
+    typedef mbstate_t state_type;
+    static const int __cxx1_category = locale::ctype;
+    explicit __cxx1_utf8_codecvt(size_t refs = 0) : locale::facet(refs) {}
+    result out(mbstate_t &st, const C *from, const C *from_end, const C *&from_next, char *to, char *to_end,
+               char *&to_next) const {
+        return do_out(st, from, from_end, from_next, to, to_end, to_next);
+    }
+    result unshift(mbstate_t &st, char *to, char *to_end, char *&to_next) const { return do_unshift(st, to, to_end, to_next); }
+    result in(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, C *to, C *to_end,
+              C *&to_next) const {
+        return do_in(st, from, from_end, from_next, to, to_end, to_next);
+    }
+    int encoding() const noexcept { return do_encoding(); }
+    bool always_noconv() const noexcept { return do_always_noconv(); }
+    int length(mbstate_t &st, const char *from, const char *end, size_t max) const { return do_length(st, from, end, max); }
+    int max_length() const noexcept { return do_max_length(); }
+
+protected:
+    ~__cxx1_utf8_codecvt() {}
+    virtual result do_out(mbstate_t &, const C *from, const C *from_end, const C *&from_next, char *to, char *to_end,
+                          char *&to_next) const {
+        result r = ok;
+        while (from != from_end) {
+            unsigned long cp = static_cast<unsigned long>(*from);
+            int units = 1;
+            if (sizeof(C) == 2 && cp >= 0xD800 && cp <= 0xDBFF) {
+                if (from + 1 == from_end) { r = partial; break; }
+                const unsigned long lo = static_cast<unsigned long>(from[1]);
+                if (lo < 0xDC00 || lo > 0xDFFF) { r = error; break; }
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                units = 2;
+            }
+            const int n = __cxx1_utf8_write(cp, to, to_end);
+            if (n < 0) { r = error; break; }
+            if (n == 0) { r = partial; break; }
+            from += units;
+        }
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual result do_unshift(mbstate_t &, char *to, char *, char *&to_next) const {
+        to_next = to;
+        return noconv;
+    }
+    virtual result do_in(mbstate_t &, const char *from, const char *from_end, const char *&from_next, C *to, C *to_end,
+                         C *&to_next) const {
+        result r = ok;
+        while (from != from_end && to != to_end) {
+            const char *at = from;
+            const long cp = __cxx1_utf8_read(at, from_end, 0x10FFFF);
+            if (cp == -1) { r = error; break; }
+            if (cp == -2) { r = partial; break; }
+            if (sizeof(C) == 2 && cp >= 0x10000) {
+                if (to_end - to < 2) { r = partial; break; }
+                *to++ = static_cast<C>(0xD800 + ((cp - 0x10000) >> 10));
+                *to++ = static_cast<C>(0xDC00 + ((cp - 0x10000) & 0x3FF));
+            } else {
+                *to++ = static_cast<C>(cp);
+            }
+            from = at;
+        }
+        if (r == ok && from != from_end) r = partial;
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual int do_encoding() const noexcept { return 0; }
+    virtual bool do_always_noconv() const noexcept { return false; }
+    virtual int do_length(mbstate_t &, const char *from, const char *end, size_t max) const {
+        const char *p = from;
+        size_t units = 0;
+        while (p != end && units < max) {
+            const char *at = p;
+            const long cp = __cxx1_utf8_read(at, end, 0x10FFFF);
+            if (cp < 0) break;
+            const size_t need = sizeof(C) == 2 && cp >= 0x10000 ? 2 : 1;
+            if (units + need > max) break;
+            units += need;
+            p = at;
+        }
+        return static_cast<int>(p - from);
+    }
+    virtual int do_max_length() const noexcept { return 4; }
+};
+template <> class codecvt<wchar_t, char, mbstate_t> : public __cxx1_utf8_codecvt<wchar_t>,
+                                                     public __cxx1_facet_id<codecvt<wchar_t, char, mbstate_t> > {
+public:
+    explicit codecvt(size_t refs = 0) : __cxx1_utf8_codecvt<wchar_t>(refs) {}
+
+protected:
+    ~codecvt() {}
+};
+template <> struct __cxx1_standard_facet<codecvt<wchar_t, char, mbstate_t> > {
+    static const bool is = true;
+    static codecvt<wchar_t, char, mbstate_t> *make() { return new codecvt<wchar_t, char, mbstate_t>(1); }
+};
+template <> class codecvt<char16_t, char, mbstate_t> : public __cxx1_utf8_codecvt<char16_t>,
+                                                      public __cxx1_facet_id<codecvt<char16_t, char, mbstate_t> > {
+public:
+    explicit codecvt(size_t refs = 0) : __cxx1_utf8_codecvt<char16_t>(refs) {}
+
+protected:
+    ~codecvt() {}
+};
+template <> class codecvt<char32_t, char, mbstate_t> : public __cxx1_utf8_codecvt<char32_t>,
+                                                      public __cxx1_facet_id<codecvt<char32_t, char, mbstate_t> > {
+public:
+    explicit codecvt(size_t refs = 0) : __cxx1_utf8_codecvt<char32_t>(refs) {}
+
+protected:
+    ~codecvt() {}
+};
+template <> struct __cxx1_standard_facet<codecvt<char16_t, char, mbstate_t> > {
+    static const bool is = true;
+    static codecvt<char16_t, char, mbstate_t> *make() { return new codecvt<char16_t, char, mbstate_t>(1); }
+};
+template <> struct __cxx1_standard_facet<codecvt<char32_t, char, mbstate_t> > {
+    static const bool is = true;
+    static codecvt<char32_t, char, mbstate_t> *make() { return new codecvt<char32_t, char, mbstate_t>(1); }
+};
+
+template <class internT, class externT, class stateT>
+class codecvt_byname : public codecvt<internT, externT, stateT> {
+public:
+    explicit codecvt_byname(const char *name, size_t refs = 0) : codecvt<internT, externT, stateT>(refs) { locale l(name); (void)l; }
+    explicit codecvt_byname(const string &name, size_t refs = 0) : codecvt<internT, externT, stateT>(refs) { locale l(name); (void)l; }
+
+protected:
+    ~codecvt_byname() {}
+};
+
+// [locale.numpunct]: the "C" locale's point, comma, no grouping, and "true" and "false".
+template <class charT> class numpunct : public locale::facet {
+public:
+    typedef charT char_type;
+    typedef basic_string<charT> string_type;
+    static const int __cxx1_category = locale::numeric;
+    explicit numpunct(size_t refs = 0) : locale::facet(refs) {}
+    char_type decimal_point() const { return do_decimal_point(); }
+    char_type thousands_sep() const { return do_thousands_sep(); }
+    string grouping() const { return do_grouping(); }
+    string_type truename() const { return do_truename(); }
+    string_type falsename() const { return do_falsename(); }
+    static locale::id id;
+
+protected:
+    ~numpunct() {}
+    virtual char_type do_decimal_point() const { return charT('.'); }
+    virtual char_type do_thousands_sep() const { return charT(','); }
+    virtual string do_grouping() const { return string(); }
+    virtual string_type do_truename() const { return widened("true"); }
+    virtual string_type do_falsename() const { return widened("false"); }
+
+private:
+    static string_type widened(const char *s) {
+        string_type r;
+        for (; *s != 0; ++s) r += charT(*s);
+        return r;
+    }
+};
+template <class charT> locale::id numpunct<charT>::id;
+template <class charT> struct __cxx1_standard_facet<numpunct<charT> > {
+    static const bool is = true;
+    static numpunct<charT> *make() { return new numpunct<charT>(1); }
+};
+template <class charT> class numpunct_byname : public numpunct<charT> {
+public:
+    explicit numpunct_byname(const char *name, size_t refs = 0) : numpunct<charT>(refs) { locale l(name); (void)l; }
+    explicit numpunct_byname(const string &name, size_t refs = 0) : numpunct<charT>(refs) { locale l(name); (void)l; }
+
+protected:
+    ~numpunct_byname() {}
+};
+
+// [locale.collate]: the "C" locale orders by the characters' values; transform answers the string itself.
+template <class charT> class collate : public locale::facet {
+public:
+    typedef charT char_type;
+    typedef basic_string<charT> string_type;
+    static const int __cxx1_category = locale::collate;
+    explicit collate(size_t refs = 0) : locale::facet(refs) {}
+    int compare(const charT *low1, const charT *high1, const charT *low2, const charT *high2) const {
+        return do_compare(low1, high1, low2, high2);
+    }
+    string_type transform(const charT *low, const charT *high) const { return do_transform(low, high); }
+    long hash(const charT *low, const charT *high) const { return do_hash(low, high); }
+    static locale::id id;
+
+protected:
+    ~collate() {}
+    virtual int do_compare(const charT *low1, const charT *high1, const charT *low2, const charT *high2) const {
+        for (; low1 != high1 && low2 != high2; ++low1, ++low2) {
+            if (*low1 < *low2) return -1;
+            if (*low2 < *low1) return 1;
+        }
+        return low2 != high2 ? -1 : low1 != high1 ? 1 : 0;
+    }
+    virtual string_type do_transform(const charT *low, const charT *high) const { return string_type(low, high); }
+    virtual long do_hash(const charT *low, const charT *high) const {
+        unsigned long h = 0;
+        for (; low != high; ++low) h = h * 131 + static_cast<unsigned long>(*low);
+        return static_cast<long>(h);
+    }
+};
+template <class charT> locale::id collate<charT>::id;
+template <class charT> struct __cxx1_standard_facet<collate<charT> > {
+    static const bool is = true;
+    static collate<charT> *make() { return new collate<charT>(1); }
+};
+template <class charT> class collate_byname : public collate<charT> {
+public:
+    typedef basic_string<charT> string_type;
+    explicit collate_byname(const char *name, size_t refs = 0) : collate<charT>(refs) { locale l(name); (void)l; }
+    explicit collate_byname(const string &name, size_t refs = 0) : collate<charT>(refs) { locale l(name); (void)l; }
+
+protected:
+    ~collate_byname() {}
+};
+
+template <class charT, class traits, class Allocator>
+bool locale::operator()(const basic_string<charT, traits, Allocator> &s1, const basic_string<charT, traits, Allocator> &s2) const {
+    // std::collate: inside locale, collate is the category.
+    const std::collate<charT> &c = std::use_facet<std::collate<charT> >(*this);
+    return c.compare(s1.data(), s1.data() + s1.size(), s2.data(), s2.data() + s2.size()) < 0;
+}
+
+}  // namespace std
+
+#endif

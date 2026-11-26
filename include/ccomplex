@@ -1,0 +1,7 @@
+// <ccomplex> - [complex.numbers.ccomplex]: it includes <complex>.
+#ifndef _CXX1_CCOMPLEX
+#define _CXX1_CCOMPLEX
+
+#include <complex>
+
+#endif

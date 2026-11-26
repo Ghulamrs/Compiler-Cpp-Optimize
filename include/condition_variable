@@ -1,0 +1,140 @@
+// <condition_variable> - [thread.condition]: condition_variable over std::mutex, condition_variable_any over
+// any lock, and notify_all_at_thread_exit.
+//
+// condition_variable waits on the operating system's condition with the mutex's own lock. condition_variable_any
+// keeps a mutex of its own: the caller's lock is let go only once that one is held, so no notify falls between.
+// What notify_all_at_thread_exit is asked to do waits in a thread_local list that the thread's exit runs.
+#ifndef _CXX1_CONDITION_VARIABLE
+#define _CXX1_CONDITION_VARIABLE
+
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <vector>
+#include <__threads>
+
+namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+class condition_variable {
+    __cxx1_os::cond_word c_;
+
+public:
+    typedef __cxx1_os::cond_word *native_handle_type;
+    condition_variable() : c_() {}
+    ~condition_variable() {}
+    condition_variable(const condition_variable &) = delete;
+    condition_variable &operator=(const condition_variable &) = delete;
+
+    void notify_one() noexcept { c_.notify_one(); }
+    void notify_all() noexcept { c_.notify_all(); }
+    void wait(unique_lock<mutex> &lock) { c_.wait(*lock.mutex()->native_handle(), ~0ul); }
+    template <class Predicate> void wait(unique_lock<mutex> &lock, Predicate pred) {
+        while (!pred()) wait(lock);
+    }
+    template <class Clock, class Duration>
+    cv_status wait_until(unique_lock<mutex> &lock, const chrono::time_point<Clock, Duration> &t) {
+        const unsigned long ms = __cxx1_ms_until(t);
+        // A wait whose time ran out says so itself (1.76). The clock was asked instead, and a wait the system
+        // ended a fraction of a millisecond before `t` - its time is counted in whole milliseconds - was reported
+        // as no_timeout with nobody having notified: wait_for(lock, 20ms) on a quiet variable, once in twenty runs.
+        if (ms != 0 && !c_.wait(*lock.mutex()->native_handle(), ms)) return cv_status::timeout;
+        return Clock::now() < t ? cv_status::no_timeout : cv_status::timeout;
+    }
+    template <class Clock, class Duration, class Predicate>
+    bool wait_until(unique_lock<mutex> &lock, const chrono::time_point<Clock, Duration> &t, Predicate pred) {
+        while (!pred())
+            if (wait_until(lock, t) == cv_status::timeout) return pred();
+        return true;
+    }
+    template <class Rep, class Period> cv_status wait_for(unique_lock<mutex> &lock, const chrono::duration<Rep, Period> &d) {
+        return wait_until(lock, chrono::steady_clock::now() + d);
+    }
+    template <class Rep, class Period, class Predicate>
+    bool wait_for(unique_lock<mutex> &lock, const chrono::duration<Rep, Period> &d, Predicate pred) {
+        return wait_until(lock, chrono::steady_clock::now() + d, std::move(pred));
+    }
+    native_handle_type native_handle() { return &c_; }
+};
+
+class condition_variable_any {
+    mutex m_;
+    condition_variable c_;
+
+    // Takes the caller's lock back on every way out, the internal one let go first.
+    template <class Lock> struct relock {
+        Lock &l;
+        unique_lock<mutex> &own;
+        ~relock() { own.unlock(); l.lock(); }
+    };
+
+public:
+    condition_variable_any() {}
+    ~condition_variable_any() {}
+    condition_variable_any(const condition_variable_any &) = delete;
+    condition_variable_any &operator=(const condition_variable_any &) = delete;
+
+    void notify_one() noexcept { lock_guard<mutex> g(m_); c_.notify_one(); }
+    void notify_all() noexcept { lock_guard<mutex> g(m_); c_.notify_all(); }
+    template <class Lock> void wait(Lock &lock) {
+        unique_lock<mutex> own(m_);
+        lock.unlock();
+        relock<Lock> back = { lock, own };
+        c_.wait(own);
+    }
+    template <class Lock, class Predicate> void wait(Lock &lock, Predicate pred) {
+        while (!pred()) wait(lock);
+    }
+    template <class Lock, class Clock, class Duration>
+    cv_status wait_until(Lock &lock, const chrono::time_point<Clock, Duration> &t) {
+        unique_lock<mutex> own(m_);
+        lock.unlock();
+        relock<Lock> back = { lock, own };
+        return c_.wait_until(own, t);
+    }
+    template <class Lock, class Clock, class Duration, class Predicate>
+    bool wait_until(Lock &lock, const chrono::time_point<Clock, Duration> &t, Predicate pred) {
+        while (!pred())
+            if (wait_until(lock, t) == cv_status::timeout) return pred();
+        return true;
+    }
+    template <class Lock, class Rep, class Period> cv_status wait_for(Lock &lock, const chrono::duration<Rep, Period> &d) {
+        return wait_until(lock, chrono::steady_clock::now() + d);
+    }
+    template <class Lock, class Rep, class Period, class Predicate>
+    bool wait_for(Lock &lock, const chrono::duration<Rep, Period> &d, Predicate pred) {
+        return wait_until(lock, chrono::steady_clock::now() + d, std::move(pred));
+    }
+};
+
+// [thread.condition]/8: at the thread's exit the lock is released and every waiter woken, in that order.
+struct __cxx1_at_thread_exit {
+    struct item {
+        condition_variable *cv;
+        mutex *m;
+    };
+    vector<item> items;
+    vector<void (*)(void *)> calls;
+    vector<void *> args;
+    ~__cxx1_at_thread_exit() {
+        for (size_t i = 0; i < calls.size(); i++) calls[i](args[i]);
+        for (size_t i = 0; i < items.size(); i++) {
+            items[i].m->unlock();
+            items[i].cv->notify_all();
+        }
+    }
+};
+inline __cxx1_at_thread_exit &__cxx1_thread_exit_list() {
+    static thread_local __cxx1_at_thread_exit list;
+    return list;
+}
+
+inline void notify_all_at_thread_exit(condition_variable &cond, unique_lock<mutex> lk) {
+    __cxx1_at_thread_exit::item it = { &cond, lk.release() };
+    __cxx1_thread_exit_list().items.push_back(it);
+}
+
+}  // namespace std
+
+#endif

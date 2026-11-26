@@ -1,0 +1,20 @@
+// <cinttypes> - [c.files]: <inttypes.h>'s types and functions under std::, and <cstdint>; the PRI and SCN
+// names are macros.
+#ifndef _CXX1_CINTTYPES
+#define _CXX1_CINTTYPES
+
+#include <cstdint>
+#include <inttypes.h>
+
+namespace std {
+using ::imaxdiv_t;
+using ::imaxabs;
+using ::imaxdiv;
+using ::strtoimax;
+using ::strtoumax;
+using ::wcstoimax;
+using ::wcstoumax;
+// [c.files]/2: abs and div for intmax_t are the long long overloads <cstdlib> has.
+}  // namespace std
+
+#endif

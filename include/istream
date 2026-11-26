@@ -1,243 +1,358 @@
-// <istream> - the input stream.
+// <istream> - [input.streams]: basic_istream, its sentry, the extractors, basic_iostream and ws.
 //
-// The mirror of <ostream> and an aggregate for the same reason: `std::cin` is
-// an object at file scope, and a constructor there would have to run before
-// `main`. The `FILE *` is resolved by `target()` at the point of use.
-//
-// **Extraction is `fscanf` underneath, and that decides the corner cases.**
-// `>>` skips leading whitespace and stops at the first character that cannot
-// belong to the value, exactly as `%d` and `%lf` do - which is the behaviour
-// the standard describes, arrived at by using the same machinery rather than
-// by reimplementing it.
+// **Every character comes from the stream's buffer**, sgetc to look and sbumpc to take. A number is the stream's
+// locale's num_get's to read, and whitespace its ctype's to tell.
 #ifndef _CXX1_ISTREAM
 #define _CXX1_ISTREAM
 
 #include <cctype>
+#include <climits>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <ios>
 #include <ostream>
+#include <__num_facets>
+#include <streambuf>
 #include <string>
 
 namespace std {
 
-// **`ss << in.rdbuf()` is how a whole stream is read in one line**, and it is
-// the only thing most programs ask a streambuf for. The standard makes it a
-// class of its own with the buffering underneath; here the streams buffer
-// through `FILE *` already, so what `rdbuf()` hands back is a token naming the
-// stream it came from and the `operator<<` for it copies whatever is left.
-//
-// Deliberately not called `streambuf`: nothing else here takes one, and a class
-// with that name would promise the rest of the standard's interface.
-class istream;
-
-struct streamsource {
-    istream *from;
-};
-
-class istream {
+template <class C, class Tr> class basic_istream : virtual public basic_ios<C, Tr> {
 public:
-    FILE *fp_;
-    int which_;                 // unused for now: 0 is stdin
-    int state_;                 // 0 good, 1 failed, 2 at end of file
-    // Where a stringstream reads from, and how far it has got. Null for a file
-    // stream; `get()` and the word reader check it, and `scan()` cannot - which
-    // is why an istringstream converts through a buffer rather than fscanf.
-    const string *src_;
-    std::size_t pos_;
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
 
-    // The same rule as <ostream>: 1 is stdin, 0 is a file, and a file with no
-    // `FILE *` is shut and reads nothing.
-    FILE *target() {
-        if (fp_ != 0) return fp_;
-        return which_ == 1 ? stdin : 0;
-    }
+    explicit basic_istream(basic_streambuf<C, Tr> *sb) : count_(0) { this->init(sb); }
+    virtual ~basic_istream() {}
 
-    bool good() const { return state_ == 0; }
-    bool fail() const { return state_ == 1; }
-    bool eof() const { return state_ == 2; }
+    // [istream::sentry]: a stream that is not good fails at once; the tied stream is flushed; a formatted
+    // input skips whitespace while `skipws` is set, an end met there being eofbit and failbit.
+    class sentry {
+        bool ok_;
 
-    // What makes `while (in >> x)` and `if (std::getline(in, s))` work.
-    operator bool() { return state_ == 0; }
-
-    // One `fscanf` conversion, and the same answer every time: one item read
-    // is success, zero is a failed match, and EOF is the end. A string source
-    // hands sscanf only the characters a number can be made of - sign, digits,
-    // and for a floating conversion the point and exponent - so `"42abc" >> x`
-    // stops at the `a` as a stream does, rather than eating the whole word.
-    istream &scan(const char *how, void *where) {
-        if (state_ != 0) return *this;
-        if (src_ != 0) {
-            const bool floating = how[1] == 'l' ? how[2] == 'f' : how[1] == 'f';
-            string w;
-            int c = get();
-            while (c >= 0 && std::isspace(c)) c = get();
-            if (c == '+' || c == '-') { w += (char)c; c = get(); }
-            bool seenPoint = false, seenExp = false;
-            while (c >= 0) {
-                bool take = std::isdigit(c) != 0;
-                if (!take && floating) {
-                    if (c == '.' && !seenPoint && !seenExp) { take = true; seenPoint = true; }
-                    else if ((c == 'e' || c == 'E') && !seenExp && w.size() != 0) {
-                        take = true; seenExp = true;
-                        w += (char)c; c = get();
-                        if (c == '+' || c == '-') { w += (char)c; c = get(); }
-                        continue;
-                    }
+    public:
+        explicit sentry(basic_istream &is, bool noskipws = false) : ok_(false) {
+            if (!is.good()) { is.setstate(ios_base::failbit); return; }
+            if (is.tie() != 0) is.tie()->flush();
+            if (!noskipws && (is.flags() & ios_base::skipws) != 0) {
+                basic_streambuf<C, Tr> *sb = is.rdbuf();
+                for (;;) {
+                    const int_type c = sb->sgetc();
+                    if (Tr::eq_int_type(c, Tr::eof())) { is.setstate(ios_base::eofbit | ios_base::failbit); return; }
+                    if (!is.__cxx1_space(Tr::to_char_type(c))) break;
+                    sb->sbumpc();
                 }
-                if (!take) break;
-                w += (char)c;
-                c = get();
             }
-            if (c >= 0) unget((char)c);
-            if (w.size() == 0) { state_ = c < 0 ? 2 : 1; return *this; }
-            if (std::sscanf(w.c_str(), how, where) != 1) state_ = 1;
-            return *this;
+            ok_ = is.good();
         }
-        FILE *f = target();
-        if (f == 0) { state_ = 1; return *this; }
-        int got = std::fscanf(f, how, where);
-        if (got == 1) return *this;
-        state_ = got == 0 ? 1 : 2;
-        return *this;
-    }
+        explicit operator bool() const { return ok_; }
+        sentry(const sentry &) = delete;
+        sentry &operator=(const sentry &) = delete;
+    };
 
-    // [istream.formatted.arithmetic]: a conversion that fails here stores 0,
-    // which both oracles do; one that never ran, the stream already failed,
-    // leaves the value alone.
-    istream &number(const char *how, void *where, unsigned size) {
-        const int before = state_;
-        scan(how, where);
-        if (state_ != 0 && before == 0)
-            for (unsigned i = 0; i < size; i++) ((char *)where)[i] = 0;
-        return *this;
-    }
-    istream &operator>>(int &v)           { return number("%d", &v, sizeof v); }
-    istream &operator>>(unsigned int &v)  { return number("%u", &v, sizeof v); }
-    istream &operator>>(long &v)          { return number("%ld", &v, sizeof v); }
-    istream &operator>>(unsigned long &v) { return number("%lu", &v, sizeof v); }
-    // The pair `<ostream>` gained for the same reason: `long long` is a type
-    // of its own, and without these a 64-bit lvalue matched every overload
-    // equally badly.
-    istream &operator>>(long long &v)          { return number("%lld", &v, sizeof v); }
-    istream &operator>>(unsigned long long &v) { return number("%llu", &v, sizeof v); }
-    istream &operator>>(double &v)        { return number("%lf", &v, sizeof v); }
-    istream &operator>>(float &v)         { return number("%f", &v, sizeof v); }
-
-    // A char skips leading whitespace, which is what `>>` means and what
-    // `get(char &)` deliberately does not.
-    istream &operator>>(char &c) {
-        int v = get();
-        while (v >= 0 && std::isspace(v)) v = get();
-        if (v < 0) { state_ = 2; return *this; }
-        c = (char)v;
-        return *this;
-    }
-
-    // A word: whitespace skipped, then everything up to the next whitespace.
-    // Read a character at a time rather than through `%s`, because `%s` cannot
-    // be told how much room it has and this one grows the string instead.
-    istream &operator>>(string &s) {
-        s = string();
-        int c = get();
-        while (c >= 0 && std::isspace(c)) c = get();
-        if (c < 0) { state_ = 2; return *this; }
-        while (c >= 0 && !std::isspace(c)) {
-            s += (char)c;
-            c = get();
-        }
-        if (c >= 0) unget((char)c);
-        return *this;
-    }
-
-    streamsource rdbuf() { streamsource s; s.from = this; return s; }
-
-    // Unformatted input: no whitespace is skipped and nothing is converted.
-    int get() {
-        if (src_ != 0) {
-            if (pos_ >= src_->size()) return -1;
-            char c = (*src_)[pos_];
-            pos_++;
-            return (int)(unsigned char)c;
-        }
-        FILE *f = target();
-        return f == 0 ? -1 : std::fgetc(f);
-    }
-    istream &get(char &c) {
-        int v = get();
-        if (v < 0) { state_ = 2; return *this; }
-        c = (char)v;
-        return *this;
-    }
-    istream &unget(char c) {
-        if (src_ != 0) { if (pos_ > 0) pos_--; return *this; }
-        FILE *f = target();
-        if (f != 0) std::ungetc((int)c, f);
-        return *this;
-    }
-
-    // The member form, which writes into a buffer the caller sized. The
-    // delimiter is consumed and not stored, and a full buffer is a failure -
-    // both of which are what the standard asks for.
-    istream &getline(char *s, streamsize n, char delim) {
-        streamsize i = 0;
+    // [istream.formatted.arithmetic]: through the num_get facet; short and int read as long and checked against
+    // their range, the nearest limit stored and a failure where it is out of it.
+    basic_istream &operator>>(bool &v) { return numbered(v); }
+    basic_istream &operator>>(short &v) { return narrowed(v, SHRT_MIN, SHRT_MAX); }
+    basic_istream &operator>>(unsigned short &v) { return numbered(v); }
+    basic_istream &operator>>(int &v) { return narrowed(v, INT_MIN, INT_MAX); }
+    basic_istream &operator>>(unsigned int &v) { return numbered(v); }
+    basic_istream &operator>>(long &v) { return numbered(v); }
+    basic_istream &operator>>(unsigned long &v) { return numbered(v); }
+    basic_istream &operator>>(long long &v) { return numbered(v); }
+    basic_istream &operator>>(unsigned long long &v) { return numbered(v); }
+    basic_istream &operator>>(float &v) { return numbered(v); }
+    basic_istream &operator>>(double &v) { return numbered(v); }
+    basic_istream &operator>>(long double &v) { return numbered(v); }
+    basic_istream &operator>>(void *&v) { return numbered(v); }
+    basic_istream &operator>>(basic_streambuf<C, Tr> *sb) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return *this;
+        if (sb == 0) { this->setstate(ios_base::failbit); return *this; }
         for (;;) {
-            int c = get();
-            if (c < 0) { if (i == 0) state_ = 2; break; }
-            if ((char)c == delim) break;
-            if (i + 1 >= n) { state_ = 1; unget((char)c); break; }
-            s[i] = (char)c;
-            i++;
+            const int_type c = this->rdbuf()->sgetc();
+            if (Tr::eq_int_type(c, Tr::eof())) { this->setstate(ios_base::eofbit); break; }
+            if (Tr::eq_int_type(sb->sputc(Tr::to_char_type(c)), Tr::eof())) break;
+            this->rdbuf()->sbumpc();
+            count_++;
         }
-        if (n > 0) s[i] = '\0';
+        if (count_ == 0) this->setstate(ios_base::failbit);
         return *this;
     }
-    istream &getline(char *s, streamsize n) { return getline(s, n, '\n'); }
+    basic_istream &operator>>(basic_istream &(*pf)(basic_istream &)) { return pf(*this); }
+    basic_istream &operator>>(basic_ios<C, Tr> &(*pf)(basic_ios<C, Tr> &)) { pf(*this); return *this; }
+    basic_istream &operator>>(ios_base &(*pf)(ios_base &)) { pf(*this); return *this; }
 
-    istream &ignore(streamsize n) {
-        for (streamsize i = 0; i < n; i++)
-            if (get() < 0) { state_ = 2; break; }
+    // [istream.unformatted]
+    streamsize gcount() const { return count_; }
+    int_type get() {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return Tr::eof();
+        const int_type c = get_();
+        if (Tr::eq_int_type(c, Tr::eof())) this->setstate(ios_base::eofbit | ios_base::failbit);
+        else count_ = 1;
+        return c;
+    }
+    basic_istream &get(char_type &c) {
+        const int_type v = get();
+        if (!Tr::eq_int_type(v, Tr::eof())) c = Tr::to_char_type(v);
+        return *this;
+    }
+    basic_istream &get(char_type *s, streamsize n, char_type delim) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (ok) {
+            while (count_ + 1 < n) {
+                const int_type c = this->rdbuf()->sgetc();
+                if (Tr::eq_int_type(c, Tr::eof())) { this->setstate(ios_base::eofbit); break; }
+                if (Tr::eq(Tr::to_char_type(c), delim)) break;
+                s[count_++] = Tr::to_char_type(c);
+                this->rdbuf()->sbumpc();
+            }
+        }
+        if (n > 0) s[count_] = char_type();
+        if (count_ == 0) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_istream &get(char_type *s, streamsize n) { return get(s, n, this->widen('\n')); }
+    basic_istream &get(basic_streambuf<C, Tr> &sb, char_type delim) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (ok) {
+            for (;;) {
+                const int_type c = this->rdbuf()->sgetc();
+                if (Tr::eq_int_type(c, Tr::eof())) { this->setstate(ios_base::eofbit); break; }
+                if (Tr::eq(Tr::to_char_type(c), delim)) break;
+                if (Tr::eq_int_type(sb.sputc(Tr::to_char_type(c)), Tr::eof())) break;
+                this->rdbuf()->sbumpc();
+                count_++;
+            }
+        }
+        if (count_ == 0) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_istream &get(basic_streambuf<C, Tr> &sb) { return get(sb, this->widen('\n')); }
+    basic_istream &getline(char_type *s, streamsize n, char_type delim) {
+        count_ = 0;
+        streamsize stored = 0;
+        sentry ok(*this, true);
+        if (ok) {
+            for (;;) {
+                const int_type c = this->rdbuf()->sgetc();
+                if (Tr::eq_int_type(c, Tr::eof())) { this->setstate(ios_base::eofbit); break; }
+                if (Tr::eq(Tr::to_char_type(c), delim)) { this->rdbuf()->sbumpc(); count_++; break; }
+                if (stored + 1 >= n) { this->setstate(ios_base::failbit); break; }
+                s[stored++] = Tr::to_char_type(c);
+                count_++;
+                this->rdbuf()->sbumpc();
+            }
+        }
+        if (n > 0) s[stored] = char_type();
+        if (count_ == 0) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_istream &getline(char_type *s, streamsize n) { return getline(s, n, this->widen('\n')); }
+    basic_istream &ignore(streamsize n = 1, int_type delim = Tr::eof()) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return *this;
+        const bool forever = n == static_cast<streamsize>(~0ULL >> 1);
+        while (forever || count_ < n) {
+            const int_type c = this->rdbuf()->sbumpc();
+            if (Tr::eq_int_type(c, Tr::eof())) { this->setstate(ios_base::eofbit); break; }
+            count_++;
+            if (!Tr::eq_int_type(delim, Tr::eof()) && Tr::eq_int_type(c, delim)) break;
+        }
+        return *this;
+    }
+    int_type peek() {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return Tr::eof();
+        const int_type c = this->rdbuf()->sgetc();
+        if (Tr::eq_int_type(c, Tr::eof())) this->setstate(ios_base::eofbit);
+        return c;
+    }
+    basic_istream &read(char_type *s, streamsize n) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return *this;
+        count_ = this->rdbuf()->sgetn(s, n);
+        if (count_ != n) this->setstate(ios_base::eofbit | ios_base::failbit);
+        return *this;
+    }
+    streamsize readsome(char_type *s, streamsize n) {
+        count_ = 0;
+        sentry ok(*this, true);
+        if (!ok) return 0;
+        const streamsize avail = this->rdbuf()->in_avail();
+        if (avail == -1) { this->setstate(ios_base::eofbit); return 0; }
+        count_ = this->rdbuf()->sgetn(s, avail < n ? avail : n);
+        return count_;
+    }
+    basic_istream &putback(char_type c) {
+        count_ = 0;
+        this->clear(this->rdstate() & ~ios_base::eofbit);
+        sentry ok(*this, true);
+        if (ok && Tr::eq_int_type(this->rdbuf()->sputbackc(c), Tr::eof())) this->setstate(ios_base::badbit);
+        return *this;
+    }
+    basic_istream &unget() {
+        count_ = 0;
+        this->clear(this->rdstate() & ~ios_base::eofbit);
+        sentry ok(*this, true);
+        if (ok && Tr::eq_int_type(this->rdbuf()->sungetc(), Tr::eof())) this->setstate(ios_base::badbit);
+        return *this;
+    }
+    int sync() {
+        if (this->rdbuf() == 0) return -1;
+        if (this->rdbuf()->pubsync() == -1) { this->setstate(ios_base::badbit); return -1; }
+        return 0;
+    }
+    // [istream.unformatted]/39-43: unformatted input functions - the sentry first, so a stream at its end fails
+    // here - and seekg clears eofbit before it.
+    pos_type tellg() {
+        const sentry ok(*this, true);
+        if (this->fail()) return pos_type(-1);
+        return this->rdbuf()->pubseekoff(0, ios_base::cur, ios_base::in);
+    }
+    basic_istream &seekg(pos_type pos) {
+        this->clear(this->rdstate() & ~ios_base::eofbit);
+        const sentry ok(*this, true);
+        if (!this->fail() && this->rdbuf()->pubseekpos(pos, ios_base::in) == pos_type(-1)) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_istream &seekg(off_type off, ios_base::seekdir dir) {
+        this->clear(this->rdstate() & ~ios_base::eofbit);
+        const sentry ok(*this, true);
+        if (!this->fail() && this->rdbuf()->pubseekoff(off, dir, ios_base::in) == pos_type(-1)) this->setstate(ios_base::failbit);
+        return *this;
+    }
+
+    // What the string and character extractors below are made of.
+    int_type __cxx1_get() { return get_(); }
+    void __cxx1_unget() { unget_(); }
+    bool __cxx1_space(char_type c) const { return use_facet<ctype<C> >(this->ios_base::loc_).is(ctype_base::space, c); }
+
+protected:
+    basic_istream() : count_(0) {}
+    basic_istream(const basic_istream &) = delete;
+    basic_istream(basic_istream &&rhs) : count_(rhs.count_) { basic_ios<C, Tr>::move(rhs); rhs.count_ = 0; }
+    basic_istream &operator=(const basic_istream &) = delete;
+    basic_istream &operator=(basic_istream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_istream &rhs) { basic_ios<C, Tr>::swap(rhs); std::swap(count_, rhs.count_); }
+
+private:
+    streamsize count_;
+
+    int_type get_() { return this->rdbuf()->sbumpc(); }
+    void unget_() { this->rdbuf()->sungetc(); }
+    template <class V> basic_istream &numbered(V &v) {
+        sentry ok(*this);
+        if (!ok) return *this;
+        ios_base::iostate err = ios_base::goodbit;
+        typedef istreambuf_iterator<C, Tr> It;
+        use_facet<num_get<C, It> >(this->ios_base::loc_).get(It(*this), It(), *this, err, v);
+        this->setstate(err);
+        return *this;
+    }
+    template <class V> basic_istream &narrowed(V &v, long lo, long hi) {
+        sentry ok(*this);
+        if (!ok) return *this;
+        ios_base::iostate err = ios_base::goodbit;
+        typedef istreambuf_iterator<C, Tr> It;
+        long n = 0;
+        use_facet<num_get<C, It> >(this->ios_base::loc_).get(It(*this), It(), *this, err, n);
+        if (n < lo) { err |= ios_base::failbit; v = static_cast<V>(lo); }
+        else if (n > hi) { err |= ios_base::failbit; v = static_cast<V>(hi); }
+        else v = static_cast<V>(n);
+        this->setstate(err);
         return *this;
     }
 };
 
-// The free function, which is the one a program reaches for. It answers the
-// stream so that `while (std::getline(in, line))` works, and that is the whole
-// reason `istream` has a conversion to bool.
-inline istream &getline(istream &in, string &s, char delim) {
-    s = string();
-    int c = in.get();
-    if (c < 0) { in.state_ = 2; return in; }
-    while (c >= 0 && (char)c != delim) {
-        s += (char)c;
-        c = in.get();
+// [istream.extractors]/7-12: a character, and a word into an array - whitespace skipped, then up to the next
+// whitespace or `width() - 1` characters, a null after them.
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, C &c) {
+    typename basic_istream<C, Tr>::sentry ok(in);
+    if (!ok) return in;
+    const typename Tr::int_type v = in.__cxx1_get();
+    if (Tr::eq_int_type(v, Tr::eof())) in.setstate(ios_base::eofbit | ios_base::failbit);
+    else c = Tr::to_char_type(v);
+    return in;
+}
+template <class Tr> basic_istream<char, Tr> &operator>>(basic_istream<char, Tr> &in, signed char &c) {
+    return in >> reinterpret_cast<char &>(c);
+}
+template <class Tr> basic_istream<char, Tr> &operator>>(basic_istream<char, Tr> &in, unsigned char &c) {
+    return in >> reinterpret_cast<char &>(c);
+}
+template <class C, class Tr> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &in, C *s) {
+    typename basic_istream<C, Tr>::sentry ok(in);
+    if (!ok) return in;
+    const streamsize most = in.width() > 0 ? in.width() - 1 : static_cast<streamsize>(~0ULL >> 1);
+    streamsize n = 0;
+    while (n < most) {
+        const typename Tr::int_type c = in.__cxx1_get();
+        if (Tr::eq_int_type(c, Tr::eof())) { in.setstate(ios_base::eofbit); break; }
+        if (in.__cxx1_space(Tr::to_char_type(c))) { in.__cxx1_unget(); break; }
+        s[n++] = Tr::to_char_type(c);
+    }
+    s[n] = C();
+    in.width(0);
+    if (n == 0) in.setstate(ios_base::failbit);
+    return in;
+}
+template <class Tr> basic_istream<char, Tr> &operator>>(basic_istream<char, Tr> &in, signed char *s) {
+    return in >> reinterpret_cast<char *>(s);
+}
+template <class Tr> basic_istream<char, Tr> &operator>>(basic_istream<char, Tr> &in, unsigned char *s) {
+    return in >> reinterpret_cast<char *>(s);
+}
+
+// [istream.rvalue]
+template <class C, class Tr, class T> basic_istream<C, Tr> &operator>>(basic_istream<C, Tr> &&in, T &x) {
+    in >> x;
+    return in;
+}
+
+// [istream.manip]
+template <class C, class Tr> basic_istream<C, Tr> &ws(basic_istream<C, Tr> &in) {
+    typename basic_istream<C, Tr>::sentry ok(in, true);
+    if (!ok) return in;
+    for (;;) {
+        const typename Tr::int_type c = in.rdbuf()->sgetc();
+        if (Tr::eq_int_type(c, Tr::eof())) { in.setstate(ios_base::eofbit); break; }
+        if (!in.__cxx1_space(Tr::to_char_type(c))) break;
+        in.rdbuf()->sbumpc();
     }
     return in;
 }
 
-inline istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
+// [iostreamclass]
+template <class C, class Tr> class basic_iostream : public basic_istream<C, Tr>, public basic_ostream<C, Tr> {
+public:
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
+    explicit basic_iostream(basic_streambuf<C, Tr> *sb) : basic_istream<C, Tr>(sb), basic_ostream<C, Tr>(sb) {}
+    virtual ~basic_iostream() {}
 
-// Everything left in the source, in blocks: a string source's remainder in one write, a file
-// through fread 512 bytes at a time (fgetc per byte cost ~630 cycles a byte on the C6747).
-inline ostream &operator<<(ostream &out, streamsource src) {
-    istream *in = src.from;
-    if (in == 0) return out;
-    if (in->src_ != 0) {
-        if (in->pos_ < in->src_->size())
-            out.write(in->src_->data() + in->pos_, (streamsize)(in->src_->size() - in->pos_));
-        in->pos_ = in->src_->size();
-        return out;
-    }
-    FILE *f = in->target();
-    if (f == 0) return out;
-    char block[512];
-    for (;;) {
-        std::size_t n = std::fread(block, 1, sizeof block, f);
-        if (n > 0) out.write(block, (streamsize)n);
-        if (n < sizeof block) break;
-    }
-    return out;
-}
-
+protected:
+    basic_iostream(const basic_iostream &) = delete;
+    basic_iostream(basic_iostream &&rhs) : basic_istream<C, Tr>(std::move(rhs)), basic_ostream<C, Tr>() {}
+    basic_iostream &operator=(const basic_iostream &) = delete;
+    basic_iostream &operator=(basic_iostream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_iostream &rhs) { basic_istream<C, Tr>::swap(rhs); }
+};
 
 }  // namespace std
 

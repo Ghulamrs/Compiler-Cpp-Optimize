@@ -1,0 +1,8 @@
+// <ctgmath> - [ctgmath.syn]: it includes <complex> and <cmath>, whose overloads are the type-generic math.
+#ifndef _CXX1_CTGMATH
+#define _CXX1_CTGMATH
+
+#include <cmath>
+#include <complex>
+
+#endif

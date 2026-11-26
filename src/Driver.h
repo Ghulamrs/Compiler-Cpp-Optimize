@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+struct Token;
+
 class Driver {
 public:
     // After run() returned 0: whether to say so - a compile was begun and -nologo was not given.
@@ -25,12 +27,12 @@ private:
     std::string program_;
     std::vector<Job> jobs_;
     std::vector<std::string> searchPath_;
+    std::vector<std::string> systemPath_;       // the standard headers' part of it: no warning is said of those
     // Inputs that are already objects: not compiled, handed to the linker.
     std::vector<std::string> alreadyObjects_;
     const Backend *backend_ = &defaultBackend();
     bool toStdout_ = false;
     bool timing_ = false;
-    int keepGoing_ = 0;          // -keep-going[=N]: report up to N errors a file, not the first alone
     bool assemblyOnly_ = false;
     bool preprocessOnly_ = false;
     bool debug_ = false;
@@ -93,6 +95,7 @@ private:
     // Driver.cpp, where both are explained.
     static const char *bannerLine();
     void standardIncludeDirectories(const std::string &argv0);
+    void reportTheRest(const Source &src, const std::vector<Token> &tokens, std::size_t failedAt, const Target &target);
     bool quiet_ = false;
     bool saysDone_ = false;  // a compile was begun, and the line saying it finished is wanted
     std::atomic<int> volatileDowngrades_{0};

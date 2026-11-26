@@ -25,6 +25,8 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
 
     // **This is a nested parse of a different function and was saving three fields of it.**
     const FunctionState outer = captureFunctionState();
+    // A parameter pack the lambda declares is its own, and goes with this reading.
+    const std::map<std::string, PackBinding> outerPacks = packs_;
     // **`this` is the exception**: a member is reached through it, and the body
     // may name one, so it is carried across the clear.
     const Local *hadThis = findLocal("this");
@@ -50,6 +52,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     functionTypes_.clear();
     inTryBody_ = false;
     inMsHandler_ = false;
+    dtorEndLabel_.clear();
     // **A lambda's body is a different function**, so a `return` in it ends no
     // catch of the function around it - [except.handle]/16 is about leaving
     // the *handler*, and this body is left through a call.
@@ -98,6 +101,19 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
                 k++;
             }
             at_ = from;
+            // `[](A... a)` over a pack of the template around it: each member a parameter of its own (1.82: the
+            // pack's name was read as a type, "expected a type").
+            std::vector<const Type *> packTypes;
+            std::vector<std::string> packNames;
+            if (packParameter(&packTypes, &packNames)) {
+                for (std::size_t m = 0; m < packTypes.size() && m < packNames.size(); m++) {
+                    inParams_ = true;
+                    declare(packNames[m], packTypes[m], tokens_[from].pos);
+                    inParams_ = false;
+                }
+                if (k < paramsTo) k++;
+                continue;
+            }
             StorageClass psc;
             Qualifiers pq;
             const Type *pt = specifiers(&psc, &pq);
@@ -138,6 +154,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     leaveScope();                                       // parameters and body
     leaveScope();                                       // the captures
     restoreFunctionState(outer);
+    packs_ = outerPacks;
     return found;
 }
 
@@ -174,6 +191,8 @@ bool Parser::namesOwnMember(const std::string &name) {
 }
 
 ExprPtr Parser::lambdaExpression() {
+    // Its body writes what it captures, and when it runs is the program's to say.
+    for (const Local &l : locals_) l.unset = false;
     const std::size_t pos = peek().pos;
     const std::size_t lamAt = at_;
     const Nesting deep(this, pos, "lambda");
@@ -211,22 +230,27 @@ ExprPtr Parser::lambdaExpression() {
     bool defaultTakesThis = false;
     const Type *capturedThisFrom = nullptr;
     if (peek().is("=") || peek().is("&")) {
-        // `[&]` only where it is the whole list: `[&x]` is one named capture
+        // `[&]` and `[&, ...]` are the default: `[&x]` is one named capture
         // and is read by the loop below.
-        if (peek().is("=") || peekAt(1).is("]")) {
+        if (peek().is("=") || peekAt(1).is("]") || peekAt(1).is(",")) {
             captureAllByValue = peek().is("=");
             captureAllByRef = peek().is("&");
             at_++;
-            if (!peek().is("]"))
-                src_.fail(peek().pos, "naming a capture after a default one is "
-                                      "not supported yet - '[=]' and '[&]' on "
-                                      "their own take everything the body "
-                                      "reads");
+            if (!peek().is("]")) expect(",");
         }
     }
     while (!peek().is("]")) {
         // `[&x]` - this one by reference, whatever the default is.
         bool byRef = consume("&");
+        // [expr.prim.lambda]/8: after `&` each named capture is by copy, after `=` each is by
+        // reference and `this` is not among them - what the default already says is refused.
+        if (captureAllByRef && byRef)
+            src_.fail(peek().pos, "'&' cannot precede a capture when the capture default is '&'");
+        if (captureAllByValue && peek().is("this"))
+            src_.fail(peek().pos, "'this' cannot be explicitly captured when the capture default is '='");
+        if (captureAllByValue && !byRef)
+            src_.fail(peek().pos, "'" + peek().text + "' cannot be captured by copy when the capture "
+                                  "default is '=' - [expr.prim.lambda]/8");
         // `[this]` - the closure holds a pointer to the enclosing object, and
         // an unqualified member name inside the body is reached through it.
         if (peek().is("this")) {
@@ -256,30 +280,42 @@ ExprPtr Parser::lambdaExpression() {
                                   "compiler is C++11: a capture here names "
                                   "something the enclosing function already "
                                   "declared");
-        const Local *have = findLocal(cname);
-        // [expr.prim.lambda]/10: a member of an anonymous union is no variable to capture, clang's words.
-        if (have != nullptr && have->sharesSlot)
-            src_.fail(cpos, "'" + cname + "' in capture list does not name a variable");
-        const Type *fromOuter = nullptr;
-        if (have == nullptr) {
-            // A capture of the lambda around this one, which is a member of
-            // that closure by now rather than a local.
-            if (ExprPtr reach = outerCaptureAccess(cname))
-                fromOuter = reach->type();
-            if (fromOuter == nullptr)
-                src_.fail(cpos, "'" + cname + "' is not a local of the function "
-                                "around this lambda, nor a capture of a lambda "
-                                "around it, so there is nothing here to "
-                                "capture");
+        // [expr.prim.lambda]/23: `[ts...]` captures each parameter of the pack, `ts$0`, `ts$1`...
+        std::vector<std::string> each(1, cname);
+        if (consume("...")) {
+            const auto pk = packs_.find(cname);
+            if (pk == packs_.end())
+                src_.fail(cpos, "'" + cname + "' is not a parameter pack, so there is nothing for '...' to expand");
+            each = pk->second.names;
         }
-        capNames.push_back(cname);
-        // **By reference the closure holds a reference member**, which takes the
-        // reference layout rule: a pointer slot where `sizeof` is the referent's.
-        // By value it holds a copy, and capturing a reference copies its referent.
-        const Type *raw = have != nullptr ? have->type : fromOuter;
-        const Type *base = raw->isReference()
-                         ? raw->referent()->unqualified() : raw->unqualified();
-        capTypes.push_back(byRef ? types_.referenceTo(base) : base);
+        for (const std::string &one : each) {
+            const Local *have = findLocal(one);
+            // [expr.prim.lambda]/10: a member of an anonymous union is no variable to capture, clang's words.
+            if (have != nullptr && have->sharesSlot)
+                src_.fail(cpos, "'" + one + "' in capture list does not name a variable");
+            const Type *fromOuter = nullptr;
+            if (have == nullptr) {
+                // A capture of the lambda around this one, which is a member of
+                // that closure by now rather than a local.
+                if (ExprPtr reach = outerCaptureAccess(one))
+                    fromOuter = reach->type();
+                if (fromOuter == nullptr)
+                    src_.fail(cpos, "'" + cname + "' is not a local of the function "
+                                    "around this lambda, nor a capture of a lambda "
+                                    "around it, so there is nothing here to "
+                                    "capture");
+            }
+            capNames.push_back(one);
+            // **By reference the closure holds a reference member**, which takes the
+            // reference layout rule: a pointer slot where `sizeof` is the referent's.
+            // By value it holds a copy, and capturing a reference copies its referent.
+            const Type *raw = have != nullptr ? have->type : fromOuter;
+            const Type *base = raw->isReference()
+                             ? raw->referent()->unqualified() : raw->unqualified();
+            // By reference the entity is reached as it is, const and all ([expr.prim.lambda]/16; 1.82: a
+            // const object came out as a `T &` that no const object binds to).
+            capTypes.push_back(byRef ? types_.referenceTo(raw->isReference() ? raw->referent() : raw) : base);
+        }
         if (!peek().is("]")) expect(",");
     }
     at_++;                                    // ']'
@@ -298,6 +334,12 @@ ExprPtr Parser::lambdaExpression() {
 
     // **`mutable` decides whether `operator()` is const** - [expr.prim.lambda].
     const bool isMutable = consume("mutable");
+    // [expr.prim.lambda]/5: the lambda-declarator's exception-specification is the call operator's -
+    // `[]() noexcept { ... }` (1.79: "expected the lambda's body"). Its tokens go into the operator's text.
+    const std::size_t specFrom = at_;
+    const bool lambdaNoexcept = (peek().is("noexcept") || peek().is("throw")) ? exceptionSpecification() : false;
+    const DynamicSpec lambdaSpec = pendingSpec_;
+    const std::size_t specTo = at_;
 
     const Type *returns = nullptr;
     if (consume("->")) {
@@ -342,7 +384,7 @@ ExprPtr Parser::lambdaExpression() {
             const Type *base = raw->isReference()
                              ? raw->referent()->unqualified()
                              : raw->unqualified();
-            capTypes.push_back(captureAllByRef ? types_.referenceTo(base) : base);
+            capTypes.push_back(captureAllByRef ? types_.referenceTo(raw->isReference() ? raw->referent() : raw) : base);
         }
     }
 
@@ -425,6 +467,8 @@ ExprPtr Parser::lambdaExpression() {
     d.name = "operator()";
     d.type = types_.functionType(returns, params, false);
     d.pos = pos;
+    pendingNoexcept_ = lambdaNoexcept;
+    pendingSpec_ = specTo > specFrom ? lambdaSpec : DynamicSpec();
     declareMember(tag, d, !isMutable, RefQual::None, Access::Public, false, false);
 
     // The tokens the replay will read. Appended rather than spliced: an index
@@ -445,6 +489,7 @@ ExprPtr Parser::lambdaExpression() {
     if (!isMutable) {
         t.kind = TokenKind::Keyword; t.text = "const"; tokens_.push_back(t);
     }
+    for (std::size_t i = specFrom; i < specTo; i++) tokens_.push_back(tokens_[i]);
     for (std::size_t i = bodyFrom; i < bodyTo; i++) tokens_.push_back(tokens_[i]);
     t.kind = TokenKind::End;    t.text = "";           tokens_.push_back(t);
 
@@ -454,7 +499,18 @@ ExprPtr Parser::lambdaExpression() {
     mine.push_back(PendingBody{ tag, start, local, tag + "::operator()",
                                 PendingBody::npos() });
     if (capNames.empty()) captureFreeConversion(tag, local, returns, params, pos, mine);
-    replayInlineBodies(std::move(mine));
+    {
+        // **The closure's operator() is no member template's specialization**, though a lambda may be written in
+        // one's body: read as one, it matched no declaration (1.82: "'put::$_0' declares no member
+        // 'operator()'", any lambda in a member function template).
+        struct NotMemberTemplate {
+            Parser *p; bool inst, body;
+            ~NotMemberTemplate() { p->memberTemplateInst_ = inst; p->memberTemplateBody_ = body; }
+        } notMember{ this, memberTemplateInst_, memberTemplateBody_ };
+        memberTemplateInst_ = false;
+        memberTemplateBody_ = false;
+        replayInlineBodies(std::move(mine));
+    }
 
     // The object itself: a slot in this frame, and the expression is its name.
     MadeLambda record;

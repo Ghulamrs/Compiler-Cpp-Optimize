@@ -1,0 +1,13 @@
+// <csignal> - [csignal.syn]: sig_atomic_t, signal and raise under std::; the SIG names are macros.
+#ifndef _CXX1_CSIGNAL
+#define _CXX1_CSIGNAL
+
+#include <signal.h>
+
+namespace std {
+using ::sig_atomic_t;
+using ::signal;
+using ::raise;
+}  // namespace std
+
+#endif

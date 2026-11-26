@@ -1,0 +1,13 @@
+0 1 1
+1 1 1 logic_error logic
+1 1 1 int 42
+1 1 1 Plain 7
+string made
+0
+0 1
+0
+0: outer failure
+1: inner failure
+nested 1 1
+plain throw 5
+end

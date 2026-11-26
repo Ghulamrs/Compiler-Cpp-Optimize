@@ -1,8 +1,12 @@
 #pragma once
 
-// **Where the optimizer holds back, said aloud when CPP11_DECLINES is set**: one stderr line per function or
-// call site a transformation declines, `decline <reason> <symbol>`. Unset it costs one cached getenv; nothing
-// emitted depends on it. **Empty or 0 is unset** (1.10, 2026-10-20): IDEs pass `CPP11_DECLINES=` for off.
+// **Where the optimizer holds back, said out loud when CPP11_DECLINES is set**: one line on stderr
+// per function or call site a transformation declines, `decline <reason> <symbol>`. Unset, it costs
+// one cached getenv and prints nothing; nothing emitted depends on it.
+//
+// **Empty or 0 is unset** (1.10, 2026-10-20). The IDEs pass `CPP11_DECLINES=` for the option off,
+// which cmd's `set NAME=` used to remove; GRIDE starts cpp11 itself now, so the empty variable
+// arrived, and every compile of a build reported every decline.
 
 #include <cstdio>
 #include <cstdlib>

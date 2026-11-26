@@ -26,11 +26,8 @@ constexpr bool frameReg(int r) { return r == RSP || r == RBP; }
 // A register's number and the width named, in bytes; -1 for one this does not
 // model (the x87 stack). The name for a number and width, for writing back.
 struct Reg {
-    int id;
-    int width;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Reg(int id = -1, int width = 0) : id(id), width(width) {}
+    int id = -1;
+    int width = 0;
 };
 Reg parseReg(Str name);
 const char *regName(int id, int width);
@@ -65,16 +62,11 @@ struct Operand {
 struct Instr {
     std::string m;
     Operand a, b;             // AT&T order: a is the source, b the destination
-    int operands;
+    int operands = 0;
     // A call's argument registers as the walker placed them; without the
     // word, the convention's whole set is read.
     RegSet args = 0;
     bool exactArgs = false;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Instr(std::string m = std::string(), Operand a = Operand(), Operand b = Operand(),
-          int operands = 0)
-        : m(std::move(m)), a(a), b(b), operands(operands) {}
 };
 
 // Everything between functionBegin and functionEnd; an event is a spelling

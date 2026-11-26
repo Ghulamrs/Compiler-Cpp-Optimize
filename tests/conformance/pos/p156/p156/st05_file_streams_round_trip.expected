@@ -1,0 +1,5 @@
+open 1
+[line one] 99 2.5 [appended] good 1
+eof 1
+[LINE one]
+missing 0 1

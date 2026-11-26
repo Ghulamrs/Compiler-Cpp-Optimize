@@ -1,0 +1,7 @@
+// <cerrno> - [errno]: errno and the E* numbers, which are macros and belong to no namespace.
+#ifndef _CXX1_CERRNO
+#define _CXX1_CERRNO
+
+#include <errno.h>
+
+#endif

@@ -43,11 +43,12 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
     hold(std::move(e));
 }
 
-void Optimizer::event(std::function<void(Spelling &)> call) {
+void Optimizer::event(std::function<void(Spelling &)> call, bool debug) {
     if (!inFunction_) { call(under_); return; }
     Entry e;
     e.kind = Entry::Event;
     e.event = std::move(call);
+    e.debug = debug;
     hold(std::move(e));
 }
 
@@ -68,7 +69,7 @@ void Optimizer::defLabel(const std::string &l) {
 void Optimizer::stateLabel(const std::string &l) {
     if (!inFunction_) { under_.stateLabel(l); return; }
     defLabel(l);
-    fn_.stream.back().state = true;
+    current().stream.back().state = true;
 }
 
 void Optimizer::functionBegin(const std::string &name, bool exported, bool mergeable) {
@@ -88,11 +89,12 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     opaque_.clear();
 }
 
-// **A funclet is a function of its own to the passes** - the runtime calls it, with the parent's
-// frame under rbp - and a piece, never whole: no pass takes a register for it that its prologue does
-// not save. What it reads or writes of the parent's frame is shared with the parent, whose passes then leave those slots alone.
+// **A funclet is a function of its own to the passes**, run by the runtime
+// over the parent's rbp frame: no register its prologue does not save, shared
+// parent slots left alone; one begun inside another holds the outer aside.
 void Optimizer::funcletBegin() {
-    assert(inFunction_ && !funclet_ && "a funclet inside a funclet");
+    assert(inFunction_ && "a funclet outside a function");
+    if (funclet_) outerFunclets_.push_back(std::move(funclet_));
     funclet_.reset(new opt::Function(*costs_));
     funclet_->name = fn_.name;
     funclet_->convention = fn_.convention;
@@ -104,8 +106,13 @@ void Optimizer::funcletEnd() {
     assert(funclet_ && "no funclet is held");
     improve(*funclet_);
     fn_.shared.addAccessesOf(funclet_->stream);
+    for (std::unique_ptr<opt::Function> &outer : outerFunclets_) outer->shared.addAccessesOf(funclet_->stream);
     funclets_.push_back(std::move(funclet_->stream));
     funclet_.reset();
+    if (!outerFunclets_.empty()) {
+        funclet_ = std::move(outerFunclets_.back());
+        outerFunclets_.pop_back();
+    }
 }
 
 void Optimizer::defer(std::function<void()> call) {
@@ -239,8 +246,15 @@ void Optimizer::fileEntry(int n, const std::string &name) {
     event([=](Spelling &s) { s.fileEntry(n, name); });
 }
 void Optimizer::location(int file, int line, int column) {
-    event([=](Spelling &s) { s.location(file, line, column); });
+    event([=](Spelling &s) { s.location(file, line, column); }, true);
 }
+// **A lexical block's label is an event, not a label**: nothing jumps to it, and as a label it would end a block of the
+// flow graph and keep a jump from being threaded through it - code -g alone would change.
+void Optimizer::blockLabel(const std::string &l) {
+    event([=](Spelling &s) { s.defLabel(l); }, true);
+}
+void Optimizer::funcletLinesBegin() { event([](Spelling &s) { s.funcletLinesBegin(); }, true); }
+void Optimizer::funcletLinesEnd() { event([](Spelling &s) { s.funcletLinesEnd(); }, true); }
 void Optimizer::globl(const std::string &name) { event([=](Spelling &s) { s.globl(name); }); }
 void Optimizer::weakDefinition(const std::string &name) {
     event([=](Spelling &s) { s.weakDefinition(name); });
@@ -268,6 +282,13 @@ void Optimizer::dataSym(const std::string &sym, long long off) {
     event([=](Spelling &s) { s.dataSym(sym, off); });
 }
 void Optimizer::noteHasEh(bool yes) { event([=](Spelling &s) { s.noteHasEh(yes); }); }
+void Optimizer::flagExchange() {
+    event([](Spelling &s) { s.flagExchange(); });
+}
+void Optimizer::atomicHelper(const std::string &name) {
+    event([=](Spelling &s) { s.atomicHelper(name); });
+}
+
 void Optimizer::initialiserEntry(const std::string &fn, bool dsoHandle) {
     event([=](Spelling &s) { s.initialiserEntry(fn, dsoHandle); });
 }

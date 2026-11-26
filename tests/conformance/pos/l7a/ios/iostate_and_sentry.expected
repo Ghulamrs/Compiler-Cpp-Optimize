@@ -1,0 +1,17 @@
+0 1 2 4
+0 1 2
+12 last field: good 0 eof 1 fail 0 bad 0 bool 1 not 0
+7 after the end: good 0 eof 1 fail 1 bad 0 bool 0 not 1
+5 only spaces: good 0 eof 1 fail 1 bad 0 bool 0 not 1
+badbit: good 0 eof 0 fail 1 bad 1 bool 0 not 1
+cleared: good 1 eof 0 fail 0 bad 0 bool 1 not 0
+1 eofbit alone: good 0 eof 1 fail 0 bad 0 bool 1 not 0
+6
+failure: ios_base::failbit set: iostream stream error
+on setting the mask: ios_base::eofbit set: iostream stream error
+3 3 5
+ofstream with no file: good 1 eof 0 fail 0 bad 0 bool 1 not 0
+written to: good 0 eof 0 fail 1 bad 1 bool 0 not 1
+ifstream with no file: good 1 eof 0 fail 0 bad 0 bool 1 not 0
+3 read from: good 0 eof 1 fail 1 bad 0 bool 0 not 1
+0 missing file: good 0 eof 0 fail 1 bad 0 bool 0 not 1

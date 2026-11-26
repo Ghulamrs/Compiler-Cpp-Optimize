@@ -52,7 +52,23 @@ public:
     // emission goes through the same door as defLabel, or a table names
     // `.L.main.caught.0` where the code defines `$_L_main_caught_0`.
     std::string labelName(const std::string &l) { return mangle(l); }
+    // `$LNend$` and the rest are the prefix before the function's MASM name - see prologue and
+    // functionEnd - so -g's records name them that way, not as one name spelled whole (1.30).
+    std::string codeLabelText(const std::string &prefix, const std::string &symbol) override {
+        return prefix + mangle(symbol);
+    }
     void functionEnd(const std::string &name) override;
+
+    // -g: the source files and lines, in the directives GRIDE's masm reads - `.FILE n, "path"` and
+    // `.LINE line, n` - as c90 writes them; ml64 has no such words (1.29, 2026-10-22).
+    void fileEntry(int n, const std::string &name) override;
+    void location(int file, int line, int column) override;
+    // A funclet PROC's lines are a run of their own; masm makes its table per PROC (1.29).
+    void funcletLinesBegin() override;
+    void funcletLinesEnd() override;
+    std::string locationDirective(int fn, int file, int line, int column) const override;
+    // -g: the CodeView writeCodeView makes for clang, spelled for GRIDE's masm (see Masm.cpp).
+    void codeView(const std::string &gnu);
 
     void globl(const std::string &name) override;
     void textSection() override;
@@ -62,6 +78,8 @@ public:
     void tlsDataSection() override;
     void tlsBssSection() override { tlsDataSection(); }
     void tlsInitialiserEntry(const std::string &fn) override;
+    bool tlsOperandsSpelled() const override { return !comdat_; }
+    void tlsOffsetWord(const std::string &symbol) override;
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
     void align(int n) override;
@@ -71,8 +89,12 @@ public:
     void dataSym(const std::string &sym, long long off) override;
     void dataBytes(const std::string &bytes) override;
 
+    void flagExchange() override;
+    void atomicHelper(const std::string &name) override;
     void predefine(const std::vector<std::string> &names) override;
     void initialiserEntry(const std::string &fn, bool dsoHandle) override;
+    // A `div` or `idiv` given up as a keyword is still an instruction here: written as its bytes (1.30).
+    void finishText(std::vector<std::string> &chunks) override;
     void preamble(std::ostream &sink) override;
     void postamble(std::ostream &sink) override;
 
@@ -94,18 +116,28 @@ private:
 
     std::string pending_;
 
+    // -g: the line entries of the function being written - the last `.LINE` and where it went (one
+    // no instruction follows is replaced by the next), and every (file, line) given a run already.
+    bool inFunction_ = false;
+    std::string lastLoc_;
+    std::size_t lastLocAt_ = 0;
+    int lastLocFile_ = 0, lastLocLine_ = 0;
+    std::set<std::pair<int, int> > linesRun_;
+    // The function's line state, set aside while a funclet's lines are written.
+    struct LineState { std::string lastLoc; std::size_t lastLocAt; int lastLocFile, lastLocLine; std::set<std::pair<int, int> > linesRun; };
+    std::vector<LineState> outerLines_;
+    std::string mangleNames(const std::string &expr);
+
     std::set<std::string> defined_, exported_, referenced_, unreserved_;
+    std::set<std::string> tlsWords_;
+    // Keywords this file writes and defines a symbol by, renamed and warned about once (1.30).
+    std::set<std::string> renamed_;
     // Referenced inside a SECTIONREL expression, which ml64 refuses to add to a `:PROC` (A2102).
     std::set<std::string> referencedData_;
 
     struct Rendered {
         std::string text;
-        bool isMem, isImm, isXmm;
-
-        // C++11 has no aggregate with a member initialiser, so the braces call this.
-        Rendered(std::string text = std::string(), bool isMem = false, bool isImm = false,
-                 bool isXmm = false)
-            : text(std::move(text)), isMem(isMem), isImm(isImm), isXmm(isXmm) {}
+        bool isMem = false, isImm = false, isXmm = false;
     };
     Rendered render(const Op &x);
     std::string mangle(const std::string &name);
@@ -123,7 +155,7 @@ public:
 private:
     bool usesFunclets() const override { return true; }
     bool localsAboveFrameBase() const override { return true; }
-    std::string beginFunclet() override;
+    std::string beginFunclet(std::size_t pos, int number, bool cleanup) override;
     void funcletLeave(const std::string &label) override;
     void endFunclet(const std::string &resume) override;
     void endCleanupFunclet() override;
@@ -139,11 +171,17 @@ private:
     // The funclets' .pdata goes to MasmSpelling::trailer_, after every function:
     // .pdata has to be sorted by the address it describes and every funclet
     // lives in .text$x, so emitting beside the parent gives LNK1223.
-    std::size_t funcletMark_ = 0;
+    std::vector<std::size_t> funcletMarks_;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;
+    // The funclets the one being walked was opened inside, with their entries' -g locations.
+    std::vector<std::pair<std::string, std::string> > outerFunclets_;
     const char *funcletKind_ = "$catch$";
-    bool writesDwarf() const override { return false; }
+    // -g: the variables and types as CodeView, which GRIDE's masm carries into the object
+    // (writeDebug); not for ml64, which the driver refuses -g for (1.29).
+    bool writesDwarf() const override { return masm_.comdat(); }
+    void writeDebug(const std::vector<DwarfFunction> &fns,
+                    const std::vector<DwarfGlobal> &globals) override;
     bool emitsOwnRtti() const override { return true; }
     // The four objects the Microsoft ABI wants per thrown type.
     void emitThrowInfo(const Program &program);

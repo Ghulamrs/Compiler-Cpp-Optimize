@@ -1,0 +1,339 @@
+// <valarray> - [numarray]: valarray, slices and generalized slices, and the four views that select from one.
+//
+// The elements live in one `new T[n]` array ([numeric.requirements] lets T be default-constructed and
+// assigned). Every view - slice_array, gslice_array, mask_array, indirect_array - is the array's address and
+// the list of indices it selects, worked out when the view is made, so the four share one way of reading and
+// writing. Operations make their result at once; there are no expression templates.
+#ifndef _CXX1_VALARRAY
+#define _CXX1_VALARRAY
+
+#include <cmath>
+#include <cstddef>
+#include <initializer_list>
+#include <utility>
+
+namespace std {
+
+template <class T> class valarray;
+template <class T> class slice_array;
+template <class T> class gslice_array;
+template <class T> class mask_array;
+template <class T> class indirect_array;
+class gslice;
+
+// [class.slice]
+class slice {
+    std::size_t start_, size_, stride_;
+
+public:
+    slice() : start_(0), size_(0), stride_(0) {}
+    slice(std::size_t start, std::size_t size, std::size_t stride) : start_(start), size_(size), stride_(stride) {}
+    std::size_t start() const { return start_; }
+    std::size_t size() const { return size_; }
+    std::size_t stride() const { return stride_; }
+};
+
+template <class T> class valarray {
+    T *p_;
+    std::size_t n_;
+
+    void make(std::size_t n) { p_ = n != 0 ? new T[n]() : 0; n_ = n; }   // [valarray.cons]/2: value-initialised
+    template <class V> void fromView(const V &v) {
+        make(v.ix_.size());
+        for (std::size_t i = 0; i < n_; i++) p_[i] = v.p_[v.ix_[i]];
+    }
+
+public:
+    typedef T value_type;
+
+    valarray() : p_(0), n_(0) {}
+    explicit valarray(std::size_t n) { make(n); }
+    valarray(const T &v, std::size_t n) { make(n); for (std::size_t i = 0; i < n; i++) p_[i] = v; }
+    valarray(const T *a, std::size_t n) { make(n); for (std::size_t i = 0; i < n; i++) p_[i] = a[i]; }
+    valarray(const valarray &o) { make(o.n_); for (std::size_t i = 0; i < n_; i++) p_[i] = o.p_[i]; }
+    valarray(valarray &&o) noexcept : p_(o.p_), n_(o.n_) { o.p_ = 0; o.n_ = 0; }
+    valarray(const slice_array<T> &v) { fromView(v); }
+    valarray(const gslice_array<T> &v) { fromView(v); }
+    valarray(const mask_array<T> &v) { fromView(v); }
+    valarray(const indirect_array<T> &v) { fromView(v); }
+    valarray(initializer_list<T> il) {
+        make(il.size());
+        std::size_t i = 0;
+        for (const T *q = il.begin(); q != il.end(); ++q) p_[i++] = *q;
+    }
+    ~valarray() { delete[] p_; }
+
+    // [valarray.assign]/1: assigning arrays of different lengths is undefined; this one resizes.
+    valarray &operator=(const valarray &o) {
+        if (this != &o) {
+            if (n_ != o.n_) { delete[] p_; make(o.n_); }
+            for (std::size_t i = 0; i < n_; i++) p_[i] = o.p_[i];
+        }
+        return *this;
+    }
+    valarray &operator=(valarray &&o) noexcept {
+        if (this != &o) { delete[] p_; p_ = o.p_; n_ = o.n_; o.p_ = 0; o.n_ = 0; }
+        return *this;
+    }
+    valarray &operator=(initializer_list<T> il) { return *this = valarray(il); }
+    valarray &operator=(const T &v) { for (std::size_t i = 0; i < n_; i++) p_[i] = v; return *this; }
+    valarray &operator=(const slice_array<T> &v) { return *this = valarray(v); }
+    valarray &operator=(const gslice_array<T> &v) { return *this = valarray(v); }
+    valarray &operator=(const mask_array<T> &v) { return *this = valarray(v); }
+    valarray &operator=(const indirect_array<T> &v) { return *this = valarray(v); }
+
+    const T &operator[](std::size_t i) const { return p_[i]; }
+    T &operator[](std::size_t i) { return p_[i]; }
+    valarray operator[](slice s) const;
+    slice_array<T> operator[](slice s);
+    valarray operator[](const gslice &s) const;
+    gslice_array<T> operator[](const gslice &s);
+    valarray operator[](const valarray<bool> &m) const;
+    mask_array<T> operator[](const valarray<bool> &m);
+    valarray operator[](const valarray<std::size_t> &ix) const;
+    indirect_array<T> operator[](const valarray<std::size_t> &ix);
+
+    valarray operator+() const { valarray r(*this); for (std::size_t i = 0; i < n_; i++) r.p_[i] = +p_[i]; return r; }
+    valarray operator-() const { valarray r(*this); for (std::size_t i = 0; i < n_; i++) r.p_[i] = -p_[i]; return r; }
+    valarray operator~() const { valarray r(*this); for (std::size_t i = 0; i < n_; i++) r.p_[i] = ~p_[i]; return r; }
+    valarray<bool> operator!() const {
+        valarray<bool> r(n_);
+        for (std::size_t i = 0; i < n_; i++) r[i] = !p_[i];
+        return r;
+    }
+
+#define _CXX1_VALARRAY_COMPOUND(op)                                                                   \
+    valarray &operator op(const T &v) { for (std::size_t i = 0; i < n_; i++) p_[i] op v; return *this; } \
+    valarray &operator op(const valarray &o) {                                                         \
+        for (std::size_t i = 0; i < n_ && i < o.n_; i++) p_[i] op o.p_[i];                             \
+        return *this;                                                                                  \
+    }
+    _CXX1_VALARRAY_COMPOUND(*=)
+    _CXX1_VALARRAY_COMPOUND(/=)
+    _CXX1_VALARRAY_COMPOUND(%=)
+    _CXX1_VALARRAY_COMPOUND(+=)
+    _CXX1_VALARRAY_COMPOUND(-=)
+    _CXX1_VALARRAY_COMPOUND(^=)
+    _CXX1_VALARRAY_COMPOUND(&=)
+    _CXX1_VALARRAY_COMPOUND(|=)
+    _CXX1_VALARRAY_COMPOUND(<<=)
+    _CXX1_VALARRAY_COMPOUND(>>=)
+#undef _CXX1_VALARRAY_COMPOUND
+
+    void swap(valarray &o) noexcept { std::swap(p_, o.p_); std::swap(n_, o.n_); }
+    std::size_t size() const { return n_; }
+    T sum() const { T s = n_ != 0 ? p_[0] : T(); for (std::size_t i = 1; i < n_; i++) s += p_[i]; return s; }
+    T min() const { T m = p_[0]; for (std::size_t i = 1; i < n_; i++) if (p_[i] < m) m = p_[i]; return m; }
+    T max() const { T m = p_[0]; for (std::size_t i = 1; i < n_; i++) if (m < p_[i]) m = p_[i]; return m; }
+    // [valarray.members]/7-8: element i takes element i + n; what falls outside is T().
+    valarray shift(int n) const {
+        valarray r(n_);
+        for (std::size_t i = 0; i < n_; i++) {
+            const long long j = static_cast<long long>(i) + n;
+            if (j >= 0 && j < static_cast<long long>(n_)) r.p_[i] = p_[j];
+        }
+        return r;
+    }
+    valarray cshift(int n) const {
+        valarray r(n_);
+        if (n_ == 0) return r;
+        const long long m = static_cast<long long>(n_);
+        for (std::size_t i = 0; i < n_; i++) r.p_[i] = p_[((static_cast<long long>(i) + n) % m + m) % m];
+        return r;
+    }
+    valarray apply(T f(T)) const { valarray r(n_); for (std::size_t i = 0; i < n_; i++) r.p_[i] = f(p_[i]); return r; }
+    valarray apply(T f(const T &)) const { valarray r(n_); for (std::size_t i = 0; i < n_; i++) r.p_[i] = f(p_[i]); return r; }
+    void resize(std::size_t n, T v = T()) { delete[] p_; make(n); for (std::size_t i = 0; i < n; i++) p_[i] = v; }
+
+    T *__cxx1_data() { return p_; }
+    const T *__cxx1_data() const { return p_; }
+};
+
+// [class.gslice]
+class gslice {
+    std::size_t start_;
+    valarray<std::size_t> size_, stride_;
+
+public:
+    gslice() : start_(0) {}
+    gslice(std::size_t start, const valarray<std::size_t> &lengths, const valarray<std::size_t> &strides)
+        : start_(start), size_(lengths), stride_(strides) {}
+    std::size_t start() const { return start_; }
+    valarray<std::size_t> size() const { return size_; }
+    valarray<std::size_t> stride() const { return stride_; }
+
+    // The indices it names, the last length varying fastest ([gslice.cons]'s example).
+    valarray<std::size_t> __cxx1_indices() const {
+        const std::size_t d = size_.size();
+        std::size_t total = d != 0 ? 1 : 0;
+        for (std::size_t k = 0; k < d; k++) total *= size_[k];
+        valarray<std::size_t> ix(total), at(std::size_t(0), d);
+        for (std::size_t n = 0; n < total; n++) {
+            std::size_t i = start_;
+            for (std::size_t k = 0; k < d; k++) i += at[k] * stride_[k];
+            ix[n] = i;
+            for (std::size_t k = d; k-- > 0;) {
+                if (++at[k] < size_[k]) break;
+                at[k] = 0;
+            }
+        }
+        return ix;
+    }
+};
+
+// The four views: an array's elements by index.
+#define _CXX1_VALARRAY_VIEW(Name)                                                                        \
+    template <class T> class Name {                                                                      \
+        friend class valarray<T>;                                                                        \
+        T *p_;                                                                                           \
+        valarray<std::size_t> ix_;                                                                       \
+        Name(T *p, const valarray<std::size_t> &ix) : p_(p), ix_(ix) {}                                  \
+                                                                                                         \
+    public:                                                                                              \
+        typedef T value_type;                                                                            \
+        Name(const Name &o) : p_(o.p_), ix_(o.ix_) {}                                                    \
+        Name() = delete;                                                                                 \
+        const Name &operator=(const Name &o) const {                                                     \
+            for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] = o.p_[o.ix_[i]];                    \
+            return *this;                                                                                \
+        }                                                                                                \
+        void operator=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] = v[i]; } \
+        void operator=(const T &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] = v; } \
+        void operator*=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] *= v[i]; } \
+        void operator/=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] /= v[i]; } \
+        void operator%=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] %= v[i]; } \
+        void operator+=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] += v[i]; } \
+        void operator-=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] -= v[i]; } \
+        void operator^=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] ^= v[i]; } \
+        void operator&=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] &= v[i]; } \
+        void operator|=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] |= v[i]; } \
+        void operator<<=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] <<= v[i]; } \
+        void operator>>=(const valarray<T> &v) const { for (std::size_t i = 0; i < ix_.size(); i++) p_[ix_[i]] >>= v[i]; } \
+    };
+_CXX1_VALARRAY_VIEW(slice_array)
+_CXX1_VALARRAY_VIEW(gslice_array)
+_CXX1_VALARRAY_VIEW(mask_array)
+_CXX1_VALARRAY_VIEW(indirect_array)
+#undef _CXX1_VALARRAY_VIEW
+
+inline valarray<std::size_t> __cxx1_slice_indices(const slice &s) {
+    valarray<std::size_t> ix(s.size());
+    for (std::size_t i = 0; i < s.size(); i++) ix[i] = s.start() + i * s.stride();
+    return ix;
+}
+inline valarray<std::size_t> __cxx1_mask_indices(const valarray<bool> &m) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < m.size(); i++) if (m[i]) n++;
+    valarray<std::size_t> ix(n);
+    for (std::size_t i = 0, k = 0; i < m.size(); i++) if (m[i]) ix[k++] = i;
+    return ix;
+}
+
+template <class T> valarray<T> valarray<T>::operator[](slice s) const {
+    return valarray<T>(slice_array<T>(p_, __cxx1_slice_indices(s)));
+}
+template <class T> slice_array<T> valarray<T>::operator[](slice s) { return slice_array<T>(p_, __cxx1_slice_indices(s)); }
+template <class T> valarray<T> valarray<T>::operator[](const gslice &s) const {
+    return valarray<T>(gslice_array<T>(p_, s.__cxx1_indices()));
+}
+template <class T> gslice_array<T> valarray<T>::operator[](const gslice &s) { return gslice_array<T>(p_, s.__cxx1_indices()); }
+template <class T> valarray<T> valarray<T>::operator[](const valarray<bool> &m) const {
+    return valarray<T>(mask_array<T>(p_, __cxx1_mask_indices(m)));
+}
+template <class T> mask_array<T> valarray<T>::operator[](const valarray<bool> &m) { return mask_array<T>(p_, __cxx1_mask_indices(m)); }
+template <class T> valarray<T> valarray<T>::operator[](const valarray<std::size_t> &ix) const {
+    return valarray<T>(indirect_array<T>(p_, ix));
+}
+template <class T> indirect_array<T> valarray<T>::operator[](const valarray<std::size_t> &ix) { return indirect_array<T>(p_, ix); }
+
+template <class T> void swap(valarray<T> &a, valarray<T> &b) noexcept { a.swap(b); }
+
+// [valarray.binary], [valarray.comparison]
+#define _CXX1_VALARRAY_BINARY(op, R)                                                                  \
+    template <class T> valarray<R> operator op(const valarray<T> &a, const valarray<T> &b) {          \
+        valarray<R> r(a.size());                                                                      \
+        for (std::size_t i = 0; i < a.size() && i < b.size(); i++) r[i] = a[i] op b[i];               \
+        return r;                                                                                     \
+    }                                                                                                 \
+    template <class T> valarray<R> operator op(const valarray<T> &a, const T &b) {                    \
+        valarray<R> r(a.size());                                                                      \
+        for (std::size_t i = 0; i < a.size(); i++) r[i] = a[i] op b;                                  \
+        return r;                                                                                     \
+    }                                                                                                 \
+    template <class T> valarray<R> operator op(const T &a, const valarray<T> &b) {                    \
+        valarray<R> r(b.size());                                                                      \
+        for (std::size_t i = 0; i < b.size(); i++) r[i] = a op b[i];                                  \
+        return r;                                                                                     \
+    }
+_CXX1_VALARRAY_BINARY(*, T)
+_CXX1_VALARRAY_BINARY(/, T)
+_CXX1_VALARRAY_BINARY(%, T)
+_CXX1_VALARRAY_BINARY(+, T)
+_CXX1_VALARRAY_BINARY(-, T)
+_CXX1_VALARRAY_BINARY(^, T)
+_CXX1_VALARRAY_BINARY(&, T)
+_CXX1_VALARRAY_BINARY(|, T)
+_CXX1_VALARRAY_BINARY(<<, T)
+_CXX1_VALARRAY_BINARY(>>, T)
+_CXX1_VALARRAY_BINARY(&&, bool)
+_CXX1_VALARRAY_BINARY(||, bool)
+_CXX1_VALARRAY_BINARY(==, bool)
+_CXX1_VALARRAY_BINARY(!=, bool)
+_CXX1_VALARRAY_BINARY(<, bool)
+_CXX1_VALARRAY_BINARY(>, bool)
+_CXX1_VALARRAY_BINARY(<=, bool)
+_CXX1_VALARRAY_BINARY(>=, bool)
+#undef _CXX1_VALARRAY_BINARY
+
+// [valarray.transcend]: each function of <cmath>, element by element.
+#define _CXX1_VALARRAY_UNARY(f)                                                                       \
+    template <class T> valarray<T> f(const valarray<T> &a) {                                          \
+        valarray<T> r(a.size());                                                                      \
+        for (std::size_t i = 0; i < a.size(); i++) r[i] = static_cast<T>(std::f(a[i]));               \
+        return r;                                                                                     \
+    }
+_CXX1_VALARRAY_UNARY(abs)
+_CXX1_VALARRAY_UNARY(acos)
+_CXX1_VALARRAY_UNARY(asin)
+_CXX1_VALARRAY_UNARY(atan)
+_CXX1_VALARRAY_UNARY(cos)
+_CXX1_VALARRAY_UNARY(cosh)
+_CXX1_VALARRAY_UNARY(exp)
+_CXX1_VALARRAY_UNARY(log)
+_CXX1_VALARRAY_UNARY(log10)
+_CXX1_VALARRAY_UNARY(sin)
+_CXX1_VALARRAY_UNARY(sinh)
+_CXX1_VALARRAY_UNARY(sqrt)
+_CXX1_VALARRAY_UNARY(tan)
+_CXX1_VALARRAY_UNARY(tanh)
+#undef _CXX1_VALARRAY_UNARY
+
+#define _CXX1_VALARRAY_TWO(f)                                                                         \
+    template <class T> valarray<T> f(const valarray<T> &a, const valarray<T> &b) {                    \
+        valarray<T> r(a.size());                                                                      \
+        for (std::size_t i = 0; i < a.size() && i < b.size(); i++) r[i] = static_cast<T>(std::f(a[i], b[i])); \
+        return r;                                                                                     \
+    }                                                                                                 \
+    template <class T> valarray<T> f(const valarray<T> &a, const T &b) {                              \
+        valarray<T> r(a.size());                                                                      \
+        for (std::size_t i = 0; i < a.size(); i++) r[i] = static_cast<T>(std::f(a[i], b));            \
+        return r;                                                                                     \
+    }                                                                                                 \
+    template <class T> valarray<T> f(const T &a, const valarray<T> &b) {                              \
+        valarray<T> r(b.size());                                                                      \
+        for (std::size_t i = 0; i < b.size(); i++) r[i] = static_cast<T>(std::f(a, b[i]));            \
+        return r;                                                                                     \
+    }
+_CXX1_VALARRAY_TWO(atan2)
+_CXX1_VALARRAY_TWO(pow)
+#undef _CXX1_VALARRAY_TWO
+
+// [valarray.range]
+template <class T> T *begin(valarray<T> &v) { return v.__cxx1_data(); }
+template <class T> const T *begin(const valarray<T> &v) { return v.__cxx1_data(); }
+template <class T> T *end(valarray<T> &v) { return v.__cxx1_data() + v.size(); }
+template <class T> const T *end(const valarray<T> &v) { return v.__cxx1_data() + v.size(); }
+
+}  // namespace std
+
+#endif

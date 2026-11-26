@@ -101,6 +101,7 @@ protected:
     }
     const std::string *tagOf(const Type *t) {
         const std::string &tag = t->tag();
+        if (tag.empty() && !t->unnamedName().empty()) return &t->unnamedName();
         if (tag.empty()) {
             refuse("an unnamed class has no name to give the linker - give the "
                    "struct or union a tag, or reach it through a typedef, "
@@ -230,10 +231,11 @@ public:
     // **`R` or `O` after the cv** - measured, `_ZNR6Buffer4takeEv`, `_ZNKO6Buffer4peekEv`.
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
-                        const Type *fn, bool constThis, RefQual refThis) {
+                        const Type *fn, unsigned cvThis, RefQual refThis) {
         conversionTo_ = fn->returns();
         out = "_ZN";
-        if (constThis) out += "K";
+        if (cvThis & Type::kThisVolatile) out += "V";
+        if (cvThis & Type::kThisConst) out += "K";
         out += refQualifier(refThis);
         prefix(clsType, cls);
         // A member operator's operand count is one more than its parameter
@@ -251,10 +253,11 @@ public:
     void memberFunctionTemplate(const std::string &cls, const Type *clsType,
                                 const std::string &name, const Type *fn,
                                 const std::vector<TemplateArg> &args,
-                                bool constThis, RefQual refThis) {
+                                unsigned cvThis, RefQual refThis) {
         conversionTo_ = fn->returns();
         out = "_ZN";
-        if (constThis) out += "K";
+        if (cvThis & Type::kThisVolatile) out += "V";
+        if (cvThis & Type::kThisConst) out += "K";
         out += refQualifier(refThis);
         prefix(clsType, cls);
         writtenName(name, false);
@@ -265,7 +268,9 @@ public:
         for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
         out += 'E';
         out += "E";
-        type(fn->returns());
+        // [mangle.function-type]: a template's return type is in its name - except a conversion
+        // function's, which the name already spells: `_ZNK1ScvPT_IdEEv`.
+        if (name.compare(0, 9, "operator ") != 0) type(fn->returns());
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
         for (const Type *p : params) type(p);
@@ -441,6 +446,13 @@ public:
 
     // `Li3E` - the value, with its own type in front and `n` for a negative one.
     void templateArgument(const TemplateArg &a) {
+        // **clang 17's <template-param-decl>**: a function template's non-type parameter whose type is another
+        // parameter's is declared in front of its value, `TnT_Li3E` for `template <class T, T v>` at <int, 3>,
+        // and that T_ is a substitution candidate after it - measured `_Z1gIlTnT_Ll4EEi2ICIS0_XT0_EE`.
+        if (a.declaredAs != nullptr && !a.isType && !a.isPack) {
+            out += "Tn";
+            type(a.declaredAs);
+        }
         // `J i c E` - a pack argument is its members between J and E, and an
         // empty one is `JE`. Measured: _Z7nothingIJicEEiv, _Z5totalIiJEEiT_DpT0_.
         // A pack of values is each `L<type><value>E`: `JLi1ELi2EE`, `JLin1EE`, `JL1E0ELS0_1EE` for an enum.
@@ -454,12 +466,21 @@ public:
                     if (a.expandsParam > 0) out += std::to_string(a.expandsParam - 1);
                     out += "_E";
                 } else {
+                    // `Tup<H, T...>`: its fixed members first, `JT_DpT0_E`.
+                    for (std::size_t i = 0; i + 1 < a.pack.size(); i++) type(a.pack[i]);
                     out += "Dp";
-                    type(a.pack[0]);
+                    type(a.pack.back());
                     subs_.push_back(Sub{ nullptr, "<pack-expansion>" + std::to_string(a.expandsParam) });
                 }
             }
             for (std::size_t i = 0; a.expandsParam < 0 && i < a.pack.size(); i++) {
+                if (!a.packIsValue && a.pack[i]->isTemplateName()) {
+                    TemplateArg one;
+                    one.isTemplate = true;
+                    one.type = a.pack[i];
+                    templateArgument(one);
+                    continue;
+                }
                 if (!a.packIsValue) { type(a.pack[i]); continue; }
                 TemplateArg one;
                 one.isType = false;
@@ -500,6 +521,14 @@ public:
             return;
         }
         if (a.isType) { type(a.type); return; }
+        // **An address is the entity's own name in `L...E`, under `ad` unless the parameter is a reference** - clang's
+        // spelling, measured: `XadL_Z2gvEE`, `L_Z2gvE`, `XadL_ZN1S1mEE`, an array named bare `XadsoKcL_Z3strEEE`, null `LPi0E`.
+        if (a.form == 'n') { out += 'L'; type(a.type); out += "0E"; return; }
+        if (a.form == 'r') { out += 'L'; entityName(a); out += 'E'; return; }
+        if (a.form == 'a') { out += "Xadso"; type(a.element); out += 'L'; entityName(a); out += "EEE"; return; }
+        // A qualification conversion is written as the cast it is: `XcvPKiadL_Z2gvEE` for `&gv` to a `const int *`.
+        if (a.form == 'c') { out += "Xcv"; type(a.type); out += "adL"; entityName(a); out += "EE"; return; }
+        if (a.form != 0) { out += "XadL"; entityName(a); out += "EE"; return; }
         out += 'L';
         type(a.type);
         // An unsigned argument is spelled as its own value, never negative: Ly18446744073709551615E.
@@ -510,6 +539,38 @@ public:
         else if (a.value < 0) { out += 'n'; out += std::to_string(0ULL - static_cast<unsigned long long>(a.value)); }
         else             { out += std::to_string(a.value); }
         out += 'E';
+    }
+
+    // **The entity an address argument names, mangled in place** - its class, its namespaces and its
+    // parameter types are candidates as they are in any name: `mcall<&S::f>(S &)` is `XadL_ZN1S1fEvEEEiRS0_`,
+    // measured with clang. A name the ABI leaves alone, or an internal one, is written as the parser spelled it.
+    void entityName(const TemplateArg &a) {
+        if (a.name.empty() || a.entity.compare(0, 2, "_Z") != 0 || a.entity.compare(0, 3, "_ZL") == 0) {
+            out += a.entity;
+            return;
+        }
+        out += "_Z";
+        const std::string leaf = scopeComponents(a.name).back();
+        if (a.scope != nullptr) {
+            out += 'N';
+            prefix(a.scope, std::string());
+            if (a.function != nullptr) conversionTo_ = a.function->returns();
+            writtenName(leaf, a.function != nullptr && a.function->params().empty());
+            out += 'E';
+        } else if (leaf.size() != a.name.size()) {
+            const bool nested = !isDirectlyInStd(a.name);
+            if (nested) out += 'N';
+            namespacesOf(a.name);
+            writtenName(leaf, false);
+            if (nested) out += 'E';
+        } else {
+            writtenName(leaf, false);
+        }
+        if (a.function == nullptr) return;
+        const std::vector<const Type *> &params = a.function->params();
+        if (params.empty() && !a.function->isVariadicFn()) { out += 'v'; return; }
+        for (const Type *p : params) type(p);
+        if (a.function->isVariadicFn()) out += 'z';
     }
 
     // **An <expression> of the Itanium ABI, a preorder walk of the tree**, every production measured
@@ -533,6 +594,12 @@ public:
             return;
         case DepExpr::SizeofType:  out += "st"; type(e->type); return;
         case DepExpr::SizeofExpr:  out += "sz"; expression(e->kids[0]); return;
+        // [mangle] `sZ <template-param>`: `sizeof...(I)` is `sZT_` for the first parameter.
+        case DepExpr::SizeofPack:
+            out += "sZT";
+            if (e->index > 0) out += std::to_string(e->index - 1);
+            out += '_';
+            return;
         case DepExpr::Operator:
             out += e->code;
             for (const DepExpr *k : e->kids) expression(k);
@@ -552,6 +619,28 @@ public:
         case DepExpr::QualifiedParamName: out += "sr"; type(e->type); sourceName(e->name); return;
         case DepExpr::Cast:       out += "cv"; type(e->type); expression(e->kids[0]); return;
         case DepExpr::StaticCast: out += "sc"; type(e->type); expression(e->kids[0]); return;
+        // Measured: `decltype(N::K::get(t))` is `DTclL_ZN1N1K3getEiEfp_EE`, `decltype(N::K::over(t))` with
+        // `over` overloaded `DTclsr1N1KE4overfp_EE`, `std::declval<T>()` `clsr3stdE7declvalIT_EE`.
+        case DepExpr::ExternalName: out += 'L'; out += e->name; out += 'E'; return;
+        // A vendor extension, measured: `__is_enum(T)` is `u9__is_enumT_E`, `__is_constructible(T, A...)`
+        // `u18__is_constructibleT_DpT0_E`.
+        case DepExpr::TypeTrait:
+            out += 'u';
+            sourceName(e->name);
+            for (const Type *t : e->targs) type(t);
+            out += 'E';
+            return;
+        case DepExpr::QualifiedName:
+            out += "sr";
+            for (const std::string &s : e->scope) sourceName(s);
+            out += 'E';
+            sourceName(e->name);
+            if (!e->targs.empty()) {
+                out += 'I';
+                for (const Type *t : e->targs) type(t);
+                out += 'E';
+            }
+            return;
         case DepExpr::CastList:
             out += "cv";
             type(e->type);
@@ -559,6 +648,25 @@ public:
             for (const DepExpr *k : e->kids) expression(k);
             out += 'E';
             return;
+        case DepExpr::PackExpansion: out += "sp"; expression(e->kids[0]); return;
+        // Measured: `std::is_integral<T>::value` is `sr3std11is_integralIT_EE5valueE` inside its `X...E`.
+        case DepExpr::ScopedMember: {
+            const Type *owner = e->type->pointee();
+            out += "sr";
+            if (owner->isSpecialization()) {
+                for (const std::string &ns : scopeComponents(owner->templateNamespace()))
+                    if (!ns.empty()) sourceName(ns);
+                sourceName(owner->templateName());
+                out += 'I';
+                for (const TemplateArg &a : owner->templateArgs()) templateArgument(a);
+                out += 'E';
+            } else {
+                type(owner);
+            }
+            out += 'E';
+            sourceName(e->type->tag());
+            return;
+        }
         }
     }
 
@@ -592,12 +700,8 @@ private:
     // Holder<double>)` is _Z3two6HolderIiES_IdE, where the S_ is the word "Holder"
     // and not any type. So the table holds one or the other and never both.
     struct Sub {
-        const Type *type;
+        const Type *type = nullptr;
         std::string name;
-
-        // C++11 has no aggregate with a member initialiser, so the braces call this.
-        Sub(const Type *type = nullptr, std::string name = std::string())
-            : type(type), name(std::move(name)) {}
     };
     std::vector<Sub> subs_;
 
@@ -712,7 +816,9 @@ private:
         // `const T &` come out RKT_ rather than RT_.** A qualified copy of a
         // template parameter still answers TemplateParam, so a kind branch drops K.
         if (qualifiedItself(t)) {
-            out += 'K';
+            // `[V] [K]`, volatile before const - measured, `const volatile int *` is `PVKi`.
+            if (t->isVolatile()) out += 'V';
+            if (t->isConst()) out += 'K';
             type(t->unqualified());
             subs_.push_back(Sub{ t, std::string() });
             return;
@@ -786,19 +892,25 @@ private:
         }
         else if (t->isArray()) {
             out += 'A';
-            // **A bound that is a template parameter is spelled as one, and is no
-            // substitution candidate** - it is an expression there, not a type.
-            // Measured: `T f(const T (&)[N])` is _Z1fIiLi3EET_RAT0__KS0_.
-            if (t->boundParam() >= 0) {
+            // **A template-parameter bound is spelled as one, no substitution
+            // candidate**: `T f(const T (&)[N])` is _Z1fIiLi3EET_RAT0__KS0_;
+            // an expression bound the expression, `PAeqstS0_Li4E_c`.
+            if (const DepExpr *b = t->dependentBound()) {
+                expression(b);
+            } else if (t->boundParam() >= 0) {
                 out += 'T';
                 if (t->boundParam() > 0) out += std::to_string(t->boundParam() - 1);
                 out += '_';
-            } else {
+            } else if (t->length() >= 0) {
+                // An array of unknown bound is `A_i`: nothing between the A and the underscore.
                 out += std::to_string(t->length());
             }
             out += '_';
             type(t->pointee());
         } else if (t->isFunction()) {
+            // A member function type's cv is the function type's own, in front of the F: `M1SKFiiE`, measured.
+            if (t->cvThis() & Type::kThisVolatile) out += 'V';
+            if (t->cvThis() & Type::kThisConst) out += 'K';
             out += 'F';
             type(t->returns());
             if (t->params().empty() && !t->isVariadicFn()) out += 'v';
@@ -809,6 +921,13 @@ private:
         } else if (t->isStructOrUnion()) {
             // A class inside another is a nested-name here too, and prefix()
             // is what consults the substitution table on the way down.
+            // **An unnamed class is `$_N`**, as clang numbers them; it has no linkage beyond this unit.
+            if (t->tag().empty() && !t->unnamedName().empty()) {
+                const std::string n = "$_" + std::to_string(t->unnamedIndex());
+                out += std::to_string(n.size()) + n;
+                subs_.push_back(Sub{ t, std::string() });
+                return;
+            }
             if (t->enclosing() != nullptr || t->inNamespace()) {
                 if (tagOf(t) == nullptr) return;
                 // `std::X` is `StX` with no wrapper - see isDirectlyInStd.
@@ -867,9 +986,17 @@ public:
     }
     // **The class as a type descriptor spells it**, `?AUBase@@`.
     void classAsTypeName(const Type *t) { out += "?A"; type(t->unqualified()); }
+    // **A cv-qualification as one letter**: A none, B const, C volatile, D both - the pointee's `EB`,
+    // a data symbol's `3HC`, a return's `?D`; a pointer writes its own as P, Q, R, S.
+    static int cvIndex(const Type *t) { return (t->isConst() ? 1 : 0) + (t->isVolatile() ? 2 : 0); }
+    static char cvLetter(const Type *t) { return static_cast<char>('A' + cvIndex(t)); }
     void anyType(const Type *t) { type(t); }   // a descriptor's pointee, `PEAUB@@`
 
     void vtableOffset(int offset) { number(offset); }   // a vcall thunk's vftable offset
+    // A signed number, `?0` for -1 as a _PMD's pdisp spells it.
+    void signedNumber(long long v) { if (v < 0) { out += '?'; number(-v); } else number(v); }
+    // An adjustor thunk's adjustment, written after its access letter `W` (Phase 6); empty for the function.
+    std::string adjustor;
 
     // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
     // `this`, the calling convention - with every enclosing class innermost first,
@@ -954,7 +1081,7 @@ public:
 
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
-                        const Type *fn, char access, bool constThis, RefQual refThis,
+                        const Type *fn, char access, unsigned cvThis, RefQual refThis,
                         const std::string &localOwner = std::string()) {
         if (!operatorPrefix(name)) {
             out = "?";
@@ -962,11 +1089,12 @@ public:
         }
         scopeOf(clsType, cls, localOwner);
         out += access;            // Q public, I protected, A private
+        out += adjustor;
         // **A static member has no `this`, so it spells none.**
         if (access != 'S' && access != 'K' && access != 'C') {
             out += 'E';           // this is __ptr64
             out += refQualifier(refThis);    // `QEGAA`, `QEHBA` - measured
-            out += constThis ? 'B' : 'A';
+            out += static_cast<char>('A' + cvThis);
         }
         out += 'A';               // __cdecl
         returnType(fn->returns());
@@ -982,7 +1110,7 @@ public:
     void memberFunctionTemplate(const std::string &cls, const Type *clsType,
                                 const std::string &name, const Type *fn,
                                 const std::vector<TemplateArg> &args,
-                                char access, bool constThis, RefQual refThis) {
+                                char access, unsigned cvThis, RefQual refThis) {
         out = "??$";
         templateId(name, args);
         scopeOf(clsType, cls);
@@ -990,7 +1118,7 @@ public:
         if (access != 'S' && access != 'K' && access != 'C') {
             out += 'E';
             out += refQualifier(refThis);
-            out += constThis ? 'B' : 'A';
+            out += static_cast<char>('A' + cvThis);
         }
         out += 'A';
         returnType(fn->returns());
@@ -1068,7 +1196,7 @@ public:
         // scope has to say so or two functions' `struct L` are one symbol.
         scopeOf(clsType, cls,
                 clsType != nullptr ? clsType->localOwner() : std::string());
-        out += "UEAAPEAXI@Z";
+        out += adjustor.empty() ? "UEAAPEAXI@Z" : adjustor + "EAAPEAXI@Z";
     }
 
     void function(const std::string &name, const Type *fn) {
@@ -1167,6 +1295,7 @@ public:
             for (std::size_t i = 0; i < a.pack.size(); i++) {
                 TemplateArg one;
                 one.type = a.pack[i];
+                one.isTemplate = !a.packIsValue && a.pack[i]->isTemplateName();
                 if (a.packIsValue) { one.isType = false; one.value = a.packValues[i]; }
                 templateArgument(one);
             }
@@ -1182,17 +1311,23 @@ public:
             return;
         }
         if (a.isType) {
-            // **A top-level const on a type argument is spelled `$$CB`**, and only
-            // where the thing under it is not a pointer. Without it the const was
-            // dropped and `W<const int>` shared one symbol with `W<int>`.
-            if (a.type->unqualified() != a.type && !a.type->isPointer()) {
-                out += "$$CB";
+            // **A top-level cv on a type argument is spelled `$$C` and its letter**, and only
+            // where the thing under it is not a pointer. Without it the const was dropped and
+            // `W<const int>` shared one symbol with `W<int>`: `$$CB`, `$$CC`, `$$CD`, measured.
+            if (a.type->isQualified() && !a.type->isPointer()) {
+                out += "$$C";
+                out += cvLetter(a.type);
                 type(a.type->unqualified());
                 return;
             }
             type(a.type);
             return;
         }
+        // **An address is `$1` and the entity's own decorated name; a data member its offset, a null one 0** -
+        // measured with cl: `$1?gv@@3HA`, `$1?fn@@YAXXZ`, `$1??_9S@@$BA@AA` for a virtual one, `$0M@`, `$0A@`.
+        if (a.form == 'n') { out += "$0"; number(0); return; }
+        if (a.form == 'm') { out += "$0"; number(a.offset); return; }
+        if (a.form != 0) { out += "$1"; out += a.entity; return; }
         out += "$0";
         if (a.value < 0) { out += '?'; number(-a.value); }
         else             { number(a.value); }
@@ -1233,12 +1368,15 @@ public:
         if (u->isArray()) {
             // An array of const is `QB`, measured: cl's `?cs@@3QBDB` for `const char cs[]`, and
             // `?cs@?1??f@@YAHXZ@4QBDB` for the same as a static local (1.28, 2026-10-22).
-            out += t->isConst() ? "QB" : "PA";
+            // And one of volatile `RC`, measured `?arr@@3RCHC`.
+            out += static_cast<char>('P' + cvIndex(t));
+            out += cvLetter(t);
             type(u->pointee());
-            out += t->isConst() ? "B" : "A";
+            out += cvLetter(t);
             return;
         }
-        type(u);
+        // A pointer's own cv is its letter, measured: `int *volatile vp` is `?vp@@3REAHEA`.
+        type(u->isPointer() || u->isMemberPointer() ? t : u);
         // **A member pointer's storage class repeats the class**, `EQ<class>@`
         // after the type: cl's `?gpm@@3PEQNest@@HEQ1@` (the review's A7); Q is
         // the member's cv-code, R for const, as a pointer's A/B are.
@@ -1254,10 +1392,10 @@ public:
         if (u->isPointer() || u->isReference()) {
             const Type *at = u->isPointer() ? u->pointee() : u->referent();
             out += 'E';
-            out += at->isConst() ? 'B' : 'A';
+            out += cvLetter(at);
             return;
         }
-        out += t->isConst() ? "B" : "A";
+        out += cvLetter(t);
     }
 
     // The scope list a vftable's name carries.
@@ -1309,8 +1447,9 @@ private:
         // A return type that is not a pointer carries its top-level cv in front: `?A` for a class or an
         // enumeration, `?B` for any const one - `const int f()` is `?f@@YA?BHXZ`, measured with clang for
         // this ABI. A pointer writes its own cv, `QEAH` for `int *const`; the rest is written as it stands.
-        if (t->isConst() && !t->isPointer() && !t->isReference() && !t->isMemberPointer()) {
-            out += "?B";
+        if (t->isQualified() && !t->isPointer() && !t->isReference() && !t->isMemberPointer()) {
+            out += '?';
+            out += cvLetter(t);           // `?C` for volatile, `?D` for both, measured
             type(t->unqualified());
             return;
         }
@@ -1352,21 +1491,23 @@ private:
         // The qualifier asked about here is the pointee's own. An array of const
         // elements is not itself const - the elements carry that, and are marked
         // where they are written - so isConst() is the wrong question.
-        out += qualifiedItself(p) ? "EB" : "EA";
+        out += 'E';
+        out += qualifiedItself(p) ? cvLetter(p) : 'A';
         type(p);
     }
 
     void type(const Type *t) {
         if (!ok) return;
 
-        if (t->isPointer())        { out += qualifiedItself(t) ? 'Q' : 'P';
+        if (t->isPointer())        { out += static_cast<char>('P' + cvIndex(t));
                                      pointee(t->pointee()); return; }
         // **`PEQ` and then the class's scope and the member's type** - measured,
         // `int S::*` is `PEQS@@H` where an ordinary `int *` is `PEAH`. The Q sits
         // where a pointer's A does, the class between it and the type.
         if (t->isMemberPointer()) {
             const Type *plain = t->unqualified();
-            out += "PEQ";
+            out += static_cast<char>('P' + cvIndex(t));     // `REQS@@H` for a volatile one, measured
+            out += "EQ";
             scopeOf(plain->enclosing(), plain->enclosing()->tag());
             type(plain->pointee());
             return;
@@ -1381,7 +1522,9 @@ private:
             scopeOf(plain->enclosing(), plain->enclosing()->tag());
             out += 'E';
             out += refQualifier(fn->refQualifier());    // `P8Buffer@@EGAAHXZ`, measured
-            out += "AA";
+            // The cv of `this` as a member function's own name writes it, `P8S@@EBAHH@Z` for a const one.
+            out += static_cast<char>('A' + fn->cvThis());
+            out += 'A';
             returnType(fn->returns());
             const std::vector<const Type *> &ps = fn->params();
             if (ps.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
@@ -1405,9 +1548,13 @@ private:
             while (elem->isArray()) { dims.push_back(elem->length()); elem = elem->pointee(); }
             number(static_cast<long long>(dims.size()));
             for (long long d : dims) number(d);
-            // A const element is written with the qualifier marker rather
-            // than by qualifying the array, which has no qualifier of its own.
-            if (elem->isConst()) out += "$$CB";
+            // A cv element is written with the qualifier marker rather than by
+            // qualifying the array, which has no qualifier of its own: `$$CB`, and
+            // `$$CC` for volatile, measured (Phase 6).
+            if (cvIndex(elem) != 0) {
+                out += "$$C";
+                out += cvLetter(elem);
+            }
             type(elem->unqualified());
             return;
         }
@@ -1416,6 +1563,14 @@ private:
         // b(cc::BinaryOp)` is `?b@@YAXW4BinaryOp@cc@@@Z`.
         if (t->isEnumeration()) {
             out += "W4";
+            // **An enum inside a class is scoped through the class**, as a nested class is: the
+            // specialization's own name for `geo::Box<int>::Kind`, `W4Kind@?$Box@H@geo@@` - the tag
+            // spelled `Kind@Box<int>@geo@@`, which masm refuses. An ordinary class comes out as before.
+            if (const Type *in = t->enumScope()) {
+                pushName(scopeComponents(t->enumTag()).back());
+                scopeOf(in, std::string(), in->localOwner());
+                return;
+            }
             scopeOf(nullptr, t->enumTag());
             return;
         }
@@ -1429,6 +1584,11 @@ private:
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
+            // cl's `U<unnamed-type-anon_s>@@`, measured: the first declarator's name for the class's.
+            if (t->tag().empty()) {
+                qualifiedName(*tag);
+                return;
+            }
             // A class written inside a function carries that function round it here
             // too, and `scopeOf` already knows the shape. Measured against clang:
             // `??$f@UL@?1??main@@9@@@YAHUL@?1??main@@9@@Z`.
@@ -1442,6 +1602,12 @@ private:
                 return;
             }
             qualifiedName(*tag);
+            return;
+        }
+        // A function type as a template argument, measured with cl: `Fn<int(int)>` is `?$Fn@$$A6AHH@Z@@`.
+        if (t->isFunction()) {
+            out += "$$A";
+            pointee(t);
             return;
         }
         refuse("this type has no Microsoft linkage name yet");
@@ -1481,34 +1647,53 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
     return "_ZTV" + itaniumClassNameString(tag);   // the St abbreviation included
 }
 
+// A class by its tag in a vbtable or vbase-destructor name: scopes innermost
+// first, each ended by '@', a template-id split outside its brackets only, and
+// what no MASM name holds written `$` and two hex digits.
+static std::string msTagComponents(const std::string &tag) {
+    std::vector<std::string> parts(1);
+    int depth = 0;
+    for (std::size_t i = 0; i < tag.size(); i++) {
+        const char c = tag[i];
+        if (c == '<') depth++;
+        else if (c == '>') depth--;
+        if (depth == 0 && c == ':' && i + 1 < tag.size() && tag[i + 1] == ':') {
+            parts.push_back(std::string());
+            i++;
+            continue;
+        }
+        const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        if (plain) { parts.back() += c; continue; }
+        static const char hex[] = "0123456789ABCDEF";
+        parts.back() += '$';
+        parts.back() += hex[(static_cast<unsigned char>(c) >> 4) & 15];
+        parts.back() += hex[static_cast<unsigned char>(c) & 15];
+    }
+    std::string out;
+    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
+    return out;
+}
+
 // **A class's type_info and the string beside it, which are one encoding under
 // two prefixes.**
 std::string vbtableSymbol(const std::string &tag) {
-    const std::vector<std::string> parts = scopeComponents(tag);
-    std::string out = "??_8";
-    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
-    return out + "@7B@";
+    return "??_8" + msTagComponents(tag) + "@7B@";
 }
 
 // **The one a class with more than one vbptr gets**, named for the base whose
 // subobject holds that pointer: `??_8Dia@@7BD1@@@`. cl names it after the
 // *direct* base and not after the class that introduced the pointer.
-std::string vbtableSymbol(const std::string &tag, const std::string &base) {
-    const std::vector<std::string> parts = scopeComponents(tag);
-    std::string out = "??_8";
-    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
-    out += "@7B";
-    const std::vector<std::string> bp = scopeComponents(base);
-    for (std::size_t i = bp.size(); i-- > 0; ) { out += bp[i]; out += '@'; }
-    return out + "@@";
+std::string vbtableSymbol(const std::string &tag, const std::string &base, const std::string &via) {
+    std::string out = "??_8" + msTagComponents(tag) + "@7B" + msTagComponents(base) + "@";
+    // **And the path, where the base names more than one subobject** - cl's `??_8G@@7BR@@F@@@`,
+    // R as F holds it.
+    if (!via.empty()) out += msTagComponents(via) + "@";
+    return out + "@";
 }
 
 // **The vbase destructor, which only the Microsoft ABI has.**
 std::string vbaseDestructorSymbol(const std::string &tag) {
-    const std::vector<std::string> parts = scopeComponents(tag);
-    std::string out = "??_D";
-    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
-    return out + "@QEAAXXZ";
+    return "??_D" + msTagComponents(tag) + "@QEAAXXZ";
 }
 
 std::string itaniumClassNameString(const std::string &tag) {
@@ -1693,36 +1878,42 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
     out->size = size;
     out->isConst = false;
     if (t->isReference()) t = t->referent()->unqualified();
+    // What is not a class, a fundamental type or a pointer to one: typeid's spelling, which has the whole grammar.
+    const auto spelled = [&](const Type *whole, std::string *code) {
+        Microsoft m;
+        m.anyType(whole);
+        if (!m.ok) { *problem = m.problem; return false; }
+        *code = m.out;
+        return true;
+    };
     if (t->isPointer()) {
         // **A pointer to const is spelled without it**, and the ThrowInfo says
         // `C` after its count: cl writes `_TI2CPEAD` for `const char *` where clang writes `_TIC2PEAD`.
         const Type *pointee = t->pointee();
         out->isConst = pointee->isConst();
         pointee = pointee->unqualified();
-        if (pointee->isPointer() || pointee->isFunction() ||
-            pointee->isMemberPointer() || pointee->isMemberFunctionPointer()) {
-            *problem = "a pointer to a function has no type_info here yet, nor has a "
-                       "pointer to a pointer or a member - a thrown pointer to '" +
-                       pointee->describe() + "' is not supported yet";
-            return false;
-        }
+        const bool toMember = pointee->isMemberPointer() || pointee->isMemberFunctionPointer();
         std::string code;
-        if (pointee->isVoid()) code = "X";
+        if (pointee->isFunction() || pointee->isPointer() || toMember) {
+            if (!spelled(pointee->isFunction() ? t : pointee, &code)) return false;
+        }
+        else if (pointee->isVoid()) code = "X";
         else if (!microsoftDescriptorCode(pointee, &code, problem)) return false;
-        if (pointee->isStructOrUnion()) code = code.substr(2);   // `?AUB@@` to `UB@@`
-        out->decorated = ".PEA" + code;
-        out->descriptor = "??_R0PEA" + code + "@8";
+        if (pointee->isStructOrUnion() && !toMember) code = code.substr(2);   // `?AUB@@` to `UB@@`
+        const std::string spelt = pointee->isFunction() ? code : "PEA" + code;    // `P6AXXZ` is whole already
+        out->decorated = "." + spelt;
+        out->descriptor = "??_R0" + spelt + "@8";
         MicrosoftThrow::Catchable self;
         self.decorated = out->decorated;
         self.descriptor = out->descriptor;
         self.size = size;
         self.simple = true;
         out->catchables.push_back(self);
-        if (pointee->isStructOrUnion() &&
+        if (pointee->isStructOrUnion() && !toMember &&
             !microsoftCatchableBases(pointee, 0, true, &out->catchables, problem))
             return false;
-        // And `void *`, which every object pointer may be caught as.
-        if (!pointee->isVoid()) {
+        // And `void *`, which every object pointer may be caught as, and a pointer to a function may not.
+        if (!pointee->isVoid() && !pointee->isFunction()) {
             MicrosoftThrow::Catchable any;
             any.decorated = ".PEAX";
             any.descriptor = "??_R0PEAX@8";
@@ -1734,18 +1925,19 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
             out->catchables[i].size = size;
         return true;
     }
+    const bool member = t->isMemberPointer() || t->isMemberFunctionPointer();
     std::string code;
-    if (!microsoftDescriptorCode(t, &code, problem)) return false;
+    if (member ? !spelled(t, &code) : !microsoftDescriptorCode(t, &code, problem)) return false;
     out->decorated = "." + code;
     out->descriptor = "??_R0" + code + "@8";
     MicrosoftThrow::Catchable self;
-    self.cls = t->isStructOrUnion() ? t : nullptr;
+    self.cls = t->isStructOrUnion() && !member ? t : nullptr;
     self.decorated = out->decorated;
     self.descriptor = out->descriptor;
     self.size = size;
-    self.simple = !t->isStructOrUnion();
+    self.simple = member || !t->isStructOrUnion();
     out->catchables.push_back(self);
-    if (t->isStructOrUnion() &&
+    if (t->isStructOrUnion() && !member &&
         !microsoftCatchableBases(t, 0, false, &out->catchables, problem))
         return false;
     return true;
@@ -1809,10 +2001,10 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
 
 bool itaniumMemberName(const std::string &cls, const Type *clsType,
                        const std::string &name,
-                       const Type *fn, bool constThis, RefQual refThis,
+                       const Type *fn, unsigned cvThis, RefQual refThis,
                        std::string *out, std::string *problem) {
     Itanium m;
-    m.memberFunction(cls, clsType, name, fn, constThis, refThis);
+    m.memberFunction(cls, clsType, name, fn, cvThis, refThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -1823,10 +2015,10 @@ bool itaniumMemberName(const std::string &cls, const Type *clsType,
 // would be outside a function, both giving up their _Z to sit in the wrapper.
 bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
                             const Type *clsType, const std::string &name,
-                            const Type *fn, bool constThis, RefQual refThis,
+                            const Type *fn, unsigned cvThis, RefQual refThis,
                             std::string *out, std::string *problem) {
     std::string inner;
-    if (!itaniumMemberName(cls, clsType, name, fn, constThis, refThis, &inner, problem))
+    if (!itaniumMemberName(cls, clsType, name, fn, cvThis, refThis, &inner, problem))
         return false;
 
     std::string function;
@@ -1834,9 +2026,7 @@ bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
     if (owner.compare(0, 2, "_Z") == 0) {
         function = owner.substr(2);
     } else {
-        // No mangled name to take apart - `main`, or `extern "C"`. Itanium
-        // writes the plain source name as a length-and-letters component,
-        // measured: _ZZ4mainEN1B3getEv.
+        // No mangled name (main, extern "C"): plain name, _ZZ4mainEN1B3getEv
         function = std::to_string(owner.size()) + owner;
     }
     *out = "_ZZ" + function + "E" + inner.substr(2);
@@ -1845,10 +2035,10 @@ bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
 
 bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
                               const Type *clsType, const std::string &name,
-                              const Type *fn, char access, bool constThis, RefQual refThis,
+                              const Type *fn, char access, unsigned cvThis, RefQual refThis,
                               std::string *out, std::string *problem) {
     Microsoft m;
-    m.memberFunction(cls, clsType, name, fn, access, constThis, refThis, owner);
+    m.memberFunction(cls, clsType, name, fn, access, cvThis, refThis, owner);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -1856,10 +2046,10 @@ bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
 
 bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          const std::string &name,
-                         const Type *fn, char access, bool constThis, RefQual refThis,
+                         const Type *fn, char access, unsigned cvThis, RefQual refThis,
                          std::string *out, std::string *problem) {
     Microsoft m;
-    m.memberFunction(cls, clsType, name, fn, access, constThis, refThis);
+    m.memberFunction(cls, clsType, name, fn, access, cvThis, refThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -1868,10 +2058,10 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
 bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
                                const std::string &name, const Type *fn,
                                const std::vector<TemplateArg> &args,
-                               bool constThis, RefQual refThis,
+                               unsigned cvThis, RefQual refThis,
                                std::string *out, std::string *problem) {
     Itanium m;
-    m.memberFunctionTemplate(cls, clsType, name, fn, args, constThis, refThis);
+    m.memberFunctionTemplate(cls, clsType, name, fn, args, cvThis, refThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -1880,10 +2070,10 @@ bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
 bool microsoftMemberTemplateName(const std::string &cls, const Type *clsType,
                                  const std::string &name, const Type *fn,
                                  const std::vector<TemplateArg> &args,
-                                 char access, bool constThis, RefQual refThis,
+                                 char access, unsigned cvThis, RefQual refThis,
                                  std::string *out, std::string *problem) {
     Microsoft m;
-    m.memberFunctionTemplate(cls, clsType, name, fn, args, access, constThis, refThis);
+    m.memberFunctionTemplate(cls, clsType, name, fn, args, access, cvThis, refThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -1971,6 +2161,121 @@ std::string microsoftDeletingDestructorName(const std::string &cls,
     m.deletingDestructor(cls, clsType);
     return m.out;
 }
+
+static std::string microsoftNumber(long long v) {
+    Microsoft m;
+    m.signedNumber(v);
+    return m.out;
+}
+
+// `W` and the adjustment; a vtordisp thunk `$4`, the vtordisp's place as an unsigned 32-bit number
+// (-4 is `PPPPPPPM@`), then the adjustment - ?f@C@@$4PPPPPPPM@7EAAHXZ, measured with cl.
+static std::string microsoftThunkCode(long long adjust, bool vtordisp) {
+    if (!vtordisp) return "W" + microsoftNumber(adjust);
+    return "$4" + microsoftNumber(static_cast<long long>(static_cast<unsigned int>(-4))) + microsoftNumber(adjust);
+}
+
+bool microsoftAdjustorThunkName(const std::string &cls, const Type *clsType, const std::string &name,
+                                const Type *fn, bool constThis, RefQual refThis, long long adjust,
+                                std::string *out, std::string *problem, bool vtordisp) {
+    Microsoft m;
+    const std::string code = microsoftThunkCode(adjust, vtordisp);
+    m.adjustor = code.substr(1);
+    m.memberFunction(cls, clsType, name, fn, code[0], constThis, refThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+std::string microsoftDeletingDestructorThunkName(const std::string &cls, const Type *clsType,
+                                                 long long adjust, bool vtordisp) {
+    Microsoft m;
+    m.adjustor = microsoftThunkCode(adjust, vtordisp);
+    m.deletingDestructor(cls, clsType);
+    return m.out;
+}
+
+std::string microsoftVftablePath(const std::vector<const Type *> &path) {
+    std::string out;
+    for (const Type *b : path) {
+        Microsoft scope;
+        scope.scopeOf(b, b->tag());
+        out += scope.out;
+    }
+    return out;
+}
+
+// clang's MSRTTIBuilder order and flags: the class, then each base as written followed by its own;
+// a base reached through a private or protected one is hidden (1|8), the edge itself 4 more.
+static bool microsoftBaseRows(const Type *k, int at, bool hidden, int attributes,
+                              std::vector<MicrosoftBaseClass> *out, std::string *problem) {
+    const std::size_t self = out->size();
+    MicrosoftBaseClass row;
+    row.cls = k;
+    row.mdisp = at;
+    row.attributes = attributes;
+    out->push_back(row);
+    const std::vector<Type::BaseSpec> &bs = k->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (bs[i].isVirtual) {
+            *problem = "a virtual base's displacement is read from a vbtable, which this array does not write yet";
+            return false;
+        }
+        const bool edge = bs[i].access != Access::Public;
+        const bool under = hidden || edge;
+        const int attr = 0x40 | (under ? 0x09 : 0) | (edge ? 0x04 : 0);
+        if (!microsoftBaseRows(bs[i].type->unqualified(), at + bs[i].offset, under, attr, out, problem))
+            return false;
+    }
+    (*out)[self].contained = static_cast<int>(out->size() - self - 1);
+    return true;
+}
+
+bool microsoftBaseClassArray(const Type *cls, std::vector<MicrosoftBaseClass> *out,
+                             int *hierarchyAttributes, std::string *problem) {
+    out->clear();
+    if (!microsoftBaseRows(cls->unqualified(), 0, false, 0x40, out, problem)) return false;
+    *hierarchyAttributes = 0;
+    for (std::size_t i = 0; i < out->size(); i++) {
+        if ((*out)[i].cls->bases().size() > 1) *hierarchyAttributes |= 1;
+        for (std::size_t j = 0; j < i; j++)
+            if ((*out)[j].cls == (*out)[i].cls) {
+                *problem = "'" + (*out)[i].cls->describe() + "' is a base twice, and an ambiguous base's "
+                           "flags are not measured yet";
+                return false;
+            }
+        MicrosoftRtti n;
+        if (!microsoftClassRttiNames((*out)[i].cls, &n, problem)) return false;
+        (*out)[i].name = microsoftBaseDescriptorName((*out)[i]);
+    }
+    return true;
+}
+
+std::string microsoftBaseDescriptorName(const MicrosoftBaseClass &row) {
+    Microsoft scope;
+    scope.scopeOf(row.cls, row.cls->tag());
+    return "??_R1" + microsoftNumber(row.mdisp) + microsoftNumber(row.pdisp) + microsoftNumber(row.vdisp) +
+           microsoftNumber(row.attributes) + scope.out + "8";
+}
+
+std::vector<MicrosoftBaseClass> microsoftRttiRows(const Type *cls, int *hierarchyAttributes) {
+    std::vector<MicrosoftBaseClass> rows;
+    std::string why;
+    if (microsoftBaseClassArray(cls, &rows, hierarchyAttributes, &why)) return rows;
+    rows.clear();
+    *hierarchyAttributes = 0;
+    for (const Type *k = cls->unqualified(); k != nullptr; k = k->base()) {
+        MicrosoftRtti n;
+        if (!microsoftClassRttiNames(k, &n, &why)) break;
+        MicrosoftBaseClass row;
+        row.cls = k;
+        row.name = n.baseDescriptor;
+        rows.push_back(row);
+    }
+    for (std::size_t i = 0; i < rows.size(); i++) rows[i].contained = static_cast<int>(rows.size() - i - 1);
+    return rows;
+}
+
 
 std::string microsoftDestructorName(const std::string &cls, const Type *clsType,
                                     char access) {

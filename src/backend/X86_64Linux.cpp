@@ -442,15 +442,30 @@ void X86_64Linux::tlsAddress(const Var &v) {
         return;
     }
     msTlsBlock();
+    // The project's masm spells no SECTIONREL operand: the offset is read from its word, into r10.
+    const bool spelled = plain_->tlsOperandsSpelled();
     if (v.viaWrapper()) {
         const std::string ready = label("tlsready", nextLabel());
-        a_->ins("cmpb", imm(0), tls("__tls_guard", "%rax"));
+        if (spelled) {
+            a_->ins("cmpb", imm(0), tls("__tls_guard", "%rax"));
+        } else {
+            plain_->tlsOffsetWord("__tls_guard");
+            a_->ins("movl", rip("$tlsoff$__tls_guard"), reg("%r10d"));
+            a_->ins("add", reg("%rax"), reg("%r10"));
+            a_->ins("cmpb", imm(0), mem(0, "%r10"));
+        }
         a_->ins("jne", lbl(ready));
         a_->ins("call", lbl("__dyn_tls_on_demand_init"));
         msTlsBlock();
         a_->defLabel(ready);
     }
-    a_->ins("lea", tls(v.symbol(), "%rax"), reg("%rax"));
+    if (spelled) {
+        a_->ins("lea", tls(v.symbol(), "%rax"), reg("%rax"));
+        return;
+    }
+    plain_->tlsOffsetWord(v.symbol());
+    a_->ins("movl", rip("$tlsoff$" + v.symbol()), reg("%r10d"));
+    a_->ins("add", reg("%r10"), reg("%rax"));
 }
 
 // Shifted and added rather than cl's `[rdx+rcx*8]`: the walker writes no indexed operand, the
@@ -924,6 +939,25 @@ void X86_64Linux::genFloatBinary(const Binary &n) {
     a_->ins("movzbq", reg("%al"), reg("%rax"));
 }
 
+// The names GCC treats as returning twice (special_function_p), with one or two underscores in front or none, and
+// the UCRT's _setjmpex; a call by pointer is not known for one. The idioms C90 7.6.2.1 allows put the call, or an
+// assignment of it, straight under the comparison, so those two shapes and a cast of either are looked through.
+static bool returnsTwiceName(const std::string &name) {
+    std::size_t at = 0;
+    while (at < 2 && at < name.size() && name[at] == '_') at++;
+    static const char *const kNames[] = { "setjmp", "setjmpex", "sigsetjmp", "savectx", "vfork", "getcontext" };
+    for (const char *k : kNames)
+        if (name.compare(at, std::string::npos, k) == 0) return true;
+    return false;
+}
+
+static bool returnsTwice(const Expr &e) {
+    if (const Call *c = dynamic_cast<const Call *>(&e)) return c->callee() == nullptr && returnsTwiceName(c->name());
+    if (const Assign *a = dynamic_cast<const Assign *>(&e)) return returnsTwice(a->value());
+    if (const Cast *c = dynamic_cast<const Cast *>(&e)) return returnsTwice(c->value());
+    return false;
+}
+
 void X86_64Linux::visit(const Binary &n) {
     if (n.op() == BinOp::LAnd || n.op() == BinOp::LOr) {
         int id = nextLabel();
@@ -948,10 +982,23 @@ void X86_64Linux::visit(const Binary &n) {
 
     if (n.lhs().type()->isFloating()) { genFloatBinary(n); return; }
 
-    n.rhs().accept(*this);
-    push();
-    n.lhs().accept(*this);
-    pop(abi_.scratch);
+    // **A function that returns twice is called with nothing parked** (c90's rule, its X86_64Linux.cpp). The right
+    // operand is evaluated first and parked while the left is worked out; in `if ((r = setjmp(jb)) == 0)` the parked
+    // 0 sat below rsp through setjmp's first return, was written over by the calls made since, and longjmp's second
+    // return compared against rubbish - a C++ program longjmping out of a signal handler went round for ever where the
+    // same C did not. The operand that calls setjmp is evaluated first, then the other, into the same registers.
+    if (returnsTwice(n.lhs())) {
+        n.lhs().accept(*this);
+        push();
+        n.rhs().accept(*this);
+        a_->ins("mov", reg("%rax"), reg(abi_.scratch));
+        pop("%rax");
+    } else {
+        n.rhs().accept(*this);
+        push();
+        n.lhs().accept(*this);
+        pop(abi_.scratch);
+    }
 
     const Type *t = n.lhs().type();
     const char *a = acc(t);
@@ -1100,7 +1147,40 @@ X86_64Linux::Placement X86_64Linux::placeCall(const Call &n) const {
     return placeArguments(types, n.hasThis(), returnsThroughPointer(n));
 }
 
+// **`_alloca(n)`, lowered where it stands** (docs\Runtime_Design.md 9.4). The frame is addressed from rbp and
+// the epilogue takes rsp back from rbp, so the function's own slots do not move; what is addressed from rsp is the
+// outgoing area at the floor - the shadow space and the stack arguments a call stores there, its size fixed before
+// the body is walked - and the words this function has pushed below it, the values of an expression in progress
+// and the arguments of a call being built. rsp moves down by n rounded to 16 (so the call alignment holds), the
+// pushed words are copied down with it, and the block is the n bytes above them and a fresh outgoing area: its top
+// is where the old outgoing area ended, which nothing reads once rsp has left it. Windows probes the pages first
+// through __chkstk, as a frame of a page does (rax the size; only r10, r11 and the flags change), asked for a page
+// more than the block: grt's and the UCRT's touch a page at a time and stop short of a last part-page, which a frame
+// leaves to its next call's push but a run of small blocks nothing touches would not - the next call could then land
+// past the guard page. So the lowest page touched is below the new rsp, as a frame's next push would be.
+void X86_64Linux::genAlloca(const Call &n) {
+    if (inFunclet_) unsupported("_alloca in a catch block or a cleanup");
+    n.args()[0]->accept(*this);
+    a_->ins("add", imm(15), reg("%rax"));
+    a_->ins("and", imm(-16), reg("%rax"));
+    if (target_.microsoftNames()) {
+        a_->ins("add", imm(4096), reg("%rax"));
+        if (optimizing()) optimizer_->callArguments(opt::bit(opt::RAX));
+        a_->ins("call", lbl("__chkstk"));
+        a_->ins("sub", imm(4096), reg("%rax"));
+    }
+    const int pushed = 8 * (floorDepth_ + depth_);
+    if (pushed > 0) a_->ins("mov", reg("%rsp"), reg("%rcx"));
+    a_->ins("sub", reg("%rax"), reg("%rsp"));
+    for (int k = 0; k < pushed; k += 8) {
+        a_->ins("mov", mem(k, "%rcx"), reg("%rdx"));
+        a_->ins("mov", reg("%rdx"), mem(k, "%rsp"));
+    }
+    a_->ins("lea", mem(pushed + outgoing_, "%rsp"), reg("%rax"));
+}
+
 void X86_64Linux::visit(const Call &n) {
+    if (n.isAlloca()) { genAlloca(n); return; }
     bool byRef = abi_.aggregatesByReference;
     bool sret = returnsThroughPointer(n);
     const bool msThisFirst = sret && abi_.positional && n.hasThis();
@@ -1346,6 +1426,52 @@ void X86_64Linux::genTruth(const Expr &e) {
     a_->ins("movzbq", reg("%al"), reg("%rax"));
 }
 
+// `va_arg` of a class on SysV, %rax holding the va_list: past 16 bytes it is in the overflow area, as it is when the
+// registers left will not take all of it. Otherwise its eightbytes are in the two save areas, a word of general
+// registers and sixteen bytes of xmm at a time, and it is put back together in the frame.
+void X86_64Linux::vaArgClass(const VaArg &n) {
+    const Type *t = n.type();
+    const int size = t->size(target_);
+    const std::vector<bool> lanes = size > 16 ? std::vector<bool>() : classifyEightbytes(t, target_);
+    if (size <= 16 && lanes.empty()) {         // a class with no data members took no register and no stack
+        a_->ins("lea", local(n.slot()), reg("%rax"));
+        return;
+    }
+    const int id = nextLabel();
+    const std::string onStack = label("va.stack", id), done = label("va.done", id);
+    if (!lanes.empty()) {
+        int ints = 0, sses = 0;
+        for (std::size_t e = 0; e < lanes.size(); e++) (lanes[e] ? sses : ints)++;
+        if (ints > 0) {
+            a_->ins("movl", mem("%rax"), reg("%ecx"));
+            a_->ins("cmpl", imm(48 - 8 * ints), reg("%ecx"));
+            a_->ins("ja", lbl(onStack));
+        }
+        if (sses > 0) {
+            a_->ins("movl", mem(4, "%rax"), reg("%ecx"));
+            a_->ins("cmpl", imm(176 - 16 * sses), reg("%ecx"));
+            a_->ins("ja", lbl(onStack));
+        }
+        a_->ins("mov", mem(16, "%rax"), reg("%r8"));
+        a_->ins("lea", local(n.slot()), reg("%r9"));
+        for (std::size_t e = 0; e < lanes.size(); e++) {
+            a_->ins("movl", lanes[e] ? mem(4, "%rax") : mem("%rax"), reg("%ecx"));
+            a_->ins("add", reg("%r8"), reg("%rcx"));
+            a_->ins("mov", mem("%rcx"), reg("%rdx"));
+            a_->ins("mov", reg("%rdx"), mem(static_cast<int>(e) * 8, "%r9"));
+            a_->ins("addl", imm(lanes[e] ? 16 : 8), lanes[e] ? mem(4, "%rax") : mem("%rax"));
+        }
+        a_->ins("mov", reg("%r9"), reg("%rax"));
+        a_->ins("jmp", lbl(done));
+        a_->defLabel(onStack);
+    }
+    a_->ins("mov", mem(8, "%rax"), reg("%rdx"));
+    a_->ins("lea", mem((size + 7) / 8 * 8, "%rdx"), reg("%rcx"));
+    a_->ins("mov", reg("%rcx"), mem(8, "%rax"));
+    a_->ins("mov", reg("%rdx"), reg("%rax"));
+    a_->defLabel(done);
+}
+
 void X86_64Linux::visit(const VaArg &n) {
     n.list().accept(*this);
     const Type *t = n.type();
@@ -1355,7 +1481,17 @@ void X86_64Linux::visit(const VaArg &n) {
         a_->ins("lea", mem(8, "%rcx"), reg("%rdx"));
         a_->ins("mov", reg("%rdx"), mem("%rax"));
         a_->ins("mov", reg("%rcx"), reg("%rax"));
+        if (t->isStructOrUnion()) {
+            // cl's rule for every argument: 1, 2, 4 or 8 bytes in the slot, anything else the address of a copy.
+            const int size = t->size(target_);
+            if (size != 1 && size != 2 && size != 4 && size != 8) a_->ins("mov", mem("%rax"), reg("%rax"));
+            return;
+        }
         load(t);
+        return;
+    }
+    if (t->isStructOrUnion()) {
+        vaArgClass(n);
         return;
     }
 
@@ -1412,6 +1548,7 @@ void X86_64Linux::visit(const VaStart &n) {
 
 void X86_64Linux::defineLabel(const std::string &l) { a_->defLabel(l); }
 void X86_64Linux::defineStateLabel(const std::string &l) { a_->stateLabel(l); }
+void X86_64Linux::defineBlockLabel(const std::string &l) { a_->blockLabel(l); }
 void X86_64Linux::jump(const std::string &l) { a_->ins("jmp", lbl(l)); }
 void X86_64Linux::branchIfZero(const std::string &l) {
     a_->ins("cmp", immText("0"), reg("%rax"));
@@ -1576,6 +1713,7 @@ namespace { std::vector<const Call *> callsIn(const Node &n, std::vector<const C
 // walked in place may make any call at all.
 bool X86_64Linux::mayWriteArea(const Expr &e) const {
     for (const Call *c : callsIn(e)) {
+        if (c->isAlloca()) return true;
         const int words = placeCall(*c).stackWords;
         if (words > 0 || inlineTarget(*c, words) != nullptr) return true;
     }
@@ -1601,10 +1739,18 @@ void X86_64Linux::emit(const Function &fn) {
         }
     if (realign_ > 0 && fn.hasLandingPads() && usesFunclets())
         unsupported("an over-aligned local in a function with a try or a local with a destructor");
-    if (realign_ > 0 && optimizing()) {
+    // **A Windows catch resumes with rsp at the establisher frame**, the floor before any `_alloca`, where the
+    // next call would write over the blocks; an Itanium landing pad gets the call site's rsp back.
+    if (usesFunclets() && callsAlloca(fn.body()) && catchesHere(fn.body()))
+        unsupported("_alloca in a function with a catch");
+    // **A function that reads or writes a volatile lvalue is written past the optimizer as well**, and
+    // walks no callee in place: the passes do not ask the qualifier, and could keep a volatile read in a
+    // register or drop it. The rest of the file keeps its -O (1.34 compiled the whole of it without).
+    volatileHere_ = optimizer_ && touchesVolatile(fn.body());
+    if ((realign_ > 0 || volatileHere_) && optimizing()) {
         optimizer_->finish();
         a_ = plain_;
-        opt::noteDecline("realigned-frame-no-optimizer", fn.symbol());
+        opt::noteDecline(realign_ > 0 ? "realigned-frame-no-optimizer" : "volatile-no-optimizer", fn.symbol());
     }
 
     a_->functionBegin(fn.symbol(), !fn.isStatic(), fn.isInline());
@@ -1616,14 +1762,14 @@ void X86_64Linux::emit(const Function &fn) {
     // label at the same address, which is what makes it the same function
     // rather than a second copy of it.
     if (!fn.alias().empty()) {
-        if (!fn.isStatic()) a_->globl(fn.alias());
+        if (!fn.isStatic() && !(fn.isInline() && a_->weakBindsGlobal())) a_->globl(fn.alias());
         if (fn.isInline()) a_->weakDefinition(fn.alias());
         a_->defLabel(fn.alias());
     }
     if (const Source *src = lineSource()) {
         Source::Place at = src->locate(fn.pos());
         DwarfFunction d;
-        d.name = fn.name();
+        d.name = fn.displayName();
         d.begin = ".Lfunc.begin." + fn.symbol();
         d.end = ".Lfunc.end." + fn.symbol();
         d.file = at.file + 1;
@@ -1632,23 +1778,25 @@ void X86_64Linux::emit(const Function &fn) {
         d.returns = fn.returns();
         d.locals = &fn.locals();
         d.symbol = a_->labelText(fn.symbol());
-        if (target_.microsoftNames()) {
+        // A display name carries its scope and arguments already - `ns::biggest<int>`, `std::basic_string<char>::size`,
+        // `geo::Pair::Pair` (1.29); a function without one - a namespaced free function - is qualified from its symbol.
+        if (target_.microsoftNames() && !fn.hasDisplayName()) {
             const Type *self = nullptr;
             for (const Local &l : fn.locals())
                 if (l.isParam && l.name == "this" && l.type->isPointer()) self = l.type->pointee();
             d.name = codeViewName(fn.symbol(), fn.name(), self);
         }
-        // CoffSpelling's own labels round the code - see its prologue and functionEnd.
-        d.prologEnd = "\"$LNprolog$" + fn.symbol() + "\"";
-        d.codeEnd = "\"$LNend$" + fn.symbol() + "\"";
+        // The spelling's own labels round the code - see CoffSpelling's and MasmSpelling's prologue
+        // and functionEnd - as each spells a name: quoted for clang, bare for masm (1.29).
+        d.prologEnd = a_->codeLabelText("$LNprolog$", fn.symbol());
+        d.codeEnd = a_->codeLabelText("$LNend$", fn.symbol());
         d.mergeable = fn.isInline();
+        dwarfFnAt_ = dwarfFns_.size();
         dwarfFns_.push_back(d);
         resetBlocks(fn.blocks());
-        a_->defLabel(d.begin);
+        a_->blockLabel(d.begin);    // the debug records' alone: an event to the optimizer, as a block's label is
     } else if (fn.hasLandingPads() && !usesFunclets()) {
-        // The call-site table measures from here, whether or not there is
-        // debug information. A funclet target has no call-site table and no
-        // use for the label - and MASM will not take one shaped like this.
+        // Call-site table origin, debug or not (not for a funclet target)
         a_->defLabel(".Lfunc.begin." + fn.symbol());
     }
     clearCallSites();
@@ -1709,7 +1857,7 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
     // The tables are written below; tell the spelling whether there are any,
     // so its unwind info does not name a FuncInfo that never appears.
-    if (target_.microsoftNames()) a_->noteHasEh(!msStates().empty());
+    if (target_.microsoftNames()) a_->noteHasEh(!msStates().empty() || fn.msUnwindHelp() != 0);
     a_->functionEnd(fn.symbol());
     // The tables below measure slots from the frame as the passes left it.
     if (optimizing()) frameSize_ = optimizer_->frameSize();
@@ -1717,12 +1865,20 @@ void X86_64Linux::emit(const Function &fn) {
     if (lineSource()) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
 
-        dwarfFns_.back().blocks = blocks();
-        dwarfFns_.back().frameBias = frameSize_ + outgoing_;
+        DwarfFunction &d = dwarfFns_[dwarfFnAt_];
+        d.blocks = blocks();
+        d.frameBias = frameSize_ + outgoing_;
         // The records measure from rbx, DWARF's register 3, up to the top of a realigned frame.
-        if (realign_ > 0) { dwarfFns_.back().frameBaseReg = 3; dwarfFns_.back().frameBias = top_; }
+        if (realign_ > 0) { d.frameBaseReg = 3; d.frameBias = top_; }
+        // Its funclets' records follow it and describe the same frame: the blocks, each funclet keeping
+        // the ones walked inside it (CodeView.cpp), and the slots measured as the function's are (1.29).
+        for (std::size_t i = dwarfFnAt_ + 1; i < dwarfFns_.size(); i++) {
+            dwarfFns_[i].blocks = d.blocks;
+            dwarfFns_[i].frameBias = d.frameBias;
+            dwarfFns_[i].frameBaseReg = d.frameBaseReg;
+        }
     }
-    if (realign_ > 0 && optimizer_) a_ = optimizer_.get();
+    if ((realign_ > 0 || volatileHere_) && optimizer_) a_ = optimizer_.get();
     realign_ = 0;
 
     if (depth_ != 0 || tempDepth_ != 0) {
@@ -1862,7 +2018,9 @@ public:
     // A thread_local reached through the CRT's guard is a call to `__dyn_tls_on_demand_init` too.
     bool tlsGuarded = false;
     void visit(const Num &) override {}
-    void visit(const Var &n) override { if (n.isThreadLocal() && n.viaWrapper()) tlsGuarded = true; }
+    void visit(const Var &n) override {
+        if (n.isThreadLocal() && n.viaWrapper()) tlsGuarded = true;
+    }
     void visit(const StrLit &) override {}
     void visit(const Goto &) override {}
     void visit(const Break &) override {}
@@ -1930,11 +2088,17 @@ std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *oute
 // a funclet-cut caller reserved - and the inliner's budgets say it is worth it.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     if (!inliner_ || current_ == nullptr || n.callee() != nullptr) return nullptr;
+    // A function written past the optimizer - realigned, or touching a volatile lvalue - walks none in place.
+    if (!optimizing()) return nullptr;
     const auto it = bodies_.find(n.symbol());
     if (it == bodies_.end() || !inliner_->allows(n)) return nullptr;
     const Function &callee = *it->second;
     const std::string site = n.symbol() + " in " + current_->symbol();
-    if (lineSource()) { opt::noteDecline("inline-site-debug-info", site); return nullptr; }
+    // A callee that touches a volatile lvalue is called, its body never optimized into the caller's.
+    std::map<const Function *, bool>::const_iterator known = volatileBodies_.find(&callee);
+    if (known == volatileBodies_.end())
+        known = volatileBodies_.insert(std::make_pair(&callee, touchesVolatile(callee.body()))).first;
+    if (known->second) { opt::noteDecline("inline-callee-volatile", site); return nullptr; }
     if (inPlace_) { opt::noteDecline("inline-site-inside-inlined-body", site); return nullptr; }
     if (stackSlots != 0) { opt::noteDecline("inline-site-stack-arguments", site); return nullptr; }
     const bool reserved = current_->hasLandingPads() && usesFunclets();
@@ -1945,7 +2109,9 @@ const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
     return &callee;
 }
 
-bool X86_64Linux::inlining() const { return inliner_ && !lineSource() && realign_ == 0; }
+// **-g changes no instruction** (1.63): a call is walked in place under -g as it is without, its body carrying the
+// call's line and no line of its own (walkInPlace), so a Release library can have CodeView at no cost.
+bool X86_64Linux::inlining() const { return inliner_ && realign_ == 0 && !volatileHere_; }
 
 // The callee's walk borrows the caller's state for its own, and gives it
 // back; its frame the optimizer moves below the caller's.
@@ -1958,10 +2124,16 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
     inPlace_ = true;
+    // **The body walked in place is on the call's line**, under -g: no line of its own and none of its blocks,
+    // whose numbers are the callee's scopes and not this function's - the walk -g leaves the code as it found it.
+    const Source *lines = lineSource();
+    const std::string dir = compDir();
+    setLineSource(nullptr, dir);
     optimizer_->inlineBegin(current_->frameSize(), fn.frameSize(), scalarsOf(fn));
     receiveParameters(fn);
     walkBody(fn);
     optimizer_->inlineEnd();
+    setLineSource(lines, dir);
     inPlace_ = false;
     floorDepth_ -= depth;
     depth_ = depth;
@@ -1977,7 +2149,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
 // return label every `return` jumps to.
 void X86_64Linux::walkBody(const Function &fn) {
     const std::vector<Param> &ps = fn.params();
-    if (!inPlace_) storeUnwindHelpAtEntry(fn.body());   // a body walked in place is not an entry
+    if (!inPlace_) storeUnwindHelpAtEntry(fn.body(), fn.msUnwindHelp());   // a body walked in place is not an entry
     fn.body().accept(*this);
 
     if (sretSlot_ != 0)                     a_->ins("mov", local(sretSlot_), reg("%rax"));
@@ -1998,13 +2170,49 @@ void X86_64Linux::walkBody(const Function &fn) {
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
-std::string X86_64Linux::beginFunclet() {
+std::string X86_64Linux::beginFunclet(std::size_t pos, int number, bool cleanup) {
     if (optimizing()) optimizer_->funcletBegin();
     inFunclet_ = true;
-    atOutput([this] { funcletMark_ = out_.size(); });
+    atOutput([this] { funcletMarks_.push_back(out_.size()); });
+    if (!funcletSymbol_.empty()) outerFunclets_.push_back(std::make_pair(funcletSymbol_, funcletEntryLoc_));
     funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
                      std::to_string(funcletIndex_++) + "$" + fnSymbol_;
+    funcletDebugBegin(funcletSymbol_, pos, number, cleanup);
     return funcletSymbol_;
+}
+
+// **-g: the funclet is a procedure of its own, over the parent's frame** - cl's `` `f'::`1'::catch$0 ``,
+// an S_LPROC32 with no type whose locals are the parent's (rbp is the parent's in a funclet) and whose
+// blocks are the ones walked inside it; its lines are a table of its own, the spelling told so (1.29).
+void X86_64Linux::funcletDebugBegin(const std::string &symbol, std::size_t pos, int number, bool cleanup) {
+    funcletEntryLoc_.clear();
+    if (!lineSource()) return;
+    const DwarfFunction &parent = dwarfFns_[dwarfFnAt_];
+    DwarfFunction d;
+    d.name = "`" + parent.name + "'::`1'::" + (cleanup ? "dtor$" : "catch$") + std::to_string(number - 1);
+    d.file = parent.file;
+    d.line = parent.line;
+    d.external = false;
+    d.returns = parent.returns;
+    d.locals = parent.locals;
+    d.symbol = a_->labelText(symbol);
+    d.prologEnd = a_->codeLabelText("$LNprolog$", symbol);
+    d.codeEnd = a_->codeLabelText("$LNend$", symbol);
+    d.mergeable = parent.mergeable;
+    d.funclet = number;
+    const int id = static_cast<int>(dwarfFns_.size());
+    dwarfFns_.push_back(d);
+    a_->funcletLinesBegin();
+    // Its first instructions are the prologue, which the walk writes no location for: named by the
+    // handler's own line, as cl names them, in the text closeFunclet puts before them.
+    if (pos != 0) {
+        const Source::Place at = lineSource()->locate(pos);
+        funcletEntryLoc_ = a_->locationDirective(id, at.file + 1, at.line, at.column);
+    }
+}
+
+void X86_64Linux::funcletDebugEnd() {
+    if (lineSource()) a_->funcletLinesEnd();
 }
 
 void X86_64Linux::endCleanupFunclet() {
@@ -2033,7 +2241,8 @@ void X86_64Linux::storeUnwindHelp(int slot) {
 
 // **The funclet's own frame, and the assembler writes its unwind data.**
 void X86_64Linux::closeFunclet(const std::string &tail) {
-    inFunclet_ = false;
+    inFunclet_ = !outerFunclets_.empty();
+    funcletDebugEnd();
     const std::string q = "\"" + funcletSymbol_ + "\"";
     const std::string b = "\"$LNbeg$" + funcletSymbol_ + "\"";
     const std::string e = "\"$LNend$" + funcletSymbol_ + "\"";
@@ -2051,6 +2260,8 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     head += "\n  .section .text$x,\"xr\"" + assoc + "\n";
     head += q + ":\n";
     head += b + ":\n";
+    // -g: the prologue is on the `catch` line, as cl's funclet begins (1.29).
+    head += funcletEntryLoc_;
     head += "  movq %rdx, 16(%rsp)\n";
     head += "  push %rbp\n";
     head += pu + ":\n";
@@ -2099,12 +2310,28 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     // **The body is lifted out of the output where it was written**, which
     // with an optimizer in front is after the function it belongs to.
     atOutput([this, head, f, pdata] {
-        const std::string body = out_.substr(funcletMark_);
-        out_.resize(funcletMark_);
-        funclets_ += head + body + f;
+        std::string body = out_.substr(funcletMarks_.back());
+        out_.resize(funcletMarks_.back());
+        funcletMarks_.pop_back();
+        // -g: the funclet's `.cv_func_id` is the first thing the walk wrote in it (funcletLinesBegin), and the
+        // head's `.cv_loc` names that id, so the declaration goes before the head: the assembler takes a
+        // location only of an id it has been told of.
+        std::string declared;
+        if (body.compare(0, 14, "  .cv_func_id ") == 0) {
+            const std::size_t nl = body.find('\n');
+            declared = body.substr(0, nl + 1);
+            body.erase(0, nl + 1);
+        }
+        funclets_ += declared + head + body + f;
         funcletPdata_ += pdata;
     });
     if (optimizing()) optimizer_->funcletEnd();
+    funcletSymbol_.clear();
+    if (!outerFunclets_.empty()) {
+        funcletSymbol_ = outerFunclets_.back().first;
+        funcletEntryLoc_ = outerFunclets_.back().second;
+        outerFunclets_.pop_back();
+    }
 }
 
 // **The FH3 tables for a frame that only cleans up.**
@@ -2124,18 +2351,20 @@ void X86_64Linux::emitCoffEhTables(const Function &fn) {
     o += "\"$cppxdata$" + m + "\":\n";
     o += "  .long 0x19930522\n";
     o += "  .long " + std::to_string(states.size()) + "\n";
-    o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
+    o += states.empty() ? "  .long 0\n" : "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
     o += "  .long " + std::to_string(tries.size()) + "\n";
     if (tries.empty()) o += "  .long 0\n";
     else o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
-    o += "  .long " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
+    const std::vector<MsIpRow> ip = msIpTable();
+    o += "  .long " + std::to_string(1 + ip.size()) + "\n";
     o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
     o += "  .long " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
     o += "  .long 0\n";                     // no exception specification
-    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
+    // EHFlags: compiled with /EHsc, and 4 for a noexcept function, which the runtime ends the program in.
+    o += "  .long " + std::to_string(1 | (fn.isNoexcept() ? 4 : 0)) + "\n";
 
     // toState, then the action: a cleanup's funclet, or nothing.
-    o += "\"$stateUnwindMap$" + m + "\":\n";
+    if (!states.empty()) o += "\"$stateUnwindMap$" + m + "\":\n";
     for (std::size_t k = 0; k < states.size(); k++) {
         o += "  .long " + std::to_string(states[k].toState) + "\n";
         if (states[k].action.empty()) o += "  .long 0\n";
@@ -2166,9 +2395,7 @@ void X86_64Linux::emitCoffEhTables(const Function &fn) {
             o += "  .long " + std::to_string(h.objectSlot == 0
                                   ? 0 : establisherOffset(h.objectSlot)) + "\n";
             o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
-            // dispFrame: where the funclet saved the parent's frame pointer, from
-            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
-            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            // dispFrame: the parent's saved frame pointer, [rsp+16]; cl 038H
             o += "  .long 56\n";
         }
     }
@@ -2178,13 +2405,9 @@ void X86_64Linux::emitCoffEhTables(const Function &fn) {
     o += "\"$ip2state$" + m + "\":\n";
     o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
     o += "  .long -1\n";
-    for (std::size_t k = 0; k < msIpRows().size(); k++) {
-        o += "  .long " + a_->labelText(msIpRows()[k].label) + "@IMGREL\n";
-        o += "  .long " + std::to_string(msIpRows()[k].state) + "\n";
-    }
-    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
-        o += "  .long " + a_->labelText(msFuncletRows()[k].label) + "@IMGREL\n";
-        o += "  .long " + std::to_string(msFuncletRows()[k].state) + "\n";
+    for (const MsIpRow &r : ip) {
+        o += "  .long " + a_->labelText(r.label) + "@IMGREL\n";
+        o += "  .long " + std::to_string(r.state) + "\n";
     }
     o += "  .text\n";
     out_ += o;
@@ -2196,31 +2419,29 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
     if (program.rtti.empty()) return;
     std::string &o = out_;
 
-    // The chain of every class named, closed and deduplicated: a class's array
-    // lists its bases' descriptors, so a base needs the full set of records
-    // even when nothing in this file names it.
+    // Every class named and every base its array lists, closed and deduplicated: a
+    // base needs the full set of records even when nothing in this file names it.
     std::vector<const Type *> all;
-    for (std::size_t i = 0; i < program.rtti.size(); i++)
-        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+    for (std::size_t i = 0; i < program.rtti.size(); i++) {
+        int attributes = 0;
+        for (const MicrosoftBaseClass &r : program.msRttiRowsOf(program.rtti[i], &attributes)) {
             bool had = false;
-            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == k) had = true;
-            if (!had) all.push_back(k);
+            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == r.cls) had = true;
+            if (!had) all.push_back(r.cls);
         }
+    }
 
+    std::set<std::string> bases;
     for (std::size_t i = 0; i < all.size(); i++) {
         MicrosoftRtti n;
         std::string why;
         if (!microsoftClassRttiNames(all[i], &n, &why)) continue;
-
-        int contained = 0;
-        for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
-            contained++;
+        int attributes = 0;
+        const std::vector<MicrosoftBaseClass> rows = program.msRttiRowsOf(all[i], &attributes);
 
         const std::string d = a_->labelText(n.descriptor);
-        const std::string bd = a_->labelText(n.baseDescriptor);
         const std::string ar = a_->labelText(n.array);
         const std::string hi = a_->labelText(n.hierarchy);
-        const std::string lo = a_->labelText(n.locator);
 
         // **The descriptor is writable** - its spare word caches the undecorated name
         // __std_type_info_name makes - so `.data`, as cl and clang have it; the four
@@ -2231,47 +2452,55 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         o += "  .asciz \"" + n.decorated + "\"\n";
         msDescriptors_.insert(n.descriptor);
 
-        // Where this class sits inside itself: at the top, never virtual.
-        coffRecord(".rdata$r", bd, 2);
-        o += "  .long " + d + "@IMGREL\n";
-        o += "  .long " + std::to_string(contained) + "\n";
-        o += "  .long 0\n";              // mdisp
-        o += "  .long -1\n";             // pdisp - there is no vbtable
-        o += "  .long 0\n";              // vdisp
-        o += "  .long 0x40\n";           // attributes
-        o += "  .long " + hi + "@IMGREL\n";
+        // Where each class of the array sits inside this one, and what it is there: one record per
+        // place and attributes, `??_R1BA@?0A@EA@I2@@8`, shared by every array that lists it.
+        for (const MicrosoftBaseClass &r : rows) {
+            if (!bases.insert(r.name).second) continue;
+            MicrosoftRtti b;
+            if (!microsoftClassRttiNames(r.cls, &b, &why)) continue;
+            coffRecord(".rdata$r", a_->labelText(r.name), 2);
+            o += "  .long " + a_->labelText(b.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(r.contained) + "\n";
+            o += "  .long " + std::to_string(r.mdisp) + "\n";
+            o += "  .long " + std::to_string(r.pdisp) + "\n";   // pdisp: -1 outside a virtual base
+            o += "  .long " + std::to_string(r.vdisp) + "\n";
+            o += "  .long " + std::to_string(r.attributes) + "\n";
+            o += "  .long " + a_->labelText(b.hierarchy) + "@IMGREL\n";
+        }
 
         coffRecord(".rdata$r", ar, 2);
-        o += "  .long " + bd + "@IMGREL\n";
-        for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
-            MicrosoftRtti b;
-            if (!microsoftClassRttiNames(k, &b, &why)) break;
-            o += "  .long " + a_->labelText(b.baseDescriptor) + "@IMGREL\n";
-        }
+        for (const MicrosoftBaseClass &r : rows) o += "  .long " + a_->labelText(r.name) + "@IMGREL\n";
         o += "  .long 0\n";
 
         coffRecord(".rdata$r", hi, 2);
         o += "  .long 0\n";
-        o += "  .long 0\n";              // attributes - no MI, no virtual bases
-        o += "  .long " + std::to_string(contained + 1) + "\n";
+        o += "  .long " + std::to_string(attributes) + "\n";   // 1: a class here has two bases
+        o += "  .long " + std::to_string(rows.size()) + "\n";
         o += "  .long " + ar + "@IMGREL\n";
 
         // The locator names itself, which is how the runtime recovers the image
-        // base every other field is relative to.
-        coffRecord(".rdata$r", lo, 2);
-        o += "  .long 1\n";
-        o += "  .long 0\n";              // the vfptr's offset in the object
-        o += "  .long 0\n";              // cdOffset
-        o += "  .long " + d + "@IMGREL\n";
-        o += "  .long " + hi + "@IMGREL\n";
-        o += "  .long " + lo + "@IMGREL\n";
+        // base every other field is relative to. One per vftable, at its vfptr.
+        std::vector<Program::MsLocator> locators;
+        for (const Program::MsLocator &l : program.msLocators)
+            if (l.cls == all[i]) locators.push_back(l);
+        if (locators.empty()) locators.push_back(Program::MsLocator{ all[i], n.locator, 0 });
+        for (const Program::MsLocator &l : locators) {
+            const std::string lo = a_->labelText(l.name);
+            coffRecord(".rdata$r", lo, 2);
+            o += "  .long 1\n";
+            o += "  .long " + std::to_string(l.offset) + "\n";   // the vfptr's offset in the object
+            o += "  .long " + std::to_string(l.cdOffset) + "\n";
+            o += "  .long " + d + "@IMGREL\n";
+            o += "  .long " + hi + "@IMGREL\n";
+            o += "  .long " + lo + "@IMGREL\n";
+        }
         o += "  .text\n";
     }
 }
 
 void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
-    if (!g.isStatic) a_->globl(g.symbol);
+    if (!g.isStatic && !(g.isInline && a_->weakBindsGlobal())) a_->globl(g.symbol);
     if (g.isInline) a_->weakDefinition(g.symbol);
 
     if (abi_.elfSymbolAttributes) {
@@ -2468,6 +2697,14 @@ void X86_64Linux::run(const Program &program) {
     for (const Function &fn : program.functions) bodies_[fn.symbol()] = &fn;
     if (inliner_) inliner_->summarize(program);
     for (const Function &fn : program.functions) emit(fn);
+    if (program.usesFlagExchange) {
+        a_->flagExchange();
+        finishChunk();
+    }
+    for (const std::string &helper : program.atomicHelpers) {
+        a_->atomicHelper(helper);
+        finishChunk();
+    }
     if (!program.initFunction.empty()) {
         a_->initialiserEntry(program.initFunction, program.usesDsoHandle);
         finishChunk();
@@ -2492,21 +2729,27 @@ void X86_64Linux::run(const Program &program) {
             dg.external = !g.isStatic;
             dwarfGlobals_.push_back(dg);
         }
-        // **Microsoft's tools read CodeView and nothing else**: link.exe drops DWARF from a COFF object.
-        if (target_.microsoftNames())
-            writeCodeView(out_, target_, CodeViewLanguage::Cpp,
-                          codeViewPath(compDir(), lineSource()->files().front() + ".obj"),
-                          dwarfFns_, dwarfGlobals_,
-                          [this](const std::string &s) { return a_->labelText(s); });
-        else
-            writeDwarf(out_, kElfDwarf, target_, lineSource()->files().front(),
-                       compDir(), dwarfFns_, dwarfGlobals_);
+        writeDebug(dwarfFns_, dwarfGlobals_);
         finishChunk();
     }
 
+    a_->finishText(chunks_);
     a_->preamble(sink_);
     for (const std::string &chunk : chunks_) sink_ << chunk;
     // After every function, so the .pdata the linker sees is in address order.
     sink_ << funcletPdata_;
     a_->postamble(sink_);
+}
+
+// **Microsoft's tools read CodeView and nothing else**: link.exe drops DWARF from a COFF object.
+// MasmCodeGen writes the same CodeView in GRIDE's masm's words (1.29).
+void X86_64Linux::writeDebug(const std::vector<DwarfFunction> &fns,
+                             const std::vector<DwarfGlobal> &globals) {
+    // The object's name plain: S_OBJNAME's writer escapes it (it was escaped twice until 1.29).
+    if (target_.microsoftNames())
+        writeCodeView(out_, target_, CodeViewLanguage::Cpp,
+                      codeViewPath(compDir(), lineSource()->files().front() + ".obj", false), fns, globals,
+                      [this](const std::string &s) { return a_->labelText(s); });
+    else
+        writeDwarf(out_, kElfDwarf, target_, lineSource()->files().front(), compDir(), fns, globals);
 }

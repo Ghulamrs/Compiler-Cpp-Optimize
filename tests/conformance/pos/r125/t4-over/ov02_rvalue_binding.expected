@@ -1,0 +1,5 @@
+int& const int& int&& int&& int&&
+const& && && &&
+const& const& &&
+int& const int& int&& int&&
+const int&

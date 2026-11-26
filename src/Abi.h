@@ -35,7 +35,6 @@ struct Abi {
     // **AAPCS64 returns one to four floats or doubles in the float registers.**
     bool homogeneousFloatAggregates = false;
 
-    // `.type` and `.size` beside a symbol: ELF has them, Mach-O and COFF
-    // do not.
+    // `.type` and `.size` beside a symbol: ELF has them, Mach-O and COFF do not
     bool elfSymbolAttributes = false;
 };

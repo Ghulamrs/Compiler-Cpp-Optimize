@@ -20,6 +20,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -67,15 +69,20 @@ extern char **environ;
 namespace {
 
 const std::size_t kThreadFrom = 4;
+// How many threads a pool makes at a time: a set is at work before the next is made (runJobs).
+const std::size_t kThreadSet = 3;
 
 }
 
 #ifndef CXX1_INCLUDE_DIR
 #define CXX1_INCLUDE_DIR ""
 #endif
+#ifndef CXX1_WIN_INCLUDE_DIR
+#define CXX1_WIN_INCLUDE_DIR ""
+#endif
 // **The C++ headers are a second directory, not more files in the first.**
-// `include/` holds `<cstddef>` and `<vector>`; `lib/` holds the C headers
-// those wrap, and a program may reach either.
+// `include/c++` holds `<cstddef>` and `<vector>`; `include/c` holds the C
+// headers those wrap, the set c90 reads too, and a program may reach either.
 #ifndef CXX1_CXX_INCLUDE_DIR
 #define CXX1_CXX_INCLUDE_DIR ""
 #endif
@@ -115,6 +122,83 @@ static bool directoryHas(const std::string &dir, const char *name) {
     return probe.good();
 }
 
+namespace {
+// **The construct that begins at `pos` taken out of the text**, an empty one left where it stood: a statement to its
+// `;` or its closing brace - with the `else` or `catch` that belongs to it - or a declaration, a class's to the `;`
+// after it. What a declaration there would have introduced is told to `src`. False where nothing can be taken.
+bool takeOut(std::vector<Token> &tokens, std::size_t pos, const Source &src) {
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i].kind != TokenKind::End && tokens[i].pos < pos) i++;
+    if (i >= tokens.size() || tokens[i].kind == TokenKind::End || tokens[i].pos != pos) return false;
+    const bool toSemicolon = tokens[i].is("struct") || tokens[i].is("class") || tokens[i].is("union") ||
+                             tokens[i].is("enum") || tokens[i].is("typedef");
+    int depth = 0;
+    std::size_t last = i;
+    for (;; last++) {
+        const Token &t = tokens[last];
+        if (t.kind == TokenKind::End) { last--; break; }
+        if (t.is("(") || t.is("[") || t.is("{")) { depth++; continue; }
+        if (t.is(")") || t.is("]") || t.is("}")) {
+            if (depth == 0) { if (last == i) return false; last--; break; }   // what holds it ended first
+            depth--;
+            if (depth != 0 || !t.is("}")) continue;
+            const Token &n = tokens[last + 1];
+            if (n.is(";")) { last++; break; }
+            if (!toSemicolon && !n.is("else") && !n.is("catch") && !n.is("while") && !n.is(",") && !n.is("{")) break;
+            continue;
+        }
+        if (depth == 0 && t.is(";")) break;
+    }
+    // `int x = wrong;`: x is what the rest of the function goes on to name.
+    depth = 0;
+    for (std::size_t k = i; k < last; k++) {
+        const Token &t = tokens[k];
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if (t.is(")") || t.is("]") || t.is("}")) depth--;
+        else if (depth == 0 && k > i && t.kind == TokenKind::Ident) {
+            const Token &b = tokens[k - 1], &n = tokens[k + 1];
+            if ((b.kind == TokenKind::Ident || b.kind == TokenKind::Keyword || b.is("*") || b.is("&") || b.is(">")) &&
+                (n.is("=") || n.is(";") || n.is(",") || n.is("(") || n.is("{") || n.is("[")))
+                src.quieten(t.text);
+        }
+    }
+    Token empty = tokens[i];
+    empty.kind = TokenKind::Punct;
+    empty.text = ";";
+    tokens.erase(tokens.begin() + static_cast<long>(i) + 1, tokens.begin() + static_cast<long>(last) + 1);
+    tokens[i] = empty;
+    return true;
+}
+}   // namespace
+
+// **Every error, not only the first.** A parser that has failed holds nothing worth going on with, so the file is
+// read again by a new one without the construct that failed, each reading saying the next error. A compile that
+// succeeds never comes here. It stops where nothing can be taken out - a failure with no statement or declaration
+// of the program's around it - or at twenty errors; the error already said is what fails the compile.
+void Driver::reportTheRest(const Source &src, const std::vector<Token> &tokens, std::size_t failedAt, const Target &target) {
+    const int kMostErrors = 20;
+    std::vector<Token> now = tokens;
+    std::size_t taken = Parser::npos();
+    for (int reading = 0; reading < 2 * kMostErrors; reading++) {
+        if (failedAt == Parser::npos() || failedAt == taken || !takeOut(now, failedAt, src)) return;
+        taken = failedAt;
+        src.clearFailed();
+        TypeTable types;
+        Parser next(src, now, types, target, backend_->abi());
+        try {
+            (void)next.parse();
+            return;
+        } catch (const CompileFailed &) {
+            if (!src.failed()) return;
+            failedAt = next.failedAt();
+        }
+        if (src.errorsReported() >= kMostErrors) {
+            std::fprintf(stderr, "%s: too many errors, stopping\n", src.files().front().c_str());
+            return;
+        }
+    }
+}
+
 // **Where the standard headers are, asked in the order a release wants.**
 void Driver::standardIncludeDirectories(const std::string &argv0) {
     const char *envCxx = std::getenv(program::env("INCLUDE").c_str());
@@ -125,11 +209,18 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
         return;
     }
 
-    // Beside the binary or one directory up. include/ is this compiler's when it
-    // holds `cstddef`, a name only this library spells; the C headers <cstddef>
-    // reaches are there too (an installation) or in lib/ (a checkout, or c90's).
+    // Beside the binary or one up: include/c++, include/c, include/win
+    // (docs\Runtime_Design.md 5.3); then the earlier layout, include/ being
+    // this compiler's when it holds `cstddef`, C headers there or in lib/.
     const std::string here = programDirectory(argv0);
     const std::string candidates[2] = { here, here + "/.." };
+    for (const std::string &at : candidates) {
+        if (!directoryHas(at + "/include/c++", "cstddef") || !directoryHas(at + "/include/c", "stddef.h")) continue;
+        searchPath_.push_back(at + "/include/c++");
+        searchPath_.push_back(at + "/include/c");
+        searchPath_.push_back(at + "/include/win");
+        return;
+    }
     for (const std::string &at : candidates) {
         const std::string cxxDir = at + "/include";
         const std::string cDir = at + "/lib";
@@ -143,6 +234,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
     if (CXX1_CXX_INCLUDE_DIR[0] != '\0')
         searchPath_.push_back(CXX1_CXX_INCLUDE_DIR);
     if (CXX1_INCLUDE_DIR[0] != '\0') searchPath_.push_back(CXX1_INCLUDE_DIR);
+    if (CXX1_WIN_INCLUDE_DIR[0] != '\0') searchPath_.push_back(CXX1_WIN_INCLUDE_DIR);
 }
 
 void Driver::usage(char *file) {
@@ -173,7 +265,7 @@ void Driver::usage(char *file) {
         "         --no_compress writes every instruction in 32 bits\n"
         "       -rts= picks the tms6747 run-time library: a directory holding\n"
         "         RTS6x's rts6x.lib (or the .lib itself), or 'ti' for TI's\n"
-        "         rts6740. Unsaid: RTS6x from RTS6X or lib/rts6x-tms6747\n"
+        "         rts6740. Unsaid: RTS6x from RTS6X or lib/tms6747\n"
         "         beside this program - as RIDE links - unless CPP11_TI or\n"
         "         CPP11_TILIB names TI's; TI's otherwise; the link says which\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'masm' is\n"
@@ -181,9 +273,9 @@ void Driver::usage(char *file) {
         "         program (RIDE's bin), assembled by it and linked by the\n"
         "         link.exe beside it (CPP11_AS, CPP11_LD name others), COMDAT\n"
         "         and all; 'gnu' is assembled by clang, the default elsewhere\n"
-        "         and for -g, being the only one that carries a line table;\n"
-        "         'ml64' is the MASM syntax without COMDAT, for ml64, which\n"
-        "         links one translation unit at a time\n"
+        "         and for -g where clang is found; 'ml64' is the MASM syntax\n"
+        "         without COMDAT, for ml64, which links one translation unit\n"
+        "         at a time\n"
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
         "         constants forwarded, pushes paired with their pops, dead\n"
         "         instructions removed. Every spelling; -O0 is the default\n"
@@ -192,16 +284,16 @@ void Driver::usage(char *file) {
         "         entry test is duplicated ahead of the frame; elsewhere -O1\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it: DWARF on x86_64-linux and arm64-darwin,\n"
-        "         CodeView on x86_64-windows in the gnu spelling (linked with\n"
-        "         /debug into a PDB), cl6x's .dwpsn and .dwtag on tms6747;\n"
-        "         refused for -masm=masm/ml64, and on tms6747 with -O\n"
+        "         CodeView on x86_64-windows (linked with /debug into a PDB) -\n"
+        "         for clang in the gnu spelling, for GRIDE's masm as the .FILE\n"
+        "         and .LINE directives it reads with -masm=masm - and cl6x's\n"
+        "         .dwpsn and .dwtag on tms6747; refused for -masm=ml64, and on\n"
+        "         tms6747 with -O\n"
         "       -nologo leaves out the line this compiler prints before it\n"
         "         starts, which a build script may not want\n"
         "       -version says which release this is, and which seal file\n"
         "         carries the CRC32 of the sources it was built from\n"
-        "       -time reports how long each phase took\n"
-        "       -keep-going[=N] reports up to N errors a file (100 if no N) and goes\n"
-        "         on from the next declaration after each; the file still fails\n", file);
+        "       -time reports how long each phase took\n", file);
 }
 
 static std::string workingDirectory() {
@@ -295,23 +387,124 @@ static std::string programOf(const std::string &command) {
     return command.substr(start, end == std::string::npos ? end : end - start);
 }
 
+// **The screen does not stand still** (1.70; the user's, 2026-11-18: a compiler that says nothing for ten seconds
+// reads as one that hangs). Whoever writes a line of progress notes the moment; while a Heartbeat lives, a thread
+// of its own looks four times a second, and when nothing has been noted for two seconds it writes one line saying
+// what is in hand - `  ... 12 s: 36 of 39 done, compiling X86.cpp 10 s` - and notes that.
+typedef std::chrono::steady_clock SteadyClock;
+static const SteadyClock::time_point kDriverBegan = SteadyClock::now();
+static std::atomic<long long> lastSaidAt{0};
+static long long sinceBeganMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::now() - kDriverBegan).count();
+}
+static void noteSaid() { lastSaidAt.store(sinceBeganMs()); }
+
+namespace {
+class Heartbeat {
+public:
+    // `what` answers the line's text, or nothing when there is nothing to say; it is called on the heartbeat's
+    // own thread with no lock held, and takes diagnosticLock() itself for whatever it reads.
+    Heartbeat(bool on, std::function<std::string()> what) : stop_(false) {
+        if (!on) return;
+        noteSaid();
+        thread_ = std::thread([this, what] {
+            std::unique_lock<std::mutex> wait(sleep_);
+            while (!stop_) {
+                wake_.wait_for(wait, std::chrono::milliseconds(250));
+                if (stop_) break;
+                if (sinceBeganMs() - lastSaidAt.load() < 2000) continue;
+                const std::string line = what();
+                if (line.empty()) continue;
+                std::lock_guard<std::mutex> hold(diagnosticLock());
+                std::fprintf(stderr, "  ... %.0f s: %s\n", static_cast<double>(sinceBeganMs()) / 1000.0, line.c_str());
+                noteSaid();
+            }
+        });
+    }
+    // woken at once: a heartbeat adds nothing to the time of what it watches
+    ~Heartbeat() {
+        { std::lock_guard<std::mutex> hold(sleep_); stop_ = true; }
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+private:
+    Heartbeat(const Heartbeat &);
+    Heartbeat &operator=(const Heartbeat &);
+    bool stop_;
+    std::mutex sleep_;
+    std::condition_variable wake_;
+    std::thread thread_;
+};
+}
+
 #ifdef _WIN32
-// **Started directly, not through cmd.exe** (1.10, 2026-10-20). A machine may have cmd disabled by policy,
-// as GRIDE's does: every cpp11 -c and link through cmd failed, and an IDE that starts cpp11 had no cmd to lend.
-// The command line is the shell's: the program's quoted path, then its arguments, as CreateProcess reads it.
+// One line a tool wrote, written whole to the stream it wrote it to: two tools at once do not write into each
+// other's lines.
+static void passOn(const std::string &line, FILE *to) {
+    std::lock_guard<std::mutex> hold(diagnosticLock());
+    std::fwrite(line.data(), 1, line.size(), to);
+    std::fflush(to);
+    noteSaid();
+}
+
+// What comes down one pipe from a tool, passed on line by line as it comes, until the tool closes its end.
+static void passOnPipe(HANDLE from, FILE *to) {
+    std::string pending;
+    char bytes[4096];
+    DWORD got = 0;
+    while (ReadFile(from, bytes, sizeof bytes, &got, nullptr) && got > 0) {
+        pending.append(bytes, got);
+        for (std::string::size_type end; (end = pending.find('\n')) != std::string::npos; ) {
+            passOn(pending.substr(0, end + 1), to);
+            pending.erase(0, end + 1);
+        }
+    }
+    if (!pending.empty()) passOn(pending + "\n", to);
+    CloseHandle(from);
+}
+
+// **Started directly, not through cmd.exe**: a machine may disable cmd by
+// policy (GRIDE's build machine does); the command line is the one a shell
+// would get - the quoted path, then the arguments - read by CreateProcess.
+//
+// **Each tool has pipes of its own** (1.70; the user's, 2026-11-18): what it writes to its output and to its
+// error stream comes down two pipes, read here as it is written - the error stream on a thread of its own - and
+// passed on to this compiler's streams a whole line at a time. A tool used to be handed this compiler's own
+// streams: several assemblers at once wrote into each other's lines, and nothing here knew that one had spoken.
 static int runDirect(const std::string &command) {
-    STARTUPINFOA si;
-    ZeroMemory(&si, sizeof si);
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    static std::mutex oneAtATime;
+    HANDLE outRead = nullptr, outWrite = nullptr, errRead = nullptr, errWrite = nullptr;
     PROCESS_INFORMATION pi;
     ZeroMemory(&pi, sizeof pi);
-    std::vector<char> line(command.begin(), command.end());
-    line.push_back('\0');
-    if (!CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) return -1;
+    {
+        // One tool is made at a time: the writing ends of its pipes can be inherited for the moment it is made
+        // and are closed here before another tool is, so no tool holds another's pipe open.
+        std::lock_guard<std::mutex> one(oneAtATime);
+        SECURITY_ATTRIBUTES inherit;
+        inherit.nLength = sizeof inherit;
+        inherit.lpSecurityDescriptor = nullptr;
+        inherit.bInheritHandle = TRUE;
+        if (!CreatePipe(&outRead, &outWrite, &inherit, 0)) return -1;
+        if (!CreatePipe(&errRead, &errWrite, &inherit, 0)) { CloseHandle(outRead); CloseHandle(outWrite); return -1; }
+        SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
+        STARTUPINFOA si;
+        ZeroMemory(&si, sizeof si);
+        si.cb = sizeof si;
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = outWrite;
+        si.hStdError = errWrite;
+        std::vector<char> line(command.begin(), command.end());
+        line.push_back('\0');
+        const BOOL made = CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+        CloseHandle(outWrite);
+        CloseHandle(errWrite);
+        if (!made) { CloseHandle(outRead); CloseHandle(errRead); return -1; }
+    }
+    std::thread errors(passOnPipe, errRead, stderr);
+    passOnPipe(outRead, stdout);
+    errors.join();
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
@@ -617,55 +810,6 @@ static std::vector<std::string> &temporaryNames() {
     return names;
 }
 
-static std::string shellQuote(const std::string &s);
-
-#ifdef _WIN32
-// The first line of a text file, its line ending and trailing blanks taken off; empty if there is none.
-static std::string firstLineOf(const std::string &path) {
-    std::ifstream in(path.c_str());
-    std::string line;
-    std::getline(in, line);
-    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-    return line;
-}
-
-// **/LIBPATH for a linker started without vcvars** (named by its path, so started directly): with no LIB set,
-// the directories come off the installation - Visual Studio's default tools version and the SDK's manifest -
-// so the project's LINK finds libcmt from a plain command line too, not only from GRIDE, which sets LIB.
-static std::string installationLibPaths() {
-    const char *lib = std::getenv("LIB");
-    if (lib != nullptr && lib[0] != '\0') return std::string();
-    static const std::string paths = [] {
-        std::vector<std::string> dirs;
-        const std::string vcvars = findVcvars();
-        const std::string::size_type cut = vcvars.find("\\VC\\Auxiliary\\Build\\");
-        if (cut != std::string::npos) {
-            const std::string root = vcvars.substr(0, cut);
-            const std::string tools = firstLineOf(root + "\\VC\\Auxiliary\\Build\\Microsoft.VCToolsVersion.default.txt");
-            if (!tools.empty()) dirs.push_back(root + "\\VC\\Tools\\MSVC\\" + tools + "\\lib\\x64");
-        }
-        // SDKManifest.xml names the installed SDK as `PlatformIdentity = "UAP, Version=10.0.26100.0"`.
-        const std::string kits = "C:\\Program Files (x86)\\Windows Kits\\10";
-        std::ifstream manifest((kits + "\\SDKManifest.xml").c_str());
-        std::string line, sdk;
-        while (sdk.empty() && std::getline(manifest, line)) {
-            const std::string::size_type v = line.find("Version=");
-            if (v == std::string::npos) continue;
-            const std::string::size_type end = line.find('"', v + 8);
-            sdk = line.substr(v + 8, end == std::string::npos ? std::string::npos : end - v - 8);
-        }
-        if (!sdk.empty()) {
-            dirs.push_back(kits + "\\Lib\\" + sdk + "\\ucrt\\x64");
-            dirs.push_back(kits + "\\Lib\\" + sdk + "\\um\\x64");
-        }
-        std::string out;
-        for (const std::string &d : dirs) out += " /LIBPATH:" + shellQuote(d);
-        return out;
-    }();
-    return paths;
-}
-#endif
-
 void Driver::removeTemporaries() {
     std::vector<std::string> &names = temporaryNames();
     for (const std::string &t : names) std::remove(t.c_str());
@@ -751,10 +895,11 @@ bool Driver::assembleObjects() {
 
 // The linker command file lnk6x needs: one flat memory for the C6747 and
 // every section the compilers and TI's runtime write placed in it - the same
-// file RIDE and VM6747's tests link with.
+// file RIDE and VM6747's tests link with. **An 8 MB stack, as the other three targets give**: 16 KB
+// put a 100,000-deep recursion into the sections below it (op11 of the suite).
 static const char *const kTiLinkCommands =
     "--rom_model\n"
-    "--stack_size=0x4000\n"
+    "--stack_size=0x800000\n"
     "--heap_size=0x100000\n"
     "MEMORY\n"
     "{\n"
@@ -817,14 +962,16 @@ bool Driver::linkTi() {
     const char *tilib = std::getenv(program::env("TILIB").c_str());
     const bool tiNamed = (ti != nullptr && ti[0] != '\0') || (tilib != nullptr && tilib[0] != '\0');
     // **RTS6x, the project's own runtime, as RIDE links it** (review D9): -rts= names it or asks for TI's;
-    // else RTS6X, or lib/rts6x-tms6747 beside this program, unless CPP11_TI or CPP11_TILIB names TI's.
+    // else RTS6X, or lib/tms6747 beside this program (lib/rts6x-tms6747 in an earlier installation), unless CPP11_TI
+    // or CPP11_TILIB names TI's.
     std::string ours, rts;
     if (rtsChoice_ != "ti") {
         std::string want = rtsChoice_;
         const char *env = std::getenv("RTS6X");
         if (want.empty() && !tiNamed && env != nullptr && env[0] != '\0') want = env;
         if (want.empty() && !tiNamed) {
-            const std::string beside = besideProgram(program_, ("lib" + sep + "rts6x-tms6747" + sep + "rts6x.lib").c_str());
+            std::string beside = besideProgram(program_, ("lib" + sep + "tms6747" + sep + "rts6x.lib").c_str());
+            if (beside.empty()) beside = besideProgram(program_, ("lib" + sep + "rts6x-tms6747" + sep + "rts6x.lib").c_str());
             if (!beside.empty()) want = beside.substr(0, beside.size() - std::strlen("rts6x.lib") - 1);
         }
         if (!want.empty()) {
@@ -860,7 +1007,13 @@ bool Driver::linkTi() {
     for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
     command += " -l " + rts + " -o " + shellQuote(linkTo_);
 
-    int rc = runTool(command);
+    // a link that takes long says so while it does (1.70)
+    const std::string linking = "linking " + linkTo_;
+    int rc;
+    {
+        Heartbeat beat(!quiet_, [&linking]() -> std::string { return linking; });
+        rc = runTool(command);
+    }
     if (rc != 0) {
         std::fprintf(stderr, "%s: the linker failed - the command was:\n  %s\n",
                      program_.c_str(), command.c_str());
@@ -901,8 +1054,7 @@ bool Driver::link() {
             }
             steps.push_back(step);
             objects.push_back(obj);
-            // Recorded before the run, so a failure still cleans up whatever
-            // the batch managed to write.
+            // Recorded first, so a failure still cleans up what was written
             temporaryNames().push_back(obj);
         }
         if (!runCommands(steps)) return false;
@@ -916,12 +1068,24 @@ bool Driver::link() {
         for (const std::string &o : objects) command += " " + shellQuote(o);
         for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
 
-        // libcpmt holds std::set_new_handler and get_new_handler, and no other static library does.
-        command += " libcmt.lib libcpmt.lib libucrt.lib libvcruntime.lib kernel32.lib"
-                   " legacy_stdio_definitions.lib";
-#ifdef _WIN32
-        command += installationLibPaths();
-#endif
+        // **GRIDE's runtime when it is installed beside this program** (lib\x86_64-windows\grtc.lib,
+        // docs\Runtime_Design.md 13.1): its five layered libraries and kernel32.lib by path, the d variants under
+        // -g, and no LIB to find - so a program built here runs where there is no Visual Studio, as one built by
+        // GRIDE does. Else Microsoft's static CRT through LIB: libcpmt holds std::set_new_handler and
+        // get_new_handler, and no other static library does.
+        const std::string grtc = besideProgram(program_, "lib\\x86_64-windows\\grtc.lib");
+        if (!grtc.empty()) {
+            const std::string dir = grtc.substr(0, grtc.size() - std::strlen("grtc.lib"));
+            const char *variant = debug_ ? "d" : "";
+            static const char *const layers[] = { "grtstart", "grtcompat", "grtcxx", "grtc", "grtwin" };
+            for (const char *layer : layers) command += " " + shellQuote(dir + layer + variant + ".lib");
+            command += " " + shellQuote(dir + "kernel32.lib");
+            if (!quiet_)
+                std::fprintf(stderr, "%s: linking against GRIDE's runtime in %s\n", program_.c_str(), dir.c_str());
+        } else {
+            command += " libcmt.lib libcpmt.lib libucrt.lib libvcruntime.lib kernel32.lib"
+                       " legacy_stdio_definitions.lib oldnames.lib";
+        }
     } else {
         command = shellQuote(hostCompiler());
 
@@ -933,7 +1097,13 @@ bool Driver::link() {
         command += " -lm";
     }
 
-    int rc = runTool(command);
+    // a link that takes long says so while it does (1.70)
+    const std::string linking = "linking " + linkTo_;
+    int rc;
+    {
+        Heartbeat beat(!quiet_, [&linking]() -> std::string { return linking; });
+        rc = runTool(command);
+    }
     if (rc != 0) {
         std::fprintf(stderr, "%s: the assembler or linker failed - the command "
                              "was:\n  %s\n", program_.c_str(), command.c_str());
@@ -1060,14 +1230,6 @@ bool Driver::parseArguments(int argc, char **argv) {
             assemblyOnly_ = true;
         } else if (std::strcmp(argv[i], "-c") == 0) {
             objectOnly_ = true;
-        } else if (std::strcmp(argv[i], "-keep-going") == 0 || std::strcmp(argv[i], "--keep-going") == 0) {
-            keepGoing_ = 100;
-        } else if (std::strncmp(argv[i], "-keep-going=", 12) == 0) {
-            keepGoing_ = std::atoi(argv[i] + 12);
-            if (keepGoing_ < 1) {
-                std::fprintf(stderr, "%s: -keep-going= wants a number of errors, 1 or more\n", argv[0]);
-                return false;
-            }
         } else if (std::strcmp(argv[i], "-time") == 0) {
             timing_ = true;
         } else if (std::strcmp(argv[i], "-version") == 0 ||
@@ -1075,8 +1237,9 @@ bool Driver::parseArguments(int argc, char **argv) {
             // Printed on stdout, unlike the banner: a version somebody asked
             // for is the answer to the command, not an aside beside it.
             // __DATE__ and __TIME__ are the build machine's local clock, whose zone is not known here.
-            std::printf("%s\nVersion %s, sealed %s\nBuilt %s, the build machine's local time\n", CXX1_BANNER,
-                        CXX1_VERSION, CXX1_SEAL_DATE, buildStamp().c_str());
+            // The first line names the program and its number, as every program of the toolchain does (Version.h).
+            std::printf("%s %s - %s\n%s\nSealed %s\nBuilt %s, the build machine's local time\n", program::kName,
+                        CXX1_VERSION, CXX1_WHAT, CXX1_OWNER, CXX1_SEAL_DATE, buildStamp().c_str());
             std::exit(0);
         } else if (std::strncmp(argv[i], "-rts=", 5) == 0 && argv[i][5] != '\0') {
             rtsChoice_ = argv[i] + 5;
@@ -1103,7 +1266,9 @@ bool Driver::parseArguments(int argc, char **argv) {
     }
 
     // C++ first, then C.
+    const std::size_t givenDirectories = searchPath_.size();
     standardIncludeDirectories(argv[0]);
+    systemPath_.assign(searchPath_.begin() + static_cast<long>(givenDirectories), searchPath_.end());
 
     if (inputs.empty()) { usage(argv[0]); return false; }
 
@@ -1148,11 +1313,10 @@ bool Driver::parseArguments(int argc, char **argv) {
     if (debug_ && !backend_->emitsLineTable(syntax_)) {
         std::fprintf(stderr,
                      "%s: -g asks where each line of C++ went, and this compiler "
-                     "writes no such thing for %s in the MASM spelling: MASM "
-                     "carries no line table and ml64 builds none from it, and "
-                     "a native Windows debugger wants CodeView rather than "
-                     "DWARF. Add -masm=gnu, which does carry one, or compile "
-                     "without -g.\n",
+                     "writes no such thing for %s with -masm=ml64: MASM carries no "
+                     "line table and ml64 builds none from it. -masm=masm writes the "
+                     ".FILE and .LINE directives GRIDE's masm reads, -masm=gnu a line "
+                     "table clang assembles; or compile without -g.\n",
                      argv[0], backend_->name());
         return false;
     }
@@ -1267,24 +1431,57 @@ bool Driver::compile(const Job &job) {
 
     auto t0 = Clock::now();
     Source src = Preprocessor(job.input, searchPath_, macros_).run();
-    src.setKeepGoing(keepGoing_);
     auto t1 = Clock::now();
 
     std::vector<Token> tokens = Lexer(src).tokenize();
     auto t2 = Clock::now();
 
+    const std::vector<Token> probeTokens = tokens;
+    src.setSystemDirectories(systemPath_);
     Parser parser(src, std::move(tokens), types, target, backend_->abi());
-    Program program = parser.parse();
+    Program program;
+    try {
+        program = parser.parse();
+    } catch (const CompileFailed &) {
+        if (src.failed()) reportTheRest(src, probeTokens, parser.failedAt(), target);
+        throw;
+    }
+    // **[temp.res]/8-10: what a template the program never instantiates says wrong of itself** - made with
+    // `int` and with `double` for its type parameters, each in a parser of its own; a failure both readings
+    // meet in the same words at the same place, in a statement that names nothing dependent, is reported.
+    if (parser.probeCandidates() > 0) {
+        std::set<std::size_t> skip;
+        for (int round = 0; round < 6; round++) {
+            Parser::ProbeResult r[2];
+            for (int v = 0; v < 2; v++) {
+                TypeTable probeTypes;
+                Parser probe(src, probeTokens, probeTypes, target, backend_->abi());
+                probe.setProbe(v, skip);
+                (void)probe.parse();
+                r[v] = probe.probeResult();
+            }
+            if (!r[0].failed && !r[1].failed) break;
+            if (r[0].failed && r[1].failed && r[0].report && r[1].report && r[0].pos == r[1].pos &&
+                r[0].why == r[1].why)
+                src.fail(r[0].pos, r[0].why);
+            bool more = false;
+            for (int v = 0; v < 2; v++)
+                if (r[v].failed && skip.insert(r[v].templateAt).second) more = true;
+            if (!more) break;
+        }
+    }
     auto t3 = Clock::now();
 
-    // **A file that writes `volatile` is compiled without -O**: the type system drops the qualifier, so an
-    // optimizer would keep a volatile read in a register or delete it. **Said as a warning at the first
-    // `volatile`** (1.10, 2026-10-20) as `file:line:col: warning:`; `cpp11: ...` stopped GRIDE 2.0's build.
-    const int level = program.usesVolatile ? 0 : optimize_;
-    if (optimize_ > 0 && program.usesVolatile) {
+    // **A file that writes `volatile` is compiled without -O**, said as a
+    // `file:line:col: warning:` at the first one (the passes do not ask it);
+    // where the backend skips such functions one by one (x86_64, arm64,
+    // tms6747), it keeps -O.
+    const bool downgrade = program.usesVolatile && !backend_->optimizesAroundVolatile();
+    const int level = downgrade ? 0 : optimize_;
+    if (optimize_ > 0 && downgrade) {
         volatileDowngrades_++;
-        std::fprintf(stderr, "%s: warning: 'volatile' is something this compiler cannot keep apart "
-                     "from plain memory, so %s is compiled without -O%d\n",
+        std::fprintf(stderr, "%s: warning: 'volatile' accesses are not yet told apart from plain "
+                     "ones by the optimiser, so %s is compiled without -O%d\n",
                      program.volatileAt.empty() ? job.input.c_str() : program.volatileAt.c_str(),
                      job.input.c_str(), optimize_);
     }
@@ -1385,6 +1582,19 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
                      program_.c_str(), commands.size(),
                      commands.size() == 1 ? "" : "s", n, n == 1 ? "" : "s");
 
+    // Said when there are several, as the compiles are, and while they run and the screen stands still (1.70):
+    // cppparse's 39 assemblies took nine seconds without a word.
+    std::atomic<std::size_t> finished{0};
+    const bool several = !quiet_ && commands.size() > 1;
+    if (several) {
+        std::lock_guard<std::mutex> hold(diagnosticLock());
+        std::fprintf(stderr, "%zu assembler runs, %u thread%s\n", commands.size(), n, n == 1 ? "" : "s");
+        noteSaid();
+    }
+    Heartbeat beat(several, [&finished, &commands]() -> std::string {
+        return "assembling, " + std::to_string(finished.load()) + " of " + std::to_string(commands.size()) + " done";
+    });
+
     std::mutex say;
     std::string failed;
     std::atomic<std::size_t> next{0};
@@ -1393,12 +1603,15 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
     // **The first failure by index, not by arrival.**
     std::size_t failedAt = commands.size();
 
+    std::atomic<unsigned> atWork{0};       // threads that have taken their first command, or found none left
     auto work = [&] {
+        bool counted = false;
         for (;;) {
             std::size_t i = next.fetch_add(1);
+            if (!counted) { atWork.fetch_add(1); counted = true; }
             if (i >= commands.size()) return;
             if (!ok.load()) return;          // somebody failed; stop starting more
-            if (runTool(commands[i]) == 0) continue;
+            if (runTool(commands[i]) == 0) { finished.fetch_add(1); continue; }
             std::lock_guard<std::mutex> hold(say);
             if (i < failedAt) { failedAt = i; failed = lastToolCommand; }
             ok.store(false);
@@ -1409,9 +1622,14 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
     if (n <= 1) {
         work();
     } else {
+        // made kThreadSet at a time, each set at work before the next is made - and no more once the work is handed out
         std::vector<std::thread> pool;
         pool.reserve(n);
-        for (unsigned t = 0; t < n; t++) pool.emplace_back(work);
+        while (pool.size() < n && next.load() < commands.size()) {
+            const std::size_t upTo = pool.size() + kThreadSet < n ? pool.size() + kThreadSet : n;
+            while (pool.size() < upTo) pool.emplace_back(work);
+            while (atWork.load() < pool.size()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         for (std::thread &t : pool) t.join();
     }
 
@@ -1459,23 +1677,91 @@ bool Driver::runJobs() {
     std::atomic<std::size_t> next{0};
     std::atomic<bool> ok{true};
 
-    // **Which thread took which file, said as it happens.** A pool that hands
-    // out the next index has no fixed assignment - the numbers are the threads
-    // and not the files - so this is the only place the work can be seen.
+    // **Which thread took which file, said as it happens - and when it is done with it** (1.70). A pool that
+    // hands out the next index has no fixed assignment - the numbers are the threads and not the files - so this
+    // is the only place the work can be seen. Until 1.70 a file's start was all that was said: cppparse's 39
+    // files were all started within five seconds and the screen then stood still for ten more, until the last
+    // had ended - which reads as a compiler that hangs. Now a file says when it ends, with its seconds and the
+    // count so far, and while files are still compiling and nothing has been written for two seconds, a line
+    // says how many are done and which are being compiled, the longest first.
+    typedef SteadyClock Clock;
+    const Clock::time_point began = Clock::now();
+    auto secondsSince = [](Clock::time_point from) {
+        return std::chrono::duration<double>(Clock::now() - from).count();
+    };
+    struct Working { bool busy; std::size_t job; Clock::time_point since; };
+    std::vector<Working> working(n, Working{ false, 0, began });      // under diagnosticLock()
+    std::size_t done = 0;                                             // under diagnosticLock()
+    std::atomic<unsigned> atWork{0};       // threads that have their first file in hand, or found none left
+
+    // **The threads are made a few at a time, and a set is at work before the next is made** (the user's,
+    // 2026-11-18): a loop that made twenty threads at once had ended before the first of them had run, the files
+    // were taken in whatever order the system woke the threads, and a thread was made for work its elders had
+    // already done. Now kThreadSet are made, each takes its file and says so, and only then the next set - and
+    // none once every file is handed out.
+    // While the pool works and the screen stands still: how many are done and which are in hand, the longest first.
+    Heartbeat beat(!quiet_, [this, n, &working, &done, secondsSince]() -> std::string {
+        std::lock_guard<std::mutex> hold(diagnosticLock());
+        std::vector<std::pair<double, std::size_t> > inHand;
+        for (unsigned t = 0; t < n; t++)
+            if (working[t].busy) inHand.push_back(std::make_pair(secondsSince(working[t].since), working[t].job));
+        if (inHand.empty()) return std::string();
+        std::sort(inHand.begin(), inHand.end(), [](const std::pair<double, std::size_t> &a,
+                                                   const std::pair<double, std::size_t> &b) { return a.first > b.first; });
+        std::string names;
+        const std::size_t shown = inHand.size() < 3 ? inHand.size() : 3;
+        for (std::size_t k = 0; k < shown; k++) {
+            const std::string &in = jobs_[inHand[k].second].input;
+            const std::size_t slash = in.find_last_of("/\\");
+            char took[32];
+            std::snprintf(took, sizeof took, " %.0f s", inHand[k].first);
+            names += (k ? ", " : "") + (slash == std::string::npos ? in : in.substr(slash + 1)) + took;
+        }
+        if (inHand.size() > shown) names += ", and " + std::to_string(inHand.size() - shown) + " more";
+        return std::to_string(done) + " of " + std::to_string(jobs_.size()) + " done, compiling " + names;
+    });
     std::vector<std::thread> pool;
     pool.reserve(n);
-    for (unsigned t = 0; t < n; t++) {
-        pool.emplace_back([this, t, &next, &ok] {
-            for (;;) {
-                std::size_t i = next.fetch_add(1);
-                if (i >= jobs_.size()) return;
+    auto work = [this, &next, &ok, &working, &done, &atWork, secondsSince](unsigned t) {
+        bool counted = false;
+        for (;;) {
+            std::size_t i = next.fetch_add(1);
+            if (i >= jobs_.size()) break;
+            {
+                std::lock_guard<std::mutex> hold(diagnosticLock());
+                working[t].busy = true;
+                working[t].job = i;
+                working[t].since = Clock::now();
                 if (!quiet_) {
-                    std::lock_guard<std::mutex> hold(diagnosticLock());
                     std::fprintf(stderr, "  [thread %u] %s\n", t + 1, jobs_[i].input.c_str());
+                    noteSaid();
                 }
-                if (!compileCaught(jobs_[i])) ok.store(false);
             }
-        });
+            // at work: its first file is in hand and said - the thread that makes the pool may make the next set
+            if (!counted) { atWork.fetch_add(1); counted = true; }
+            const bool compiled = compileCaught(jobs_[i]);
+            if (!compiled) ok.store(false);
+            {
+                std::lock_guard<std::mutex> hold(diagnosticLock());
+                working[t].busy = false;
+                done++;
+                if (!quiet_) {
+                    std::fprintf(stderr, "  [thread %u] %s %s - %.1f s, %zu of %zu\n", t + 1,
+                                 compiled ? "done" : "failed", jobs_[i].input.c_str(),
+                                 secondsSince(working[t].since), done, jobs_.size());
+                    noteSaid();
+                }
+            }
+        }
+        if (!counted) atWork.fetch_add(1);       // it found every file taken
+    };
+    while (pool.size() < n && next.load() < jobs_.size()) {
+        const std::size_t upTo = pool.size() + kThreadSet < n ? pool.size() + kThreadSet : n;
+        while (pool.size() < upTo) {
+            const unsigned t = static_cast<unsigned>(pool.size());
+            pool.emplace_back(work, t);
+        }
+        while (atWork.load() < pool.size()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     for (std::thread &t : pool) t.join();
     return ok.load();

@@ -7,13 +7,16 @@
 // **`integral_constant<T, v>` is the base every trait derives from**, as the
 // standard writes it, `true_type` and `false_type` its two bool instances.
 //
-// What is deliberately absent: `is_class`, `is_enum`, `is_union`, `is_pod`,
-// `is_polymorphic` and the rest of the questions no library can answer
-// without help from the compiler. They need intrinsics (`__is_class` and its
-// neighbours) that this compiler does not have, and a wrong answer from a
-// trait is worse than a missing one - it is a silently different program.
+// `is_class`, `is_enum`, `is_union`, `is_pod`, `is_polymorphic` and the rest of
+// the questions no library can answer without help from the compiler are its
+// built-ins since 1.43 (`__is_class` and its neighbours, as clang and cl name
+// them). A wrong answer from a trait is worse than a missing one - it is a
+// silently different program - so what this compiler cannot answer yet is
+// left out and says why where it would be.
 #ifndef _CXX1_TYPE_TRAITS
 #define _CXX1_TYPE_TRAITS
+
+#include <cstddef>
 
 namespace std {
 
@@ -29,25 +32,27 @@ typedef integral_constant<bool, false> false_type;
 
 // The cv strippers, which every question below asks first: `const int` is an
 // integral type, and a trait that said otherwise would be answering about the
-// qualifier rather than the type.
-// **`volatile` is not in this compiler's type system**, so the traits that
-// would ask about it are not here: no `remove_volatile`, no `is_volatile`, and
-// no `T *volatile` among the pointer strippers - each is a compile error
-// today, naming the volatile sweep's own message. `remove_cv` therefore
-// removes what there is to remove, which is `const`. It is spelled out rather
-// than aliased so that the day volatile lands, this is the one line to change
-// and the traits above it need no thought.
+// qualifier rather than the type. [meta.trans.cv]: `volatile` the same way.
 template <class T> struct remove_const          { typedef T type; };
 template <class T> struct remove_const<const T> { typedef T type; };
-template <class T> struct remove_cv { typedef typename remove_const<T>::type type; };
+template <class T> struct remove_volatile             { typedef T type; };
+template <class T> struct remove_volatile<volatile T> { typedef T type; };
+template <class T> struct remove_cv {
+    typedef typename remove_volatile<typename remove_const<T>::type>::type type;
+};
+template <class T> struct add_const    { typedef const T type; };
+template <class T> struct add_volatile { typedef volatile T type; };
+template <class T> struct add_cv       { typedef const volatile T type; };
 
 template <class T> struct remove_reference      { typedef T type; };
 template <class T> struct remove_reference<T &> { typedef T type; };
 template <class T> struct remove_reference<T &&>{ typedef T type; };
 
-template <class T> struct remove_pointer                    { typedef T type; };
-template <class T> struct remove_pointer<T *>               { typedef T type; };
-template <class T> struct remove_pointer<T *const>          { typedef T type; };
+template <class T> struct remove_pointer                     { typedef T type; };
+template <class T> struct remove_pointer<T *>                { typedef T type; };
+template <class T> struct remove_pointer<T *const>           { typedef T type; };
+template <class T> struct remove_pointer<T *volatile>        { typedef T type; };
+template <class T> struct remove_pointer<T *const volatile>  { typedef T type; };
 
 template <class T> struct add_pointer { typedef typename remove_reference<T>::type *type; };
 
@@ -58,6 +63,8 @@ template <class A>          struct is_same<A, A> : integral_constant<bool, true>
 
 template <class T> struct is_const             : integral_constant<bool, false> {};
 template <class T> struct is_const<const T>    : integral_constant<bool, true>  {};
+template <class T> struct is_volatile             : integral_constant<bool, false> {};
+template <class T> struct is_volatile<volatile T> : integral_constant<bool, true>  {};
 
 template <class T> struct is_lvalue_reference       : integral_constant<bool, false> {};
 template <class T> struct is_lvalue_reference<T &>  : integral_constant<bool, true>  {};
@@ -68,12 +75,6 @@ template <class T> struct is_reference<T &>  : integral_constant<bool, true>  {}
 template <class T> struct is_reference<T &&> : integral_constant<bool, true>  {};
 
 
-// **`is_array` is not here.** `template <class T> struct is_array<T []>` - a
-// partial specialization on an array of unknown bound - stops with `target: no
-// size for this type yet`, and a pattern is a shape rather than an object: it
-// needs no size. Same anonymous refusal as a template parameter used as an
-// array element. Restore it when that lands.
-//
 // The fundamental types, asked of the type with its qualifiers removed. Each
 // list is written out rather than derived: there is no arithmetic on types
 // here, and a name missing from a list is a trait that quietly says false.
@@ -94,6 +95,12 @@ template <> struct _is_integral_raw<long>               : integral_constant<bool
 template <> struct _is_integral_raw<unsigned long>      : integral_constant<bool, true> {};
 template <> struct _is_integral_raw<long long>          : integral_constant<bool, true> {};
 template <> struct _is_integral_raw<unsigned long long> : integral_constant<bool, true> {};
+// [basic.fundamental]/7: wchar_t, char16_t and char32_t are integral types too, each a type of its own (1.75: they
+// were left out, so is_integral, is_arithmetic, is_fundamental and is_scalar said false of them, and what chooses
+// by those went wrong - atomic<char16_t> had no fetch_add).
+template <> struct _is_integral_raw<wchar_t>            : integral_constant<bool, true> {};
+template <> struct _is_integral_raw<char16_t>           : integral_constant<bool, true> {};
+template <> struct _is_integral_raw<char32_t>           : integral_constant<bool, true> {};
 template <class T> struct is_integral
     : _is_integral_raw<typename remove_cv<T>::type> {};
 
@@ -120,6 +127,11 @@ template <class T> struct is_arithmetic
 
 template <bool Arith, class T> struct _fund_or : is_void<T> {};
 template <class T> struct _fund_or<true, T> : integral_constant<bool, true> {};
+// [meta.unary.comp]: std::nullptr_t is a fundamental type too ([basic.fundamental]/10; left out until 1.75).
+template <> struct _fund_or<false, decltype(nullptr)> : integral_constant<bool, true> {};
+template <> struct _fund_or<false, const decltype(nullptr)> : integral_constant<bool, true> {};
+template <> struct _fund_or<false, volatile decltype(nullptr)> : integral_constant<bool, true> {};
+template <> struct _fund_or<false, const volatile decltype(nullptr)> : integral_constant<bool, true> {};
 template <class T> struct is_fundamental
     : _fund_or<is_arithmetic<T>::value, T> {};
 
@@ -134,6 +146,9 @@ template <> struct _is_signed_raw<long long>   : integral_constant<bool, true> {
 template <> struct _is_signed_raw<float>       : integral_constant<bool, true> {};
 template <> struct _is_signed_raw<double>      : integral_constant<bool, true> {};
 template <> struct _is_signed_raw<long double> : integral_constant<bool, true> {};
+// plain char and wchar_t, signed or not as the target has them ([meta.unary.prop]: T(-1) < T(0))
+template <> struct _is_signed_raw<char>        : integral_constant<bool, (char)-1 < 0> {};
+template <> struct _is_signed_raw<wchar_t>     : integral_constant<bool, (wchar_t)-1 < 0> {};
 template <class T> struct is_signed : _is_signed_raw<typename remove_cv<T>::type> {};
 
 template <class T> struct _is_unsigned_raw : integral_constant<bool, false> {};
@@ -143,6 +158,10 @@ template <> struct _is_unsigned_raw<unsigned short>     : integral_constant<bool
 template <> struct _is_unsigned_raw<unsigned int>       : integral_constant<bool, true> {};
 template <> struct _is_unsigned_raw<unsigned long>      : integral_constant<bool, true> {};
 template <> struct _is_unsigned_raw<unsigned long long> : integral_constant<bool, true> {};
+template <> struct _is_unsigned_raw<char>               : integral_constant<bool, 0 < (char)-1> {};
+template <> struct _is_unsigned_raw<wchar_t>            : integral_constant<bool, 0 < (wchar_t)-1> {};
+template <> struct _is_unsigned_raw<char16_t>           : integral_constant<bool, true> {};
+template <> struct _is_unsigned_raw<char32_t>           : integral_constant<bool, true> {};
 template <class T> struct is_unsigned : _is_unsigned_raw<typename remove_cv<T>::type> {};
 
 // conditional and enable_if, the two that select rather than answer.
@@ -151,6 +170,207 @@ template <class T, class F>         struct conditional<false, T, F> { typedef F 
 
 template <bool B, class T = void> struct enable_if {};
 template <class T> struct enable_if<true, T> { typedef T type; };
+
+// ---- [meta]'s remaining traits (1.43): what C++11 cannot answer in itself is the compiler's
+// built-ins (__is_class and the rest, as clang and cl name them); the rest is written here.
+
+// [meta.trans.ref]: a reference to T, and T itself for void, which has none.
+template <class T> struct add_lvalue_reference { typedef T &type; };
+template <> struct add_lvalue_reference<void> { typedef void type; };
+template <> struct add_lvalue_reference<const void> { typedef const void type; };
+template <> struct add_lvalue_reference<volatile void> { typedef volatile void type; };
+template <> struct add_lvalue_reference<const volatile void> { typedef const volatile void type; };
+template <class T> struct add_rvalue_reference { typedef T &&type; };
+template <> struct add_rvalue_reference<void> { typedef void type; };
+template <> struct add_rvalue_reference<const void> { typedef const void type; };
+template <> struct add_rvalue_reference<volatile void> { typedef volatile void type; };
+template <> struct add_rvalue_reference<const volatile void> { typedef const volatile void type; };
+
+// <utility>'s declval, which includes this header, for the traits below that name an expression.
+template <class T>
+typename add_rvalue_reference<T>::type __cxx1_declval() noexcept {
+    return static_cast<typename add_rvalue_reference<T>::type>(*static_cast<typename remove_reference<T>::type *>(0));
+}
+
+template <class T> struct is_class : integral_constant<bool, __is_class(T)> {};
+template <class T> struct is_union : integral_constant<bool, __is_union(T)> {};
+template <class T> struct is_enum : integral_constant<bool, __is_enum(T)> {};
+
+template <class T> struct __cxx1_is_null_pointer : is_same<typename remove_cv<T>::type, decltype(nullptr)> {};
+
+// [meta.unary.cat], [meta.trans.arr], [meta.unary.prop.query]: arrays by their two patterns (1.45).
+template <class T> struct is_array : false_type {};
+template <class T> struct is_array<T[]> : true_type {};
+template <class T, std::size_t N> struct is_array<T[N]> : true_type {};
+
+template <class T> struct remove_extent { typedef T type; };
+template <class T> struct remove_extent<T[]> { typedef T type; };
+template <class T, std::size_t N> struct remove_extent<T[N]> { typedef T type; };
+
+template <class T> struct remove_all_extents { typedef T type; };
+template <class T> struct remove_all_extents<T[]> { typedef typename remove_all_extents<T>::type type; };
+template <class T, std::size_t N> struct remove_all_extents<T[N]> { typedef typename remove_all_extents<T>::type type; };
+
+template <class T> struct rank : integral_constant<std::size_t, 0> {};
+template <class T> struct rank<T[]> : integral_constant<std::size_t, rank<T>::value + 1> {};
+template <class T, std::size_t N> struct rank<T[N]> : integral_constant<std::size_t, rank<T>::value + 1> {};
+
+template <class T, unsigned I = 0> struct extent : integral_constant<std::size_t, 0> {};
+template <class T> struct extent<T[], 0> : integral_constant<std::size_t, 0> {};
+template <class T, unsigned I> struct extent<T[], I> : integral_constant<std::size_t, extent<T, I - 1>::value> {};
+template <class T, std::size_t N> struct extent<T[N], 0> : integral_constant<std::size_t, N> {};
+template <class T, std::size_t N, unsigned I> struct extent<T[N], I>
+    : integral_constant<std::size_t, extent<T, I - 1>::value> {};
+
+// A function type is the one that a const does not qualify, beside a reference; void has is_void.
+template <class T> struct is_function
+    : integral_constant<bool, !is_const<const T>::value && !is_reference<T>::value && !is_void<T>::value> {};
+
+// [meta.unary.cat], [meta.unary.comp]. A pointer to a data member is the pattern T C::*; a pointer to
+// a member function this compiler matches to no pattern yet, so it is what is left of a member
+// pointer, and a member pointer what is left of a scalar - every object type being a scalar, an
+// array, a class or a union.
+template <class T> struct __cxx1_member_object_raw : false_type {};
+template <class T, class C> struct __cxx1_member_object_raw<T C::*> : integral_constant<bool, !is_function<T>::value> {};
+template <class T> struct is_member_object_pointer
+    : integral_constant<bool, __cxx1_member_object_raw<typename remove_cv<T>::type>::value> {};
+
+template <class T> struct is_object
+    : integral_constant<bool, !is_function<T>::value && !is_reference<T>::value && !is_void<T>::value> {};
+template <class T> struct is_scalar
+    : integral_constant<bool, is_object<T>::value && !is_class<T>::value && !is_union<T>::value && !is_array<T>::value> {};
+template <class T> struct is_member_pointer
+    : integral_constant<bool, is_scalar<T>::value && !is_arithmetic<T>::value && !is_enum<T>::value &&
+                              !is_pointer<T>::value && !__cxx1_is_null_pointer<T>::value> {};
+template <class T> struct is_member_function_pointer
+    : integral_constant<bool, is_member_pointer<T>::value && !is_member_object_pointer<T>::value> {};
+template <class T> struct is_compound
+    : integral_constant<bool, !is_fundamental<T>::value && !__cxx1_is_null_pointer<T>::value> {};
+
+// [meta.unary.prop]
+template <class T> struct is_trivial : integral_constant<bool, __is_trivial(T)> {};
+template <class T> struct is_trivially_copyable : integral_constant<bool, __is_trivially_copyable(T)> {};
+template <class T> struct is_standard_layout : integral_constant<bool, __is_standard_layout(T)> {};
+template <class T> struct is_pod : integral_constant<bool, __is_pod(T)> {};
+template <class T> struct is_literal_type : integral_constant<bool, __is_literal_type(T)> {};
+template <class T> struct is_empty : integral_constant<bool, __is_empty(T)> {};
+template <class T> struct is_polymorphic : integral_constant<bool, __is_polymorphic(T)> {};
+template <class T> struct is_abstract : integral_constant<bool, __is_abstract(T)> {};
+template <class T> struct has_virtual_destructor : integral_constant<bool, __has_virtual_destructor(T)> {};
+
+template <class T, class... Args> struct is_constructible : integral_constant<bool, __is_constructible(T, Args...)> {};
+template <class T, class... Args>
+struct is_trivially_constructible : integral_constant<bool, __is_trivially_constructible(T, Args...)> {};
+template <class T, class... Args>
+struct is_nothrow_constructible : integral_constant<bool, __is_nothrow_constructible(T, Args...)> {};
+template <class T, class U> struct is_assignable : integral_constant<bool, __is_assignable(T, U)> {};
+template <class T, class U> struct is_trivially_assignable : integral_constant<bool, __is_trivially_assignable(T, U)> {};
+template <class T, class U> struct is_nothrow_assignable : integral_constant<bool, __is_nothrow_assignable(T, U)> {};
+template <class T> struct is_destructible : integral_constant<bool, __is_destructible(T)> {};
+template <class T> struct is_trivially_destructible : integral_constant<bool, __is_trivially_destructible(T)> {};
+template <class T> struct is_nothrow_destructible : integral_constant<bool, __is_nothrow_destructible(T)> {};
+
+#define _CXX1_CONSTRUCTIBLE_KINDS(PREFIX)                                                              \
+template <class T> struct PREFIX##default_constructible                                              \
+    : integral_constant<bool, PREFIX##constructible<T>::value> {};                                    \
+template <class T> struct PREFIX##copy_constructible                                                 \
+    : integral_constant<bool, PREFIX##constructible<T, typename add_lvalue_reference<const T>::type>::value> {}; \
+template <class T> struct PREFIX##move_constructible                                                 \
+    : integral_constant<bool, PREFIX##constructible<T, typename add_rvalue_reference<T>::type>::value> {}; \
+template <class T> struct PREFIX##copy_assignable                                                    \
+    : integral_constant<bool, PREFIX##assignable<typename add_lvalue_reference<T>::type,               \
+                                                 typename add_lvalue_reference<const T>::type>::value> {}; \
+template <class T> struct PREFIX##move_assignable                                                    \
+    : integral_constant<bool, PREFIX##assignable<typename add_lvalue_reference<T>::type,               \
+                                                 typename add_rvalue_reference<T>::type>::value> {};
+
+_CXX1_CONSTRUCTIBLE_KINDS(is_)
+_CXX1_CONSTRUCTIBLE_KINDS(is_trivially_)
+_CXX1_CONSTRUCTIBLE_KINDS(is_nothrow_)
+
+#undef _CXX1_CONSTRUCTIBLE_KINDS
+
+template <class T> struct alignment_of : integral_constant<std::size_t, alignof(T)> {};
+
+// [meta.rel]
+template <class B, class D> struct is_base_of : integral_constant<bool, __is_base_of(B, D)> {};
+template <class From, class To> struct is_convertible : integral_constant<bool, __is_convertible_to(From, To)> {};
+
+// [meta.trans.sign]: an integer type of the other signedness and the same rank, its cv kept; an
+// enumeration and the character types take the smallest of the size they have.
+template <std::size_t Size> struct __cxx1_sized_integer;
+template <> struct __cxx1_sized_integer<1> { typedef signed char s; typedef unsigned char u; };
+template <> struct __cxx1_sized_integer<2> { typedef short s; typedef unsigned short u; };
+template <> struct __cxx1_sized_integer<4> { typedef int s; typedef unsigned int u; };
+template <> struct __cxx1_sized_integer<8> { typedef long long s; typedef unsigned long long u; };
+
+template <class T> struct __cxx1_signedness {
+    typedef typename __cxx1_sized_integer<sizeof(T)>::s s;
+    typedef typename __cxx1_sized_integer<sizeof(T)>::u u;
+};
+#define _CXX1_SIGNEDNESS(S, U)                                                \
+template <> struct __cxx1_signedness<S> { typedef S s; typedef U u; };       \
+template <> struct __cxx1_signedness<U> { typedef S s; typedef U u; };
+_CXX1_SIGNEDNESS(signed char, unsigned char)
+_CXX1_SIGNEDNESS(short, unsigned short)
+_CXX1_SIGNEDNESS(int, unsigned int)
+_CXX1_SIGNEDNESS(long, unsigned long)
+_CXX1_SIGNEDNESS(long long, unsigned long long)
+#undef _CXX1_SIGNEDNESS
+template <> struct __cxx1_signedness<char> { typedef signed char s; typedef unsigned char u; };
+
+template <class From, class To> struct __cxx1_copy_cv { typedef To type; };
+template <class From, class To> struct __cxx1_copy_cv<const From, To> { typedef const To type; };
+template <class From, class To> struct __cxx1_copy_cv<volatile From, To> { typedef volatile To type; };
+template <class From, class To> struct __cxx1_copy_cv<const volatile From, To> { typedef const volatile To type; };
+
+template <class T> struct make_signed {
+    typedef typename __cxx1_copy_cv<T, typename __cxx1_signedness<typename remove_cv<T>::type>::s>::type type;
+};
+template <class T> struct make_unsigned {
+    typedef typename __cxx1_copy_cv<T, typename __cxx1_signedness<typename remove_cv<T>::type>::u>::type type;
+};
+
+// [meta.trans.other]
+template <class U, bool Array = is_array<U>::value, bool Function = is_function<U>::value>
+struct __cxx1_decay { typedef typename remove_cv<U>::type type; };
+template <class U> struct __cxx1_decay<U, true, false> { typedef typename remove_extent<U>::type *type; };
+template <class U> struct __cxx1_decay<U, false, true> { typedef typename add_pointer<U>::type type; };
+template <class T> struct decay { typedef typename __cxx1_decay<typename remove_reference<T>::type>::type type; };
+
+template <std::size_t... Values> struct __cxx1_largest;
+template <std::size_t A> struct __cxx1_largest<A> : integral_constant<std::size_t, A> {};
+template <std::size_t A, std::size_t B, std::size_t... Rest> struct __cxx1_largest<A, B, Rest...>
+    : integral_constant<std::size_t, __cxx1_largest<(A > B ? A : B), Rest...>::value> {};
+
+// Aligned as max_align_t unless asked otherwise, as cl's library has it.
+template <std::size_t Len, std::size_t Align = alignof(max_align_t)> struct aligned_storage {
+    struct type { alignas(Align) unsigned char __data[Len]; };
+};
+
+template <std::size_t Len, class... Types> struct aligned_union {
+    static const std::size_t alignment_value = __cxx1_largest<alignof(Types)...>::value;
+    typedef typename aligned_storage<__cxx1_largest<Len, sizeof(Types)...>::value,
+                                     __cxx1_largest<alignof(Types)...>::value>::type type;
+};
+
+template <class... T> struct common_type;
+template <class T> struct common_type<T> { typedef typename decay<T>::type type; };
+template <class T, class U> struct common_type<T, U> {
+    typedef typename decay<decltype(true ? std::__cxx1_declval<T>() : std::__cxx1_declval<U>())>::type type;
+};
+template <class T, class U, class V, class... Rest> struct common_type<T, U, V, Rest...> {
+    typedef typename common_type<typename common_type<T, U>::type, V, Rest...>::type type;
+};
+
+template <class T> struct underlying_type { typedef __underlying_type(T) type; };
+
+// [meta.trans.other]: what calling an F with Args gives, for a function, a pointer to one or a class
+// with operator(). A pointer to a member is not answered: INVOKE's forms for one are not written.
+template <class Signature> struct result_of;
+template <class F, class... Args> struct result_of<F(Args...)> {
+    typedef decltype(std::__cxx1_declval<F>()(std::__cxx1_declval<Args>()...)) type;
+};
 
 }  // namespace std
 

@@ -1,0 +1,6 @@
+exit 1
+4:9 error
+5:13 error
+7:9 error
+8:18 error
+8:38 error

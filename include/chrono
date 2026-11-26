@@ -1,0 +1,322 @@
+// <chrono> - [time]: durations, time points and the three clocks.
+//
+// A duration is a count of ticks of a ratio of a second; arithmetic between two works in their common
+// type, whose period is the greatest common divisor of theirs. The clocks read the platform's own time:
+// the system clock is the wall clock (Windows' precise system time, POSIX clock_gettime REALTIME, C time()
+// on the C6747), the steady clock never goes back (QueryPerformanceCounter, clock_gettime MONOTONIC,
+// clock()), and the high-resolution clock is the steady one. Their C functions are declared in a namespace
+// of this header's own, which names the same C function ([dcl.link]/6) and puts no OS name in a program's.
+#ifndef _CXX1_CHRONO
+#define _CXX1_CHRONO
+
+#include <ctime>
+#include <limits>
+#include <ratio>
+#include <type_traits>
+
+namespace std {
+
+namespace __cxx1_os {
+#if defined(_WIN32)
+extern "C" int QueryPerformanceCounter(long long *count);
+extern "C" int QueryPerformanceFrequency(long long *frequency);
+extern "C" void GetSystemTimePreciseAsFileTime(unsigned long long *hundredNanosecondsSince1601);
+#elif defined(__linux__) || defined(__APPLE__)
+struct timespec_ { long long tv_sec; long tv_nsec; };
+// Declared as <__threads> declares it, since <thread> reads both and a C function has one type.
+extern "C" int clock_gettime(int clock, void *now);
+#endif
+}  // namespace __cxx1_os
+
+namespace chrono {
+
+template <class Rep, class Period = ratio<1> > class duration;
+template <class Clock, class Duration = typename Clock::duration> class time_point;
+
+// [time.traits]
+template <class Rep> struct treat_as_floating_point : is_floating_point<Rep> {};
+template <class Rep> struct duration_values {
+    static constexpr Rep zero() { return Rep(0); }
+    static constexpr Rep min() { return numeric_limits<Rep>::lowest(); }
+    static constexpr Rep max() { return numeric_limits<Rep>::max(); }
+};
+
+template <class T> struct __cxx1_is_duration : false_type {};
+template <class R, class P> struct __cxx1_is_duration<duration<R, P> > : true_type {};
+
+// [time.duration.cast]: through the common representation, the period's ratio applied as one multiplication
+// or one division where the other term is 1.
+template <class ToDuration, class Rep, class Period>
+constexpr typename enable_if<__cxx1_is_duration<ToDuration>::value, ToDuration>::type
+duration_cast(const duration<Rep, Period> &d);
+
+}  // namespace chrono
+
+// [time.traits.specializations]
+template <class R1, class P1, class R2, class P2>
+struct common_type<chrono::duration<R1, P1>, chrono::duration<R2, P2> > {
+    typedef chrono::duration<typename common_type<R1, R2>::type,
+                             ratio<__cxx1_static_gcd<P1::num, P2::num>::value,
+                                   (P1::den / __cxx1_static_gcd<P1::den, P2::den>::value) * P2::den> > type;
+};
+template <class C, class D1, class D2> struct common_type<chrono::time_point<C, D1>, chrono::time_point<C, D2> > {
+    typedef chrono::time_point<C, typename common_type<D1, D2>::type> type;
+};
+
+namespace chrono {
+
+template <class Rep, class Period> class duration {
+    static_assert(!__cxx1_is_duration<Rep>::value, "a duration's representation may not be a duration - [time.duration]/2");
+    static_assert(Period::num > 0, "a duration's period must be positive - [time.duration]/4");
+    Rep rep_;
+
+public:
+    typedef Rep rep;
+    typedef Period period;
+
+    constexpr duration() noexcept(is_nothrow_default_constructible<Rep>::value) : rep_() {}
+    // [time.duration.cons]/1: a count that converts, and no floating count into an integral duration.
+    template <class Rep2, class = typename enable_if<is_convertible<Rep2, Rep>::value &&
+                                                     (treat_as_floating_point<Rep>::value ||
+                                                      !treat_as_floating_point<Rep2>::value)>::type>
+    constexpr explicit duration(const Rep2 &r) : rep_(static_cast<Rep>(r)) {}
+    // /3: another duration whose ticks this one holds exactly, or any where this one is floating.
+    template <class Rep2, class Period2,
+              class = typename enable_if<treat_as_floating_point<Rep>::value ||
+                                         (ratio_divide<Period2, Period>::den == 1 &&
+                                          !treat_as_floating_point<Rep2>::value)>::type>
+    constexpr duration(const duration<Rep2, Period2> &d) : rep_(duration_cast<duration>(d).count()) {}
+
+    constexpr Rep count() const { return rep_; }
+
+    constexpr duration operator+() const { return *this; }
+    constexpr duration operator-() const { return duration(-rep_); }
+    duration &operator++() { ++rep_; return *this; }
+    duration operator++(int) { return duration(rep_++); }
+    duration &operator--() { --rep_; return *this; }
+    duration operator--(int) { return duration(rep_--); }
+    duration &operator+=(const duration &d) { rep_ += d.count(); return *this; }
+    duration &operator-=(const duration &d) { rep_ -= d.count(); return *this; }
+    duration &operator*=(const Rep &r) { rep_ *= r; return *this; }
+    duration &operator/=(const Rep &r) { rep_ /= r; return *this; }
+    duration &operator%=(const Rep &r) { rep_ %= r; return *this; }
+    duration &operator%=(const duration &d) { rep_ %= d.count(); return *this; }
+
+    static constexpr duration zero() { return duration(duration_values<Rep>::zero()); }
+    static constexpr duration min() { return duration(duration_values<Rep>::min()); }
+    static constexpr duration max() { return duration(duration_values<Rep>::max()); }
+};
+
+template <class ToDuration, class Rep, class Period>
+constexpr typename enable_if<__cxx1_is_duration<ToDuration>::value, ToDuration>::type
+duration_cast(const duration<Rep, Period> &d) {
+    typedef typename ToDuration::rep to_rep;
+    typedef ratio_divide<Period, typename ToDuration::period> cf;
+    typedef typename common_type<to_rep, Rep, intmax_t>::type cr;
+    return ToDuration(static_cast<to_rep>(cf::num == 1 && cf::den == 1 ? static_cast<cr>(d.count())
+                                          : cf::den == 1 ? static_cast<cr>(d.count()) * static_cast<cr>(cf::num)
+                                          : cf::num == 1 ? static_cast<cr>(d.count()) / static_cast<cr>(cf::den)
+                                          : static_cast<cr>(d.count()) * static_cast<cr>(cf::num) / static_cast<cr>(cf::den)));
+}
+
+// [time.duration.nonmember]: a scalar operand's common representation, none for a duration or a type that does
+// not convert to it - so `d * d2` drops the scalar overloads instead of asking common_type<Rep, duration>.
+template <class R1, class R2, bool = __cxx1_is_duration<R2>::value> struct __cxx1_dur_scalar {};
+template <class R1, class R2> struct __cxx1_dur_scalar<R1, R2, false>
+    : enable_if<is_convertible<R2, typename common_type<R1, R2>::type>::value, typename common_type<R1, R2>::type> {};
+template <class R1, class P1, class R2, class P2>
+constexpr typename common_type<duration<R1, P1>, duration<R2, P2> >::type
+operator+(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(cd(a).count() + cd(b).count());
+}
+template <class R1, class P1, class R2, class P2>
+constexpr typename common_type<duration<R1, P1>, duration<R2, P2> >::type
+operator-(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(cd(a).count() - cd(b).count());
+}
+template <class R1, class P, class R2>
+constexpr duration<typename __cxx1_dur_scalar<R1, R2>::type, P> operator*(const duration<R1, P> &d, const R2 &s) {
+    typedef duration<typename common_type<R1, R2>::type, P> cd;
+    return cd(cd(d).count() * s);
+}
+template <class R1, class R2, class P>
+constexpr duration<typename __cxx1_dur_scalar<R2, R1>::type, P> operator*(const R1 &s, const duration<R2, P> &d) {
+    return d * s;
+}
+template <class R1, class P, class R2>
+constexpr duration<typename __cxx1_dur_scalar<R1, R2>::type, P> operator/(const duration<R1, P> &d, const R2 &s) {
+    typedef duration<typename common_type<R1, R2>::type, P> cd;
+    return cd(cd(d).count() / s);
+}
+template <class R1, class P1, class R2, class P2>
+constexpr typename common_type<R1, R2>::type operator/(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(a).count() / cd(b).count();
+}
+template <class R1, class P, class R2>
+constexpr duration<typename __cxx1_dur_scalar<R1, R2>::type, P> operator%(const duration<R1, P> &d, const R2 &s) {
+    typedef duration<typename common_type<R1, R2>::type, P> cd;
+    return cd(cd(d).count() % s);
+}
+template <class R1, class P1, class R2, class P2>
+constexpr typename common_type<duration<R1, P1>, duration<R2, P2> >::type
+operator%(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(cd(a).count() % cd(b).count());
+}
+
+// [time.duration.comparisons]
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator==(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(a).count() == cd(b).count();
+}
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator!=(const duration<R1, P1> &a, const duration<R2, P2> &b) { return !(a == b); }
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator<(const duration<R1, P1> &a, const duration<R2, P2> &b) {
+    typedef typename common_type<duration<R1, P1>, duration<R2, P2> >::type cd;
+    return cd(a).count() < cd(b).count();
+}
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator<=(const duration<R1, P1> &a, const duration<R2, P2> &b) { return !(b < a); }
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator>(const duration<R1, P1> &a, const duration<R2, P2> &b) { return b < a; }
+template <class R1, class P1, class R2, class P2>
+constexpr bool operator>=(const duration<R1, P1> &a, const duration<R2, P2> &b) { return !(a < b); }
+
+typedef duration<long long, nano> nanoseconds;
+typedef duration<long long, micro> microseconds;
+typedef duration<long long, milli> milliseconds;
+typedef duration<long long> seconds;
+typedef duration<long long, ratio<60> > minutes;
+typedef duration<long long, ratio<3600> > hours;
+
+// [time.point]
+template <class Clock, class Duration> class time_point {
+    Duration d_;
+
+public:
+    typedef Clock clock;
+    typedef Duration duration;
+    typedef typename duration::rep rep;
+    typedef typename duration::period period;
+
+    constexpr time_point() : d_(duration::zero()) {}
+    constexpr explicit time_point(const duration &d) : d_(d) {}
+    template <class Duration2, class = typename enable_if<is_convertible<Duration2, duration>::value>::type>
+    constexpr time_point(const time_point<clock, Duration2> &t) : d_(t.time_since_epoch()) {}
+
+    constexpr duration time_since_epoch() const { return d_; }
+    time_point &operator+=(const duration &d) { d_ += d; return *this; }
+    time_point &operator-=(const duration &d) { d_ -= d; return *this; }
+    static constexpr time_point min() { return time_point(duration::min()); }
+    static constexpr time_point max() { return time_point(duration::max()); }
+};
+
+template <class C, class D1, class R2, class P2>
+constexpr time_point<C, typename common_type<D1, duration<R2, P2> >::type>
+operator+(const time_point<C, D1> &t, const duration<R2, P2> &d) {
+    return time_point<C, typename common_type<D1, duration<R2, P2> >::type>(t.time_since_epoch() + d);
+}
+template <class R1, class P1, class C, class D2>
+constexpr time_point<C, typename common_type<duration<R1, P1>, D2>::type>
+operator+(const duration<R1, P1> &d, const time_point<C, D2> &t) {
+    return t + d;
+}
+template <class C, class D1, class R2, class P2>
+constexpr time_point<C, typename common_type<D1, duration<R2, P2> >::type>
+operator-(const time_point<C, D1> &t, const duration<R2, P2> &d) {
+    return time_point<C, typename common_type<D1, duration<R2, P2> >::type>(t.time_since_epoch() - d);
+}
+template <class C, class D1, class D2>
+constexpr typename common_type<D1, D2>::type operator-(const time_point<C, D1> &a, const time_point<C, D2> &b) {
+    return a.time_since_epoch() - b.time_since_epoch();
+}
+template <class C, class D1, class D2>
+constexpr bool operator==(const time_point<C, D1> &a, const time_point<C, D2> &b) { return a.time_since_epoch() == b.time_since_epoch(); }
+template <class C, class D1, class D2>
+constexpr bool operator!=(const time_point<C, D1> &a, const time_point<C, D2> &b) { return !(a == b); }
+template <class C, class D1, class D2>
+constexpr bool operator<(const time_point<C, D1> &a, const time_point<C, D2> &b) { return a.time_since_epoch() < b.time_since_epoch(); }
+template <class C, class D1, class D2>
+constexpr bool operator<=(const time_point<C, D1> &a, const time_point<C, D2> &b) { return !(b < a); }
+template <class C, class D1, class D2>
+constexpr bool operator>(const time_point<C, D1> &a, const time_point<C, D2> &b) { return b < a; }
+template <class C, class D1, class D2>
+constexpr bool operator>=(const time_point<C, D1> &a, const time_point<C, D2> &b) { return !(a < b); }
+
+template <class ToDuration, class C, class D>
+constexpr typename enable_if<__cxx1_is_duration<ToDuration>::value, time_point<C, ToDuration> >::type
+time_point_cast(const time_point<C, D> &t) {
+    return time_point<C, ToDuration>(duration_cast<ToDuration>(t.time_since_epoch()));
+}
+
+// [time.clock.system]: the wall clock, from the Unix epoch, as time_t counts.
+class system_clock {
+public:
+    typedef long long rep;
+    typedef ratio<1, 10000000> period;   // Windows' 100 ns tick; finer platforms are rounded to it
+    typedef chrono::duration<rep, period> duration;
+    typedef chrono::time_point<system_clock> time_point;
+    static constexpr bool is_steady = false;
+
+    static time_point now() noexcept {
+#if defined(_WIN32)
+        unsigned long long ticks = 0;   // 100 ns units since 1601-01-01
+        __cxx1_os::GetSystemTimePreciseAsFileTime(&ticks);
+        return time_point(duration(static_cast<rep>(ticks) - 116444736000000000LL));
+#elif defined(__linux__) || defined(__APPLE__)
+        __cxx1_os::timespec_ ts = { 0, 0 };
+        __cxx1_os::clock_gettime(0, &ts);   // CLOCK_REALTIME is 0 on both
+        return time_point(duration(ts.tv_sec * 10000000LL + ts.tv_nsec / 100));
+#else
+        return time_point(duration(static_cast<rep>(std::time(0)) * 10000000LL));
+#endif
+    }
+    static std::time_t to_time_t(const time_point &t) noexcept {
+        return static_cast<std::time_t>(duration_cast<seconds>(t.time_since_epoch()).count());
+    }
+    static time_point from_time_t(std::time_t t) noexcept {
+        return time_point(duration_cast<duration>(seconds(static_cast<long long>(t))));
+    }
+};
+
+// [time.clock.steady]
+class steady_clock {
+public:
+    typedef long long rep;
+    typedef nano period;
+    typedef nanoseconds duration;
+    typedef chrono::time_point<steady_clock> time_point;
+    static constexpr bool is_steady = true;
+
+    static time_point now() noexcept {
+#if defined(_WIN32)
+        long long count = 0, frequency = 1;
+        __cxx1_os::QueryPerformanceCounter(&count);
+        __cxx1_os::QueryPerformanceFrequency(&frequency);
+        // Whole seconds and the rest apart, so the nanoseconds do not overflow a long long.
+        return time_point(duration((count / frequency) * 1000000000LL + (count % frequency) * 1000000000LL / frequency));
+#elif defined(__linux__) || defined(__APPLE__)
+        __cxx1_os::timespec_ ts = { 0, 0 };
+#if defined(__APPLE__)
+        __cxx1_os::clock_gettime(6, &ts);   // CLOCK_MONOTONIC on Darwin
+#else
+        __cxx1_os::clock_gettime(1, &ts);   // CLOCK_MONOTONIC on Linux
+#endif
+        return time_point(duration(ts.tv_sec * 1000000000LL + ts.tv_nsec));
+#else
+        return time_point(duration(static_cast<rep>(std::clock()) * (1000000000LL / CLOCKS_PER_SEC)));
+#endif
+    }
+};
+
+typedef steady_clock high_resolution_clock;
+
+}  // namespace chrono
+}  // namespace std
+
+#endif

@@ -1,0 +1,34 @@
+// <typeindex> - [type.index]: a type_info held by pointer, so it can be copied, ordered and hashed.
+#ifndef _CXX1_TYPEINDEX
+#define _CXX1_TYPEINDEX
+
+#include <cstddef>
+#include <typeinfo>
+
+namespace std {
+
+class type_index {
+    const type_info *t_;
+
+public:
+    type_index(const type_info &t) noexcept : t_(&t) {}
+    bool operator==(const type_index &r) const noexcept { return *t_ == *r.t_; }
+    bool operator!=(const type_index &r) const noexcept { return !(*t_ == *r.t_); }
+    bool operator<(const type_index &r) const noexcept { return t_->before(*r.t_); }
+    bool operator<=(const type_index &r) const noexcept { return !r.t_->before(*t_); }
+    bool operator>(const type_index &r) const noexcept { return r.t_->before(*t_); }
+    bool operator>=(const type_index &r) const noexcept { return !t_->before(*r.t_); }
+    std::size_t hash_code() const noexcept { return static_cast<std::size_t>(t_->hash_code()); }
+    const char *name() const noexcept { return t_->name(); }
+};
+
+template <class T> struct hash;
+template <> struct hash<type_index> {
+    typedef type_index argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const type_index &t) const noexcept { return t.hash_code(); }
+};
+
+}  // namespace std
+
+#endif

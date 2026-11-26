@@ -3,13 +3,16 @@
 #include "../Mangle.h"
 #include "../Name.h"
 #include "../optimizer/OptIr.h"
+#include "CodeView.h"
 
 #include "../Source.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -73,18 +76,61 @@ bool isReservedInMasm(const std::string &name) {
     return false;
 }
 
-bool canUnreserve(const std::string &name) {
-    static const char *const kNeverEmitted[] = {
-        "fabs","fadd","fchs","fcos","fdiv","fild","finit","fist","fld","fmul",
-        "fnop","fprem","fptan","frndint","fscale","fsin","fsqrt","fst","fstp",
-        "fsub","ftst","fwait","fxam","fxch",
+// **The reserved words this spelling writes as keywords** (registers, sizes,
+// directives, the instructions it spells); any other a symbol is named (`fabs`,
+// `div`) is given up by `OPTION NOKEYWORD:<...>`, its instructions as bytes.
+bool writtenAsKeyword(const std::string &lower) {
+    static const char *const kWritten[] = {
+        "ah","al","ax","eax","rax","bh","bl","bx","ebx","rbx",
+        "ch","cl","cx","ecx","rcx","dh","dl","dx","edx","rdx",
+        "si","esi","rsi","di","edi","rdi","bp","ebp","rbp","sp","esp","rsp",
+        "r8","r9","r10","r11","r12","r13","r14","r15",
+        "cs","ds","es","fs","gs","ss","flat","rip",
+        "byte","word","dword","qword","tbyte","oword","ptr","offset",
+        "proc","endp","segment","ends","public","extern","externdef","end","align",
+        "label","db","dw","dd","dq","dt",
+        "add","and","call","cdq","cmp","cqo","dec","imul","inc","ja","jae","jb","jbe","je",
+        "jg","jge","jl","jle","jmp","jne","jno","jnp","jns","jnz","jo","jp","js","jz","lea",
+        "mov","movsd","movss","movsx","movsxd","movzx","neg","nop","not","or","pop","push",
+        "rep","ret","sar","seta","setae","setb","setbe","sete","setg","setge","setl","setle",
+        "setne","setnz","setz","shl","shr","sub","test","xor",
+        "addsd","addss","cvtsd2ss","cvtsi2sd","cvtss2sd","cvttsd2si","divsd","divss",
+        "movapd","movaps","movd","movq","mulsd","mulss","pxor","subsd","subss","ucomisd",
+        "ucomiss","xorpd","xorps",
         nullptr,
     };
-    std::string lower;
-    for (char c : name) lower += static_cast<char>(std::tolower(c));
-    for (const char *const *p = kNeverEmitted; *p != nullptr; ++p)
+    for (const char *const *p = kWritten; *p != nullptr; ++p)
         if (lower == *p) return true;
     return false;
+}
+
+std::string lowered(const std::string &name) {
+    std::string lower;
+    for (char c : name) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower;
+}
+
+bool canUnreserve(const std::string &name) {
+    const std::string lower = lowered(name);
+    return lower == "div" || lower == "idiv" || !writtenAsKeyword(lower);
+}
+
+// A general register as this spelling writes one - its number and width - or -1.
+int registerNumber(const std::string &r, int *bits) {
+    static const char *const k64[] = { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi" };
+    static const char *const k32[] = { "eax","ecx","edx","ebx","esp","ebp","esi","edi" };
+    for (int i = 0; i < 8; i++) {
+        if (r == k64[i]) { *bits = 64; return i; }
+        if (r == k32[i]) { *bits = 32; return i; }
+    }
+    if (r.size() < 2 || r[0] != 'r' || !std::isdigit(static_cast<unsigned char>(r[1]))) return -1;
+    std::size_t k = 1;
+    int n = 0;
+    while (k < r.size() && std::isdigit(static_cast<unsigned char>(r[k]))) n = n * 10 + (r[k++] - '0');
+    if (n < 8 || n > 15) return -1;
+    if (k == r.size()) { *bits = 64; return n; }
+    if (r.substr(k) == "d") { *bits = 32; return n; }
+    return -1;
 }
 
 const char *ptrFor(int bytes) {
@@ -199,12 +245,23 @@ std::string MasmSpelling::mangle(const std::string &name) {
         return out;
     }
     if (!isReservedInMasm(name)) return name;
-    if (defined_.find(name) != defined_.end()) return "$" + name;
-    if (!canUnreserve(name))
-        give_up(name, "'" + name + "' is a name ml64 reserves and this file "
-                      "emits, so an imported symbol cannot be spelled it");
-    unreserved_.insert(name);
-    return name;
+    // A keyword this spelling never writes as one is given up, and the name is the C name - see
+    // writtenAsKeyword (1.30). One it writes - a register, `test`, `add` - is renamed where this file
+    // defines it, which only this file can then call, and said so.
+    if (canUnreserve(name)) {
+        unreserved_.insert(name);
+        return name;
+    }
+    if (defined_.find(name) != defined_.end()) {
+        if (renamed_.insert(name).second)
+            std::fprintf(stderr, "%s: masm: warning: '%s' is a word MASM reserves and this file also "
+                                 "writes as one, so it is defined as '$%s' - only this file can call "
+                                 "it; the default GNU syntax, -masm=gnu, keeps the name\n",
+                         program::kName, name.c_str(), name.c_str());
+        return "$" + name;
+    }
+    give_up(name, "'" + name + "' is a name ml64 reserves and this file "
+                  "emits, so an imported symbol cannot be spelled it");
 }
 
 MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
@@ -284,6 +341,26 @@ void MasmSpelling::ins(const std::string &m, const Op &a) {
 
 void MasmSpelling::ins(const std::string &m, const Op &a, const Op &b) {
     afterCall_ = false;
+    // **The project's masm writes no segment override**: the thread's TLS array, cl's `mov rcx, gs:[58h]`,
+    // goes in as its bytes - 65 48 8B 0C 25 58 00 00 00 for rcx - the register in ModRM's reg field (Phase 6).
+    if (comdat_ && m == "mov" && a.kind == Op::Seg && b.kind == Op::Reg) {
+        static const char *const regs[16] = { "%rax", "%rcx", "%rdx", "%rbx", "%rsp", "%rbp", "%rsi", "%rdi",
+                                              "%r8", "%r9", "%r10", "%r11", "%r12", "%r13", "%r14", "%r15" };
+        int n = -1;
+        for (int i = 0; i < 16; i++) if (std::string(b.text) == regs[i]) n = i;
+        if (n < 0 || std::string(a.text) != "%gs") give_up(m, "a segment load this spelling cannot write as bytes");
+        const unsigned d = static_cast<unsigned>(a.disp);
+        const unsigned bytes[9] = { 0x65, 0x48u | (n >= 8 ? 4u : 0u), 0x8B, 0x04u | ((n & 7u) << 3), 0x25,
+                                    d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF };
+        o_ += "  DB ";
+        for (int i = 0; i < 9; i++) {
+            char hex[8];
+            std::snprintf(hex, sizeof hex, "0%02XH", bytes[i]);
+            o_ += hex;
+            o_ += i < 8 ? ", " : "\n";
+        }
+        return;
+    }
     const Rule *r = ruleFor(m);
     if (r == nullptr) give_up(m, "an instruction this spelling does not know");
 
@@ -307,8 +384,9 @@ void MasmSpelling::ins(const std::string &m, const Op &a, const Op &b) {
 
 void MasmSpelling::defLabel(const std::string &l) {
     if (seg_ == Code) {
-
-        if (l.compare(0, 3, ".L.") != 0)
+        // Internal: the Walker's own (.L.), and under -g the function's bounds (.Lfunc.) and its
+        // blocks' (.L.blk.), which the CodeView records measure (1.29).
+        if (l.compare(0, 2, ".L") != 0)
             give_up(l, "a label in code that is not an internal one");
         defined_.insert(l);
         o_ += mangle(l); o_ += ":\n";
@@ -323,6 +401,10 @@ void MasmSpelling::defLabel(const std::string &l) {
 // reaches the COMDAT bit - see CoffSpelling, which exists for that reason.
 void MasmSpelling::functionBegin(const std::string &name, bool exported,
                                  bool mergeable) {
+    inFunction_ = true;
+    lastLoc_.clear();
+    lastLocFile_ = lastLocLine_ = 0;
+    linesRun_.clear();
     defined_.insert(name);
     if (exported) exported_.insert(name);
     flushPending();
@@ -441,6 +523,7 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda, int outgoing
 // records where its instruction *ends*, and `sub rsp, 40` is four bytes where
 // `sub rsp, 400` is seven - the assembler chooses, so the assembler is asked.
 void MasmSpelling::functionEnd(const std::string &name) {
+    inFunction_ = false;
     const std::string m = mangle(name);
     // **The dot is the whole of it.** A segment called `pdata` is a segment called
     // pdata; the linker builds the image's exception directory from `.pdata`, and
@@ -482,6 +565,163 @@ void MasmSpelling::functionEnd(const std::string &name) {
     unwindCodes_ = 0;
     hasEh_ = false;
     saves_.clear();
+}
+
+// **-g through GRIDE's masm**: `.FILE n, "path"` names source file n and masm
+// writes the line table from the `.LINE`s; the path comes as codeViewPath spelt
+// it for clang, and a MASM string undoes that, doubling a quote instead.
+void MasmSpelling::fileEntry(int n, const std::string &name) {
+    std::string path;
+    for (std::size_t i = 0; i < name.size(); i++) {
+        if (name[i] == '\\' && i + 1 < name.size()) i++;
+        if (name[i] == '"') path += '"';
+        path += name[i];
+    }
+    o_ += ".FILE "; appendNum(o_, n); o_ += ", \""; o_ += path; o_ += "\"\n";
+}
+
+// Whether text holds an instruction: a line indented, and not a directive.
+static bool holdsInstruction(const std::string &text) {
+    for (std::size_t at = 0; at < text.size();) {
+        if (text.compare(at, 2, "  ") == 0 && at + 2 < text.size() && text[at + 2] != '.') return true;
+        const std::size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) break;
+        at = nl + 1;
+    }
+    return false;
+}
+
+// `.LINE line, file` before the instructions of a line, by CoffSpelling::location's rules for
+// `.cv_loc`: one entry per run of a line, no second run of it in a function (cdb refuses `bp` on
+// a line entered twice), and one no instruction follows replaced by the next.
+void MasmSpelling::location(int file, int line, int) {
+    if (!inFunction_) return;
+    if (file == lastLocFile_ && line == lastLocLine_) return;
+    if (!linesRun_.insert(std::make_pair(file, line)).second) return;
+    lastLocFile_ = file;
+    lastLocLine_ = line;
+    if (!lastLoc_.empty() && lastLocAt_ + lastLoc_.size() <= o_.size() &&
+        o_.compare(lastLocAt_, lastLoc_.size(), lastLoc_) == 0 &&
+        !holdsInstruction(o_.substr(lastLocAt_ + lastLoc_.size())))
+        o_.erase(lastLocAt_, lastLoc_.size());
+    lastLocAt_ = o_.size();
+    o_ += "  .LINE "; appendNum(o_, line); o_ += ", "; appendNum(o_, file); o_ += '\n';
+    lastLoc_ = o_.substr(lastLocAt_);
+}
+
+// **A funclet PROC's lines are a run of their own** (1.29): masm makes one table per PROC, so a line the
+// function had may come again in its handler; the function's state waits and comes back after.
+void MasmSpelling::funcletLinesBegin() {
+    LineState s;
+    s.lastLoc = lastLoc_; s.lastLocAt = lastLocAt_; s.lastLocFile = lastLocFile_; s.lastLocLine = lastLocLine_;
+    s.linesRun = linesRun_;
+    outerLines_.push_back(s);
+    lastLoc_.clear(); lastLocAt_ = 0; lastLocFile_ = lastLocLine_ = 0;
+    linesRun_.clear();
+}
+
+void MasmSpelling::funcletLinesEnd() {
+    if (outerLines_.empty()) return;
+    const LineState &s = outerLines_.back();
+    lastLoc_ = s.lastLoc; lastLocAt_ = s.lastLocAt; lastLocFile_ = s.lastLocFile; lastLocLine_ = s.lastLocLine;
+    linesRun_ = s.linesRun;
+    outerLines_.pop_back();
+}
+
+// masm names no function in a `.LINE`: the PROC the instruction is in is the one described.
+std::string MasmSpelling::locationDirective(int, int file, int line, int) const {
+    std::string o = "  .LINE ";
+    appendNum(o, line); o += ", "; appendNum(o, file); o += '\n';
+    return o;
+}
+
+// Every name in an expression as this spelling writes it: `.Lcv.r3.e-.Lcv.r3.b` and the like.
+std::string MasmSpelling::mangleNames(const std::string &expr) {
+    std::string out;
+    for (std::size_t i = 0; i < expr.size();) {
+        const char c = expr[i];
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '$' || c == '?' || c == '@') {
+            std::size_t j = i;
+            while (j < expr.size() && (std::isalnum(static_cast<unsigned char>(expr[j])) || expr[j] == '_' ||
+                                       expr[j] == '.' || expr[j] == '$' || expr[j] == '?' || expr[j] == '@'))
+                j++;
+            out += mangle(expr.substr(i, j - i));
+            i = j;
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return out;
+}
+
+// **writeCodeView's records for clang, in MASM**: the sections become SEGMENTs
+// (a mergeable function's ASSOCIATIVE with its COMDAT), the data DD/DW/DB, the
+// relocations SECTIONREL/SECTION; masm makes the line table from `.LINE`s.
+void MasmSpelling::codeView(const std::string &gnu) {
+    flushPending();
+    closeDataBlock();
+    std::string open;
+    for (std::size_t at = 0; at < gnu.size();) {
+        std::size_t nl = gnu.find('\n', at);
+        if (nl == std::string::npos) nl = gnu.size();
+        const std::string line = gnu.substr(at, nl - at);
+        at = nl + 1;
+        const std::size_t b = line.find_first_not_of(" \t");
+        if (b == std::string::npos) continue;
+        const std::string t = line.substr(b);
+        if (b == 0 && t[t.size() - 1] == ':') {
+            const std::string name = t.substr(0, t.size() - 1);
+            defined_.insert(name);
+            o_ += mangle(name); o_ += ":\n";
+            continue;
+        }
+        const std::size_t sp = t.find_first_of(" \t");
+        const std::string d = t.substr(0, sp);
+        const std::string rest = sp == std::string::npos ? std::string() : t.substr(t.find_first_not_of(" \t", sp));
+        if (d == ".section") {
+            if (!open.empty()) o_ += open + " ENDS\n";
+            open = rest.compare(0, 8, ".debug$T") == 0 ? ".debug$T" : ".debug$S";
+            o_ += "\n" + open + " SEGMENT";
+            const std::size_t assoc = rest.find(",associative,");
+            if (assoc != std::string::npos) o_ += " ASSOCIATIVE(" + mangle(rest.substr(assoc + 13)) + ")";
+            o_ += "\n";
+        } else if (d == ".p2align") {
+            o_ += "  ALIGN "; appendNum(o_, 1LL << std::atoi(rest.c_str())); o_ += '\n';
+        } else if (d == ".long") {
+            o_ += "  DD " + mangleNames(rest) + "\n";
+        } else if (d == ".short") {
+            o_ += "  DW " + mangleNames(rest) + "\n";
+        } else if (d == ".byte") {
+            o_ += "  DB " + rest + "\n";
+        } else if (d == ".asciz") {
+            // the GNU string's escapes undone, MASM's one escape - a doubled quote - made
+            std::string s;
+            for (std::size_t k = 1; k + 1 < rest.size(); k++) {
+                if (rest[k] == '\\' && k + 2 < rest.size()) k++;
+                if (rest[k] == '"') s += '"';
+                s += rest[k];
+            }
+            o_ += s.empty() ? "  DB 0\n" : "  DB \"" + s + "\", 0\n";
+        } else if (d == ".secrel32") {
+            o_ += "  DD SECTIONREL " + mangleNames(rest) + "\n";
+        } else if (d == ".secidx") {
+            o_ += "  DW SECTION " + mangleNames(rest) + "\n";
+        } else if (d != ".cv_linetable" && d != ".cv_filechecksums" && d != ".cv_stringtable") {
+            give_up(line, "a CodeView directive the MASM spelling has no words for");
+        }
+    }
+    if (!open.empty()) o_ += open + " ENDS\n";
+    seg_ = None;  // the next code or data reopens its segment
+}
+
+void MasmCodeGen::writeDebug(const std::vector<DwarfFunction> &fns,
+                             const std::vector<DwarfGlobal> &globals) {
+    std::string gnu;
+    writeCodeView(gnu, target_, CodeViewLanguage::Cpp,
+                  codeViewPath(compDir(), lineSource()->files().front() + ".obj", false), fns, globals,
+                  [](const std::string &s) { return s; });
+    masm_.codeView(gnu);
 }
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
@@ -547,8 +787,6 @@ void MasmSpelling::bssSection() {
 // **`.tls$`, with the dot**: ml64 names a `_TLS SEGMENT` `_TLS` and the linker builds no template
 // from it - measured with dumpbin. The project's masm has no SECTIONREL to reach the object with.
 void MasmSpelling::tlsDataSection() {
-    if (comdat_) give_up(".tls$", "a thread_local is not supported yet in the project's own masm, "
-                                  "which has no SECTIONREL operator - the GNU spelling and ml64 have it");
     flushPending();
     if (seg_ == Tls) return;
     closeDataBlock();
@@ -557,12 +795,31 @@ void MasmSpelling::tlsDataSection() {
     seg_ = Tls;
 }
 
+// `$tlsoff$x DD SECTIONREL x`, once per object this file reaches, in a segment of its own: the project's
+// masm relocates SECTIONREL in a DD (the line tables' way) and in no operand.
+void MasmSpelling::tlsOffsetWord(const std::string &symbol) {
+    if (!tlsWords_.insert(symbol).second) return;
+    referencedData_.insert(symbol);
+    predefine({ "$tlsoff$" + symbol });
+    trailer_ += "\n.rdata$tls SEGMENT READONLY ALIGN(4) 'DATA'\n" + mangle("$tlsoff$" + symbol) +
+                " DD SECTIONREL " + mangle(symbol) + "\n.rdata$tls ENDS\n";
+}
+
 void MasmSpelling::tlsInitialiserEntry(const std::string &fn) {
     flushPending();
     closeDataBlock();
     o_ += "\n.CRT$XDU SEGMENT READONLY ALIGN(8) 'DATA'\n" + mangle(fn + "$initializer$") + " DQ ";
     o_ += mangle(fn);
-    o_ += "\n.CRT$XDU ENDS\n.drectve SEGMENT INFO\n  DB \" /include:__dyn_tls_init\"\n.drectve ENDS\n";
+    o_ += "\n.CRT$XDU ENDS\n";
+    // The project's masm writes no INFO segment: a word naming __dyn_tls_init brings it into the link as
+    // the directive does (Phase 6).
+    if (comdat_) {
+        referenced_.insert("__dyn_tls_init");
+        o_ += ".rdata$tli SEGMENT READONLY ALIGN(8) 'DATA'\n" + mangle(fn + "$dyn_tls_init$") +
+              " DQ __dyn_tls_init\n.rdata$tli ENDS\n";
+    } else {
+        o_ += ".drectve SEGMENT INFO\n  DB \" /include:__dyn_tls_init\"\n.drectve ENDS\n";
+    }
     seg_ = None;
 }
 
@@ -641,6 +898,50 @@ void MasmSpelling::items(const char *dir, const std::vector<std::string> &it) {
 // **`.CRT$XCU`, with the dot.** cl's listing writes `CRT$XCU SEGMENT` and
 // `DQ FLAT:`, neither of which is what ml64 takes - the same trap `.pdata` and
 // `.text$x` set. Measured on the box: this runs the function before main.
+void MasmSpelling::flagExchange() {
+    flushPending();
+    closeDataBlock();
+    if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
+    o_ += "__cxx1_flag_exchange PROC\n  mov eax, edx\n  xchg BYTE PTR [rcx], al\n  movzx eax, al\n  ret\n__cxx1_flag_exchange ENDP\n";
+    defined_.insert("__cxx1_flag_exchange");
+}
+
+// Win64: the object's address in rcx, the value or the expected value's address in rdx, the desired value in r8.
+// A byte or a word comes back zero-extended; `lock cmpxchg` leaves what the object held in the accumulator either
+// way, and writing it back to *e when they were equal writes what *e had.
+void MasmSpelling::atomicHelper(const std::string &name) {
+    const AtomicHelper h = atomicHelperOf(name);
+    if (h.op == AtomicHelper::None) return;
+    flushPending();
+    closeDataBlock();
+    if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
+    static const char *const width[] = { "BYTE", "WORD", "DWORD", "QWORD" };
+    static const char *const acc[] = { "al", "ax", "eax", "rax" };
+    static const char *const desired[] = { "r8b", "r8w", "r8d", "r8" };
+    const std::string object = std::string(width[h.k]) + " PTR [rcx]";
+    const std::string expected = std::string(width[h.k]) + " PTR [rdx]";
+    const char *const widen = h.k == 0 ? "  movzx eax, al\n" : h.k == 1 ? "  movzx eax, ax\n" : "";
+    std::string body;
+    switch (h.op) {
+    case AtomicHelper::Load:
+        body = h.k < 2 ? "  movzx eax, " + object + "\n" : std::string("  mov ") + acc[h.k] + ", " + object + "\n";
+        break;
+    case AtomicHelper::Xchg:
+    case AtomicHelper::Add:
+        body = h.k == 3 ? "  mov rax, rdx\n" : "  mov eax, edx\n";
+        body += (h.op == AtomicHelper::Xchg ? "  xchg " : "  lock xadd ") + object + ", " + acc[h.k] + "\n" + widen;
+        break;
+    case AtomicHelper::Cas:
+        body = std::string("  mov ") + acc[h.k] + ", " + expected + "\n  lock cmpxchg " + object + ", " + desired[h.k] +
+               "\n  mov " + expected + ", " + acc[h.k] + "\n  sete al\n  movzx eax, al\n";
+        break;
+    case AtomicHelper::None:
+        break;
+    }
+    o_ += name + " PROC\n" + body + "  ret\n" + name + " ENDP\n";
+    defined_.insert(name);
+}
+
 void MasmSpelling::initialiserEntry(const std::string &fn, bool) {
     flushPending();
     closeDataBlock();
@@ -652,6 +953,91 @@ void MasmSpelling::initialiserEntry(const std::string &fn, bool) {
 
 void MasmSpelling::predefine(const std::vector<std::string> &names) {
     for (const std::string &n : names) defined_.insert(n);
+}
+
+// **`div` named a symbol is no instruction in this file** (1.30): NOKEYWORD gives the word up for the
+// whole file, so every `div reg` and `idiv reg` the code generator wrote becomes its bytes - F7 /6 and
+// F7 /7 on the register, REX.W for a 64-bit one and REX.B for r8-r15 - and keeps the text as a comment.
+// **`dup` named a symbol** (2026-11-10, Microsoft's names - `dup` is POSIX's for _dup): NOKEYWORD gives the word up
+// for the file, as it gives `div` up, so a zero fill this spelling wrote as `DB n DUP (0)` - or `(?)` in .DATA? - is
+// written out instead, 32 bytes to a line. Only a file that names dup pays for it.
+static void expandDupFills(std::vector<std::string> &chunks, const std::set<std::string> &unreserved)
+{
+    bool given = false;
+    for (const std::string &u : unreserved) {
+        std::string lower;
+        for (char c : u) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower == "dup") given = true;
+    }
+    if (!given) return;
+    for (std::string &text : chunks) {
+        std::string out;
+        std::size_t at = 0;
+        while (at < text.size()) {
+            std::size_t nl = text.find('\n', at);
+            const std::size_t end = nl == std::string::npos ? text.size() : nl + 1;
+            const std::string line = text.substr(at, end - at);
+            at = end;
+            const std::size_t d = line.find(" DUP (");
+            const std::size_t db = d == std::string::npos ? std::string::npos : line.rfind("DB ", d);
+            if (db == std::string::npos) { out += line; continue; }
+            const std::string head = line.substr(0, db);
+            long long n = std::atoll(line.substr(db + 3, d - db - 3).c_str());
+            const char *fill = line.compare(d + 6, 1, "?") == 0 ? "?" : "0";
+            bool first = true;
+            while (n > 0) {
+                const long long k = n > 32 ? 32 : n;
+                out += first ? head : std::string("  ");
+                out += "DB ";
+                for (long long i = 0; i < k; i++) { if (i != 0) out += ','; out += fill; }
+                out += '\n';
+                n -= k;
+                first = false;
+            }
+        }
+        text.swap(out);
+    }
+}
+void MasmSpelling::finishText(std::vector<std::string> &chunks) {
+    expandDupFills(chunks, unreserved_);
+    bool given[2] = { false, false };
+    for (const std::string &u : unreserved_) {
+        const std::string lower = lowered(u);
+        if (lower == "div") given[0] = true;
+        if (lower == "idiv") given[1] = true;
+    }
+    if (!given[0] && !given[1]) return;
+    for (std::string &text : chunks) {
+        std::string out;
+        std::size_t at = 0;
+        while (at < text.size()) {
+            std::size_t nl = text.find('\n', at);
+            const std::size_t end = nl == std::string::npos ? text.size() : nl + 1;
+            const std::string line = text.substr(at, end - at);
+            at = end;
+            const int which = line.compare(0, 6, "  div ") == 0 ? 0 : line.compare(0, 7, "  idiv ") == 0 ? 1 : -1;
+            if (which < 0 || !given[which]) { out += line; continue; }
+            std::string reg = line.substr(which == 0 ? 6 : 7);
+            while (!reg.empty() && (reg.back() == '\n' || reg.back() == '\r' || reg.back() == ' ')) reg.pop_back();
+            int bits = 0;
+            const int n = registerNumber(reg, &bits);
+            if (n < 0)
+                give_up(line, "'" + std::string(which == 0 ? "div" : "idiv") + "' names a symbol in this "
+                              "file, so its instruction is written as bytes, and these bytes are for a "
+                              "64- or 32-bit register only");
+            char bytes[64];
+            const int rex = (bits == 64 ? 0x48 : 0x40) | (n >= 8 ? 1 : 0);
+            const int modrm = 0xC0 | ((which == 0 ? 6 : 7) << 3) | (n & 7);
+            if (rex != 0x40) std::snprintf(bytes, sizeof bytes, "  DB 0%02XH, 0F7H, 0%02XH", rex, modrm);
+            else             std::snprintf(bytes, sizeof bytes, "  DB 0F7H, 0%02XH", modrm);
+            out += bytes;
+            out += "  ; ";
+            out += which == 0 ? "div " : "idiv ";
+            out += reg;
+            out += '\n';
+        }
+        text.swap(out);
+    }
 }
 
 void MasmSpelling::preamble(std::ostream &sink) {
@@ -673,6 +1059,9 @@ void MasmSpelling::preamble(std::ostream &sink) {
 
     for (const std::string &e : exported_) {
         const std::string spelt = mangle(e);
+        // cl's `<unnamed-type-x>`: an object or a specialization of an unnamed class no other unit can name,
+        // kept in this one under the respelt name rather than exported under one MASM cannot hold.
+        if (e.find("<unnamed-type-") != std::string::npos) continue;
         // Renaming an exported name would break the link; only a dot was ever renamed in one.
         if (e.find_first_not_of(std::string(kMasmNameChars) + ".") != std::string::npos)
             give_up(e, "an exported name holds a character no MASM name can spell");
@@ -712,21 +1101,23 @@ int MasmCodeGen::establisherOffset(int slot) const {
 // only place the frame moves: `[rbp-slot]` written here comes out as `[rbp + frameSize - slot]`
 // there, which is the same arithmetic establisherOffset does for the tables.
 void MasmCodeGen::storeUnwindHelp(int slot) {
-    if (optimizer_) optimizer_->sharedSlot(-slot, 8);
+    if (optimizing()) optimizer_->sharedSlot(-slot, 8);
     a_->ins("movq", imm(-2), mem(-slot, "%rbp"));
 }
 
-// **A funclet is a slice of the ordinary output, lifted.** Walking the handler
-// appends its code like any other, so remembering where that began and cutting
-// back to it gives the body exactly - and the code generator knows none of it.
-std::string MasmCodeGen::beginFunclet() {
-    if (optimizer_) optimizer_->funcletBegin();
+// **A funclet is a slice of the ordinary output, lifted**: where the handler's
+// code began is remembered and cut back to, so the body is exact; one opened
+// inside another is cut out of it first - the slices nest.
+std::string MasmCodeGen::beginFunclet(std::size_t pos, int number, bool cleanup) {
+    if (optimizing()) optimizer_->funcletBegin();
     atOutput([this] {
         masm_.raw("");                   // nothing pending inside the slice
-        funcletMark_ = out_.size();
+        funcletMarks_.push_back(out_.size());
     });
+    if (!funcletSymbol_.empty()) outerFunclets_.push_back(std::make_pair(funcletSymbol_, funcletEntryLoc_));
     funcletSymbol_ = masm_.mangledName() + funcletKind_ +
                      std::to_string(funcletIndex_++);
+    funcletDebugBegin(funcletSymbol_, pos, number, cleanup);
     return funcletSymbol_;
 }
 
@@ -750,6 +1141,7 @@ void MasmCodeGen::funcletLeave(const std::string &label) {
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
     const std::string sym = funcletSymbol_;
+    funcletDebugEnd();
     // Written here as raw text, so said to be defined: an early exit's `jmp $LNleave$` made it an EXTERN otherwise.
     masm_.predefine({ sym, "$LNbeg$" + sym, "$LNpush$" + sym, "$LNprolog$" + sym, "$LNleave$" + sym, "$LNend$" + sym });
     // The text around the body: the head, then the body as written out, then the tail with the unwind data.
@@ -760,6 +1152,8 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     head += "\n.text$x SEGMENT ALIGN(16) 'CODE'" + masm_.associative() + "\n";
     head += sym + " PROC\n";
     head += "$LNbeg$" + sym + ":\n";
+    // -g: the prologue is on the `catch` line, as cl's funclet begins (1.29).
+    head += funcletEntryLoc_;
     head += "  mov QWORD PTR [rsp+16], rdx\n";
     head += "  push rbp\n";
     head += "$LNpush$" + sym + ":\n";
@@ -805,15 +1199,22 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     // with an optimizer in front is after the function it belongs to.
     atOutput([this, head, f] {
         masm_.raw("");
-        const std::string body = out_.substr(funcletMark_);
-        out_.resize(funcletMark_);
+        const std::string body = out_.substr(funcletMarks_.back());
+        out_.resize(funcletMarks_.back());
+        funcletMarks_.pop_back();
         funclets_ += head + body + f;
     });
-    if (optimizer_) optimizer_->funcletEnd();
+    if (optimizing()) optimizer_->funcletEnd();
+    funcletSymbol_.clear();
+    if (!outerFunclets_.empty()) {
+        funcletSymbol_ = outerFunclets_.back().first;
+        funcletEntryLoc_ = outerFunclets_.back().second;
+        outerFunclets_.pop_back();
+    }
 }
 
 void MasmCodeGen::emitExceptionTables(const Function &fn) {
-    if (msStates().empty()) {
+    if (msStates().empty() && fn.msUnwindHelp() == 0) {
         if (!callSites().empty()) emitLsda(fn.symbol(), false);
         out_ += funclets_;
         funclets_.clear();
@@ -835,16 +1236,18 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'" + masm_.associative() + "\n";
     o += "$cppxdata$" + m + " DD 019930522H\n";
     o += "  DD " + std::to_string(states.size()) + "\n";
-    o += "  DD imagerel $stateUnwindMap$" + m + "\n";
+    o += states.empty() ? "  DD 00H\n" : "  DD imagerel $stateUnwindMap$" + m + "\n";
     o += "  DD " + std::to_string(tries.size()) + "\n";
     o += tries.empty() ? "  DD 00H\n" : "  DD imagerel $tryMap$" + m + "\n";
-    o += "  DD " + std::to_string(1 + msIpRows().size() + msFuncletRows().size()) + "\n";
+    const std::vector<MsIpRow> ip = msIpTable();
+    o += "  DD " + std::to_string(1 + ip.size()) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
     o += "  DD " + std::to_string(establisherOffset(msUnwindHelpSlot())) + "\n";
     o += "  DD 00H\n";                      // no exception specification
-    o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
+    // EHFlags: compiled with /EHsc, and 4 for a noexcept function, which the runtime ends the program in.
+    o += "  DD 0" + std::to_string(1 | (fn.isNoexcept() ? 4 : 0)) + "H\n";
 
-    o += "$stateUnwindMap$" + m;
+    if (!states.empty()) o += "$stateUnwindMap$" + m;
     for (std::size_t k = 0; k < states.size(); k++) {
         o += (k == 0 ? " DD " : "  DD ");
         o += (states[k].toState < 0 ? std::string("0ffffffffH")
@@ -878,25 +1281,18 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
             o += "  DD " + std::to_string(h.objectSlot == 0
                                               ? 0 : establisherOffset(h.objectSlot)) + "\n";
             o += "  DD imagerel " + h.funclet + "\n";
-            // dispFrame: where the funclet saved the parent's frame pointer, from
-            // its own establisher - [rsp+16] at entry, past `push rbp; sub rsp,32`.
-            // Read only when an exception passes *through* a catch funclet. cl: 038H.
+            // dispFrame: the parent's saved frame pointer, [rsp+16]; cl 038H
             o += "  DD 56\n";
         }
     }
 
-    // Where each state begins, in address order; a funclet is wholly inside
+    // Where each state begins, in address order; a catch funclet is entered in
     // its own handler state.
     o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
     o += "  DD 0ffffffffH\n";
-    for (std::size_t k = 0; k < msIpRows().size(); k++) {
-        o += "  DD imagerel " + masm_.labelName(msIpRows()[k].label) + "\n";
-        o += "  DD " + (msIpRows()[k].state < 0 ? std::string("0ffffffffH")
-                                                  : std::to_string(msIpRows()[k].state)) + "\n";
-    }
-    for (std::size_t k = 0; k < msFuncletRows().size(); k++) {
-        o += "  DD imagerel " + msFuncletRows()[k].label + "\n";
-        o += "  DD " + std::to_string(msFuncletRows()[k].state) + "\n";
+    for (const MsIpRow &r : ip) {
+        o += "  DD imagerel " + (r.entry ? r.label : masm_.labelName(r.label)) + "\n";
+        o += "  DD " + (r.state < 0 ? std::string("0ffffffffH") : std::to_string(r.state)) + "\n";
     }
     o += ".xdata ENDS\n\n.CODE\n";
     out_ += o;
@@ -923,25 +1319,25 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
     if (program.rtti.empty()) return;
     std::string &o = out_;
 
-    // The chain of every class named, closed and deduplicated: a class's array
-    // lists its bases' descriptors, so a base needs the full set of records
-    // even when nothing in this file names it.
+    // Every class named and every base its array lists, closed and deduplicated: a
+    // base needs the full set of records even when nothing in this file names it.
     std::vector<const Type *> all;
-    for (std::size_t i = 0; i < program.rtti.size(); i++)
-        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+    for (std::size_t i = 0; i < program.rtti.size(); i++) {
+        int attributes = 0;
+        for (const MicrosoftBaseClass &r : program.msRttiRowsOf(program.rtti[i], &attributes)) {
             bool had = false;
-            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == k) had = true;
-            if (!had) all.push_back(k);
+            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == r.cls) had = true;
+            if (!had) all.push_back(r.cls);
         }
+    }
 
+    std::set<std::string> bases;
     for (std::size_t i = 0; i < all.size(); i++) {
         MicrosoftRtti n;
         std::string why;
         if (!microsoftClassRttiNames(all[i], &n, &why)) continue;
-
-        int contained = 0;
-        for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
-            contained++;
+        int attributes = 0;
+        const std::vector<MicrosoftBaseClass> rows = program.msRttiRowsOf(all[i], &attributes);
 
         // **The descriptor is writable** - its spare word caches the undecorated name - so
         // `.data$r`, which the linker folds into .data: a segment named `.data` is MASM's
@@ -953,42 +1349,51 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         o += ".data$r ENDS\n";
         msDescriptors_.insert(n.descriptor);
 
-        // Where this class sits inside itself: at the top, never virtual. Those
-        // four numbers are constant because a class with a second base is
-        // refused - its first base is always at offset zero.
-        o += record(".rdata$r", 4, n.baseDescriptor, true);
-        o += n.baseDescriptor + " DD imagerel " + n.descriptor + "\n";
-        o += "  DD 0" + std::to_string(contained) + "H\n";
-        o += "  DD 00H\n";              // mdisp
-        o += "  DD 0ffffffffH\n";       // pdisp - -1, there is no vbtable
-        o += "  DD 00H\n";              // vdisp
-        o += "  DD 040H\n";             // attributes
-        o += "  DD imagerel " + n.hierarchy + "\n";
-
-        o += record(".rdata$r", 4, n.array, false);
-        o += n.array + " DD imagerel " + n.baseDescriptor + "\n";
-        for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
+        // Where each class of the array sits inside this one, and what it is there: one record per
+        // place and attributes, `??_R1BA@?0A@EA@I2@@8`, shared by every array that lists it.
+        bool first = true;
+        for (const MicrosoftBaseClass &r : rows) {
+            if (!bases.insert(r.name).second) continue;
             MicrosoftRtti b;
-            if (!microsoftClassRttiNames(k, &b, &why)) break;
-            o += "  DD imagerel " + b.baseDescriptor + "\n";
+            if (!microsoftClassRttiNames(r.cls, &b, &why)) continue;
+            o += record(".rdata$r", 4, r.name, first);
+            first = false;
+            o += r.name + " DD imagerel " + b.descriptor + "\n";
+            o += "  DD " + std::to_string(r.contained) + "\n";
+            o += "  DD " + std::to_string(r.mdisp) + "\n";
+            o += "  DD " + std::to_string(r.pdisp) + "\n";   // pdisp: -1 outside a virtual base
+            o += "  DD " + std::to_string(r.vdisp) + "\n";
+            o += "  DD " + std::to_string(r.attributes) + "\n";
+            o += "  DD imagerel " + b.hierarchy + "\n";
         }
+
+        o += record(".rdata$r", 4, n.array, first);
+        o += n.array;
+        for (std::size_t k = 0; k < rows.size(); k++)
+            o += (k == 0 ? " DD imagerel " : "  DD imagerel ") + rows[k].name + "\n";
         o += "  DD 00H\n";
 
         o += record(".rdata$r", 4, n.hierarchy, false);
         o += n.hierarchy + " DD 00H\n";
-        o += "  DD 00H\n";              // attributes - no MI, no virtual bases
-        o += "  DD 0" + std::to_string(contained + 1) + "H\n";
+        o += "  DD " + std::to_string(attributes) + "\n";    // 1: a class here has two bases
+        o += "  DD " + std::to_string(rows.size()) + "\n";
         o += "  DD imagerel " + n.array + "\n";
 
         // The locator names itself, which is how the runtime recovers the image
-        // base every other field is relative to.
-        o += record(".rdata$r", 4, n.locator, false);
-        o += n.locator + " DD 01H\n";
-        o += "  DD 00H\n";              // the vfptr's offset in the object
-        o += "  DD 00H\n";              // cdOffset
-        o += "  DD imagerel " + n.descriptor + "\n";
-        o += "  DD imagerel " + n.hierarchy + "\n";
-        o += "  DD imagerel " + n.locator + "\n";
+        // base every other field is relative to. One per vftable, at its vfptr.
+        std::vector<Program::MsLocator> locators;
+        for (const Program::MsLocator &l : program.msLocators)
+            if (l.cls == all[i]) locators.push_back(l);
+        if (locators.empty()) locators.push_back(Program::MsLocator{ all[i], n.locator, 0 });
+        for (const Program::MsLocator &l : locators) {
+            o += record(".rdata$r", 4, l.name, false);
+            o += l.name + " DD 01H\n";
+            o += "  DD " + std::to_string(l.offset) + "\n";   // the vfptr's offset in the object
+            o += "  DD " + std::to_string(l.cdOffset) + "\n";
+            o += "  DD imagerel " + n.descriptor + "\n";
+            o += "  DD imagerel " + n.hierarchy + "\n";
+            o += "  DD imagerel " + l.name + "\n";
+        }
         o += ".rdata$r ENDS\n";
     }
 }
@@ -1057,20 +1462,26 @@ void MasmCodeGen::run(const Program &program) {
     // **And every class descriptor this file defines**, for the same reason: the spelling writes an
     // EXTERN for each name a call mentions, and these are mentioned by the `lea` in front of every
     // __RTDynamicCast while being laid down a few lines above it.
-    for (std::size_t i = 0; i < program.rtti.size(); i++)
-        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+    for (std::size_t i = 0; i < program.rtti.size(); i++) {
+        int attributes = 0;
+        for (const MicrosoftBaseClass &r : program.msRttiRowsOf(program.rtti[i], &attributes)) {
             MicrosoftRtti n;
             std::string why;
-            if (!microsoftClassRttiNames(k, &n, &why)) break;
+            if (!microsoftClassRttiNames(r.cls, &n, &why)) break;
             // **All five, not the descriptor alone.** The descriptor is the
             // one a `lea` mentions, so it was the only one that had to be here
             // while only instructions recorded a reference.
             mine.push_back(n.descriptor);
             mine.push_back(n.baseDescriptor);
+            mine.push_back(r.name);
             mine.push_back(n.array);
             mine.push_back(n.hierarchy);
-            mine.push_back(n.locator);
+            bool listed = false;
+            for (const Program::MsLocator &l : program.msLocators) listed = listed || l.cls == r.cls;
+            if (!listed) mine.push_back(n.locator);
         }
+    }
+    for (const Program::MsLocator &l : program.msLocators) mine.push_back(l.name);
     masm_.predefine(mine);
     // **Before the code, not after it.** The base run() flushes what it has
     // built when it finishes, so anything appended afterwards goes to a buffer

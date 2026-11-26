@@ -26,9 +26,10 @@ bool Parser::aliasDeclaration(const std::string &prefix) {
     if (t->unqualified()->kind() == Kind::Deduced)
         src_.fail(typeAt, "an alias declaration names a type, and 'auto' deduces one from an "
                           "initialiser it does not have");
-    // `using F = int(int);` - a function type, whose parameter list no declarator reads.
+    // `using F = int(int);` - a function type, whose parameter list no declarator reads;
+    // `using PF = int (S::*)() const;` a pointer to a member function, which one does.
     Declared d{ "", t, typeAt, 0, "" };
-    if (peek().is("(") && !atParenInitialiser()) typedefFunctionSuffix(d);
+    if (peek().is("(") && !atParenDeclarator() && !atParenInitialiser()) typedefFunctionSuffix(d);
     else d = declarator(t, true);
     if (!d.name.empty())
         src_.fail(d.pos, "an alias declaration names a type, and '" + d.name + "' would declare something "
@@ -63,7 +64,8 @@ bool Parser::externTemplateDeclaration() {
 }
 
 // **`= default` and `= delete` sit exactly where `= 0` does**, after the virt-specifiers, and every
-// declare* that follows reads which one was written. Outside a class only `= delete` has a meaning.
+// declare* that follows reads which one was written. Outside a class `= default` defines a special
+// member the class declared, and the out-of-line definition reads it.
 void Parser::readDefaultedOrDeleted() {
     pendingSpecial_ = SpecialDef::None;
     if (!peek().is("=")) return;
@@ -72,10 +74,6 @@ void Parser::readDefaultedOrDeleted() {
     pendingSpecialAt_ = peek().pos;
     pendingSpecial_ = def ? SpecialDef::Defaulted : SpecialDef::Deleted;
     at_ += 2;
-    if (def && classStack_.empty())
-        src_.fail(pendingSpecialAt_, "'= default' outside the class is not supported yet: a special "
-                                     "member defaulted on a later declaration is user-provided, where "
-                                     "one defaulted inside its class is the implicit one - write it there");
 }
 
 // [dcl.fct.def.delete]/2: a deleted function may not be used, and this is said where the use is.
@@ -84,7 +82,7 @@ void Parser::refuseDeleted(const Signature &f, std::size_t pos) const {
     const std::string name = f.owner.empty() ? f.name : f.owner + "::" + f.name;
     if (f.implicit)
         src_.fail(pos, "'" + name + "' is deleted - the compiler would write it, and [class.copy] deletes "
-                       "it: a move written '= default', or a base or member whose own is deleted");
+                       "it: a move the class declares, or a base or member whose own is deleted");
     src_.fail(pos, "'" + name + "' is deleted - it was declared '= delete', and a deleted function "
                    "cannot be called, copied from or taken the address of");
 }
@@ -94,6 +92,8 @@ void Parser::defaultedMember(DefaultedMember &m, Access access, std::size_t pos,
     if (m.is) src_.fail(pos, what + " is defaulted twice");
     m.is = true;
     m.access = access;
+    m.quiet = pendingNoexcept_;
+    pendingNoexcept_ = false;
 }
 
 // What the class wrote `= default` on, or nothing.
@@ -131,6 +131,15 @@ void Parser::befriendClass(const std::string &owner, bool keyed) {
     if (keyed) at_++;
     const std::string name = expectIdent("the class to befriend");
     std::string key = name;
+    // [class.friend]/3: `friend class valarray<T>;` - one specialization, named by its template-id.
+    if (peek().is("<") && isClassTemplate(name)) {
+        at_--;
+        StorageClass sc;
+        const Type *t = specifiers(&sc);
+        friendClasses_[owner].push_back(t->unqualified()->tag());
+        expect(";");
+        return;
+    }
     if (const Type *t = findTypedef(name)) key = t->unqualified()->tag();
     else if (!namespaceStack_.empty()) key = namespacePrefix() + name;
     friendClasses_[owner].push_back(key);
@@ -146,26 +155,33 @@ bool Parser::isFriendClassOf(const Type *cls) const {
     const Type *here[3] = { currentClass_, classStack_.empty() ? nullptr : classStack_.back(), lambdaScope() };
     for (const Type *h : here)
         for (const Type *c = h; c != nullptr; c = c->enclosing())
-            for (std::size_t i = 0; i < it->second.size(); i++)
+            for (std::size_t i = 0; i < it->second.size(); i++) {
                 if (c->unqualified()->tag() == it->second[i]) return true;
+                // `template <class U> friend class H;` befriends every specialization of H (R12).
+                if (c->unqualified()->isSpecialization() &&
+                    it->second[i] == "template " + c->unqualified()->templateName())
+                    return true;
+            }
     return false;
 }
 
-// The implicit member a `= default` stands for was declared public; it takes the access it was written under.
+// The implicit member a `= default` stands for was declared public; it takes the access it was written under,
+// and `noexcept` where it was written with it.
 void Parser::applyDefaultedAccess(const std::string &tag, const Type *type) {
     std::map<std::string, Defaulted>::const_iterator it = defaulted_.find(tag);
     if (it == defaulted_.end()) return;
     const Defaulted &df = it->second;
-    if (const Signature *f = defaultConstructorOf(type))
-        if (df.defaultCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.defaultCtor.access;
-    if (const Signature *f = copyConstructorOf(type))
-        if (df.copyCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.copyCtor.access;
-    if (const Signature *f = moveConstructorOf(type))
-        if (df.moveCtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.moveCtor.access;
-    if (const Signature *f = copyAssignOf(type))
-        if (df.copyAssign.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.copyAssign.access;
-    if (const Signature *f = destructorOf(type))
-        if (df.dtor.is) functions_[static_cast<std::size_t>(f - &functions_[0])].access = df.dtor.access;
+    auto apply = [this](const Signature *f, const DefaultedMember &m) {
+        if (f == nullptr || !m.is) return;
+        Signature &made = functions_[static_cast<std::size_t>(f - &functions_[0])];
+        made.access = m.access;
+        if (m.quiet) made.isNoexcept = true;
+    };
+    apply(defaultConstructorOf(type), df.defaultCtor);
+    apply(copyConstructorOf(type), df.copyCtor);
+    apply(moveConstructorOf(type), df.moveCtor);
+    apply(copyAssignOf(type), df.copyAssign);
+    apply(destructorOf(type), df.dtor);
 }
 
 bool Parser::staticAssertion() {
@@ -210,16 +226,151 @@ bool Parser::staticAssertion() {
 // **The exception specification, and the one thing it does not touch.** In C++11 it is
 // *not* part of the function's type - measured, both spellings mangle alike - so what
 // it buys is `noexcept(e)`, or `throw(T...)`'s list, kept in pendingSpec_ for the definition.
+// Whether the operand of `noexcept(`, from token `from`, holds an unevaluated operand of its own - the only
+// place a constant expression can name a function parameter.
+bool Parser::noexceptOperandMayNameParameters(std::size_t from) const {
+    int depth = 0;
+    for (std::size_t i = from; i < tokens_.size() && tokens_[i].kind != TokenKind::End; i++) {
+        if (tokens_[i].is("(")) depth++;
+        else if (tokens_[i].is(")")) { if (depth == 0) break; depth--; }
+        else if (tokens_[i].is("noexcept") || tokens_[i].is("sizeof") || tokens_[i].is("decltype")) return true;
+    }
+    return false;
+}
+
+// The function just declared takes the specification that waits for its class, if one does.
+void Parser::keepDeferredSpec() {
+    if (!specDeferred_) return;
+    specDeferred_ = false;
+    if (functions_.empty() || classStack_.empty()) return;
+    DeferredSpec d;
+    d.cls = classStack_.back();
+    d.function = functions_.size() - 1;
+    d.operandAt = specOperandAt_;
+    d.paramsOpen = specParamsOpen_;
+    deferredSpecs_.push_back(d);
+}
+
+// The class is complete: each of its kept specifications is read where it was written, its members in scope.
+// One may ask another's - `noexcept(noexcept(T().touch()))` of a constructor and a member declared below - so
+// they are read again until a whole round changes nothing; what an early reading answered is only a start.
+void Parser::settleDeferredSpecs(const Type *cls) {
+    std::vector<DeferredSpec> mine;
+    for (std::size_t k = 0; k < deferredSpecs_.size(); ) {
+        if (deferredSpecs_[k].cls != cls) { k++; continue; }
+        mine.push_back(deferredSpecs_[k]);
+        deferredSpecs_.erase(deferredSpecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    }
+    if (mine.empty()) return;
+    const std::size_t resume = at_;
+    // (currentClass_ may still name the class of the last member defined outside its class)
+    const Type *wasClass = currentClass_;
+    currentClass_ = cls;
+    for (std::size_t round = 0; round <= mine.size(); round++) {
+        bool changed = false;
+        for (const DeferredSpec &d : mine) {
+            if (d.function >= functions_.size()) continue;
+            at_ = d.operandAt;
+            if (d.paramsOpen != 0) { declareParametersAt(d.paramsOpen); at_ = d.operandAt; }
+            const long long value = constantExpression("a constant in 'noexcept('");
+            if (d.paramsOpen != 0) {
+                locals_.resize(scopeStarts_.back());
+                scopeStarts_.pop_back();
+            }
+            expect(")");
+            if (functions_[d.function].isNoexcept != (value != 0)) changed = true;
+            functions_[d.function].isNoexcept = value != 0;
+            functions_[d.function].spec.allowsAll = value == 0;
+        }
+        if (!changed) break;
+    }
+    at_ = resume;
+    currentClass_ = wasClass;
+    // [except.spec]/5, which the declaration left for here: an overrider promises no less than what it overrides.
+    for (const DeferredSpec &d : mine)
+        if (d.function < functions_.size() && functions_[d.function].isVirtual)
+            checkOverride(cls, functions_[d.function], functions_[d.function].deleted, tokens_[d.operandAt].pos);
+}
+
 bool Parser::exceptionSpecification() {
     skipAttributes();
     pendingSpec_ = DynamicSpec();
+    specDeferred_ = false;
     bool noexc = false;
     if (consume("noexcept")) {
         noexc = true;
         if (consume("(")) {
-            const long long value = constantExpression("a constant in 'noexcept('");
+            // [basic.scope.block]/2: the function's parameters are in scope here, and an unevaluated operand
+            // may name them - `noexcept(noexcept(x.swap(y)))`, the standard's own spelling (1.77: they were
+            // not declared yet). Found from the list this follows, past the cv- and ref-qualifiers, and
+            // declared only where an operand that can name one is written.
+            std::size_t open = 0;
+            if (noexceptOperandMayNameParameters(at_)) {
+                std::size_t i = at_ >= 3 ? at_ - 3 : 0;      // the token before `noexcept (`
+                while (i > 0 && (tokens_[i].is("const") || tokens_[i].is("volatile") || tokens_[i].is("&") ||
+                                 tokens_[i].is("&&")))
+                    i--;
+                if (i > 0 && tokens_[i].is(")")) {
+                    int nest = 0;
+                    for (;; i--) {
+                        if (tokens_[i].is(")")) nest++;
+                        else if (tokens_[i].is("(") && --nest == 0) { open = i; break; }
+                        if (i == 0) break;
+                    }
+                }
+            }
+            const std::size_t operandAt = at_;
+            // CWG 1330: in a class still being defined the operand may fail for a member declared below it;
+            // then it waits for the class (keepDeferredSpec, settleDeferredSpecs).
+            const bool mayWait = !classStack_.empty() && !classStack_.back()->isComplete() && !patternOnly_ &&
+                                 !src_.inTrial();
+            const std::size_t localsWere = locals_.size(), scopesWere = scopeStarts_.size();
+            long long value = 0;
+            bool waits = false;
+            if (mayWait) {
+                std::size_t after = 0;
+                try {
+                    Trial trial(this);
+                    if (open != 0) { declareParametersAt(open); at_ = operandAt; }
+                    value = constantExpression("a constant in 'noexcept('");
+                    after = at_;
+                } catch (const SubstitutionFailure &f) {
+                    if (f.unsupported) src_.fail(f.pos, f.why);
+                    waits = true;
+                }
+                locals_.resize(localsWere);
+                scopeStarts_.resize(scopesWere);
+                if (waits) {
+                    // to the `)` that closes `noexcept(`
+                    at_ = operandAt;
+                    for (int depth = 1; peek().kind != TokenKind::End; at_++) {
+                        if (peek().is("(") || peek().is("[") || peek().is("{")) depth++;
+                        else if ((peek().is(")") || peek().is("]") || peek().is("}")) && --depth == 0) break;
+                    }
+                    value = 0;
+                } else {
+                    at_ = after;
+                }
+                // An operand that names anything is read again with the class complete, whatever it
+                // answered here: a member declared below may change what a call in it finds.
+                bool names = waits;
+                for (std::size_t i = operandAt; i < at_ && !names; i++) names = tokens_[i].kind == TokenKind::Ident;
+                if (names) {
+                    specDeferred_ = true;
+                    specOperandAt_ = operandAt;
+                    specParamsOpen_ = open;
+                }
+            } else {
+                if (open != 0) { declareParametersAt(open); at_ = operandAt; }
+                value = constantExpression("a constant in 'noexcept('");
+                if (open != 0) {
+                    locals_.resize(scopeStarts_.back());
+                    scopeStarts_.pop_back();
+                }
+            }
             expect(")");
             noexc = value != 0;
+            pendingSpec_.allowsAll = !noexc;
         }
     } else if (peek().is("throw") && peekAt(1).is("(")) {
         const std::size_t at = peek().pos;
@@ -231,8 +382,13 @@ bool Parser::exceptionSpecification() {
             pendingSpec_.pos = at;
             do {
                 const std::size_t tpos = peek().pos;
+                // [temp.variadic]/5: `throw(Ts)` names the pack without the '...' that expands it.
+                const std::string named = peek().kind == TokenKind::Ident ? peek().text : std::string();
                 StorageClass sc;
                 const Type *t = declarator(specifiers(&sc), true).type;
+                if (!named.empty() && packs_.count(named) != 0 && !peek().is("..."))
+                    src_.fail(tpos, "'" + named + "' is a parameter pack, and here it is written without the "
+                                    "'...' that expands it");
                 if (peek().is("..."))
                     src_.fail(peek().pos, "a pack expansion in a dynamic exception specification is not "
                                           "supported yet - write the types out");
@@ -300,6 +456,13 @@ void Parser::refuseVirtSpecifiers(const char *what) {
 long long Parser::constantExpression(const char *what) {
     std::size_t pos = peek().pos;
     ExprPtr e = decay(conditional());
+    // [expr.const]/5: a literal class where an integral constant is wanted is converted by its one
+    // non-explicit conversion function to a number - `int a[t];` for a constexpr object t.
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion())
+        if (const Signature *how = soleNumericConversion(e->type())) {
+            const Type *object = e->type();
+            e = memberCallWith(std::move(e), object, how->name, pos, std::vector<ExprPtr>());
+        }
     long long v;
     if (!fold(*e, &v, pos))
         src_.fail(pos, std::string("expected ") + what +
@@ -323,8 +486,23 @@ const Parser::ConstexprSlot *Parser::constexprSlot(const Var &v) const {
 
 bool Parser::enterConstexprCall(const Call &c, const ConstexprFn **out,
                                 std::size_t pos) const {
-    auto it = constexprFns_.find(c.symbol());
-    if (it == constexprFns_.end() && instantiateForConstant(c.symbol())) it = constexprFns_.find(c.symbol());
+    std::string symbol = c.symbol();
+    // **A call through a pointer that names one function** - `F(x)` with F a template argument `&sq` - is a
+    // call of that function ([expr.const]/2; 1.82: `apply<sq>(3)` did not fold).
+    if (c.callee() != nullptr) {
+        const Expr *e = c.callee();
+        for (;;) {
+            if (const Cast *k = dynamic_cast<const Cast *>(e)) { e = &k->value(); continue; }
+            if (const Unary *u = dynamic_cast<const Unary *>(e))
+                if (u->op() == '&' || u->op() == '*') { e = &u->operand(); continue; }
+            break;
+        }
+        const Var *v = dynamic_cast<const Var *>(e);
+        if (v == nullptr || v->isLocal() || v->type() == nullptr || !v->type()->isFunction()) return false;
+        symbol = v->symbol();
+    }
+    auto it = constexprFns_.find(symbol);
+    if (it == constexprFns_.end() && instantiateForConstant(symbol)) it = constexprFns_.find(symbol);
     if (it == constexprFns_.end()) return false;
     const ConstexprFn &fn = it->second;
     if (fn.value == nullptr || c.args().size() != fn.slots.size())
@@ -332,9 +510,9 @@ bool Parser::enterConstexprCall(const Call &c, const ConstexprFn **out,
 
     // A recursion that does not end is a compiler that does not either.
     // The standard lets an implementation set a limit and say so; this is
-    // that limit, and it is said where it is reached.
-    if (constexprFrames_.size() >= 256)
-        src_.fail(pos, "this constant expression is more than 256 calls "
+    // that limit - twice Annex B's 512 - and it is said where it is reached.
+    if (constexprFrames_.size() >= kMaxConstexprCalls)
+        src_.fail(pos, "this constant expression is more than " + std::to_string(kMaxConstexprCalls) + " calls "
                        "deep - a 'constexpr' function that never stops "
                            "recursing cannot be worked out while compiling");
 
@@ -385,7 +563,7 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         // folded belongs to another function, so its Vars name slots in a frame that
         // does not exist; what they are worth is on the top of this stack.
         if (const ConstexprSlot *slot = constexprSlot(*v)) {
-            if (slot->floating || slot->obj != nullptr) return false;   // Cast/Binary fold it as floating
+            if (slot->floating || slot->obj != nullptr || slot->pointer) return false;   // Cast/Binary fold it as floating
             *out = slot->i;
             return true;
         }
@@ -429,6 +607,7 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         if (!fold(c->left(), &dropped, pos) && !runConstexprEffect(c->left(), pos)) return false;
         return fold(c->right(), out, pos);
     }
+    if (const Expr *chosen = chosenLvalue(e, pos)) return fold(*chosen, out, pos);
     // **A member of a constant object**, or what a pointer into one reaches.
     if (dynamic_cast<const MemberAccess *>(&e) != nullptr ||
         (dynamic_cast<const Unary *>(&e) != nullptr && static_cast<const Unary &>(e).op() == '*')) {
@@ -488,6 +667,27 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         long long l, r;
         const Type *lt = b->lhs().type();
         const Type *rt = b->rhs().type();
+        // [expr.log.and]/1, [expr.log.or]/1: a left operand that decides leaves the right one unevaluated, so it
+        // need not be constant - `B >= 0 && A <= INTMAX_MAX - B` for a negative B.
+        if (b->op() == BinOp::LAnd || b->op() == BinOp::LOr) {
+            bool sides[2];
+            const Expr *operands[2] = { &b->lhs(), &b->rhs() };
+            for (int k = 0; k < 2; k++) {
+                const Type *ot = operands[k]->type();
+                if (ot != nullptr && ot->isFloating()) {
+                    long double d = 0;
+                    if (!foldFloating(*operands[k], &d)) return false;
+                    sides[k] = d != 0;
+                } else {
+                    long long v;
+                    if (!fold(*operands[k], &v, pos)) return false;
+                    sides[k] = v != 0;
+                }
+                if (k == 0 && sides[0] == (b->op() == BinOp::LOr)) { *out = sides[0]; return true; }
+            }
+            *out = sides[1];
+            return true;
+        }
         if ((lt != nullptr && lt->isFloating()) ||
             (rt != nullptr && rt->isFloating())) {
             long double dl = 0, dr = 0;
@@ -511,6 +711,36 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         bool uns = t->isInteger() && !t->isSigned(target_);
         unsigned long long ul = static_cast<unsigned long long>(l);
         unsigned long long ur = static_cast<unsigned long long>(r);
+
+        // [expr.const]/2: an operation whose result is undefined - a signed one outside its type, a
+        // shift past the promoted operand's width - is no constant expression, and is not folded.
+        const Type *res = e.type();
+        const int bits = res != nullptr && res->isInteger() ? res->size(target_) * 8 : 64;
+        const bool signedResult = res != nullptr && res->isInteger() && res->isSigned(target_);
+        auto fits = [&](long long v) {
+            return !signedResult || bits >= 64 ||
+                   (v >= -(1LL << (bits - 1)) && v <= (1LL << (bits - 1)) - 1);
+        };
+        if (signedResult) {
+            if (b->op() == BinOp::Add && (bits >= 64 ? ((r > 0 && l > LLONG_MAX - r) || (r < 0 && l < LLONG_MIN - r))
+                                                     : !fits(l + r)))
+                return false;
+            if (b->op() == BinOp::Sub && (bits >= 64 ? ((r < 0 && l > LLONG_MAX + r) || (r > 0 && l < LLONG_MIN + r))
+                                                     : !fits(l - r)))
+                return false;
+            if (b->op() == BinOp::Mul && (bits >= 64 ? (l != 0 && r != 0 &&
+                                                        ((l == -1 && r == LLONG_MIN) || (r == -1 && l == LLONG_MIN) ||
+                                                         (l != -1 && r != -1 && (l * r) / r != l)))
+                                                     : !fits(l * r)))
+                return false;
+        }
+        if ((b->op() == BinOp::Shl || b->op() == BinOp::Shr) && res != nullptr && res->isInteger() &&
+            r >= 0 && r < 64 && r >= bits)
+            return false;
+        // A non-negative signed operand shifts into the sign bit by CWG 1457, which clang applies to C++11.
+        if (b->op() == BinOp::Shl && signedResult && r >= 0 && r < bits &&
+            (l < 0 || (bits >= 64 ? ul > (~0ULL >> r) : (ul << r) >= (1ULL << bits))))
+            return false;
 
         switch (b->op()) {
         case BinOp::Add: *out = static_cast<long long>(ul + ur); return true;
@@ -562,8 +792,17 @@ const Expr *Parser::singleReturnValue(const Stmt &body) const {
     for (;;) {
         const Block *b = dynamic_cast<const Block *>(at);
         if (b == nullptr) break;
-        if (b->body().size() != 1) return nullptr;
-        at = b->body()[0].get();
+        // [dcl.constexpr]/3: typedefs, static_asserts, using-declarations and null statements may stand beside
+        // the return - each leaves an empty block marked declarative.
+        const Stmt *only = nullptr;
+        for (const StmtPtr &s : b->body()) {
+            const Block *nothing = dynamic_cast<const Block *>(s.get());
+            if (nothing != nullptr && nothing->declarative()) continue;
+            if (only != nullptr) return nullptr;
+            only = s.get();
+        }
+        if (only == nullptr) return nullptr;
+        at = only;
     }
     const Return *r = dynamic_cast<const Return *>(at);
     if (r == nullptr || !r->hasValue()) return nullptr;
@@ -572,7 +811,8 @@ const Expr *Parser::singleReturnValue(const Stmt &body) const {
 
 bool Parser::constantInitialiser(const Type *t, const Init &in,
                                  long long *out) const {
-    if (t == nullptr || !t->isConst() || !t->isInteger()) return false;
+    // [expr.const]/2: a volatile object is read at run time, const or not.
+    if (t == nullptr || !t->isConst() || t->isVolatile() || !t->isInteger()) return false;
     if (in.isList || in.value == nullptr) return false;
     return fold(*in.value, out, in.pos);
 }
@@ -581,7 +821,7 @@ bool Parser::constantInitialiser(const Type *t, const Init &in,
 // read back by foldDouble, an integer one being widened on the way in.
 bool Parser::constantFloatingInitialiser(const Type *t, const Init &in,
                                          long double *out) const {
-    if (t == nullptr || !t->isConst() || !t->isFloating()) return false;
+    if (t == nullptr || !t->isConst() || t->isVolatile() || !t->isFloating()) return false;
     if (in.isList || in.value == nullptr) return false;
     return foldFloating(*in.value, out);
 }
@@ -638,6 +878,61 @@ std::string Parser::constObjectKey(const Var &v) const {
     return v.isLocal() ? currentFunction_ + "@" + std::to_string(v.offset()) : v.symbol();
 }
 
+// `*(c ? &a : &b)`, which an lvalue `?:` is lowered to ([expr.cond]/4): the lvalue the condition picks.
+const Expr *Parser::chosenLvalue(const Expr &e, std::size_t pos) const {
+    const Unary *u = dynamic_cast<const Unary *>(&e);
+    const Conditional *c = u != nullptr && u->op() == '*' ? dynamic_cast<const Conditional *>(&u->operand()) : nullptr;
+    long long t = 0;
+    if (c == nullptr || !fold(c->cond(), &t, pos)) return nullptr;
+    const Unary *arm = dynamic_cast<const Unary *>(t ? &c->thenArm() : &c->elseArm());
+    return arm != nullptr && arm->op() == '&' ? &arm->operand() : nullptr;
+}
+
+// [dcl.constexpr]/9: `constexpr` makes the object const - `int *const` for `constexpr int *p` - where the
+// const the specifiers read it as sits on the pointee, unless `const` was written there too. A pointer to a
+// function or through volatile keeps it where it is.
+const Type *Parser::constexprObjectType(const Type *t, const Qualifiers &q) {
+    if (!q.isConstexpr || mentionsDeduced(t)) return t;
+    if (t->isArray()) {
+        const Type *e = constexprObjectType(t->pointee(), q);
+        return e == t->pointee() ? t : types_.arrayOf(e, t->length());
+    }
+    if (!t->isPointer()) return t;
+    if (q.constWritten) return types_.withConst(t);
+    const Type *inner = withoutBaseConst(t->pointee());
+    return inner == nullptr ? t : types_.withConst(types_.pointerTo(inner));
+}
+
+// The type with the const taken off what its pointers lead to, or null where that is a function.
+const Type *Parser::withoutBaseConst(const Type *t) {
+    if (t->isFunction() || t->isVolatile()) return nullptr;
+    if (!t->isPointer()) return types_.withoutConst(t);
+    const Type *in = withoutBaseConst(t->pointee());
+    if (in == nullptr) return nullptr;
+    const Type *p = types_.pointerTo(in);
+    return t->isConst() ? types_.withConst(p) : p;
+}
+
+// [expr.const]/3: a constexpr pointer's initialiser is an address constant - into a constant object or a
+// string literal, kept under `key` for `*p` to be read; or any other object's or function's, or null.
+bool Parser::constantPointerInit(const Init &in, const std::string &key) {
+    if (in.isList || in.value == nullptr) return false;
+    const bool scratch = constexprFrames_.empty();
+    if (scratch) constexprFrames_.push_back(std::vector<ConstexprSlot>(1, ConstexprSlot()));
+    if (scratch) constexprFrames_.back()[0].offset = kScratchFrame;
+    ConstObjectPtr obj;
+    int at = 0;
+    const bool into = foldObjectPointer(*in.value, &obj, &at, in.pos);
+    if (scratch) constexprFrames_.pop_back();
+    if (into) {
+        constPointers_[key] = std::make_pair(obj, at);
+        return true;
+    }
+    std::string sym;
+    long long v = 0;
+    return foldAddress(*in.value, &sym, &v) || fold(*in.value, &v, in.pos);
+}
+
 // What a call's argument is worth: a number, an object of class type, or a pointer into one.
 bool Parser::foldArgument(const Expr &a, ConstexprSlot *slot, std::size_t pos) const {
     const Type *t = a.type();
@@ -645,12 +940,22 @@ bool Parser::foldArgument(const Expr &a, ConstexprSlot *slot, std::size_t pos) c
         slot->obj = std::make_shared<ConstObject>();
         return foldObject(a, slot->obj.get(), pos);
     }
-    if (t != nullptr && t->isPointer() && t->pointee()->unqualified()->isStructOrUnion()) {
+    // A pointer into a constant object, array or string literal, and the address it holds where it has a name.
+    if (t != nullptr && t->isPointer() && !t->pointee()->isFunction()) {
         int at = 0;
-        if (!foldObjectPointer(a, &slot->obj, &at, pos)) return false;
-        slot->pointer = true;
-        slot->i = at;
-        return true;
+        long long off = 0;
+        const bool into = foldObjectPointer(a, &slot->obj, &at, pos);
+        const bool named = foldAddress(a, &slot->address, &off);
+        if (into || named) {
+            slot->pointer = true;
+            slot->i = into ? at : off;
+            if (!into) slot->obj.reset();
+            if (into && named && off != at) slot->address.clear();
+            return true;
+        }
+        slot->obj.reset();
+        slot->address.clear();
+        if (t->pointee()->unqualified()->isStructOrUnion()) return false;
     }
     slot->floating = t != nullptr && t->isFloating();
     return slot->floating ? foldFloating(a, &slot->d) : fold(a, &slot->i, pos);
@@ -666,9 +971,9 @@ bool Parser::objectAddress(const Expr &e, ConstObjectPtr *obj, int *at, std::siz
             *at = 0;
             return true;
         }
-        // A named object outside any call: inside one, every name is a parameter or a temporary.
-        if (!constexprFrames_.empty() && (constexprFrames_.back().empty() ||
-                                          constexprFrames_.back()[0].offset != kScratchFrame))
+        // A named local outside any call: inside one, every local name is a parameter or a temporary.
+        if (v->isLocal() && !constexprFrames_.empty() && (constexprFrames_.back().empty() ||
+                                                          constexprFrames_.back()[0].offset != kScratchFrame))
             return false;
         std::map<std::string, ConstObject>::const_iterator it = constObjects_.find(constObjectKey(*v));
         if (it == constObjects_.end() && !v->isLocal()) it = constObjects_.find(v->name());
@@ -684,18 +989,57 @@ bool Parser::objectAddress(const Expr &e, ConstObjectPtr *obj, int *at, std::siz
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e))
         if (u->op() == '*') return foldObjectPointer(u->operand(), obj, at, pos);
+    // [lex.string]/8: a narrow string literal is an array of const char, its terminator included.
+    if (const StrLit *s = dynamic_cast<const StrLit *>(&e)) {
+        const Type *t = e.type();
+        if (t == nullptr || !t->isArray() || t->pointee()->size(target_) != 1) return false;
+        ConstObject chars;
+        for (long long i = 0; i < t->length(); i++) {
+            ConstLeaf leaf;
+            leaf.type = t->pointee()->unqualified();
+            const unsigned char c = i < static_cast<long long>(s->text().size())
+                                  ? static_cast<unsigned char>(s->text()[static_cast<std::size_t>(i)]) : 0;
+            leaf.i = leaf.type->isSigned(target_) ? static_cast<signed char>(c) : c;
+            chars[static_cast<int>(i)] = leaf;
+        }
+        *obj = std::make_shared<ConstObject>(std::move(chars));
+        *at = 0;
+        return true;
+    }
     return false;
 }
 
 // **A pointer into a constant object**, as the lowering computes one: `&x`, `this`, a cast, the
 // arithmetic a base's address is reached by, and the comma that builds a temporary first.
 bool Parser::foldObjectPointer(const Expr &e, ConstObjectPtr *obj, int *at, std::size_t pos) const {
+    if (const Expr *chosen = chosenLvalue(e, pos)) return foldObjectPointer(*chosen, obj, at, pos);
+    if (e.type() != nullptr && e.type()->isArray()) return objectAddress(e, obj, at, pos);
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         const ConstexprSlot *slot = constexprSlot(*v);
-        if (slot == nullptr || !slot->pointer) return false;
+        if (slot == nullptr) {
+            // A named constexpr pointer; a local one outside any call, as objectAddress asks.
+            if (v->isLocal() && !constexprFrames_.empty() && (constexprFrames_.back().empty() ||
+                                                              constexprFrames_.back()[0].offset != kScratchFrame))
+                return false;
+            std::map<std::string, std::pair<ConstObjectPtr, int> >::const_iterator it =
+                constPointers_.find(constObjectKey(*v));
+            if (it == constPointers_.end() && !v->isLocal()) it = constPointers_.find(v->name());
+            if (it == constPointers_.end()) return false;
+            *obj = it->second.first;
+            *at = it->second.second;
+            return true;
+        }
+        if (!slot->pointer || slot->obj == nullptr) return false;
         *obj = slot->obj;
         *at = static_cast<int>(slot->i);
         return true;
+    }
+    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+        const ConstexprFn *fn = nullptr;
+        if (!enterConstexprCall(*c, &fn, pos)) return false;
+        const bool ok = foldObjectPointer(*fn->value, obj, at, pos);
+        constexprFrames_.pop_back();
+        return ok;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
         if (u->op() != '&') return false;
@@ -707,17 +1051,20 @@ bool Parser::foldObjectPointer(const Expr &e, ConstObjectPtr *obj, int *at, std:
         *at = 0;
         return true;
     }
-    if (const Cast *c = dynamic_cast<const Cast *>(&e))
+    if (const Cast *c = dynamic_cast<const Cast *>(&e)) {
+        // An array decayed to its first element.
+        if (c->value().type() != nullptr && c->value().type()->isArray()) return objectAddress(c->value(), obj, at, pos);
         return c->value().type() != nullptr && c->value().type()->isPointer() &&
                foldObjectPointer(c->value(), obj, at, pos);
+    }
     if (const Binary *b = dynamic_cast<const Binary *>(&e)) {
         long long n = 0;
         const Type *pt = b->lhs().type();
         if ((b->op() != BinOp::Add && b->op() != BinOp::Sub) || pt == nullptr || !pt->isPointer() ||
             !foldObjectPointer(b->lhs(), obj, at, pos) || !fold(b->rhs(), &n, pos))
             return false;
-        const long long step = pt->pointee()->isVoid() ? 1 : pt->pointee()->size(target_);
-        *at += static_cast<int>((b->op() == BinOp::Add ? n : -n) * step);
+        // The lowering has scaled the index already (pointerAdd): what is added is bytes.
+        *at += static_cast<int>(b->op() == BinOp::Add ? n : -n);
         return true;
     }
     // `p ? p + k : 0` - a base's address, null-checked; an object here is never null.
@@ -746,7 +1093,69 @@ bool Parser::instantiateForConstant(const std::string &symbol) const {
     const std::size_t c2 = complete.find("C2E");
     if (c2 != std::string::npos) complete.replace(c2, 3, "C1E");
     for (std::size_t i = 0; i < specializations_.size(); i++) {
-        if (!specializations_[i].isClass) continue;
+        // **A constexpr function template's specialization, made now** -
+        // [dcl.constexpr]/6, [temp.inst]/3: `Arr<sq(3)>` needs its body as
+        // read; replayed as emission would, and not made again there.
+        if (!specializations_[i].isClass) {
+            if (specializations_[i].emitted || specializations_[i].explicitly ||
+                specializations_[i].symbol != symbol || templates_.count(specializations_[i].templateKey) == 0)
+                continue;
+            const TemplateDecl decl = templates_.find(specializations_[i].templateKey)->second;
+            // Only a constexpr one: any other is made at the end of the file, where the names its
+            // body looks up at the point of instantiation are all declared.
+            bool isConstexpr = false;
+            for (std::size_t t = decl.afterParams; t < tokens_.size() && !tokens_[t].is("(") &&
+                                                   tokens_[t].text != decl.name; t++)
+                isConstexpr = isConstexpr || tokens_[t].is("constexpr");
+            if (!isConstexpr) return false;
+            self.specializations_[i].emitted = true;
+            const Specialization sp = specializations_[i];
+            std::vector<Shadow> undo;
+            self.bindTemplateParameters(sp.params, sp.binding, sp.values, sp.packs, &undo);
+            std::vector<std::vector<ConstexprSlot> > frames;
+            frames.swap(constexprFrames_);
+            const std::string wasKey = instantiationKey_, wasOf = instantiationOf_, wasDisplay = instantiationDisplay_;
+            const int wasDepth = instantiationDepth_;
+            const bool wasInline = replayingInline_;
+            const std::vector<std::string> wasStack = namespaceStack_;
+            const std::size_t resume = at_;
+            // A constant inside an `extern "C"` block asks for a specialization with C++ linkage.
+            const int wasC = cLinkage_;
+            const bool wasDirect = directLinkage_;
+            self.cLinkage_ = 0;
+            self.directLinkage_ = false;
+            const FunctionState outer = self.captureFunctionState();
+            self.clearFunctionState();
+            self.instantiationKey_ = sp.key;
+            self.instantiationOf_ = sp.name;
+            self.instantiationDisplay_ = sp.display;
+            self.instantiationDepth_ = sp.depth;
+            self.replayingInline_ = true;
+            if (!decl.ns.empty()) self.namespaceStack_ = self.namespacePathStack(decl.ns);
+            auto restore = [&]() {
+                self.restoreFunctionState(outer);
+                self.cLinkage_ = wasC;
+                self.directLinkage_ = wasDirect;
+                self.namespaceStack_ = wasStack;
+                self.at_ = resume;
+                self.replayingInline_ = wasInline;
+                self.instantiationKey_ = wasKey;
+                self.instantiationOf_ = wasOf;
+                self.instantiationDisplay_ = wasDisplay;
+                self.instantiationDepth_ = wasDepth;
+                frames.swap(constexprFrames_);
+                self.unbindTemplateParameters(undo);
+            };
+            try {
+                self.at_ = sp.start;
+                self.topLevel(*current_);
+            } catch (...) {
+                restore();
+                throw;
+            }
+            restore();
+            return true;
+        }
         std::vector<PendingBody> &bodies = self.specializations_[i].bodies;
         for (std::size_t b = 0; b < bodies.size(); b++) {
             if (bodies[b].which >= functions_.size() || functions_[bodies[b].which].symbol != complete) continue;
@@ -758,16 +1167,23 @@ bool Parser::instantiateForConstant(const std::string &symbol) const {
             self.bindTemplateParameters(sp.params, sp.binding, sp.values, sp.packs, &undo);
             std::vector<std::vector<ConstexprSlot> > frames;
             frames.swap(constexprFrames_);
-            const std::string wasKey = instantiationKey_, wasOf = instantiationOf_;
+            const std::string wasKey = instantiationKey_, wasOf = instantiationOf_, wasDisplay = instantiationDisplay_;
             self.instantiationKey_.clear();
             self.instantiationOf_.clear();
+            self.instantiationDisplay_.clear();
             const bool wasInline = replayingInline_;
+            const bool wasMemberInst = memberTemplateInst_, wasMemberBody = memberTemplateBody_;
+            self.memberTemplateInst_ = false;
+            self.memberTemplateBody_ = false;
             const std::size_t resume = at_;
             self.replayInlineBodies(std::vector<PendingBody>(1, body));
             self.at_ = resume;
             self.replayingInline_ = wasInline;
+            self.memberTemplateInst_ = wasMemberInst;
+            self.memberTemplateBody_ = wasMemberBody;
             self.instantiationKey_ = wasKey;
             self.instantiationOf_ = wasOf;
+            self.instantiationDisplay_ = wasDisplay;
             frames.swap(constexprFrames_);
             self.unbindTemplateParameters(undo);
             return true;
@@ -786,7 +1202,12 @@ bool Parser::foldObject(const Expr &e, ConstObject *out, std::size_t pos) const 
     bool ok = false;
     ConstObjectPtr obj;
     int at = 0;
-    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+    const auto made = foldedAggregates_.find(&e);
+    const Var *list = made != foldedAggregates_.end() ? aggregateTemporaryVar(e) : nullptr;
+    if (list != nullptr && list->name() == made->second.first) {
+        *out = made->second.second;
+        ok = true;
+    } else if (const Call *c = dynamic_cast<const Call *>(&e)) {
         const ConstexprFn *fn = nullptr;
         if (enterConstexprCall(*c, &fn, pos)) {
             ok = foldObject(*fn->value, out, pos);
@@ -798,14 +1219,34 @@ bool Parser::foldObject(const Expr &e, ConstObject *out, std::size_t pos) const 
     } else if (objectAddress(e, &obj, &at, pos)) {
         *out = subObject(*obj, at, t->size(target_));
         ok = true;
+    } else if (valueInitialisedTemporary(e)) {
+        // [dcl.init]/8: `P()` of a class no constructor was written for is zero, leaf by leaf.
+        ok = constObjectFromInit(t, Init(), 0, out);
     } else if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&e)) {
         // A member of an object that is itself a value - `make().inner`.
         ConstObject whole;
         ok = !m->isBitField() && foldObject(m->object(), &whole, pos);
         if (ok) *out = subObject(whole, m->offset(), t->size(target_));
+    } else if (const Conditional *c = dynamic_cast<const Conditional *>(&e)) {
+        // `n == 0 ? P(1) : P(pw(n - 1).r * 2)` - the arm the condition chooses (1.82: a class value through a
+        // recursive constexpr function did not fold).
+        long long chosen = 0;
+        ok = fold(c->cond(), &chosen, pos) && foldObject(chosen ? c->thenArm() : c->elseArm(), out, pos);
     }
     if (scratch) constexprFrames_.pop_back();
     return ok;
+}
+
+// The two shapes classTemporary gives `P()`: the `$vinit` temporary, or `*(zeroing, &$vinit)`.
+bool Parser::valueInitialisedTemporary(const Expr &e) {
+    const Var *v = dynamic_cast<const Var *>(&e);
+    if (v == nullptr) {
+        const Unary *u = dynamic_cast<const Unary *>(&e);
+        const Comma *c = u != nullptr && u->op() == '*' ? dynamic_cast<const Comma *>(&u->operand()) : nullptr;
+        const Unary *at = c != nullptr ? dynamic_cast<const Unary *>(&c->right()) : nullptr;
+        v = at != nullptr && at->op() == '&' ? dynamic_cast<const Var *>(&at->operand()) : nullptr;
+    }
+    return v != nullptr && v->isLocal() && v->name() == "$vinit";
 }
 
 // **One scalar of a constant object**, the type the read asks for and the leaf agreeing on it.
@@ -842,9 +1283,9 @@ bool Parser::constructConst(const Call &c, std::size_t pos) const {
     if (it == constexprCtors_.end() || c.args().empty()) return false;
     const ConstexprCtor &ctor = it->second;
     if (ctor.slots.size() + 1 != c.args().size()) return false;
-    if (constexprFrames_.size() >= 256)
-        src_.fail(pos, "this constant expression is more than 256 calls deep - a 'constexpr' "
-                       "function that never stops recursing cannot be worked out while compiling");
+    if (constexprFrames_.size() >= kMaxConstexprCalls)
+        src_.fail(pos, "this constant expression is more than " + std::to_string(kMaxConstexprCalls) + " calls deep "
+                       "- a 'constexpr' function that never stops recursing cannot be worked out while compiling");
     // A temporary the comma around this call reads back is made here, in the caller's frame.
     ConstexprSlot self;
     self.offset = ctor.thisSlot;
@@ -906,8 +1347,22 @@ bool Parser::runConstexprEffect(const Expr &e, std::size_t pos) const {
     if (a == nullptr || a->type() == nullptr) return false;
     const Type *t = a->target().type()->unqualified();
     // A pointer the lowering keeps in a temporary of its own - a base's address on its way.
+    const Var *temp = dynamic_cast<const Var *>(&a->target());
+    if (t->isPointer() && (temp == nullptr || !temp->isLocal())) {
+        // A pointer member: the address it is given, or null.
+        ConstObjectPtr obj;
+        int at = 0;
+        ConstLeaf leaf;
+        leaf.type = t;
+        if (!objectAddress(a->target(), &obj, &at, pos) ||
+            (!foldAddress(a->value(), &leaf.address, &leaf.i) && !(fold(a->value(), &leaf.i, pos) && leaf.i == 0)))
+            return false;
+        storeSubObject(*obj, at, t->size(target_), ConstObject());
+        (*obj)[at] = leaf;
+        return true;
+    }
     if (t->isPointer()) {
-        const Var *v = dynamic_cast<const Var *>(&a->target());
+        const Var *v = temp;
         if (v == nullptr || !v->isLocal() || constexprFrames_.empty()) return false;
         ConstexprSlot slot;
         slot.offset = v->offset();
@@ -1006,6 +1461,15 @@ bool Parser::constObjectFromInit(const Type *t, const Init &in, int base, ConstO
             if (m.declaredIn == nullptr && !constObjectFromInit(m.type, Init(), base + m.offset, out)) return false;
         return true;
     }
+    if (t->isPointer()) {
+        ConstLeaf leaf;
+        leaf.type = t;
+        if (in.value != nullptr && !foldAddress(*in.value, &leaf.address, &leaf.i) &&
+            !(fold(*in.value, &leaf.i, in.pos) && leaf.i == 0))
+            return false;
+        (*out)[base] = leaf;
+        return true;
+    }
     if (!t->isArithmetic()) return false;
     ConstLeaf leaf;
     leaf.type = t;
@@ -1019,6 +1483,15 @@ bool Parser::constObjectFromInit(const Type *t, const Init &in, int base, ConstO
 // The bytes a constant object is laid down as, each leaf the way flattenInit writes a scalar.
 void Parser::constObjectPieces(const ConstObject &o, std::vector<GlobalPiece> &out) {
     for (const auto &leaf : o) {
+        if (leaf.second.type->isPointer()) {
+            GlobalPiece p;
+            p.offset = leaf.first;
+            p.size = leaf.second.type->size(target_);
+            p.value = leaf.second.i;
+            p.symbol = leaf.second.address;
+            out.push_back(p);
+            continue;
+        }
         Init in;
         Num *n = leaf.second.type->isFloating() ? new Num(leaf.second.d) : new Num(leaf.second.i);
         n->setType(leaf.second.type);

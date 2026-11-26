@@ -1,0 +1,7 @@
+int* 1
+const char* 1
+function 1
+S* const 1
+long* 1
+nullptr_t
+void* 1

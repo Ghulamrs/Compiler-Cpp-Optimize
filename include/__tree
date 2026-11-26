@@ -7,11 +7,16 @@
 // it goes to the largest. An erased node is unlinked and its neighbour moved into its place by
 // relinking - never by copying a value - so every other node, and every iterator to one, stays.
 //
-// KeyOf says what a value is ordered by: the pair's first for a map, the value for a set.
+// KeyOf says what a value is ordered by: the pair's first for a map, the value for a set; Compare
+// orders two keys, as the container's comparison object. insertUnique is a map's and a set's,
+// insertEqual a multimap's and a multiset's - an equal key goes after those already there.
 #ifndef _CXX1___TREE
 #define _CXX1___TREE
 
 #include <cstddef>
+#include <utility>
+#include <__allocator>
+#include <__iterator_base>
 
 namespace std {
 
@@ -29,11 +34,11 @@ struct __tree_node : __tree_link {
     explicit __tree_node(const V &v) : value(v) { height = 1; }
 };
 
-inline __tree_link *__tree_leftmost(__tree_link *n) { while (n->left != 0) n = n->left; return n; }
-inline __tree_link *__tree_rightmost(__tree_link *n) { while (n->right != 0) n = n->right; return n; }
+inline __tree_link *__tree_leftmost(__tree_link *n) noexcept { while (n->left != 0) n = n->left; return n; }
+inline __tree_link *__tree_rightmost(__tree_link *n) noexcept { while (n->right != 0) n = n->right; return n; }
 
 // In-order successor; the largest element's is the sentinel, the root's parent.
-inline __tree_link *__tree_next(__tree_link *n) {
+inline __tree_link *__tree_next(__tree_link *n) noexcept {
     if (n->right != 0) return __tree_leftmost(n->right);
     __tree_link *p = n->parent;
     while (p->right == n) { n = p; p = p->parent; }
@@ -41,7 +46,7 @@ inline __tree_link *__tree_next(__tree_link *n) {
 }
 
 // In-order predecessor; the sentinel's is the largest element.
-inline __tree_link *__tree_prev(__tree_link *n, __tree_link *head) {
+inline __tree_link *__tree_prev(__tree_link *n, __tree_link *head) noexcept {
     if (n == head) return __tree_rightmost(head->left);
     if (n->left != 0) return __tree_rightmost(n->left);
     __tree_link *p = n->parent;
@@ -56,8 +61,12 @@ template <class V>
 class __tree_iterator {
 public:
     typedef V value_type;
-    __tree_iterator() : n_(0), head_(0) {}
-    __tree_iterator(__tree_link *n, __tree_link *head) : n_(n), head_(head) {}
+    typedef std::ptrdiff_t difference_type;
+    typedef V *pointer;
+    typedef V &reference;
+    typedef bidirectional_iterator_tag iterator_category;
+    __tree_iterator() noexcept : n_(0), head_(0) {}
+    __tree_iterator(__tree_link *n, __tree_link *head) noexcept : n_(n), head_(head) {}
     V &operator*() const { return static_cast<__tree_node<V> *>(n_)->value; }
     V *operator->() const { return &static_cast<__tree_node<V> *>(n_)->value; }
     __tree_iterator &operator++() { n_ = __tree_next(n_); return *this; }
@@ -66,8 +75,8 @@ public:
     __tree_iterator operator--(int) { __tree_iterator was = *this; n_ = __tree_prev(n_, head_); return was; }
     bool operator==(const __tree_iterator &o) const { return n_ == o.n_; }
     bool operator!=(const __tree_iterator &o) const { return n_ != o.n_; }
-    __tree_link *link() const { return n_; }
-    __tree_link *head() const { return head_; }
+    __tree_link *link() const noexcept { return n_; }
+    __tree_link *head() const noexcept { return head_; }
 private:
     __tree_link *n_;
     __tree_link *head_;
@@ -77,10 +86,14 @@ template <class V>
 class __tree_const_iterator {
 public:
     typedef V value_type;
-    __tree_const_iterator() : n_(0), head_(0) {}
-    __tree_const_iterator(const __tree_link *n, const __tree_link *head)
+    typedef std::ptrdiff_t difference_type;
+    typedef const V *pointer;
+    typedef const V &reference;
+    typedef bidirectional_iterator_tag iterator_category;
+    __tree_const_iterator() noexcept : n_(0), head_(0) {}
+    __tree_const_iterator(const __tree_link *n, const __tree_link *head) noexcept
         : n_(const_cast<__tree_link *>(n)), head_(const_cast<__tree_link *>(head)) {}
-    __tree_const_iterator(const __tree_iterator<V> &i) : n_(i.link()), head_(i.head()) {}
+    __tree_const_iterator(const __tree_iterator<V> &i) noexcept : n_(i.link()), head_(i.head()) {}
     const V &operator*() const { return static_cast<const __tree_node<V> *>(n_)->value; }
     const V *operator->() const { return &static_cast<const __tree_node<V> *>(n_)->value; }
     __tree_const_iterator &operator++() { n_ = __tree_next(n_); return *this; }
@@ -89,52 +102,94 @@ public:
     __tree_const_iterator operator--(int) { __tree_const_iterator was = *this; n_ = __tree_prev(n_, head_); return was; }
     bool operator==(const __tree_const_iterator &o) const { return n_ == o.n_; }
     bool operator!=(const __tree_const_iterator &o) const { return n_ != o.n_; }
-    __tree_link *link() const { return n_; }
+    __tree_link *link() const noexcept { return n_; }
+    __tree_link *head() const noexcept { return head_; }
 private:
     __tree_link *n_;
     __tree_link *head_;
 };
 
-template <class V, class KeyOf>
+// The tree owns its allocator: a node from it rebound to the node, the element in the node made and destroyed
+// through allocator_traits, the allocator carried across where propagate_on_container_* says (1.52).
+template <class V, class KeyOf, class Compare, class Alloc = allocator<V> >
 class __tree {
+    typedef allocator_traits<Alloc> traits_;
+    typedef __cxx1_nodes<__tree_node<V>, Alloc> nodes_;
+
 public:
     typedef typename KeyOf::key_type key_type;
     typedef std::size_t size_type;
     typedef __tree_iterator<V> iterator;
     typedef __tree_const_iterator<V> const_iterator;
 
-    __tree() : size_(0) {}
-    __tree(const __tree &o) : size_(0) { insertAll(o); }
+    __tree() : comp_(), size_(0), alloc_() {}
+    explicit __tree(const Compare &c, const Alloc &a = Alloc()) : comp_(c), size_(0), alloc_(a) {}
+    __tree(const __tree &o)
+        : comp_(o.comp_), size_(0), alloc_(traits_::select_on_container_copy_construction(o.alloc_)) {
+        insertAll(o);
+    }
+    __tree(const __tree &o, const Alloc &a) : comp_(o.comp_), size_(0), alloc_(a) { insertAll(o); }
+    __tree(__tree &&o) : comp_(o.comp_), size_(0), alloc_(std::move(o.alloc_)) { take(o); }
+    __tree(__tree &&o, const Alloc &a) : comp_(o.comp_), size_(0), alloc_(a) {
+        if (alloc_ == o.alloc_) take(o);
+        else moveAll(o);
+    }
     __tree &operator=(const __tree &o) {
-        if (this != &o) { clear(); insertAll(o); }
+        if (this != &o) {
+            clear();
+            if (traits_::propagate_on_container_copy_assignment::value) alloc_ = o.alloc_;
+            comp_ = o.comp_;
+            insertAll(o);
+        }
+        return *this;
+    }
+    __tree &operator=(__tree &&o) {
+        if (this == &o) return *this;
+        clear();
+        comp_ = o.comp_;
+        if (traits_::propagate_on_container_move_assignment::value || alloc_ == o.alloc_) {
+            if (traits_::propagate_on_container_move_assignment::value) alloc_ = std::move(o.alloc_);
+            take(o);
+        } else {
+            moveAll(o);
+        }
         return *this;
     }
     ~__tree() { clear(); }
 
-    size_type size() const { return size_; }
-    bool empty() const { return size_ == 0; }
-    void clear() { destroy(head_.left); head_.left = 0; size_ = 0; }
+    size_type size() const noexcept { return size_; }
+    size_type max_size() const {
+        typedef typename nodes_::node_alloc node_alloc;
+        node_alloc na(alloc_);
+        return allocator_traits<node_alloc>::max_size(na);
+    }
+    bool empty() const noexcept { return size_ == 0; }
+    void clear() noexcept { destroy(head_.left); head_.left = 0; size_ = 0; }
+    Alloc allocator() const { return alloc_; }
     // The two exchange their nodes; the roots are re-hung from the sentinel each belongs to.
     void swap(__tree &o) {
         __tree_link *r = head_.left; head_.left = o.head_.left; o.head_.left = r;
         if (head_.left != 0) head_.left->parent = &head_;
         if (o.head_.left != 0) o.head_.left->parent = &o.head_;
         size_type s = size_; size_ = o.size_; o.size_ = s;
+        Compare c = comp_; comp_ = o.comp_; o.comp_ = c;
+        if (traits_::propagate_on_container_swap::value) std::__cxx1_swap_adl(alloc_, o.alloc_);
     }
+    const Compare &compare() const { return comp_; }
 
-    iterator begin() { return iterator(head_.left != 0 ? __tree_leftmost(head_.left) : &head_, &head_); }
-    iterator end() { return iterator(&head_, &head_); }
-    const_iterator begin() const {
+    iterator begin() noexcept { return iterator(head_.left != 0 ? __tree_leftmost(head_.left) : &head_, &head_); }
+    iterator end() noexcept { return iterator(&head_, &head_); }
+    const_iterator begin() const noexcept {
         return const_iterator(head_.left != 0 ? __tree_leftmost(head_.left) : &head_, &head_);
     }
-    const_iterator end() const { return const_iterator(&head_, &head_); }
+    const_iterator end() const noexcept { return const_iterator(&head_, &head_); }
 
     // The first element not ordered before k, and the first ordered after it.
     __tree_link *lowerLink(const key_type &k) const {
         __tree_link *n = head_.left;
         __tree_link *at = const_cast<__tree_link *>(&head_);
         while (n != 0) {
-            if (KeyOf::get(nodeValue(n)) < k) n = n->right;
+            if (comp_(KeyOf::get(nodeValue(n)), k)) n = n->right;
             else { at = n; n = n->left; }
         }
         return at;
@@ -143,36 +198,55 @@ public:
         __tree_link *n = head_.left;
         __tree_link *at = const_cast<__tree_link *>(&head_);
         while (n != 0) {
-            if (k < KeyOf::get(nodeValue(n))) { at = n; n = n->left; }
+            if (comp_(k, KeyOf::get(nodeValue(n)))) { at = n; n = n->left; }
             else n = n->right;
         }
         return at;
     }
     __tree_link *findLink(const key_type &k) const {
         __tree_link *at = lowerLink(k);
-        if (at == &head_ || k < KeyOf::get(nodeValue(at))) return const_cast<__tree_link *>(&head_);
+        if (at == &head_ || comp_(k, KeyOf::get(nodeValue(at)))) return const_cast<__tree_link *>(&head_);
         return at;
     }
+    size_type countKey(const key_type &k) const {
+        size_type n = 0;
+        for (__tree_link *at = lowerLink(k), *to = upperLink(k); at != to; at = __tree_next(at)) n++;
+        return n;
+    }
 
-    // Where the value is, and whether this call put it there.
-    __tree_link *insertUnique(const V &v, bool *inserted) {
-        const key_type &k = KeyOf::get(v);
-        __tree_link *parent = &head_;
-        __tree_link *n = head_.left;
-        bool goLeft = true;
-        while (n != 0) {
-            parent = n;
-            if (k < KeyOf::get(nodeValue(n))) { goLeft = true; n = n->left; }
-            else if (KeyOf::get(nodeValue(n)) < k) { goLeft = false; n = n->right; }
-            else { *inserted = false; return n; }
-        }
-        __tree_link *made = new __tree_node<V>(v);
-        made->parent = parent;
-        if (goLeft) parent->left = made; else parent->right = made;
-        size_++;
-        rebalance(parent);
+    // Where the value is, and whether this call put it there. A value is made only where its key is new.
+    template <class X> __tree_link *insertUnique(X &&v, bool *inserted) {
+        __tree_link *parent;
+        bool goLeft;
+        if (__tree_link *had = place(KeyOf::get(v), true, &parent, &goLeft)) { *inserted = false; return had; }
         *inserted = true;
-        return made;
+        return hang(makeNode(std::forward<X>(v)), parent, goLeft);
+    }
+    template <class X> __tree_link *insertEqual(X &&v) {
+        __tree_link *parent;
+        bool goLeft;
+        place(KeyOf::get(v), false, &parent, &goLeft);
+        return hang(makeNode(std::forward<X>(v)), parent, goLeft);
+    }
+    // [associative.reqmts] emplace: the element is made first, from the arguments, and its key looked for after.
+    template <class... A> __tree_link *emplaceUnique(bool *inserted, A &&... a) {
+        __tree_link *made = makeNode(std::forward<A>(a)...);
+        __tree_link *parent;
+        bool goLeft;
+        if (__tree_link *had = place(KeyOf::get(nodeValue(made)), true, &parent, &goLeft)) {
+            nodes_::destroy(alloc_, static_cast<__tree_node<V> *>(made));
+            *inserted = false;
+            return had;
+        }
+        *inserted = true;
+        return hang(made, parent, goLeft);
+    }
+    template <class... A> __tree_link *emplaceEqual(A &&... a) {
+        __tree_link *made = makeNode(std::forward<A>(a)...);
+        __tree_link *parent;
+        bool goLeft;
+        place(KeyOf::get(nodeValue(made)), false, &parent, &goLeft);
+        return hang(made, parent, goLeft);
     }
 
     // Unlinks the node; its successor, if it had two children, is relinked into its place.
@@ -200,7 +274,7 @@ public:
             from = node->parent;
             replace(node, child);
         }
-        delete static_cast<__tree_node<V> *>(node);
+        nodes_::destroy(alloc_, static_cast<__tree_node<V> *>(node));
         size_--;
         rebalance(from);
     }
@@ -208,6 +282,34 @@ public:
     static V &nodeValue(__tree_link *n) { return static_cast<__tree_node<V> *>(n)->value; }
 
 private:
+    template <class... A> __tree_link *makeNode(A &&... a) {
+        __tree_node<V> *n = nodes_::make(alloc_, std::forward<A>(a)...);
+        n->left = n->right = n->parent = 0;
+        n->height = 1;
+        return n;
+    }
+    // Where a key goes - under `parent`, on the side `goLeft` says - or, for a unique tree, the node that has it.
+    __tree_link *place(const key_type &k, bool unique, __tree_link **parent, bool *goLeft) {
+        __tree_link *p = &head_;
+        __tree_link *n = head_.left;
+        bool left = true;
+        while (n != 0) {
+            p = n;
+            if (comp_(k, KeyOf::get(nodeValue(n)))) { left = true; n = n->left; }
+            else if (unique && !comp_(KeyOf::get(nodeValue(n)), k)) return n;
+            else { left = false; n = n->right; }
+        }
+        *parent = p;
+        *goLeft = left;
+        return 0;
+    }
+    __tree_link *hang(__tree_link *made, __tree_link *parent, bool goLeft) {
+        made->parent = parent;
+        if (goLeft) parent->left = made; else parent->right = made;
+        size_++;
+        rebalance(parent);
+        return made;
+    }
     static int height(const __tree_link *n) { return n != 0 ? n->height : 0; }
     static void update(__tree_link *n) {
         const int l = height(n->left), r = height(n->right);
@@ -261,15 +363,29 @@ private:
         if (n == 0) return;
         destroy(n->left);
         destroy(n->right);
-        delete static_cast<__tree_node<V> *>(n);
+        nodes_::destroy(alloc_, static_cast<__tree_node<V> *>(n));
     }
+    // In order, each after its equals, so a multi container's copy keeps their order.
     void insertAll(const __tree &o) {
-        bool made;
-        for (const_iterator i = o.begin(); i != o.end(); ++i) insertUnique(*i, &made);
+        for (const_iterator i = o.begin(); i != o.end(); ++i) insertEqual(*i);
+    }
+    // Another allocator's nodes cannot change hands: each element moves into one of this tree's.
+    void moveAll(__tree &o) {
+        for (iterator i = o.begin(); i != o.end(); ++i) insertEqual(std::move(*i));
+        o.clear();
+    }
+    void take(__tree &o) {
+        head_.left = o.head_.left;
+        if (head_.left != 0) head_.left->parent = &head_;
+        size_ = o.size_;
+        o.head_.left = 0;
+        o.size_ = 0;
     }
 
+    Compare comp_;
     __tree_link head_;
     size_type size_;
+    Alloc alloc_;
 };
 
 // [container.requirements.general] for a map or a set: equal sizes and equal elements in order,

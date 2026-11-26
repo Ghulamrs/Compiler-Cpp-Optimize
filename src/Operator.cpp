@@ -45,6 +45,7 @@ const OperatorCode table[] = {
     { "++",   "pp",  nullptr, "E"  },
     { "--",   "mm",  nullptr, "F"  },
     { "->",   "pt",  nullptr, "C"  },
+    { "->*",  "pm",  nullptr, "J"  },   // int S::*
     // The allocation functions, named as operators: `_Znwm` and `_ZdlPv` are
     // exactly these codes with their parameters. cl: ??2 and ??3.
     { "new",    "nw",  nullptr, "2"  },

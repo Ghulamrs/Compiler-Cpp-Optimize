@@ -1,0 +1,1996 @@
+set	group	case	kind	check	expect_rc	note
+r125	t1-lex	lex01_literal_types	pos	output	0	
+r125	t1-lex	lex02_char_literals	pos	output	0	
+r125	t1-lex	lex03_string_literals	pos	output	0	
+r125	t1-lex	lex04_float_literals	pos	output	0	
+r125	t1-lex	lex05_pp_basics	pos	output	0	
+r125	t1-lex	lex06_pp_cplusplus	pos	own	0	cl reports __cplusplus as 199711 without /Zc:__cplusplus
+r125	t1-lex	lex08_alt_tokens_digraphs	pos	output	0	
+r125	t1-lex	lex09_pp_include_macro	pos	output	0	
+r125	t1-lex	lex10_ucn_identifiers	pos	own	0	execution character set: cl writes code page 1252, cpp11 UTF-8
+r125	t1-lex	lex11_comments_splices	pos	output	0	
+r125	t1-lex	lex12_pp_stringize_edge	pos	output	0	
+r125	t1-lex	lex14_trigraph	pos	own	0	C++11 replaces trigraphs in phase 1 ([lex.phases]/1, [lex.trigraph]); cl does only with /Zc:trigraphs, clang does for a non-Microsoft target
+r125	t2-decl	decl01_auto_deduction	pos	output	0	
+r125	t2-decl	decl02_decltype	pos	output	0	
+r125	t2-decl	decl03_nullptr	pos	output	0	
+r125	t2-decl	decl04_enum_class	pos	output	0	
+r125	t2-decl	decl05_static_assert	pos	output	0	
+r125	t2-decl	decl06_list_init_scalar	pos	output	0	
+r125	t2-decl	decl07_list_init_class	pos	output	0	
+r125	t2-decl	decl08_value_init	pos	output	0	
+r125	t2-decl	decl09_nsdmi	pos	output	0	
+r125	t2-decl	decl10_alias_using	pos	output	0	
+r125	t2-decl	decl11_constexpr_vars	pos	output	0	
+r125	t2-decl	decl12_namespaces	pos	output	0	
+r125	t2-decl	decl13_storage_linkage	pos	output	0	
+r125	t2-decl	decl14_cv_and_refs	pos	output	0	
+r125	t2-decl	decl15_attributes_misc	pos	output	0	
+r125	t3-class	cls01_special_members	pos	output	0	
+r125	t3-class	cls02_delegating_inheriting	pos	output	0	
+r125	t3-class	cls03_override_final	pos	output	0	
+r125	t3-class	cls04_layout_inheritance	pos	output	0	
+r125	t3-class	cls07_static_nested_local	pos	output	0	
+r125	t3-class	cls08_member_pointers	pos	output	0	
+r125	t3-class	cls10_friends_access	pos	output	0	
+r125	t3-class	cls11_ctor_dtor_order	pos	output	0	
+r125	t3-class	cls12_explicit_conversion	pos	output	0	
+r125	t3-class	cls13_abstract_interfaces	pos	output	0	
+r125	t3-class	cls14_copy_elision_counts	pos	output	0	
+r125	t3-class	cls15_virtual_base_init	pos	output	0	
+r125	t4-over	ov01_ranking	pos	output	0	
+r125	t4-over	ov02_rvalue_binding	pos	output	0	
+r125	t4-over	ov03_templates_vs_functions	pos	output	0	
+r125	t4-over	ov04_user_conversions	pos	output	0	
+r125	t4-over	ov05_operator_lookup	pos	output	0	
+r125	t4-over	ov07_function_pointers_overload	pos	output	0	
+r125	t4-over	ov08_nullptr_bool_ptr_overloads	pos	output	0	
+r125	t4-over	ov09_initlist_overload	pos	output	0	
+r125	t4-over	ov10_ambiguity_resolution	pos	output	0	
+r125	t4-over	ov11_conversion_ops_in_ops	pos	output	0	
+r125	t4-over	ov12_member_vs_free_template	pos	output	0	
+r125	t5-tmpl	tm01_deduction_basics	pos	output	0	
+r125	t5-tmpl	tm02_forwarding_refs	pos	output	0	
+r125	t5-tmpl	tm03_partial_spec	pos	output	0	
+r125	t5-tmpl	tm06_variadic_basics	pos	output	0	
+r125	t5-tmpl	tm07_variadic_forward	pos	output	0	
+r125	t5-tmpl	tm08_variadic_nontype	pos	output	0	
+r125	t5-tmpl	tm09_alias_templates	pos	output	0	
+r125	t5-tmpl	tm10_member_templates	pos	output	0	
+r125	t5-tmpl	tm11_dependent_names	pos	output	0	
+r125	t5-tmpl	tm13_class_template_misc	pos	output	0	
+r125	t5-tmpl	tm14_two_phase	pos	output	0	
+r125	t5-tmpl	tm15_template_recursion_limits	pos	output	0	
+r125	t5-tmpl	tm16_explicit_instantiation	pos	output	0	
+r125	t6-exc	ex01_basic_throw_catch	pos	output	0	
+r125	t6-exc	ex02_unwinding	pos	output	0	
+r125	t6-exc	ex04_noexcept	pos	output	0	
+r125	t6-exc	ex06_exceptions_and_objects	pos	output	0	
+r125	t6-exc	ex07_exceptions_through_templates_lambdas	pos	output	0	
+r125	t6-exc	ex08_function_try_block	pos	output	0	
+r125	t6-exc	ex10_dynamic_spec	pos	output	0	
+r125	t6-exc	ex11_catch_conversions	pos	own	0	cl's own build fails with 0xC0000409; a pointer handler matches a thrown nullptr, [except.handle]/3; cl's and clang's Microsoft runtime let it past
+r125	t6-exc	ex12_exception_in_loop_perf	pos	output	0	
+r125	t7-lambda	lm01_captures	pos	output	0	
+r125	t7-lambda	lm02_conversion_fnptr	pos	output	0	
+r125	t7-lambda	lm03_return_types	pos	output	0	
+r125	t7-lambda	lm05_closure_objects	pos	output	0	
+r125	t7-lambda	lm06_lambda_in_contexts	pos	output	0	
+r125	t7-lambda	lm07_capture_semantics_edge	pos	output	0	
+r125	t8-move	mv01_move_semantics	pos	output	0	
+r125	t8-move	mv02_implicit_move_rules	pos	output	0	
+r125	t8-move	mv03_return_and_temporaries	pos	run	0	copy elision is optional in C++11 ([class.copy]/31)
+r125	t8-move	mv04_vector_moves	pos	output	0	
+r125	t8-move	mv05_xvalues_lifetime	pos	output	0	
+r125	t8-move	mv06_move_only_types	pos	output	0	
+r125	t8-move	mv07_rvalue_this_members	pos	output	0	
+r125	t9-constexpr	ce01_constexpr_functions	pos	output	0	
+r125	t9-constexpr	ce02_constexpr_ctors	pos	output	0	
+r125	t9-constexpr	ce04_narrowing_in_constants	pos	output	0	
+r125	t9-constexpr	ce05_constexpr_runtime_mix	pos	output	0	
+r125	t10-stmt	st01_range_for	pos	output	0	
+r125	t10-stmt	st02_control_flow	pos	output	0	
+r125	t10-stmt	st04_static_init_recursion_guard	pos	output	0	
+r125	t10-stmt	st05_main_and_exit	pos	output	0	
+r125	t10-stmt	st06_declaration_statements	pos	output	0	
+r125	t11-expr	ex_arith01_conversions	pos	output	0	
+r125	t11-expr	ex_arith02_div_mod_shift	pos	output	0	
+r125	t11-expr	ex_arith03_conditional_comma	pos	output	0	
+r125	t11-expr	ex_arith04_pointers	pos	output	0	
+r125	t11-expr	ex_arith05_float	pos	output	0	
+r125	t11-expr	ex_arith06_sizeof_misc	pos	output	0	
+r125	t11-expr	ex_arith07_casts	pos	output	0	
+r125	t11-expr	ex_arith08_logic_and_sequencing	pos	output	0	
+r125	t11-expr	ex_arith09_integer_edge	pos	output	0	
+r125	t11-expr	ex_arith10_string_char_ops	pos	output	0	
+r125	t12-lib	lib01_string	pos	output	0	
+r125	t12-lib	lib06_memory_smart	pos	output	0	
+r125	t12-lib	lib09_initializer_list_functional	pos	output	0	
+r125	t12-lib	lib10_new_delete	pos	output	0	
+r125	t13-opt	op01_aliasing	pos	output	0	
+r125	t13-opt	op02_loops_induction	pos	output	0	
+r125	t13-opt	op03_division_magic	pos	output	0	
+r125	t13-opt	op04_switch_tables	pos	output	0	
+r125	t13-opt	op05_struct_copies_returns	pos	output	0	
+r125	t13-opt	op06_inline_side_effects	pos	output	0	
+r125	t13-opt	op07_float_strictness	pos	output	0	
+r125	t13-opt	op08_bitfields_unions	pos	output	0	
+r125	t13-opt	op09_dead_code_and_unused	pos	output	0	
+r125	t13-opt	op10_64bit_arith	pos	output	0	
+r125	t13-opt	op11_recursion_tail	pos	output	-1073741571	
+r125	t13-opt	op12_string_building_perf	pos	output	0	
+r125	t17-second	ce01_constexpr_functionsb	pos	output	0	
+r125	t17-second	ce03_constant_expressionsb	pos	output	0	
+r125	t17-second	ce05_constexpr_runtime_mixb	pos	output	0	
+r125	t17-second	cls01_special_membersb	pos	output	0	
+r125	t17-second	cls04_layout_inheritanceb	pos	output	0	
+r125	t17-second	cls06_operatorsb	pos	output	0	
+r125	t17-second	cls07_static_nested_localb	pos	output	0	
+r125	t17-second	cls08_member_pointersb	pos	output	0	
+r125	t17-second	cls09_rtti_castsb	pos	output	0	
+r125	t17-second	cls10_friends_accessb	pos	output	0	
+r125	t17-second	cls11_ctor_dtor_orderb	pos	output	0	
+r125	t17-second	cls13_abstract_interfacesb	pos	output	0	
+r125	t17-second	decl01_auto_deductionb	pos	output	0	
+r125	t17-second	decl02_decltypeb	pos	output	0	
+r125	t17-second	decl03_nullptrb	pos	output	0	
+r125	t17-second	decl10_alias_usingb	pos	output	0	
+r125	t17-second	decl11_constexpr_varsb	pos	output	0	
+r125	t17-second	decl12_namespacesb	pos	output	0	
+r125	t17-second	ex01_basic_throw_catchb	pos	output	0	
+r125	t17-second	ex02_unwindingb	pos	output	0	
+r125	t17-second	ex03_std_exceptionsb	pos	output	0	
+r125	t17-second	ex04_noexceptb	pos	output	0	
+r125	t17-second	ex06_exceptions_and_objectsb	pos	output	0	
+r125	t17-second	ex08_function_try_blockb	pos	output	0	
+r125	t17-second	ex11_catch_conversionsb	pos	own	0	as ex11_catch_conversions
+r125	t17-second	ex_arith03_conditional_commab	pos	output	0	
+r125	t17-second	lex05_pp_basicsb	pos	output	0	
+r125	t17-second	lex09_pp_include_macrob	pos	output	0	
+r125	t17-second	lib09_initializer_list_functionalb	pos	output	0	
+r125	t17-second	lib10_new_deleteb	pos	output	0	
+r125	t17-second	lm01_capturesb	pos	output	0	
+r125	t17-second	lm06_lambda_in_contextsb	pos	output	0	
+r125	t17-second	lm07_capture_semantics_edgeb	pos	output	0	
+r125	t17-second	mv01_move_semanticsb	pos	output	0	
+r125	t17-second	mv06_move_only_typesb	pos	output	0	
+r125	t17-second	mv07_rvalue_this_membersb	pos	output	0	
+r125	t17-second	op08_bitfields_unionsb	pos	output	0	
+r125	t17-second	ov01_rankingb	pos	output	0	
+r125	t17-second	ov04_user_conversionsb	pos	output	0	
+r125	t17-second	ov05_operator_lookupb	pos	output	0	
+r125	t17-second	ov07_function_pointers_overloadb	pos	output	0	
+r125	t17-second	ov08_nullptr_bool_ptr_overloadsb	pos	output	0	
+r125	t17-second	ov09_initlist_overloadb	pos	output	0	
+r125	t17-second	ov11_conversion_ops_in_opsb	pos	output	0	
+r125	t17-second	st03_statics_and_atexitb	pos	output	0	
+r125	t17-second	tm01_deduction_basicsb	pos	output	0	
+r125	t17-second	tm02_forwarding_refsb	pos	output	0	
+r125	t17-second	tm03_partial_specb	pos	output	0	
+r125	t17-second	tm04_partial_orderingb	pos	output	0	
+r125	t17-second	tm05_sfinaeb	pos	output	0	
+r125	t17-second	tm07_variadic_forwardb	pos	output	0	
+r125	t17-second	tm09_alias_templatesb	pos	output	0	
+r125	t17-second	tm10_member_templatesb	pos	output	0	
+r125	t17-second	tm11_dependent_namesb	pos	output	0	
+r125	t17-second	tm12_metaprogrammingb	pos	output	0	
+r125	t17-second	tm13_class_template_miscb	pos	output	0	
+r125	t18-focus	fo01_enum_operator_adl	pos	output	0	
+r125	t18-focus	fo02_static_cast_unrelated_pointers	pos	output	0	
+r125	t18-focus	fo06_rvalue_ref_lifetime	pos	output	0	
+r125	t18-focus	fo07_member_of_temporary_lifetime	pos	output	0	
+r125	t18-focus	fo08_reference_through_function	pos	output	0	
+r125	t18-focus	fo09_implicit_move_assignment	pos	output	0	
+r125	t18-focus	fo10_user_copy_assign_suppresses_move	pos	output	0	
+r125	t18-focus	fo11_defaulted_copy_with_defaulted_move	pos	output	0	
+r125	t18-focus	fo12_static_local_init_throws	pos	output	0	
+r125	t18-focus	fo13_user_conversion_rvalue_binding	pos	output	0	
+r125	t18-focus	fo14_exception_what_through_base	pos	output	0	
+r125	t18-focus	fo15_auto_ref_const	pos	output	0	
+r125	t18-focus	fo16_meminit_name_hiding	pos	output	0	
+r125	t18-focus	fo17_aggregate_with_class_member	pos	output	0	
+r125	t18-focus	fo18_scalar_brace_init	pos	output	0	
+r125	t18-focus	fo19_macro_rescan	pos	output	0	
+r125	t18-focus	fo20_comments_in_macro_args	pos	output	0	
+r125	t18-focus	fo21_default_arg_reevaluated	pos	output	0	
+r125	t18-focus	fo22_array_dtor_order	pos	output	0	
+r125	t18-focus	fo23_virtual_in_dtor	pos	output	0	
+r125	t18-focus	fo24_switch_class_conversion	pos	output	0	
+r125	t18-focus	fo25_cv_rank_and_depth_rank	pos	output	0	
+r125	t18-focus	fo26_same_conversion_fn_second_standard	pos	output	0	
+r125	t18-focus	fo27_array_deduction_by_reference	pos	output	0	
+r125	t18-focus	fo28_forwarding_two_layers	pos	output	0	
+r125	t18-focus	fo29_qualified_base_member_access	pos	output	0	
+r125	t18-focus	fo30_nested_class_private_access	pos	output	0	
+r125	t18-focus	fo31_static_assert_block_scope	pos	output	0	
+r125	t18-focus	fo32_init_order_same_name_shadow	pos	output	0	
+r125	t18-focus	fo34_two_phase_nondependent	pos	output	0	
+r125	t18-focus	fo35_sizeof_pointer_to_member_kinds	pos	output	0	
+r125	t18-focus	fo36_long_double_and_wchar	pos	output	0	
+r125	t18-focus	fo37_string_literal_type_overload	pos	output	0	
+r125	t18-focus	fo38_pack_expansion_in_bases_and_initlist	pos	output	0	
+r125	t18-focus	fo39_trailing_decltype_pack_call	pos	output	0	
+r125	t18-focus	fo40_conditional_throw_arm	pos	output	0	
+r125	t20-third	th01_const_auto_ref	pos	output	0	
+r125	t20-third	th02_decltype_expressions	pos	output	0	
+r125	t20-third	th03_nested_class_sees_later_members	pos	output	0	
+r125	t20-third	th05_template_ref_param_const_arg	pos	output	0	
+r125	t20-third	th06_conditional_class_arm	pos	output	0	
+r125	t20-third	th07_member_fn_ptr_array_and_null	pos	output	0	
+r125	t20-third	th08_constexpr_static_assert_parts	pos	output	0	
+r125	t20-third	th09_explicit_member_template_call	pos	output	0	
+r125	t20-third	th10_bom_source	pos	output	0	
+r125	t20-third	th11_comma_in_constant	pos	output	0	
+r125	t20-third	th12_this_capture_default_in_member	pos	run	0	the order of evaluation of printf's arguments is unspecified
+r125	t20-third	th13_implicit_this_in_lambda_nested_scope	pos	output	0	
+r125	t20-third	th14_virtual_inheritance_data_only	pos	output	0	
+r125	t20-third	th15_string_as_map_key_iteration	pos	output	0	
+r125	t20-third	th16_inline_static_two_calls_one_tu	pos	output	0	
+r125	t20-third	th17_virtual_dtor_delete_via_base_in_array_of_pointers	pos	output	0	
+r125	t20-third	th18_switch_fallthrough_with_objects	pos	output	0	
+r125	t20-third	th19_long_long_division_and_shift_runtime	pos	output	0	
+r125	t20-third	th20_struct_return_through_function_pointer_and_virtual	pos	output	0	
+p130	p130	c01_using_decl_in_class	pos	output	0	
+p130	p130	c02_using_decl_block_scope	pos	output	0	
+p130	p130	c03_unrestricted_union	pos	output	0	
+p130	p130	c04_two_polymorphic_bases	pos	output	0	
+p130	p130	c05_virtual_base_with_virtuals	pos	output	0	
+p130	p130	c06_nsdmi_braced_array_class	pos	output	0	
+p130	p130	c07_mem_init_braced_list	pos	output	0	
+p130	p130	c08_deleted_destructor	pos	output	0	
+p130	p130	c09_default_outside_class	pos	output	0	
+p130	p130	c10_ref_qualifiers	pos	output	0	
+p130	p130	c11_friend_member_of_other	pos	output	0	
+p130	p130	c12_union_member_function	pos	output	0	
+p130	p130	c13_static_member_array_of_class	pos	output	0	
+p130	p130	c14_inheriting_ctor_template	pos	output	0	
+p130	p130	c15_deleted_virtual	pos	output	0	
+p130	p130	c16_alias_ptr_const_member_fn	pos	output	0	
+p130	p130	c17_sizeof_member_no_object	pos	output	0	
+p130	p130	c18_delegating_with_virtual_base	pos	output	0	
+p130	p130	c19_operator_comma_andand	pos	output	0	
+p130	p130	c20_operator_arrow_star	pos	output	0	
+p130	p130	e02_lambda_in_nsdmi	pos	output	0	
+p130	p130	e03_capture_default_then_named	pos	output	0	
+p130	p130	e04_global_scope_name_expr	pos	output	0	
+p130	p130	e05_new_2d_array	pos	output	0	
+p130	p130	e06_postfix_inc_bitfield	pos	output	0	
+p130	p130	e07_noexcept_operator	pos	output	0	
+p130	p130	e08_auto_braced	pos	output	0	
+p130	p130	e09_init_list_temporary	pos	output	0	
+p130	p130	e10_static_ref_to_temporary	pos	output	0	
+p130	p130	e11_static_initializer_list	pos	output	0	
+p130	p130	e12_loop_condition_class	pos	output	0	
+p130	p130	e13_braced_default_argument	pos	output	0	
+p130	p130	e14_static_cast_ref_derived	pos	output	0	
+p130	p130	e15_statement_attribute	pos	output	0	
+p130	p130	e16_catch_pointer_by_ref	pos	output	0	
+p130	p130	e17_rethrow	pos	output	0	
+p130	p130	e18_function_try_block	pos	output	0	
+p130	p130	e19_dynamic_cast_ref	pos	output	0	
+p130	p130	e20_local_dtor_in_handler	pos	output	0	
+p130	p130	e21_try_in_handler	pos	output	0	
+p130	p130	e22_thread_local	pos	output	0	
+p130	p130	e23_volatile_pointer	pos	output	0	
+p130	p130	e24_overload_set_as_argument	pos	output	0	
+p130	p130	e26_namespace_alias_block	pos	output	0	
+p130	p130	e27_constexpr_class_with_pointer	pos	output	0	
+p130	p130	e28_typename_outside_template	pos	output	0	
+p130	p130	p01_comment_in_macro_arg	pos	output	0	
+p130	p130	p02_trigraph	pos	own	0	C++11 replaces trigraphs in phase 1 ([lex.phases]/1, [lex.trigraph]); cl does only with /Zc:trigraphs, clang does for a non-Microsoft target
+p130	p130	t01_enable_if_return	pos	output	0	
+p130	p130	t02_sizeof_sfinae_declared_only	pos	output	0	
+p130	p130	t03_pack_in_base_list	pos	output	0	
+p130	p130	t04_trailing_decltype_pack	pos	output	0	
+p130	p130	t05_partly_explicit_args	pos	output	0	
+p130	p130	t06_constexpr_string_literal	pos	output	0	
+p130	p130	t07_constexpr_array_and_address	pos	output	0	
+p130	p130	t08_partial_spec_T_N	pos	output	0	
+p130	p130	t09_partial_order_T_Tp_cTp	pos	output	0	
+p130	p130	t10_explicit_instantiation	pos	output	0	
+p130	p130	t11_out_of_line_member_template	pos	output	0	
+p130	p130	t12_member_class_template	pos	output	0	
+p130	p130	t13_function_type_template_arg	pos	output	0	
+p130	p130	t14_name_function_template	pos	output	0	
+p130	p130	t15_qualified_template_id_member	pos	output	0	
+p130	p130	t16_pack_of_template_template	pos	output	0	
+p130	p130	t17_two_phase_lookup	pos	output	0	
+p130	p130	t18_explicit_ctor_template	pos	output	0	
+p130	p130	t19_default_template_arg_function	pos	output	0	
+p130	p130	t20_template_alias_partial	pos	output	0	
+p131	p131	decltype_member_kinds	pos	output	0	
+p131	p131	enum_deduction_and_specialisation	pos	output	0	
+p131	p131	enum_template_arguments	pos	output	0	
+p131	p131	nsdmi_this_implicit_ctor	pos	output	0	
+p131	p131	p2_ph2_more1	pos	output	0	
+p131	p131	p2_ph2_more2	pos	output	0	
+p131	p131	p2_r01_mem_initialiser_braces_scalar	pos	output	0	
+p131	p131	p2_r02_local_class_in_member_accesses_private	pos	output	0	
+p131	p131	p2_r12_char_array_from_braced_string_literal	pos	output	0	
+p131	p131	p2_r18_function_type_parameter	pos	output	0	
+p131	p131	p2_r21_pure_virtual_destructor	pos	output	0	
+p131	p131	p2_r23_static_cast_to_base_reference	pos	output	0	
+p131	p131	p2_r27_noexcept_on_function_pointer_type	pos	output	0	
+p131	p131	p2_r45_member_pointer_bool_context	pos	output	0	
+p131	p131	p2_template_defaults	pos	output	0	
+p131	p131	p2_x22_bool_from_pointer_contexts	pos	output	0	
+p131	p131	pack_partial_ordering	pos	output	0	
+p131	p131	throw_moves_parameter	pos	output	0	
+p131	p131	valid_a1ok	pos	output	2	
+p131	p131	valid_a2ok	pos	output	1	
+p131	p131	valid_a3ok	pos	output	2	
+p131	p131	valid_a4ok	pos	output	6	
+p131	p131	virtual_base_of_virtual_base_member	pos	output	0	
+p131	p131	virtual_bases_shared_vbptr_order	pos	output	0	
+p133	p133	r1_address_arguments	pos	output	0	
+p133	p133	r1_member_function_arguments	pos	output	0	
+p133	p133	r3_null_member_pointer_arguments	pos	output	0	
+p133	p133	r3_pointer_to_const_member_function	pos	output	0	
+v134	v134	r22_reference_members_in_aggregates	pos	output	0	
+v134	v134	r22_reference_to_array_from_braces	pos	output	0	
+v134	v134	r5_r8_r11_calls_and_declarations	pos	output	0	
+v134	v134	v1_volatile_objects_and_pointers	pos	output	0	
+v134	v134	v2_volatile_member_functions	pos	output	0	
+v134	v134	v3_volatile_type_traits	pos	output	0	
+v134	v134	v4_volatile_deduction_and_typeid	pos	output	0	
+f130	a1-lex	lx01_raw_string	pos	output	0	
+f130	a1-lex	lx02_raw_string_line_splice	pos	output	0	
+f130	a1-lex	lx04_char_types_distinct	pos	output	0	
+f130	a1-lex	lx05_long_double_literal	pos	output	0	
+f130	a1-lex	lx06_literal_types	pos	output	0	
+f130	a1-lex	lx07_udl_cooked_int_float	pos	output	0	
+f130	a1-lex	lx08_udl_raw_and_template	pos	output	0	
+f130	a1-lex	lx09_udl_string_char	pos	output	0	
+f130	a1-lex	lx10_udl_cooked_preferred_over_raw	pos	output	0	
+f130	a1-lex	lx11_alt_tokens_and_digraphs	pos	output	0	
+f130	a1-lex	lx12_max_munch_templates	pos	output	0	
+f130	a1-lex	lx13_string_concat_prefixes	pos	output	0	
+f130	a1-lex	lx14_escapes_and_multichar	pos	output	0	
+f130	a1-lex	lx17_keywords_as_identifiers_final_override	pos	output	0	
+f130	a1-lex	lx18_integer_literal_too_big	pos	output	0	
+f130	a1-lex	lx19_float_literal_forms	pos	output	0	
+f130	a1-lex	lx20_nullptr_literal	pos	output	0	
+f130	a2-cpp	pp02_line_and_file	pos	output	0	
+f130	a2-cpp	pp03_variadic_macro_edge	pos	output	0	
+f130	a2-cpp	pp05_placemarker	pos	output	0	
+f130	a2-cpp	pp06_if_arithmetic	pos	output	0	
+f130	a2-cpp	pp08_pragma_once_and_include_macro	pos	output	0	
+f130	a2-cpp	pp09_counter_date_time	pos	output	0	
+f130	a2-cpp	pp10_elif_after_taken_not_evaluated	pos	output	0	
+f130	a2-cpp	pp11_macro_spanning_lines_in_args	pos	output	0	
+f130	a2-cpp	pp12_function_macro_not_followed_by_paren	pos	output	0	
+f130	a2-cpp	pp13_hash_in_nonmacro_and_null_directive	pos	output	0	
+f130	a2-cpp	pp14_stringise_strings_with_quotes	pos	output	0	
+f130	a2-cpp	pp15_va_args_empty	pos	output	0	
+f130	a2-cpp	pp16_pragma_operator_in_macro	pos	output	0	
+f130	a2-cpp	pp17_if_with_character_and_shift	pos	output	0	
+f130	a2-cpp	pp20_long_macro_chain	pos	output	0	
+f130	a3-basic	bs01_static_local_thread_safe_guard	pos	output	0	
+f130	a3-basic	bs02_static_dtor_reverse_order	pos	output	0	
+f130	a3-basic	bs04_adl_hidden_friend	pos	output	0	
+f130	a3-basic	bs05_adl_associated_namespaces_of_template_args	pos	output	0	
+f130	a3-basic	bs06_unqualified_lookup_stops_at_class_scope	pos	output	0	
+f130	a3-basic	bs07_using_directive_transitive_and_ambiguous_resolution	pos	output	0	
+f130	a3-basic	bs08_inline_namespace_specialisation	pos	output	0	
+f130	a3-basic	bs09_inline_namespace_adl_and_using	pos	output	0	
+f130	a3-basic	bs10_anonymous_namespace_and_static	pos	output	0	
+f130	a3-basic	bs11_extern_c_linkage_and_overload	pos	output	0	
+f130	a3-basic	bs12_block_scope_extern	pos	output	0	
+f130	a3-basic	bs14_sizeof_fundamental	pos	output	0	
+f130	a3-basic	bs15_lvalue_xvalue_prvalue_decltype	pos	output	0	
+f130	a3-basic	bs17_order_of_dynamic_init_within_tu	pos	output	0	
+f130	a3-basic	bs18_constant_initialisation_before_dynamic	pos	output	0	
+f130	a3-basic	bs19_name_hiding_class_vs_function	pos	output	0	
+f130	a3-basic	bs20_enum_in_class_scope_and_qualified	pos	output	0	
+f130	a4-conv	cv01_narrowing_contexts_valid	pos	output	0	
+f130	a4-conv	cv02_integral_promotions_bitfield_enum	pos	output	0	
+f130	a4-conv	cv03_scoped_enum_rules	pos	output	0	
+f130	a4-conv	cv05_bool_conversions	pos	output	0	
+f130	a4-conv	cv06_pointer_conversions	pos	output	0	
+f130	a4-conv	cv07_usual_arithmetic_conversions	pos	output	0	
+f130	a4-conv	cv08_array_function_to_pointer_auto	pos	output	0	
+f130	a4-conv	cv09_floating_integral_conversions	pos	output	0	
+f130	a4-conv	cv10_qualification_conversion_multilevel	pos	output	0	
+f130	a4-conv	cv11_string_literal_to_const_char_array_binding	pos	output	0	
+f130	a4-conv	cv12_long_double_arithmetic	pos	output	0	
+f130	a5-expr	ex01_sizeof_pack_alignof_noexcept	pos	output	0	
+f130	a5-expr	ex02_typeid_polymorphic_evaluation	pos	output	0	
+f130	a5-expr	ex04_casts	pos	output	0	
+f130	a5-expr	ex05_conditional_operator_value_categories	pos	output	0	
+f130	a5-expr	ex06_comma_and_assignment_lvalues	pos	output	0	
+f130	a5-expr	ex07_pointer_to_member_calls	pos	output	0	
+f130	a5-expr	ex08_new_delete_forms	pos	output	0	
+f130	a5-expr	ex09_class_operator_new_delete_called	pos	output	0	
+f130	a5-expr	ex10_new_throws_dtor_cleanup_and_delete_called	pos	output	0	
+f130	a5-expr	ex11_bad_array_new_length	pos	output	0	
+f130	a5-expr	ex12_bad_alloc_on_huge_new	pos	output	0	
+f130	a5-expr	ex13_lambda_forms	pos	output	0	
+f130	a5-expr	ex14_lambda_capture_this_and_nested	pos	output	0	
+f130	a5-expr	ex16_lambda_capture_array_and_copy_semantics	pos	output	0	
+f130	a5-expr	ex18_lambda_const_call_and_mutable	pos	output	0	
+f130	a5-expr	ex19_constant_expressions_in_array_bounds	pos	output	0	
+f130	a5-expr	ex20_shift_and_unsigned_wrap	pos	output	0	
+f130	a5-expr	ex21_global_scope_operator_in_expression	pos	output	0	
+f130	a5-expr	ex22_member_access_through_pointer_to_base_subobject	pos	output	0	
+f130	a5-expr	ex23_sizeof_expressions_unevaluated	pos	output	0	
+f130	a5-expr	ex24_ptr_arith_and_difference_type	pos	output	0	
+f130	a5-expr	ex25_string_literal_type_and_cv	pos	output	0	
+f130	a5-expr	ex26_delete_calls_virtual_destructor_and_array_order	pos	output	0	
+f130	a5-expr	ex27_implicit_conversion_sequence_in_ternary_with_class	pos	output	0	
+f130	a5-expr	ex28_throw_in_conditional_and_void	pos	output	0	
+f130	a5-expr	ex29_builtin_operators_on_pointers_to_members	pos	output	0	
+f130	a5-expr	ex30_increment_on_pointer_and_enum_arith	pos	output	0	
+f130	a6-stmt	st01_range_for_forms	pos	output	0	
+f130	a6-stmt	st02_range_for_temporary_lifetime	pos	own	0	cl destroys the H() of `for (int x : H().a)` before the loop; __range binds its member, so [class.temporary]/5 keeps it to the loop's end, as clang does
+f130	a6-stmt	st03_switch_forms	pos	output	0	
+f130	a6-stmt	st04_condition_declarations	pos	output	0	
+f130	a6-stmt	st05_goto_and_labels_destructors	pos	output	0	
+f130	a6-stmt	st06_return_forms_and_void	pos	output	0	
+f130	a6-stmt	st07_declaration_statements_and_scopes	pos	output	0	
+f130	a6-stmt	st08_noreturn_attribute_and_exit	pos	output	3	
+f130	a6-stmt	st09_static_local_in_loop_and_recursion	pos	output	0	
+f130	a6-stmt	st10_switch_jumps_over_trivial_declaration	pos	output	0	
+f130	a6-stmt	st11_break_continue_in_nested_loops_and_switch	pos	output	0	
+f130	b1-dcl	dc01_auto_forms	pos	output	0	
+f130	b1-dcl	dc02_auto_multiple_declarators_same_type	pos	output	0	
+f130	b1-dcl	dc03_decltype_forms	pos	output	0	
+f130	b1-dcl	dc04_constexpr_functions	pos	output	0	
+f130	b1-dcl	dc05_constexpr_variables_and_static_members	pos	output	0	
+f130	b1-dcl	dc06_static_assert_scopes	pos	output	0	
+f130	b1-dcl	dc07_alias_declarations	pos	output	0	
+f130	b1-dcl	dc08_enum_declarations	pos	output	0	
+f130	b1-dcl	dc09_register_and_storage_classes	pos	output	0	
+f130	b1-dcl	dc10_mutable_and_const_object	pos	output	0	
+f130	b1-dcl	dc11_alignas_forms	pos	output	0	
+f130	b1-dcl	dc12_extended_friend_declarations	pos	output	0	
+f130	b1-dcl	dc14_explicit_conversion_and_ctor	pos	output	0	
+f130	b1-dcl	dc15_noexcept_specifications	pos	output	0	
+f130	b1-dcl	dc17_list_initialisation_forms	pos	output	0	
+f130	b1-dcl	dc18_aggregate_brace_elision_and_nested	pos	output	0	
+f130	b1-dcl	dc19_reference_initialisation	pos	output	0	
+f130	b1-dcl	dc20_value_init_and_default_init	pos	output	0	
+f130	b1-dcl	dc21_static_const_member_odr_use	pos	output	0	
+f130	b1-dcl	dc22_union_default_member_initialiser	pos	output	0	
+f130	b1-dcl	dc23_anonymous_union_in_class_and_namespace	pos	output	0	
+f130	b1-dcl	dc24_linkage_specification_forms	pos	output	0	
+f130	b1-dcl	dc25_attributes_forms	pos	output	0	
+f130	b1-dcl	dc26_typedef_redeclaration_and_elaborated	pos	output	0	
+f130	b1-dcl	dc27_namespace_alias_and_nested	pos	output	0	
+f130	b1-dcl	dc28_using_declaration_namespace_scope_overloads	pos	output	0	
+f130	b1-dcl	dc30_default_arguments_forms	pos	output	0	
+f130	b2-decl	dd01_complex_declarators	pos	output	0	
+f130	b2-decl	dd02_trailing_return_types	pos	output	0	
+f130	b2-decl	dd03_rvalue_reference_to_array_and_function	pos	output	0	
+f130	b2-decl	dd04_default_args_added_on_redeclaration	pos	output	0	
+f130	b2-decl	dd05_function_parameter_adjustments	pos	output	0	
+f130	b2-decl	dd07_cv_qualified_function_types_and_ref_qualifiers	pos	output	0	
+f130	b2-decl	dd08_array_declarators	pos	output	0	
+f130	b2-decl	dd09_function_definition_forms	pos	output	0	
+f130	b2-decl	dd10_pointer_to_member_declarators	pos	output	0	
+f130	b2-decl	dd11_incomplete_types_in_declarations	pos	output	0	
+f130	b2-decl	dd12_initializer_scalar_forms	pos	output	0	
+f130	b3-class	cl01_nested_and_local_classes	pos	output	0	
+f130	b3-class	cl02_bitfields	pos	output	0	
+f130	b3-class	cl03_static_members	pos	output	0	
+f130	b3-class	cl04_nsdmi_forms	pos	output	0	
+f130	b3-class	cl05_this_in_nsdmi_and_sizeof_members	pos	output	0	
+f130	b3-class	cl06_virtual_functions_forms	pos	output	0	
+f130	b3-class	cl07_covariant_and_hiding	pos	output	0	
+f130	b3-class	cl08_abstract_classes_and_pure_virtual_call_in_ctor	pos	output	0	
+f130	b3-class	cl09_conversion_functions	pos	output	0	
+f130	b3-class	cl10_operator_overloads_forms	pos	output	0	
+f130	b3-class	cl11_operator_new_delete_class_members_and_placement	pos	output	0	
+f130	b3-class	cl12_destructor_forms	pos	output	0	
+f130	b3-class	cl13_unions_forms	pos	output	0	
+f130	b3-class	cl14_member_function_definitions_out_of_class_and_inline	pos	output	0	
+f130	b3-class	cl16_injected_class_name_and_scope	pos	output	0	
+f130	b3-class	cl17_class_with_reference_and_const_members	pos	output	0	
+f130	b3-class	cl18_member_pointer_to_overloaded_and_static_via_object	pos	output	0	
+f130	b3-class	cl19_empty_class_sizes_and_ebo	pos	output	0	
+f130	b3-class	cl20_friend_forms	pos	output	0	
+f130	b4-derived	dr01_multiple_inheritance_lookup_and_disambiguation	pos	output	0	
+f130	b4-derived	dr02_virtual_inheritance_shared_base_and_dominance	pos	output	0	
+f130	b4-derived	dr03_ctor_dtor_order_with_virtual_bases	pos	output	0	
+f130	b4-derived	dr04_final_and_override_forms	pos	output	0	
+f130	b4-derived	dr05_base_conversion_and_pointer_adjustment	pos	output	0	
+f130	b4-derived	dr06_protected_and_private_inheritance	pos	output	0	
+f130	b4-derived	dr07_base_access_through_using_in_derived_is_c98	pos	output	0	
+f130	b4-derived	dr08_virtual_base_with_virtual_functions	pos	output	0	
+f130	b4-derived	dr09_interface_two_polymorphic_bases	pos	output	0	
+f130	b4-derived	dr10_slicing_copy_and_assignment_to_base	pos	output	0	
+f130	b5-access	ac01_access_on_names_not_types	pos	output	0	
+f130	b5-access	ac02_friend_access_to_private_members_and_nested	pos	output	0	
+f130	b5-access	ac03_protected_through_this_derived_only	pos	output	0	
+f130	b5-access	ac04_access_in_overload_resolution_after_selection	pos	output	0	
+f130	b5-access	ac05_private_members_in_sizeof_and_decltype	pos	output	0	
+f130	b5-access	ac06_access_declarations_using_in_class_change_access	pos	output	0	
+f130	b5-access	ac07_lambda_in_member_accesses_private	pos	output	0	
+f130	b6-special	sp02_move_falls_back_to_copy_with_user_dtor	pos	output	0	
+f130	b6-special	sp05_ctor_exception_destroys_completed_subobjects	pos	output	0	
+f130	b6-special	sp06_delegating_ctor_exception_runs_dtor	pos	output	0	
+f130	b6-special	sp07_inheriting_constructors_forms	pos	output	0	
+f130	b6-special	sp08_temporaries_lifetime_rules	pos	output	0	
+f130	b6-special	sp09_temporary_in_mem_initialiser_and_default_arg	pos	output	0	
+f130	b6-special	sp10_initializer_list_backing_array_lifetime	pos	output	0	
+f130	b6-special	sp11_copy_elision_and_nrvo_observable	pos	output	0	
+f130	b6-special	sp13_conversion_ctor_template_and_copy_ctor_template_rules	pos	output	0	
+f130	b6-special	sp14_destructor_called_on_scope_exit_and_throw	pos	output	0	
+f130	b6-special	sp15_array_members_ctor_dtor_order	pos	output	0	
+f130	b6-special	sp16_static_local_init_once_with_exception_and_recursion	pos	output	0	
+f130	b7-over	ov01_ranking_promotions_vs_conversions	pos	output	0	
+f130	b7-over	ov02_exact_match_subranks_cv_and_bases	pos	output	0	
+f130	b7-over	ov04_list_initialisation_ranking	pos	output	0	
+f130	b7-over	ov05_template_vs_non_template_and_partial_ordering	pos	output	0	
+f130	b7-over	ov06_operator_lookup_member_nonmember_builtin	pos	output	0	
+f130	b7-over	ov07_address_of_overloaded_function	pos	output	0	
+f130	b7-over	ov08_rvalue_overloads_and_forwarding	pos	output	0	
+f130	b7-over	ov09_default_arguments_and_ellipsis_ranking	pos	output	0	
+f130	b7-over	ov10_pointer_and_nullptr_conversions_ranking	pos	output	0	
+f130	b7-over	ov11_conversion_function_templates_and_ambiguity_resolution	pos	output	0	
+f130	b7-over	ov12_surrogate_call_and_functor_overloads	pos	output	0	
+f130	b7-over	ov13_enum_and_bool_overloads_with_literals	pos	output	0	
+f130	b7-over	ov14_member_operator_with_implicit_object_conversions	pos	output	0	
+f130	b7-over	ov15_overload_on_pointer_to_member_and_function_types	pos	output	0	
+f130	b7-over	ov16_literal_operator_lookup_and_templates	pos	output	0	
+f130	c1-temp	tp01_nontype_params_pointer_ref_member	pos	output	0	
+f130	c1-temp	tp02_nontype_params_enum_bool_char_nullptr	pos	output	0	
+f130	c1-temp	tp03_dependent_nontype_param_type	pos	output	0	
+f130	c1-temp	tp04_variadic_pack_expansions	pos	output	0	
+f130	c1-temp	tp05_pack_expansion_contexts	pos	output	0	
+f130	c1-temp	tp06_variadic_forwarding_and_make	pos	output	0	
+f130	c1-temp	tp07_sfinae_forms	pos	output	0	
+f130	c1-temp	tp08_sfinae_declared_only_and_sizeof_idiom	pos	output	0	
+f130	c1-temp	tp09_partial_specialisations	pos	output	0	
+f130	c1-temp	tp10_explicit_specialisations_of_members	pos	output	0	
+f130	c1-temp	tp11_explicit_instantiation_and_extern_template	pos	output	0	
+f130	c1-temp	tp12_member_templates_out_of_line_and_member_class_template	pos	output	0	
+f130	c1-temp	tp14_deduction_forms	pos	output	0	
+f130	c1-temp	tp15_deduction_with_conversions_and_base	pos	output	0	
+f130	c1-temp	tp16_class_template_features	pos	output	0	
+f130	c1-temp	tp18_template_template_params	pos	output	0	
+f130	c1-temp	tp19_local_and_unnamed_types_as_template_args	pos	output	0	
+f130	c1-temp	tp20_default_template_args_function_templates	pos	output	0	
+f130	c1-temp	tp21_two_phase_lookup_binding	pos	output	0	
+f130	c1-temp	tp22_template_instantiation_points_and_recursion	pos	output	0	
+f130	c1-temp	tp23_function_template_overloading_explicit_args	pos	output	0	
+f130	c1-temp	tp24_templates_and_friends_and_static_members	pos	output	0	
+f130	c1-temp	tp25_constexpr_templates_and_integral_constant	pos	output	0	
+f130	c1-temp	tp26_decltype_in_templates_and_trailing_return	pos	output	0	
+f130	c1-temp	tp27_name_function_template_as_argument	pos	output	0	
+f130	c1-temp	tp28_template_argument_forms	pos	output	0	
+f130	c1-temp	tp29_specialisation_in_enclosing_and_inline_namespace	pos	output	0	
+f130	c1-temp	tp30_pack_in_partial_spec_and_tuple_like	pos	output	0	
+f130	c1-temp	tp31_noexcept_dependent_and_sizeof_in_signature	pos	output	0	
+f130	c1-temp	tp32_qualified_name_through_template_id_and_scope	pos	output	0	
+f130	c1-temp	tp33_abstract_template_and_virtual_in_template	pos	output	0	
+f130	c1-temp	tp34_template_static_local_and_shared_instance	pos	output	0	
+f130	c1-temp	tp35_variadic_class_ctor_and_sizeof_pack_in_static_assert	pos	output	0	
+f130	c2-except	ex01_throw_catch_hierarchy_and_slicing	pos	output	0	
+f130	c2-except	ex02_rethrow_same_object	pos	output	0	
+f130	c2-except	ex03_nested_try_in_handler_and_local_dtor_in_handler	pos	output	0	
+f130	c2-except	ex04_function_try_block	pos	output	0	
+f130	c2-except	ex10_throw_in_ctor_releases_new_and_array_partial	pos	output	0	
+f130	c2-except	ex12_throw_pointer_and_nullptr_and_const	pos	own	0	a pointer handler matches a thrown nullptr, [except.handle]/3; cl's and clang's Microsoft runtime let it past
+f130	c2-except	ex16_destructors_in_handler_scope_and_rethrow_in_nested_function	pos	output	0	
+f130	c2-except	ex17_exception_specification_on_pointers_and_virtuals	pos	output	0	
+f130	c2-except	ex18_terminate_on_uncaught_exit_code	pos	output	-1073740791	
+f130	c2-except	ex19_throw_class_with_dtor_and_copy_elision_in_throw	pos	output	0	
+f130	c2-except	ex20_new_handler_called	pos	output	5	
+f130	d1-lib-support	ls05_new_header	pos	output	0	
+f130	d1-lib-support	ls14_cmath_overloads_integral_and_abs	pos	output	0	
+f130	d4-lib-cont	ct02_vector_exceptions_and_swap	pos	output	0	
+f130	d6-lib-io	io07_iosfwd_and_std_endl_as_manipulator_function	pos	output	0	
+f130	e1-isolate	cr01_variadic_ctor_template_in_variadic_class	pos	output	0	
+f130	e1-isolate	cr02_variadic_class_static_assert_sizeof_pack	pos	output	0	
+f130	e1-isolate	cr03_allsame_partial_specs	pos	output	0	
+f130	e1-isolate	cr04_variadic_class_default_ctor_from_variadic_template	pos	output	0	
+f130	e1-isolate	r01_mem_initialiser_braces_scalar	pos	output	0	
+f130	e1-isolate	r02_local_class_in_member_accesses_private	pos	output	0	
+f130	e1-isolate	r03_enable_if_nontype_default_template_arg	pos	output	0	
+f130	e1-isolate	r04_sizeof_comparison_in_template_argument_list	pos	output	0	
+f130	e1-isolate	r05_friend_class_template_declaration	pos	output	0	
+f130	e1-isolate	r06_friend_function_template_declaration	pos	output	0	
+f130	e1-isolate	r07_friend_T_extended	pos	output	0	
+f130	e1-isolate	r08_member_alias_template	pos	output	0	
+f130	e1-isolate	r09_alignas_dependent_in_class_template_head	pos	output	0	
+f130	e1-isolate	r10_explicit_spec_of_deleted_function_template	pos	output	0	
+f130	e1-isolate	r11_noexcept_dependent_on_template_declared_then_defined	pos	output	0	
+f130	e1-isolate	r12_char_array_from_braced_string_literal	pos	output	0	
+f130	e1-isolate	r13_using_declarations_merge_overloads_from_two_namespaces	pos	output	0	
+f130	e1-isolate	r14_function_template_default_argument_uses_T	pos	output	0	
+f130	e1-isolate	r15_default_template_arg_depends_on_earlier_param	pos	output	0	
+f130	e1-isolate	r16_rvalue_reference_to_array_declarator	pos	output	0	
+f130	e1-isolate	r17_default_arguments_accumulate_over_declarations	pos	output	0	
+f130	e1-isolate	r18_function_type_parameter	pos	output	0	
+f130	e1-isolate	r19_conversion_function_template	pos	output	0	
+f130	e1-isolate	r20_usual_deallocation_with_placement_delete_present	pos	output	0	
+f130	e1-isolate	r21_pure_virtual_destructor	pos	output	0	
+f130	e1-isolate	r22_aggregate_with_reference_to_array_member	pos	output	0	
+f130	e1-isolate	r23_static_cast_to_base_reference	pos	output	0	
+f130	e1-isolate	r24_braced_list_overload_prefers_initializer_list	pos	output	0	
+f130	e1-isolate	r25_forwarding_reference_array_argument	pos	output	0	
+f130	e1-isolate	r26_surrogate_call_function	pos	output	0	
+f130	e1-isolate	r28_template_template_param_with_pack	pos	output	0	
+f130	e1-isolate	r29_lambda_capture_pack	pos	output	0	
+f130	e1-isolate	r30_alignas_pack_expansion	pos	output	0	
+f130	e1-isolate	r31_nullptr_t_and_pointer_nontype_params	pos	output	0	
+f130	e1-isolate	r32_explicit_specialisation_on_enum_argument	pos	output	0	
+f130	e1-isolate	r33_specialise_function_in_inline_namespace_from_enclosing	pos	output	0	
+f130	e1-isolate	r34_adl_through_template_argument_namespace	pos	output	0	
+f130	e1-isolate	r35_auto_reference_to_function	pos	output	0	
+f130	e1-isolate	r36_pointer_to_member_deduction	pos	output	0	
+f130	e1-isolate	r37_unnamed_type_as_template_argument	pos	output	0	
+f130	e1-isolate	r38_constexpr_function_template_call_as_template_argument	pos	output	0	
+f130	e1-isolate	r39_for_loop_condition_class_declaration_message	pos	output	0	
+f130	e1-isolate	r40_pointer_to_const_member_function	pos	output	0	
+f130	e1-isolate	r41_explicit_specialisation_of_class_template_member	pos	output	0	
+f130	e1-isolate	r44_initializer_list_of_class_objects_as_argument	pos	output	0	
+f130	e1-isolate	r45_member_pointer_bool_context	pos	output	0	
+f130	e1-isolate	r47_template_nontype_pointer_to_function_and_member	pos	output	0	
+f130	e1-isolate	r48_qualified_name_in_trailing_decltype	pos	output	0	
+f130	e1-isolate	r49_pack_beside_other_args_in_partial_spec	pos	output	0	
+f130	e1-isolate	r50_sizeof_T_in_signature_sfinae	pos	output	0	
+f130	e1-isolate	w01_this_in_nsdmi	pos	output	0	
+f130	e1-isolate	w02_virtual_base_member_via_second_path	pos	output	0	
+f130	e1-isolate	w03_temporary_in_mem_initialiser_destroyed	pos	output	0	
+f130	e1-isolate	w04_temporary_in_default_argument_destroyed	pos	output	0	
+f130	e1-isolate	w05_implicit_move_assignment_moves_members	pos	output	0	
+f130	e1-isolate	w06_decltype_member_access_unparenthesised	pos	output	0	
+f130	e1-isolate	w07_throw_local_moves_and_throw_xvalue_moves	pos	output	0	
+f130	e1-isolate	w08_bad_array_new_length_negative_and_overflow	pos	output	0	
+f130	e1-isolate	w13_static_local_guard_shape	pos	output	0	
+f130	e1-isolate	w14_decltype_of_lambda_capture_and_pointer_to_bool_in_condition	pos	output	0	
+f130	e2-isolate2	x01_virtual_base_member_via_second_path_no_cast	pos	output	0	
+f130	e2-isolate2	x02_nsdmi_this_arrow_member	pos	output	0	
+f130	e2-isolate2	x03_nsdmi_member_read_without_ctor	pos	output	0	
+f130	e2-isolate2	x04_nsdmi_sizeof_this	pos	output	0	
+f130	e2-isolate2	x05_nested_namespace_members_leak_into_enclosing_lookup	pos	output	0	
+f130	e2-isolate2	x06_specialise_in_enclosing_with_sibling_namespace	pos	output	0	
+f130	e2-isolate2	x07_noexcept_function_pointer_declarator	pos	output	0	
+f130	e2-isolate2	x08_enum_vs_int_overload_of_template_runtime	pos	output	0	
+f130	e2-isolate2	x11_lambda_in_ctor_mem_initialiser	pos	output	0	
+f130	e2-isolate2	x15_template_recursion_depth_200	pos	output	0	
+f130	e2-isolate2	x16_template_recursion_depth_600	pos	output	0	
+f130	e2-isolate2	x18_long_expression_3000_terms	pos	output	0	
+f130	e2-isolate2	x23_catch_by_value_copy_count_and_rethrow_shape	pos	output	0	
+f130	e2-isolate2	x24_string_literal_in_overload_moves	pos	output	0	
+f130	e2-isolate2	x26_volatile_forms	pos	output	0	
+f130	e2-isolate2	x27_variadic_class_two_partial_specs_recursive_crash_minimal	pos	output	0	
+f130	e2-isolate2	x28_variadic_two_partial_specs_no_recursion	pos	output	0	
+f130	g1-lib-behaviour	lb01_map_reference_and_iterator_stability_on_insert	pos	output	0	
+f130	g1-lib-behaviour	lb03_vector_bool_and_string_moved_from	pos	output	0	
+f130	g1-lib-behaviour	lb06_iostream_formatting_defaults	pos	output	0	
+f130	g1-lib-behaviour	lb07_istream_extraction_edge_cases	pos	output	0	
+r125	t14-neg	neg01_narrowing_double_int	neg	refuse		
+r125	t14-neg	neg02_narrowing_char_300	neg	refuse		
+r125	t14-neg	neg03_narrowing_in_aggregate	neg	refuse		
+r125	t14-neg	neg04_enum_class_to_int	neg	refuse		
+r125	t14-neg	neg05_enum_class_compare_int	neg	refuse		
+r125	t14-neg	neg06_explicit_ctor_copy_init	neg	refuse		
+r125	t14-neg	neg07_explicit_bool_implicit	neg	refuse		
+r125	t14-neg	neg08_deleted_function_called	neg	refuse		
+r125	t14-neg	neg09_copy_of_noncopyable	neg	refuse		
+r125	t14-neg	neg10_override_nonvirtual	neg	refuse		
+r125	t14-neg	neg11_override_final_function	neg	refuse		
+r125	t14-neg	neg12_derive_from_final	neg	refuse		
+r125	t14-neg	neg13_static_assert_fails	neg	refuse		
+r125	t14-neg	neg14_constexpr_nonconstant	neg	refuse		
+r125	t14-neg	neg15_constexpr_two_statements_cxx11	neg	refuse		
+r125	t14-neg	neg16_auto_no_init	neg	refuse		
+r125	t14-neg	neg17_auto_conflicting	neg	refuse		
+r125	t14-neg	neg18_lambda_missing_capture	neg	refuse		
+r125	t14-neg	neg19_rvalue_ref_to_lvalue	neg	refuse		
+r125	t14-neg	neg20_lvalue_ref_to_temporary	neg	refuse		
+r125	t14-neg	neg21_deduction_conflict	neg	refuse		
+r125	t14-neg	neg22_ambiguous_overload	neg	refuse		
+r125	t14-neg	neg23_private_member	neg	refuse		
+r125	t14-neg	neg24_goto_past_init	neg	refuse		
+r125	t14-neg	neg25_missing_typename	neg	refuse		
+r125	t14-neg	neg26_return_type_mismatch	neg	refuse		
+r125	t14-neg	neg27_assign_to_const	neg	refuse		
+r125	t14-neg	neg28_undeclared	neg	refuse		
+r125	t14-neg	neg29_redefinition	neg	refuse		
+r125	t14-neg	neg30_too_many_initialisers	neg	refuse		
+r125	t14-neg	neg31_default_arg_not_trailing	neg	refuse		
+r125	t14-neg	neg32_switch_jump_past_init	neg	refuse		
+r125	t14-neg	neg33_nullptr_to_int	neg	refuse		
+r125	t14-neg	neg34_break_outside_loop	neg	refuse		
+r125	t14-neg	neg35_reference_member_no_init	neg	refuse		
+r125	t14-neg	neg36_abstract_instantiated	neg	refuse		
+r125	t14-neg	neg37_range_for_non_range	neg	refuse		
+r125	t14-neg	neg38_static_cast_unrelated	neg	refuse		
+r125	t14-neg	neg39_udl_undefined	neg	refuse		
+r125	t14-neg	neg40_pack_not_expanded	neg	refuse		
+r125	t14-neg	neg41_constexpr_from_runtime	neg	refuse		
+r125	t14-neg	neg42_enum_underlying_float	neg	refuse		
+r125	t14-neg	neg43_multichar_u16	neg	refuse		
+r125	t14-neg	neg44_unterminated_raw_string	neg	refuse		
+r125	t14-neg	neg45_const_member_modified	neg	refuse		
+r125	t14-neg	neg46_this_in_static	neg	refuse		
+r125	t14-neg	neg47_nontype_arg_not_constant	neg	refuse		
+r125	t14-neg	neg48_unique_ptr_copied	neg	refuse		
+r125	t14-neg	neg49_dtor_override_nonvirtual	neg	refuse		
+r125	t14-neg	neg50_initlist_narrowing	neg	refuse		
+r125	t14-neg	neg51_cxx14_decltype_auto	neg	refuse		
+r125	t14-neg	neg52_cxx14_binary_literal	neg	refuse		
+r125	t14-neg	neg53_cxx14_digit_separator	neg	refuse		
+r125	t14-neg	neg54_cxx14_return_deduction	neg	refuse		
+r125	t14-neg	neg55_cxx14_generic_lambda	neg	refuse		
+r125	t14-neg	neg56_cxx14_constexpr_loop	neg	refuse		
+r125	t14-neg	neg57_cxx14_variable_template	neg	refuse		
+r125	t14-neg	neg58_cxx14_aggregate_nsdmi	neg	refuse		
+r125	t14-neg	neg59_call_nonconst_on_const	neg	refuse		
+r125	t14-neg	neg60_void_value_used	neg	refuse		
+r125	t14-neg	neg61_two_defaults_in_switch	neg	refuse		
+r125	t14-neg	neg62_duplicate_case	neg	refuse		
+r125	t14-neg	neg63_incomplete_type_sizeof	neg	refuse		
+r125	t14-neg	neg64_virtual_static	neg	refuse		
+r125	t14-neg	neg66_delegating_with_member_init	neg	refuse		
+r125	t14-neg	neg67_inheriting_ctor_wrong_args	neg	refuse		
+r125	t14-neg	neg68_template_wrong_arity	neg	refuse		
+r125	t14-neg	neg69_noexcept_false_in_constant	neg	refuse		
+r125	t14-neg	neg70_alignas_weaker	neg	refuse		
+r125	t14-neg	neg71_const_object_no_init	neg	refuse		
+r125	t14-neg	neg72_array_of_references	neg	refuse		
+r125	t14-neg	neg73_string_literal_to_char_ptr	neg	refuse		
+r125	t14-neg	neg74_implicit_void_ptr_conversion	neg	refuse		
+r125	t14-neg	neg75_bool_increment_ok_but_decrement_not	neg	refuse		
+r125	t14-neg	neg76_lambda_return_mismatch	neg	refuse		
+r125	t14-neg	neg77_missing_template_keyword	neg	refuse		
+r125	t14-neg	neg78_using_declaration_of_nothing	neg	refuse		
+r125	t14-neg	neg79_jump_into_try	neg	refuse		
+r125	t14-neg	neg80_catch_order_unreachable_is_ok_but_duplicate_types	neg	refuse		
+p130	p130neg	e01_lambda_mixed_returns_illformed	neg	refuse		
+p130	p130neg	e29_alignas_weaker_illformed	neg	refuse		
+p131	p131neg	illformed_a1g	neg	refuse		
+p131	p131neg	illformed_a1i	neg	refuse		
+p131	p131neg	illformed_a1v	neg	refuse		
+p131	p131neg	illformed_a2	neg	refuse		
+p131	p131neg	illformed_a3	neg	refuse		
+p131	p131neg	illformed_a4	neg	refuse		
+p131	p131neg	p2_alias_exception_spec	neg	refuse		
+p131	p131neg	p2_bool_braced_from_pointer	neg	refuse		
+p131	p131neg	p2_meminit_brace_narrowing	neg	refuse		
+p131	p131neg	p2_meminit_brace_narrowing_const	neg	refuse		
+p131	p131neg	p2_pointer_to_int_implicit	neg	refuse		
+p131	p131neg	p2_static_cast_ref_const_off	neg	refuse		
+p131	p131neg	p2_typedef_exception_spec	neg	refuse		
+p133	p133neg	r1n01_int_zero_for_pointer	neg	refuse		
+p133	p133neg	r1n02_address_of_local	neg	refuse		
+p133	p133neg	r1n03_pointer_variable	neg	refuse		
+p133	p133neg	r1n04_reference_to_literal	neg	refuse		
+p133	p133neg	r1n05_subobject_address	neg	refuse		
+p133	p133neg	r1n06_member_for_function_pointer	neg	refuse		
+p133	p133neg	r1n07_function_for_data_member	neg	refuse		
+p133	p133neg	r1n08_double_parameter	neg	refuse		
+p133	p133neg	r1n09_const_object_to_pointer	neg	refuse		
+p133	p133neg	r1n10_thread_local	neg	refuse		
+p133	p133neg	r1n11_string_literal	neg	refuse		
+p133	p133neg	r1n12_address_for_reference	neg	refuse		
+p133	p133neg	r1n13_wrong_pointee	neg	refuse		
+p133	p133neg	r1n14_object_without_ampersand	neg	refuse		
+p133	p133neg	r1n15_const_member_function	neg	refuse		
+p133	p133neg	r3n01_nonconst_through_const_object	neg	refuse		
+p133	p133neg	r3n02_const_member_to_nonconst_pointer	neg	refuse		
+p133	p133neg	r3n03_nonconst_member_to_const_pointer	neg	refuse		
+p133	p133neg	r3n04_const_on_plain_function_pointer	neg	refuse		
+p133	p133neg	r3n05_nonconst_through_pointer_to_const	neg	refuse		
+p133	p133neg	r3n06_mixed_pointer_assignment	neg	refuse		
+v134	v134neg	r22n01_lvalue_reference_to_array_from_braces	neg	refuse		
+v134	v134neg	r5n01_explicit_conversion_no_surrogate	neg	refuse		
+v134	v134neg	r8n01_default_before_none	neg	refuse		
+v134	v134neg	r8n02_default_given_twice	neg	refuse		
+v134	v134neg	vn01_drops_volatile_pointer	neg	refuse		
+v134	v134neg	vn02_nonvolatile_member_on_volatile	neg	refuse		
+v134	v134neg	vn03_const_ref_to_volatile	neg	refuse		
+v134	v134neg	vn04_copy_volatile_class	neg	refuse		
+v134	v134neg	vn05_const_volatile_not_constant	neg	refuse		
+v134	v134neg	vn06_static_cast_drops_volatile	neg	refuse		
+v134	v134neg	vn07_plain_ref_to_volatile	neg	refuse		
+v134	v134neg	vn08_volatile_case_label	neg	refuse		
+v134	v134neg	vn09_volatile_overload_ambiguous_assign	neg	refuse		
+v134	v134neg	vn10_volatile_member_pointer_on_plain	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng01_string_literal_to_char_ptr	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng02_concat_u8_and_L	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng03_udl_without_underscore_defined_twice	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng04_udl_bad_parameter_type	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng05_udl_no_matching	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng06_raw_string_bad_delimiter	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng07_char16_multichar	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng08_integer_literal_overflow	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng09_undef_builtin_macro	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng100_comparison_pointer_int	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng101_pointer_minus_unrelated_types	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng102_typeid_incomplete	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng103_static_cast_unrelated_pointers	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng104_static_cast_drops_const	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng105_reinterpret_cast_drops_const	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng106_const_cast_to_unrelated	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng107_dynamic_cast_non_polymorphic	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng108_cast_to_abstract_by_value	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng109_call_non_function	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng10_define_defined	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng110_too_few_arguments	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng111_member_of_non_class	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng112_arrow_on_non_pointer	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng113_subscript_non_array	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng114_alignas_on_function	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng115_alignof_function	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng116_alignas_non_power_of_two	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng117_noexcept_operator_non_expression	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng118_decltype_of_overload_set	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng119_decltype_incomplete_prvalue	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng11_hash_outside_function_like_macro	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng120_main_called	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng121_main_address	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng122_main_wrong_return	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng123_main_declared_static	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng124_main_overloaded	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng125_main_constexpr	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng126_main_inline	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng127_reserved_identifier_double_underscore_keyword	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng128_thread_local_and_static_both	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng129_extern_with_initialiser_in_block	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng12_too_many_macro_args	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng130_auto_in_parameter	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng131_auto_two_declarators_differ	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng132_auto_no_initialiser	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng133_auto_in_cast	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng134_auto_in_template_argument	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng135_auto_member	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng136_auto_self_reference	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng137_auto_array_braces_two_types	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng138_static_local_in_constexpr	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng139_register_on_global	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng13_paste_invalid_token	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng140_mutable_outside_class	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng141_virtual_outside_class	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng142_explicit_on_non_constructor	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng143_friend_outside_class	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng144_typedef_with_initialiser	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng145_wchar_literal_to_char16_pointer	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng146_string_literal_modify_constexpr	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng147_constexpr_uninitialised	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng148_constexpr_non_literal_type	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng149_constexpr_reference_to_temporary	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng14_if_unbalanced	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng150_constexpr_function_no_return	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng151_constexpr_function_two_returns	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng152_constexpr_function_void_return	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng153_constexpr_virtual	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng154_constexpr_call_non_constexpr_in_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng155_constexpr_ctor_body_statement	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng156_constexpr_ctor_uninitialised_member	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng157_constexpr_pointer_to_local	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng158_constexpr_read_of_non_constexpr_variable	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng159_constexpr_reinterpret_cast	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng15_else_after_else	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng160_constexpr_array_out_of_bounds	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng161_static_assert_false	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng162_static_assert_non_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng163_static_assert_not_bool_convertible	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng16_if_no_expression	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng17_error_directive	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng18_include_missing	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng19_scoped_enum_to_int	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng20_scoped_enum_arith	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng21_scoped_enum_bitor	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng22_scoped_enum_to_bool_in_if	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng23_narrowing_double_to_int_braces	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng24_narrowing_negative_to_unsigned_braces	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng25_narrowing_variable_int_to_char	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng26_narrowing_in_aggregate	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng27_narrowing_in_mem_initialiser	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng28_narrowing_in_return_braces	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng30_narrowing_long_long_to_int_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng31_narrowing_float_to_int_in_array	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng32_narrowing_in_function_argument_braces	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng33_unscoped_enum_opaque_without_type	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng34_enum_value_out_of_fixed_range_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng35_enum_redeclared_different_underlying	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng36_explicit_bool_in_copy_init	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng37_sizeof_bitfield	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng38_address_of_bitfield	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng39_reference_to_bitfield	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng40_division_by_zero_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng41_overflow_in_constant_expression	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng42_shift_too_far_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng43_nullptr_arithmetic	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng44_nullptr_to_int	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng45_void_pointer_deref	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng46_void_pointer_arith	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng47_function_pointer_arith	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng48_assign_to_rvalue	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng49_assign_to_array	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng51_delete_non_pointer	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng52_new_incomplete	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng53_sizeof_incomplete	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng54_sizeof_function	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng55_sizeof_void	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng57_lambda_capture_without_enclosing_variable	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng58_lambda_capture_in_namespace_scope_default	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng59_lambda_duplicate_capture	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng60_lambda_this_and_default_this	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng61_lambda_capture_default_and_same_default	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng62_lambda_odr_use_without_capture	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng63_lambda_mutable_on_reference_capture_const_call	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng64_lambda_return_non_convertible	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng65_goto_past_initialised_variable	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng66_switch_past_nontrivial_init	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng67_duplicate_case	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng68_two_defaults	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng69_switch_on_class	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng70_switch_on_float	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng71_case_not_constant	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng72_break_outside_loop	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng73_continue_in_switch_outside_loop	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng74_return_value_from_void	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng75_return_void_from_int	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng76_range_for_no_begin	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng77_range_for_over_pointer	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng78_range_for_over_unsized_array_param	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng79_for_condition_class_without_bool	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng80_undeclared_label	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng81_duplicate_label	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng82_do_while_declaration_condition	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng83_declaration_in_switch_condition_class_no_integral	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng84_void_variable	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng85_const_object_uninitialised	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng86_reference_uninitialised	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng87_array_of_references	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng88_pointer_to_reference	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng89_reference_to_void	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng90_function_returning_array	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng91_function_returning_function	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng92_array_of_functions	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng93_zero_size_array	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng94_vla	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng95_negative_array_bound	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng96_array_initialiser_too_many	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng97_char_array_no_room_for_nul	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng98_ternary_void_and_int	neg	refuse		
+f130	n1-neg-lexpp-basic-expr-stmt	ng99_ternary_unrelated_classes	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd01_auto_declarators_differ	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd02_auto_function_return_no_trailing	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd03_decltype_auto	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd04_constexpr_var_non_constant	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd05_constexpr_function_non_literal_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd06_constexpr_function_loop	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd07_constexpr_member_modifies	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd08_static_const_double_in_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd09_static_constexpr_non_literal	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd100_conversion_operator_with_parameter	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd101_conversion_operator_with_return_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd102_operator_non_member_no_class_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd103_operator_subscript_non_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd104_operator_call_non_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd105_operator_assign_non_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd106_operator_with_default_argument	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd107_operator_wrong_arity	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd108_postfix_increment_wrong_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd109_operator_new_wrong_return	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd10_alias_template_specialisation	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd110_operator_delete_wrong_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd111_destructor_with_params	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd112_destructor_with_return	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd113_two_destructors	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd114_constructor_with_return_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd115_constructor_const	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd116_constructor_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd117_constructor_ref_qualified	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd118_copy_ctor_by_value	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd119_mem_init_unknown_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd11_alias_with_storage_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd120_mem_init_twice	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd121_mem_init_non_direct_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd122_delegating_and_member_init	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd123_delegating_in_non_ctor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd124_this_in_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd125_nonstatic_member_without_object	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd126_const_object_calls_nonconst	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd127_const_member_function_modifies	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd128_const_this_assign_through_ptr_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd129_rvalue_ref_qualified_called_on_lvalue	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd12_enum_class_duplicate_enumerator	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd130_ref_qualifier_mixed_with_unqualified	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd131_ref_qualifier_on_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd132_cv_on_static_member_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd133_local_class_static_data_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd134_local_class_member_template	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd135_local_class_uses_local_variable	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd137_access_private_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd138_access_private_method	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd139_access_protected_from_outside	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd13_enum_non_integral_underlying	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd140_protected_through_other_derived_object	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd141_protected_via_sibling_derived	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd142_private_base_conversion	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd143_private_base_member_access	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd144_private_ctor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd145_private_dtor_stack_object	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd146_private_dtor_delete	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd147_private_copy_ctor_in_elided_copy	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd148_private_copy_ctor_pass_by_value	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd149_private_operator_delete	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd14_enum_class_forward_then_unscoped	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd150_private_operator_new	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd151_private_conversion_operator	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd152_private_typedef_used_outside	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd153_private_nested_class_outside	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd154_private_static_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd155_private_enum_outside	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd156_private_member_via_pointer_to_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd157_private_member_in_derived	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd158_private_override_called_directly	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd159_friend_does_not_make_class_visible_qualified	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd15_enum_enumerator_not_constant	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd161_ambiguous_member_lookup	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd162_ambiguous_base_conversion	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd163_ambiguous_base_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd164_duplicate_direct_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd165_base_incomplete	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd166_base_is_union	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd167_base_is_enum	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd168_base_is_int	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd169_static_cast_from_virtual_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd16_enum_enumerator_narrowing_of_init_to_fixed_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd170_pointer_to_member_of_virtual_base_conversion	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd171_dynamic_cast_to_private_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd172_implicit_default_ctor_deleted_member_no_default	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd173_implicit_copy_deleted_by_move_ctor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd174_implicit_copy_assign_deleted_by_move_assign	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd175_implicit_copy_assign_deleted_const_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd176_implicit_copy_assign_deleted_ref_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd177_implicit_copy_deleted_member_deleted_copy	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd178_default_ctor_defaulted_but_deleted_called	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd179_inherited_ctor_conflicts	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd17_scoped_enum_unqualified_enumerator	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd180_inheriting_from_non_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd181_inherited_ctor_not_default	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd183_ambiguous_long_unsigned	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd184_ambiguous_conversion_two_user_conversions	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd185_ambiguous_ctor_and_conversion	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd186_two_user_conversions_in_sequence	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd187_no_viable_overload	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd188_overload_differ_only_in_return	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd189_overload_differ_only_in_top_level_const	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd18_thread_local_on_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd190_overload_differ_typedef	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd191_overload_static_and_nonstatic_same_signature	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd192_default_arg_redefined	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd193_default_arg_uses_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd194_default_arg_uses_local	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd195_default_arg_missing_middle	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd196_default_arg_on_operator_subscript	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd197_default_arg_uses_this	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd198_ambiguous_operator_overload	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd199_rvalue_binds_to_nonconst_ref_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd19_thread_local_on_parameter	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd200_string_literal_to_char_ref_array_nonconst	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd201_address_of_overloaded_no_target	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd202_address_of_overloaded_wrong_target	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd203_address_of_member_without_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd204_member_function_without_call	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd205_bound_member_function_to_pointer	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd206_udl_operator_in_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd207_udl_operator_with_default_arg	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd208_udl_template_with_type_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd209_udl_string_wrong_second_param	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd20_register_on_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd210_udl_raw_and_string_called_with_float_no_match	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd212_braces_to_scalar_two_values	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd213_braces_to_reference_two_values	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd214_braces_init_list_to_pointer	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd215_empty_braces_to_ref	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd216_designated_init_is_c99	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd217_compound_literal_is_c99	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd218_array_init_from_other_array	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd219_string_init_wchar_from_narrow	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd21_alignas_less_than_natural	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd220_class_init_with_parens_aggregate_no_ctor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd221_most_vexing_parse_then_call	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd223_reference_to_reference_typedef_fine_but_direct_declarator_not	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd224_pointer_to_member_of_reference	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd225_pointer_to_member_of_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd226_array_of_void	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd227_array_of_incomplete	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd228_array_of_abstract	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd229_function_with_void_and_other_params	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd22_alignas_on_typedef	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd230_parameter_named_void	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd231_duplicate_parameter_names	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd232_parameter_redeclared_in_body	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd233_ellipsis_before_parameter	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd234_extern_c_overloads	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd235_extern_c_template	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd236_extern_c_conflicting_linkage	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd238_using_directive_in_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd239_using_declaration_of_namespace	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd23_alignas_on_bitfield	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd240_namespace_alias_to_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd241_namespace_member_defined_outside_without_prior_declaration	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd242_redefinition_of_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd243_redeclaration_different_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd244_redeclaration_var_as_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd245_static_then_extern_conflict	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd246_undeclared_identifier	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd247_type_used_as_value	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd248_value_used_as_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd249_typename_outside_qualified	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd24_alignas_non_constant	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd250_missing_semicolon_after_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd251_missing_template_keyword_dependent	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd252_enum_class_bitfield_narrowing_to_wrong_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd26_noreturn_on_variable	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd28_default_on_non_special_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd29_default_with_wrong_signature	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd30_delete_then_define	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd31_delete_on_later_declaration	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd32_call_deleted_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd33_copy_deleted_class_copied	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd34_assign_deleted	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd35_default_deleted_ctor_used	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd37_explicit_ctor_copy_list_init	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd38_explicit_ctor_copy_init	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd39_explicit_ctor_in_return_braces	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd40_explicit_conversion_implicit_use	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd41_explicit_on_conversion_in_arithmetic	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd42_noexcept_mismatch_redeclaration	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd43_noexcept_on_typedef_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd44_virtual_override_looser_exception_spec	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd45_virtual_override_looser_throw_spec	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd46_noexcept_and_throw_both	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd47_throw_spec_incomplete_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd48_narrowing_in_nsdmi	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd49_narrowing_nested_aggregate	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd50_too_many_initialisers_struct	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd51_aggregate_with_private_member_braces	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd52_aggregate_with_base_braces	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd53_aggregate_with_virtual_braces	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd54_init_list_ctor_narrowing	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd55_reference_init_from_wrong_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd56_nonconst_ref_to_temporary	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd57_nonconst_ref_to_rvalue_of_class	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd58_rvalue_ref_to_lvalue	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd59_const_ref_to_bitfield_direct_ptr	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd60_const_member_without_init_and_default_ctor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd61_reference_member_without_init	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd62_const_var_no_init	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd63_union_with_reference	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd64_union_with_base	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd65_union_with_virtual	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd67_union_two_default_member_initialisers	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd68_anonymous_union_namespace_scope_not_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd69_anonymous_union_with_member_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd70_anonymous_union_private_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd71_class_redefinition	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd72_member_redeclared	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd74_incomplete_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd75_member_of_own_type	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd76_static_virtual_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd77_static_member_with_nsdmi_syntax	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd78_static_member_mutable	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd79_mutable_const_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd80_mutable_reference_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd81_bitfield_non_integral	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd82_bitfield_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd83_bitfield_negative_width	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd84_bitfield_zero_width_named	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd85_virtual_static	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd86_virtual_constructor	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd87_virtual_member_template	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd88_override_non_virtual	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd89_override_no_base_function	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd90_final_function_overridden	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd91_final_class_derived	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd92_override_on_non_member	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd93_covariant_return_wrong	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd94_override_different_return	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd95_abstract_instantiated	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd98_abstract_array	neg	refuse		
+f130	n2-neg-dcl-class-special-over	nd99_pure_specifier_on_non_virtual	neg	refuse		
+f130	n3-neg-temp-except	nt01_template_nontype_string_literal	neg	refuse		
+f130	n3-neg-temp-except	nt02_template_nontype_address_of_local	neg	refuse		
+f130	n3-neg-temp-except	nt03_template_nontype_floating	neg	refuse		
+f130	n3-neg-temp-except	nt04_template_nontype_class	neg	refuse		
+f130	n3-neg-temp-except	nt05_template_nontype_narrowing	neg	refuse		
+f130	n3-neg-temp-except	nt06_template_nontype_non_constant	neg	refuse		
+f130	n3-neg-temp-except	nt07_template_too_many_args	neg	refuse		
+f130	n3-neg-temp-except	nt08_template_too_few_args	neg	refuse		
+f130	n3-neg-temp-except	nt09_template_type_for_nontype	neg	refuse		
+f130	n3-neg-temp-except	nt100_try_without_handler	neg	refuse		
+f130	n3-neg-temp-except	nt101_catch_without_try	neg	refuse		
+f130	n3-neg-temp-except	nt102_throw_private_copy_ctor	neg	refuse		
+f130	n3-neg-temp-except	nt103_goto_into_try	neg	refuse		
+f130	n3-neg-temp-except	nt104_goto_into_handler	neg	refuse		
+f130	n3-neg-temp-except	nt105_return_in_ctor_function_try_handler	neg	refuse		
+f130	n3-neg-temp-except	nt106_noexcept_spec_non_constant	neg	refuse		
+f130	n3-neg-temp-except	nt107_noexcept_spec_non_bool_class	neg	refuse		
+f130	n3-neg-temp-except	nt108_exception_spec_on_typedef_then_mismatch	neg	refuse		
+f130	n3-neg-temp-except	nt109_exception_spec_pointer_assignment_looser	neg	refuse		
+f130	n3-neg-temp-except	nt10_template_nontype_for_type	neg	refuse		
+f130	n3-neg-temp-except	nt110_exception_spec_pointer_noexcept_from_plain	neg	refuse		
+f130	n3-neg-temp-except	nt111_throw_spec_on_virtual_override_adds_type	neg	refuse		
+f130	n3-neg-temp-except	nt114_throw_spec_rvalue_reference	neg	refuse		
+f130	n3-neg-temp-except	nt115_throw_void	neg	refuse		
+f130	n3-neg-temp-except	nt117_throw_spec_pack_not_expanded	neg	refuse		
+f130	n3-neg-temp-except	nt11_template_redeclared_different_params	neg	refuse		
+f130	n3-neg-temp-except	nt12_template_default_arg_then_non_default	neg	refuse		
+f130	n3-neg-temp-except	nt13_template_default_arg_redefined	neg	refuse		
+f130	n3-neg-temp-except	nt14_partial_spec_not_more_specialised	neg	refuse		
+f130	n3-neg-temp-except	nt15_partial_spec_of_function_template	neg	refuse		
+f130	n3-neg-temp-except	nt16_explicit_spec_after_instantiation	neg	refuse		
+f130	n3-neg-temp-except	nt17_explicit_spec_in_wrong_namespace	neg	refuse		
+f130	n3-neg-temp-except	nt18_explicit_spec_missing_template_prefix	neg	refuse		
+f130	n3-neg-temp-except	nt19_explicit_spec_with_default_args	neg	refuse		
+f130	n3-neg-temp-except	nt20_partial_spec_default_args	neg	refuse		
+f130	n3-neg-temp-except	nt21_partial_spec_nondeducible_param	neg	refuse		
+f130	n3-neg-temp-except	nt22_ambiguous_partial_specs	neg	refuse		
+f130	n3-neg-temp-except	nt23_template_in_local_scope	neg	refuse		
+f130	n3-neg-temp-except	nt24_virtual_template	neg	refuse		
+f130	n3-neg-temp-except	nt27_missing_typename_dependent	neg	refuse		
+f130	n3-neg-temp-except	nt28_dependent_base_member_unqualified	neg	refuse		
+f130	n3-neg-temp-except	nt31_pack_expansion_without_pack	neg	refuse		
+f130	n3-neg-temp-except	nt32_pack_not_last_in_class_template	neg	refuse		
+f130	n3-neg-temp-except	nt33_two_packs_in_class_template	neg	refuse		
+f130	n3-neg-temp-except	nt34_sizeof_dots_on_non_pack	neg	refuse		
+f130	n3-neg-temp-except	nt35_deduction_conflict	neg	refuse		
+f130	n3-neg-temp-except	nt36_deduction_non_deduced_context	neg	refuse		
+f130	n3-neg-temp-except	nt37_deduction_braced_list_no_initializer_list_param	neg	refuse		
+f130	n3-neg-temp-except	nt38_deduction_initializer_list_conflict	neg	refuse		
+f130	n3-neg-temp-except	nt39_explicit_args_too_many	neg	refuse		
+f130	n3-neg-temp-except	nt40_template_id_of_non_template	neg	refuse		
+f130	n3-neg-temp-except	nt42_class_template_used_without_args	neg	refuse		
+f130	n3-neg-temp-except	nt43_alias_template_used_without_args	neg	refuse		
+f130	n3-neg-temp-except	nt44_alias_template_partial_spec	neg	refuse		
+f130	n3-neg-temp-except	nt45_template_template_arg_mismatch_arity	neg	refuse		
+f130	n3-neg-temp-except	nt46_template_template_arg_is_type	neg	refuse		
+f130	n3-neg-temp-except	nt47_static_assert_in_template_fails_on_instantiation	neg	refuse		
+f130	n3-neg-temp-except	nt48_instantiation_error_in_body	neg	refuse		
+f130	n3-neg-temp-except	nt49_dependent_member_call_wrong_args	neg	refuse		
+f130	n3-neg-temp-except	nt50_incomplete_template_instantiation	neg	refuse		
+f130	n3-neg-temp-except	nt51_specialisation_of_undeclared_template	neg	refuse		
+f130	n3-neg-temp-except	nt52_default_template_arg_on_out_of_line_member	neg	refuse		
+f130	n3-neg-temp-except	nt53_default_template_arg_on_partial_spec	neg	refuse		
+f130	n3-neg-temp-except	nt55_explicit_instantiation_twice	neg	refuse		
+f130	n3-neg-temp-except	nt56_explicit_instantiation_of_undefined_template	neg	refuse		
+f130	n3-neg-temp-except	nt57_extern_template_then_explicit_specialisation_after_use	neg	refuse		
+f130	n3-neg-temp-except	nt58_template_parameter_shadows	neg	refuse		
+f130	n3-neg-temp-except	nt60_template_parameter_same_name_as_template	neg	refuse		
+f130	n3-neg-temp-except	nt61_nontype_template_param_modified	neg	refuse		
+f130	n3-neg-temp-except	nt63_constructor_template_explicit_args	neg	refuse		
+f130	n3-neg-temp-except	nt64_destructor_template	neg	refuse		
+f130	n3-neg-temp-except	nt65_conversion_template_specialised_with_explicit_args_on_call	neg	refuse		
+f130	n3-neg-temp-except	nt66_class_template_argument_deduction_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt67_fold_expression_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt68_variable_template_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt69_generic_lambda_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt70_if_constexpr_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt71_template_template_param_typename_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt72_concept_is_cpp20	neg	refuse		
+f130	n3-neg-temp-except	nt73_requires_is_cpp20	neg	refuse		
+f130	n3-neg-temp-except	nt74_auto_nontype_param_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt75_structured_binding_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt76_inline_variable_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt77_nested_namespace_definition_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt78_init_statement_in_if_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt79_constexpr_lambda_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt80_lambda_init_capture_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt81_binary_literal_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt82_digit_separator_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt83_u8_char_literal_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt84_deprecated_attribute_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt86_static_assert_no_message_is_cpp17	neg	refuse		
+f130	n3-neg-temp-except	nt87_relaxed_constexpr_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt88_return_type_deduction_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt89_decltype_auto_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt90_aggregate_with_nsdmi_braces_is_cpp14	neg	refuse		
+f130	n3-neg-temp-except	nt91_noexcept_fn_ptr_from_plain_fn	neg	refuse		
+f130	n3-neg-temp-except	nt92_throw_incomplete_type	neg	refuse		
+f130	n3-neg-temp-except	nt93_throw_abstract	neg	refuse		
+f130	n3-neg-temp-except	nt94_catch_abstract_by_value	neg	refuse		
+f130	n3-neg-temp-except	nt95_catch_incomplete	neg	refuse		
+f130	n3-neg-temp-except	nt96_catch_rvalue_ref	neg	refuse		
+f130	n3-neg-temp-except	nt97_catch_pointer_to_incomplete	neg	refuse		
+f130	n3-neg-temp-except	nt98_catch_void	neg	refuse		
+f130	n3-neg-temp-except	nt99_catch_dots_not_last	neg	refuse		
+p3pp	p3pp	pp30_line_after_splices	pos	output	0	
+p3pp	p3pp	pp31_if_short_circuit_and_ranges	pos	output	0	
+p3pp	p3pp	pp32_scope_example	pos	output	0	
+p3pp	p3pp	pp33_stringize_example	pos	output	0	
+p3pp	p3pp	pp34_placemarker_example	pos	output	0	
+p3pp	p3pp	pp35_variadic_example	pos	output	0	
+p3pp	p3pp	pp36_comment_is_one_space	pos	own	0	cl's traditional preprocessor fails to build it (C2059); clang's build is the expectation
+p3pp	p3pp	pp37_rescan_and_painting	pos	output	0	
+p3pp	p3pp	pp38_line_directive_forms	pos	output	0	
+p3pp	p3pp	pp39_ppnumbers_stringized	pos	output	0	
+p3pp	p3pp	pp40_string_concatenation_prefixes	pos	output	0	
+p3pp	p3pp	pp41_include_and_if_by_macro	pos	output	0	
+p3pp	p3pp	pp42_function_like_name_without_call	pos	output	0	
+p3pp	p3ppneg	pq01_macro_redefined_differently	neg	refuse		
+p3pp	p3ppneg	pq02_macro_redefined_white_space	neg	refuse		
+p3pp	p3ppneg	pq03_function_macro_redefined_parameter	neg	refuse		[cpp.replace]/2's own example; clang refuses it for a non-Microsoft target, its Microsoft mode accepts it
+p3pp	p3ppneg	pq04_object_macro_no_white_space	neg	refuse		
+p3pp	p3ppneg	pq05_undef_extra_tokens	neg	refuse		
+p3pp	p3ppneg	pq06_endif_extra_tokens	neg	refuse		
+p3pp	p3ppneg	pq07_include_extra_tokens	neg	refuse		
+p3pp	p3ppneg	pq08_line_zero	neg	refuse		
+p3pp	p3ppneg	pq09_line_too_large	neg	refuse		
+p3pp	p3ppneg	pq10_if_division_by_zero	neg	refuse		
+p3pp	p3ppneg	pq11_if_floating	neg	refuse		
+p3pp	p3ppneg	pq12_if_bad_octal	neg	refuse		
+p3pp	p3ppneg	pq13_if_constant_too_large	neg	refuse		
+p3pp	p3ppneg	pq14_if_decimal_past_signed	neg	refuse		
+p3pp	p3ppneg	pq15_variadic_missing_argument	neg	refuse		
+p3pp	p3ppneg	pq16_comma_paste_va_args	neg	refuse		
+p3pp	p3ppneg	pq17_va_args_in_object_like	neg	refuse		
+p3pp	p3ppneg	pq18_hash_not_before_parameter	neg	refuse		
+p3pp	p3ppneg	pq19_paste_at_start	neg	refuse		
+p3pp	p3ppneg	pq20_alternative_token_as_macro_name	neg	refuse		
+p3pp	p3ppneg	pq21_paste_forms_comment	neg	refuse		
+p3pp	p3ppneg	pq22_concat_wide_and_utf8	neg	refuse		
+p3pp	p3ppneg	pq23_concat_utf16_and_wide	neg	refuse		
+p3pp	p3ppneg	pq24_ppnumber_hex_with_e_sign	neg	refuse		[lex.ppnumber]: 0x1e+1 is one pp-number; clang refuses it for a non-Microsoft target, its Microsoft mode lexes three tokens as cl does
+p3pp	p3ppneg	pq25_ppnumber_two_points	neg	refuse		
+p3pp	p3ppneg	pq26_ppnumber_udl_with_e_sign	neg	refuse		
+p3pp	p3ppneg	pq27_undef_line	neg	refuse		
+p3pp	p3ppneg	pq28_define_file	neg	refuse		
+p3pp	p3ppneg	pq30_unterminated_call	neg	refuse		
+p3pp	p3ppneg	pq31_scope_redefinitions	neg	refuse		[cpp.replace]/2's own example; clang refuses it for a non-Microsoft target, its Microsoft mode accepts it
+l7a	cstdlib	abs_overload_types	pos	output	0	
+l7a	cstdlib	cstdlib_names	pos	output	0	
+l7a	cstdlib	quick_exit_handlers	pos	output	3	
+l7a	cstdlib	exit_without_handlers	pos	output	4	
+l7a	cmath	abs_cmath_only	pos	output	0	
+l7a	cmath	cmath_c99_names	pos	output	0	
+l7a	cstdio	cstdio_names	pos	output	0	
+l7a	cstdio	cstdio_vscanf	pos	output	0	clang judged it on Microsoft's headers: cpp11's va_start is its own builtin, which clang does not take
+l7a	cstdio	cstring_cctype_names	pos	output	0	
+l7a	support	cstdint_cstddef_names	pos	output	0	
+l7a	support	exception_handlers	pos	output	0	
+l7a	support	bad_typeid_and_bad_cast	pos	output	0	
+l7a	support	initializer_list_begin_end	pos	output	0	
+l7a	string	substr_out_of_range	pos	output	0	
+l7a	ios	ios_manipulators_output	pos	output	0	
+l7a	ios	ios_manipulators_input	pos	output	0	
+l7a	ios	istream_integer_overflow	pos	output	0	
+l7a	ios	fstream_integer_fields	pos	output	0	
+l7a	ios	r46_istream_manipulators_hex_ws	pos	output	0	
+l7a	ios	io01_ostream_formatting_breadth	pos	output	0	
+l7a	ios	x10_iomanip_setfill_left	pos	output	0	
+w6	eh	eh01_try_in_handler_three_deep	pos	output	0	
+w6	eh	eh02_return_from_inner_handler	pos	output	0	
+w6	eh	eh03_break_continue_from_inner_handler	pos	output	0	
+w6	eh	eh04_goto_out_of_nested_handlers	pos	output	0	
+w6	eh	eh05_exception_escapes_nested_handlers	pos	output	0	
+w6	eh	eh06_rethrow_inside_nested_try	pos	output	0	
+w6	eh	eh07_ctor_function_try_destroys_built_parts	pos	output	0	
+w6	eh	eh08_dtor_function_try	pos	output	0	
+w6	eh	eh09_handler_local_destroyed_by_unwinding	pos	output	0	
+w6	eh	eh10_range_for_with_destructor_in_handler	pos	output	0	
+w6	eh	eh11_catch_pointer_by_reference	pos	output	0	
+w6	eh	eh12_dynamic_cast_reference_bad_cast	pos	output	0	
+w6	eh	eh13_nested_catches_in_a_loop	pos	output	0	
+w6	eh	eh14_switch_and_handler_value	pos	output	0	
+w6	eh	eh15_throwing_destructor_at_scope_end	pos	output	0	
+w6	eh	ehn01_return_in_ctor_function_try_handler	neg	refuse		
+w6	eh	ehn02_goto_into_handler_nested_in_handler	neg	refuse		
+w6	eh	ehn03_goto_into_try_block_inside_handler	neg	refuse		
+w6	eh	ehn04_dynamic_cast_reference_of_prvalue	neg	refuse		
+w6	eh	ehn05_dynamic_cast_reference_non_polymorphic	neg	refuse		
+w6	mi	mi01_two_polymorphic_bases_calls	pos	output	0	
+w6	mi	mi02_polymorphic_base_laid_first	pos	output	0	
+w6	mi	mi03_deeper_and_private_bases	pos	output	0	
+w6	mi	mi04_rtti_across_bases	pos	output	0	
+w6	mi	mi05_pure_in_second_base	pos	output	0	
+w6	mi	mi06_same_function_in_both_bases	pos	output	0	
+w6	mi	mi07_construction_and_destruction_order	pos	output	0	
+w6	mi	min01_abstract_through_second_base	neg	refuse		
+w6	vb	vb01_diamond_dominance_calls	pos	output	0	
+w6	vb	vb02_delete_through_virtual_base	pos	output	0	
+w6	vb	vb03_own_vfptr_and_virtual_base	pos	output	0	
+w6	vb	vb04_qualified_and_base_calls	pos	output	0	
+w6	vb	vb05_rtti_through_virtual_base	pos	output	0	
+w6	vb	vb06_deeper_overrider_below_the_diamond	pos	output	0	
+w6	vd	vd01_diamond_dominance_calls	pos	output	0	
+w6	vd	vd03_own_vfptr_and_virtual_base	pos	output	0	
+w6	vd	vd04_qualified_and_base_calls	pos	output	0	
+w6	vd	vd06_deeper_overrider_below_the_diamond	pos	output	0	
+w6	vd	vd07_virtual_call_while_a_base_is_built	pos	output	0	
+w6	vd	vd08_vtordisp_inherited_by_a_class_without_constructors	pos	output	0	
+k134	k134	k1_c_function_beside_cpp_overloads	pos	output	0	
+k134	k134	k2_c_abs_and_its_overloads	pos	output	0	
+k134	k134neg	k1n01_cpp_then_c_linkage	neg	refuse		
+k134	k134neg	k1n02_two_c_linkage_overloads	neg	refuse		
+p135	p135	c1_constexpr_function_templates_in_constants	pos	output	0	
+p135	p135	c2_noexcept_expression_on_a_template	pos	output	0	
+p135	p135	c3_new_array_from_a_braced_list	pos	output	0	
+p135	p135	c4_new_array_element_that_throws	pos	output	0	
+p135	p135	c5_new_auto_and_arrays_of_arrays	pos	output	0	
+p135	p135	c6_conversion_function_templates	pos	output	0	
+p135	p135	c7_constexpr_conversions_and_cpp_linkage_inside_c	pos	output	0	
+p135	p135neg	n01_class_template_with_c_linkage	neg	refuse		
+p135	p135neg	n02_operator_delete_returning_int	neg	refuse		
+p135	p135neg	n03_new_array_excess_elements	neg	refuse		
+p135	p135neg	n04_new_array_element_explicit_constructor	neg	refuse		
+p135	p135neg	n05_new_array_narrowing_element	neg	refuse		
+p135	p135neg	n06_new_auto_without_initialiser	neg	refuse		
+l7a	ios	iostate_and_sentry	pos	output	0	
+l7a	ios	ios_members_and_ties	pos	output	0	
+l7a	ios	unformatted_input	pos	output	0	
+l7a	ios	stream_positions	pos	output	0	
+l7a	ios	more_extractors	pos	output	0	
+l7a	string	string_iterators_and_types	pos	output	0	
+l7a	string	string_init_list_and_compare	pos	output	0	
+l7a	string	to_string_all_types	pos	output	0	
+l7a	string	char_traits_and_utf_strings	pos	output	0	
+p136	p136	c1_member_explicit_specialisations	pos	output	0	
+p136	p136	c2_deleted_function_template_with_specialisations	pos	output	0	
+p136	p136	c3_friend_templates	pos	output	0	
+p136	p136	c4_member_alias_templates	pos	output	0	
+p136	p136	c5_placement_delete_and_global_new	pos	output	0	
+p136	p136neg	n01_deleted_function_template_used	neg	refuse		
+p136	p136neg	n02_friend_class_template_not_another	neg	refuse		
+p136	p136neg	n03_friend_function_template_not_another	neg	refuse		
+p136	p136neg	n04_member_alias_template_wrong_arguments	neg	refuse		
+p136	p136neg	n05_explicit_specialisation_of_no_member	neg	refuse		
+p136	p136neg	n06_placement_new_hidden_by_class	neg	refuse		
+w6	tl	tl01_one_copy_per_thread	pos	output	0	
+w6	tl	tl02_dynamic_initialisation_and_destruction	pos	output	0	
+w6	tl	tl03_local_static_thread_local	pos	output	0	
+w6	nx	nx01_noexcept_violation_terminates	pos	output	7	
+w6	nx	nx02_noexcept_member_and_expression_forms	pos	output	4	
+w6	nx	nx03_noexcept_function_that_handles_its_own	pos	output	0	
+w6	ux	ux01_unexpected_after_the_frame_is_unwound	pos	own	5	cl ignores a throw(T...) list - MSVC never implemented [except.unexpected]; the expectation is the standard's, checked by hand
+w6	ux	ux02_handler_throws_an_allowed_type	pos	own	0	cl ignores a throw(T...) list - MSVC never implemented [except.unexpected]; the expectation is the standard's, checked by hand
+w6	ux	ux03_handler_throws_what_the_list_refuses	pos	own	3	cl ignores a throw(T...) list - MSVC never implemented [except.unexpected]; the expectation is the standard's, checked by hand
+w6	ux	ux04_bad_exception_in_the_list	pos	own	0	cl ignores a throw(T...) list - MSVC never implemented [except.unexpected]; the expectation is the standard's, checked by hand
+w6	ux	ux05_constructor_and_virtual_member_lists	pos	own	0	cl ignores a throw(T...) list - MSVC never implemented [except.unexpected]; the expectation is the standard's, checked by hand
+w6	ux	ux06_what_the_list_allows	pos	output	0	
+w6	vo	vo01_overloads_on_volatile_array_elements	pos	output	0	
+p137	p137	c1_braced_argument_overload_ranking	pos	output	0	
+p137	p137neg	n01_braced_argument_ambiguous	neg	refuse		
+p137	p137neg	n02_braced_argument_narrowing	neg	refuse		
+p137	p137neg	n03_braced_argument_no_viable	neg	refuse		
+p138	p138	c1_c_functions_declared_in_namespaces	pos	output	0	
+p138	p138	c2_names_qualified_by_the_global_namespace	pos	output	0	
+p138	p138	c3_constexpr_conversions_in_constant_expressions	pos	output	0	
+p138	p138	c4_overloaded_names_in_braces	pos	output	0	
+p138	p138	c5_explicit_constexpr_conversion_functions	pos	output	0	
+p138	p138neg	n01_global_qualified_name_in_namespace_only	neg	refuse		
+p138	p138neg	n02_overloaded_name_in_braces_fits_nothing	neg	refuse		
+p138	p138neg	n03_array_bound_through_explicit_conversion	neg	refuse		
+p138	p138neg	n04_c_function_two_types_in_two_namespaces	neg	refuse		
+p139	p139	c1_initializer_list_of_class_objects_in_expressions	pos	output	0	
+p139	p139	c2_initializer_list_element_that_throws	pos	output	0	
+p139	p139	c3_initializer_list_of_strings_in_expressions	pos	output	0	
+p139	p139neg	n01_initializer_list_element_explicit_constructor	neg	refuse		
+p140	p140	c1_volatile_beside_optimised_code	pos	output	0	
+p141	p141	c1_member_template_explicit_specialisations	pos	output	0	
+p141	p141neg	n01_member_template_specialisation_matches_none	neg	refuse		
+p142	p142	c1_deduction_from_braced_lists	pos	output	0	
+p142	p142neg	n01_braced_list_for_a_plain_parameter	neg	refuse		
+p142	p142neg	n02_braced_list_elements_of_two_types	neg	refuse		
+p143	p143	tr1_class_kinds	pos	output	0	
+p143	p143	tr2_layout_and_triviality	pos	output	0	
+p143	p143	tr3_constructible_destructible	pos	output	0	
+p143	p143	tr4_assignable_convertible	pos	output	0	
+p143	p143	tr5_in_templates	pos	output	0	
+p144	p144	tl1_bound_at_definition	pos	output	0	
+p144	p144	tl2_dependent_base_lookup	pos	output	0	
+p143	p143neg	trn1_incomplete_operand	neg	refuse		
+p143	p143neg	trn2_underlying_of_int	neg	refuse		
+p143	p143neg	trn3_base_of_incomplete	neg	refuse		
+p143	p143neg	trn4_trait_arity	neg	refuse		
+p143	p143neg	trn5_constructible_nothing	neg	refuse		
+p143	p143neg	trn6_incomplete_argument	neg	refuse		
+p144	p144neg	tln1_dependent_base_member	neg	refuse		
+p144	p144neg	tln2_dependent_base_function	neg	refuse		
+p144	p144neg	tln3_undeclared_nondependent	neg	refuse		
+p144	p144neg	tln4_dependent_not_found_by_adl	neg	refuse		
+l7a	limits	limits_members	pos	output	0	
+l7a	algorithm	algorithm_nonmodifying	pos	output	0	
+l7a	algorithm	algorithm_modifying	pos	output	0	
+l7a	algorithm	algorithm_partitions_and_sorting	pos	output	0	
+l7a	algorithm	algorithm_heaps_searches_and_sets	pos	output	0	
+l7a	algorithm	algorithm_minmax_and_permutations	pos	output	0	
+l7a	numeric	numeric_operations	pos	output	0	
+p145	p145	ei1_explicit_instantiation	pos	output	0	
+p145	p145	mg1_dependent_signatures	pos	output	0	
+p145	p145	pe1_partly_explicit_arguments	pos	output	0	
+p145	p145	sl1_string_literal_array_reference	pos	output	0	
+p145	p145neg	ein1_instantiate_non_template	neg	refuse		
+p145	p145neg	ein2_instantiate_no_match	neg	refuse		
+p145	p145neg	pen1_partly_explicit_conflict	neg	refuse		
+l7a	utility	utility_pair_and_swap	pos	output	0	
+l7a	memory	memory_unique_ptr	pos	output	0	
+l7a	memory	memory_shared_ptr_ownership	pos	output	0	
+l7a	memory	memory_weak_ptr_and_shared_from_this	pos	output	0	
+l7a	memory	memory_allocators_and_raw_storage	pos	output	0	
+l7a	support	exception_ptr_and_nesting	pos	output	0	
+cls5	b1	block_namespace_alias	pos	output	0	
+cls5	b1	block_using_function	pos	output	0	
+cls5	b1	block_using_type_and_variable	pos	output	0	
+cls5	b1	braced_default_arguments	pos	output	0	
+cls5	b1	lambda_capture_default_and_named	pos	output	0	
+cls5	b1	mem_initialiser_lists	pos	output	0	
+cls5	b1	nsdmi_lists	pos	output	0	
+cls5	b1	postfix_bitfield	pos	output	0	
+cls5	b1	stmt_attributes	pos	output	0	
+cls5	b1	block_using_class_member	neg	refuse		
+cls5	b1	block_using_undeclared	neg	refuse		
+cls5	b1	braced_default_narrowing	neg	refuse		
+cls5	b1	lambda_default_copy_then_copy	neg	refuse		
+cls5	b1	lambda_default_copy_then_this	neg	refuse		
+cls5	b1	lambda_default_ref_then_ref	neg	refuse		
+cls5	b1	mem_init_list_explicit_member_class	neg	refuse		
+cls5	b1	mem_init_list_too_long	neg	refuse		
+cls5	b1	nsdmi_list_narrowing	neg	refuse		
+cls5	b1	stmt_attribute_noreturn	neg	refuse		
+cls5	b2	class_using_functions	pos	output	0	
+cls5	b2	class_using_types_and_operators	pos	output	0	
+cls5	b2	default_outside_class	pos	output	0	
+cls5	b2	deleted_destructor_heap	pos	output	0	
+cls5	b2	deleted_virtual_slots	pos	output	0	
+cls5	b2	operators_logical_comma_arrow_star	pos	output	0	
+cls5	b2	class_using_data_private	neg	refuse		
+cls5	b2	class_using_no_such_member	neg	refuse		
+cls5	b2	class_using_not_a_base	neg	refuse		
+cls5	b2	class_using_private_access	neg	refuse		
+cls5	b2	class_using_protected_stays_protected	neg	refuse		
+cls5	b2	default_free_function	neg	refuse		
+cls5	b2	default_outside_not_special	neg	refuse		
+cls5	b2	default_outside_twice	neg	refuse		
+cls5	b2	deleted_destructor_delete	neg	refuse		
+cls5	b2	deleted_destructor_local	neg	refuse		
+cls5	b2	deleted_destructor_member	neg	refuse		
+cls5	b2	deleted_destructor_temporary	neg	refuse		
+cls5	b2	deleted_overrides_nondeleted	neg	refuse		
+cls5	b2	deleted_virtual_called	neg	refuse		
+cls5	b2	nondeleted_overrides_deleted	neg	refuse		
+cls5	b2	operator_arrow_star_none	neg	refuse		
+cls5	b2	operator_comma_without_class	neg	refuse		
+cls5	b3	braced_list_bound_to_reference	pos	output	0	
+cls5	b3	friend_member_of_another_class	pos	output	0	
+cls5	b3	loop_condition_objects	pos	output	0	
+cls5	b3	static_member_arrays_of_classes	pos	output	0	
+cls5	b3	union_members_and_functions	pos	output	0	
+cls5	b3	braced_list_to_nonconst_reference	neg	refuse		
+cls5	b3	friend_member_not_declared	neg	refuse		
+cls5	b3	friend_member_private_elsewhere	neg	refuse		
+cls5	b3	loop_condition_no_bool	neg	refuse		
+cls5	b3	union_member_with_copy_copied	neg	refuse		
+cls5	b3	union_member_with_ctor_default_deleted	neg	refuse		
+cls5	b3	union_member_with_dtor_destroyed	neg	refuse		
+cls5	b3	union_virtual_function	neg	refuse		
+cls5	b4	diagnostics_valid_neighbours	pos	output	0	
+cls5	b4	aggregate_braces_with_virtual	neg	refuse		
+cls5	b4	array_of_references	neg	refuse		
+cls5	b4	catch_reference_to_incomplete	neg	refuse		
+cls5	b4	copy_ctor_by_value_with_default	neg	refuse		
+cls5	b4	default_argument_names_earlier_parameter_in_definition	neg	refuse		
+cls5	b4	default_argument_on_operator_plus	neg	refuse		
+cls5	b4	dynamic_cast_to_protected_base_reference	neg	refuse		
+cls5	b4	lambda_return_void_then_value	neg	refuse		
+cls5	b4	local_class_nested_static_member	neg	refuse		
+cls5	b4	main_called_from_other_function	neg	refuse		
+cls5	b4	override_noexcept_dropped_by_throw_list	neg	refuse		
+cls5	b4	postfix_decrement_wrong_param_nonmember	neg	refuse		
+cls5	b4	sizeof_function_type_id	neg	refuse		
+cls5	b4	static_after_extern_function_scope_object	neg	refuse		
+cls5	b4	throw_incomplete_pointer	neg	refuse		
+cls5	b4	throw_private_destructor	neg	refuse		
+p146	p146	mo1_member_templates_out_of_line	pos	output	0	
+p146	p146	ps1_partial_specialisation_shapes	pos	output	0	
+p146	p146neg	mon1_out_of_line_not_declared	neg	refuse		
+p147	p147	lz01_member_class_explicit	pos	output	0	
+p147	p147	lz02_unused_member_class	pos	output	0	
+p147	p147	lz03_nested_hierarchy	pos	output	0	
+p147	p147	mc01_rebind	pos	output	0	
+p147	p147	mc02_members_and_names	pos	output	0	
+p147	p147	mc03_alias_of_class_template	pos	output	0	
+p147	p147	mc04_inner_uses_outer	pos	output	0	
+p147	p147	mc05_inherited	pos	output	0	
+p147	p147	mc06_self_reference	pos	output	0	
+p147	p147neg	lzn01_specialized_after_use	neg	refuse		
+p147	p147neg	lzn02_used_bad_member_class	neg	refuse		
+p147	p147neg	lzn03_not_a_member_class	neg	refuse		
+p147	p147neg	mcn01_private	neg	refuse		
+p147	p147neg	mcn02_missing_template_keyword	neg	refuse		
+p147	p147neg	mcn03_not_a_member_template	neg	refuse		
+p147	p147neg	mcn04_local_class	neg	refuse		
+p147	p147neg	mcn05_protected_outside	neg	refuse		
+p148	p148	px01_base_list_expansion	pos	output	0	
+p148	p148	px02_function_type_pack_deduction	pos	output	0	
+p148	p148	px03_forward_in_signature	pos	output	0	
+p148	p148	px04_pack_in_nested_partial	pos	output	0	
+p148	p148	px05_capture_pack	pos	output	0	
+p148	p148	px06_alignas_pack	pos	output	0	
+p148	p148	px07_member_template_of_variadic	pos	output	0	
+p148	p148	px08_static_auto_member	pos	output	0	
+p148	p148	px09_pack_into_fixed_params	pos	output	0	
+p148	p148	px10_template_named_without_call	pos	output	0	
+p148	p148neg	pxn01_capture_not_a_pack	neg	refuse		
+p148	p148neg	pxn02_base_pack_not_expanded	neg	refuse		
+p148	p148neg	pxn03_alignas_pack_not_power_of_two	neg	refuse		
+p148	p148neg	pxn04_template_named_no_target	neg	refuse		
+p148	p148neg	pxn05_function_type_pack_mismatch	neg	refuse		
+p148	p148neg	pxn06_static_auto_no_trailing	neg	refuse		
+p148	p148neg	pxn07_mem_init_pack_not_expanded	neg	refuse		
+p148	p148neg	pxn08_nested_pack_partial_no_match	neg	refuse		
+p149	p149	wc01_placement_new_throw	pos	output	0	
+p149	p149	wc02_empty_base_assignment	pos	output	0	
+p149	p149	wc03_forwarding_string_literal	pos	output	0	
+p149	p149	wc04_template_vs_nontemplate_namespaces	pos	output	0	
+p149	p149	wc05_nothrow_traits_implicit	pos	output	0	
+p149	p149	wc06_namespace_deduction_failure	pos	output	0	
+p149	p149	wc07_adl_template_argument_namespaces	pos	output	0	
+p149	p149	wc08_explicit_spec_inline_namespace	pos	output	0	
+p149	p149	wc09_partial_spec_cv	pos	output	0	
+p149	p149	wc10_enable_if_nontype_param	pos	output	0	
+p149	p149	wc11_unnamed_class_template_args	pos	output	0	
+p149	p149	wc12_aggregate_member_from_object	pos	output	0	
+p149	p149neg	wcn01_throw_pack_in_template_id	neg	refuse		
+p149	p149neg	wcn02_qualified_call_other_namespace	neg	refuse		
+p149	p149neg	wcn03_adl_ambiguous	neg	refuse		
+p149	p149neg	wcn04_explicit_spec_sibling_namespace	neg	refuse		
+p149	p149neg	wcn05_enable_if_nontype_no_candidate	neg	refuse		
+p149	p149neg	wcn06_partial_spec_cv_no_match	neg	refuse		
+p149	p149neg	wcn07_typename_param_not_a_type	neg	refuse		
+p150	p150	dv01_dependent_bodies_never_used	pos	output	0	
+p150	p150	dv02_dependent_class_members_never_used	pos	output	0	
+p150	p150	lb20_partly_explicit_arguments_and_pointer_casts	pos	output	0	
+p150	p150	lb29_explicit_and_converting_constructor_templates	pos	output	0	
+p150	p150	lb31_unchosen_constructor_template_bodies	pos	output	0	
+p150	p150	lb32_static_member_templates_and_operator_new	pos	output	0	
+p150	p150	lb36_shared_ptr_exception_ptr_translation_unit	pos	output	0	
+p150	p150	lb37_operator_templates_reached_by_lookup	pos	output	0	
+p150	p150	lb38_pack_forwarded_in_member_template	pos	output	0	
+p150	p150	lb39_initializer_list_constructor_with_defaults	pos	output	0	
+p150	p150	lb50_braced_assignment_emplace_make_shared	pos	output	0	
+p150	p150neg	dt01_syntax_error_in_body	neg	refuse		
+p150	p150neg	dt02_undeclared_function_no_dependent_argument	neg	refuse		
+p150	p150neg	dt03_undeclared_variable	neg	refuse		
+p150	p150neg	dt04_undeclared_type	neg	refuse		
+p150	p150neg	dt05_nondependent_conversion	neg	refuse		
+p150	p150neg	dt06_nondependent_wrong_arity	neg	refuse		
+p150	p150neg	dt07_member_of_used_class_never_called	neg	refuse		
+p150	p150neg	dt08_missing_typename	neg	refuse		
+p150	p150neg	dt09_void_returns_value	neg	refuse		
+p150	p150neg	dt10_undeclared_in_class_template_static	neg	refuse		
+p150	p150neg	dt11_break_outside_loop	neg	refuse		
+p150	p150neg	dt12_member_template_body	neg	refuse		
+p150	p150neg	dt13_nondependent_member_missing	neg	refuse		
+p150	p150neg	dt14_undeclared_used_after_definition	neg	refuse		
+p150	p150neg	dt15_operator_template_of_nested_namespace	neg	refuse		
+l7a	containers	vector_and_array_members	pos	output	0	
+l7a	containers	map_and_set_members	pos	output	0	
+l7a	type_traits	type_traits_categories_and_properties	pos	output	0	
+cls5	b5	access_and_constant_neighbours	pos	output	0	
+cls5	b5	static_references_to_temporaries	pos	output	0	
+cls5	b5	constant_overflow_in_array_bound	neg	refuse		
+cls5	b5	constant_shift_negative_left	neg	refuse		
+cls5	b5	constant_shift_past_width	neg	refuse		
+cls5	b5	constexpr_ctor_leaves_member	neg	refuse		
+cls5	b5	constexpr_reference_to_temporary_class	neg	refuse		
+cls5	b5	nsdmi_narrowing_negative_to_unsigned	neg	refuse		
+cls5	b5	private_destructor_global	neg	refuse		
+cls5	b5	private_destructor_static_local	neg	refuse		
+cls5	b5	private_operator_delete_array	neg	refuse		
+cls5	b5	protected_through_base_pointer	neg	refuse		
+cls5	b5	static_assert_overflow	neg	refuse		
+cls5	b6	template_declarations_valid	pos	output	0	
+cls5	b6	class_template_named_as_its_nontype_parameter	neg	refuse		
+cls5	b6	function_template_partial_specialisation_definition	neg	refuse		
+cls5	b6	partial_spec_identical_with_two_params	neg	refuse		
+cls5	b6	template_default_on_out_of_line_static_member	neg	refuse		
+cls5	b6	template_member_function_parameter_named_as_parameter	neg	refuse		
+cls5	b6	template_nontype_param_redeclared_as_member	neg	refuse		
+cls5	b6	template_redeclared_pack_versus_single	neg	refuse		
+cls5	b7	range_for_member_array_of_temporary	pos	own	0	cl destroys each H() before its loop; [class.temporary]/5 keeps it as long as __range, which binds its member - clang's output is this
+l7a	utility	get_and_pointer_casts	pos	output	0	
+l7a	type_traits	type_traits_function_types_and_result_of	pos	output	0	
+l7a	utility	pair_converting_assignment	pos	output	0	
+cls5	b8	member_type_access_granted	pos	output	0	
+cls5	b8	member_type_access_in_templates	pos	output	0	
+cls5	b8	private_typedef_in_derived_member	neg	refuse		
+cls5	b8	private_typedef_in_template_argument	neg	refuse		
+cls5	b8	private_typedef_named_outside	neg	refuse		
+cls5	b8	private_typedef_through_derived	neg	refuse		
+cls5	b8	protected_alias_named_outside	neg	refuse		
+cls5	b8	protected_typedef_in_unrelated_function	neg	refuse		
+cls5	b9	member_enumerator_access_granted	pos	output	0	
+cls5	b9	private_anonymous_enumerator_outside	neg	refuse		
+cls5	b9	private_enumerator_in_derived_member	neg	refuse		
+cls5	b9	private_enumerator_named_outside	neg	refuse		
+cls5	b9	protected_enumerator_through_derived	neg	refuse		
+cls5	b10	friend_functions_visible	pos	output	0	
+cls5	b10	friend_hidden_beside_declared_overload	pos	output	0	
+cls5	b10	friend_defined_in_class_called_bare	neg	refuse		
+cls5	b10	friend_only_called_qualified	neg	refuse		
+cls5	b11	constexpr_literal_parameters	pos	output	0	
+cls5	b11	constexpr_constructor_parameter_not_literal	neg	refuse		
+cls5	b11	constexpr_member_parameter_not_literal	neg	refuse		
+cls5	b11	constexpr_parameter_nontrivial_destructor	neg	refuse		
+cls5	b11	constexpr_return_not_literal	neg	refuse		
+cls5	b12	ctor_or_conversion_by_reference_binding	pos	output	0	
+cls5	b12	ambiguous_ctor_and_const_conversion	neg	refuse		
+cls5	b12	ambiguous_ctor_and_conversion_on_temporary	neg	refuse		
+cls5	b12	ambiguous_ctor_by_value_and_conversion	neg	refuse		
+cls5	b13	constexpr_addresses_and_pointer_members	pos	output	0	
+cls5	b13	constexpr_arrays_strings_pointers	pos	output	0	
+cls5	b13	constexpr_pointer_object_types	pos	output	0	
+cls5	b13	constexpr_array_read_out_of_bounds	neg	refuse		
+cls5	b13	constexpr_pointer_to_automatic	neg	refuse		
+cls5	b13	constexpr_read_through_pointer_to_variable	neg	refuse		
+cls5	b13	constexpr_string_past_terminator	neg	refuse		
+cls5	b14	static_initializer_lists	pos	output	0	
+cls5	b14	static_references_to_class_temporaries	pos	output	0	
+cls5	b14	static_initializer_list_narrowing	neg	refuse		
+cls5	b14	static_reference_to_temporary_nonconst_lvalue	neg	refuse		
+cls5	b15	delegating_constructor_with_virtual_base	pos	output	0	
+p151	p151	lf01_function_bind_mem_fn_tuple	pos	output	0	
+p151	p151	lf02_iterator_header	pos	output	0	
+p151	p151	lf03_string_iterator_ranges	pos	output	0	
+p151	p151	ls01_member_function_pointer_deduction	pos	output	0	
+p151	p151	ls02_assignment_to_class_prvalue_and_const_member_assign	pos	output	0	
+p151	p151	ls03_specialization_only_where_deduced	pos	output	0	
+p151	p151	ls04_copy_initialisation_takes_converting_constructors	pos	output	0	
+p151	p151	ls05_base_template_member_names_its_own_parameters	pos	output	0	
+p151	p151	ls06_function_parameter_pack_name_reused	pos	output	0	
+p151	p151	ls07_partial_specialization_parameter_written_twice	pos	output	0	
+p151	p151	ls08_member_pointers_through_template_ids	pos	output	0	
+p151	p151	ls09_member_templates_ranked_by_a_non_deduced_parameter	pos	output	0	
+p151	p151	ls10_unused_member_templates_of_an_ordinary_class	pos	output	0	
+p151	p151	ls11_member_types_in_member_template_signatures	pos	output	0	
+p151	p151	ls12_class_to_scalar_casts	pos	output	0	
+p151	p151neg	nf01_specialization_from_another_call	neg	refuse		
+p151	p151neg	nf02_operator_specialization_from_another_use	neg	refuse		
+p151	p151neg	nf03_const_object_non_const_assignment_operator	neg	refuse		
+p151	p151neg	nf04_copy_initialisation_explicit_constructor_template	neg	refuse		
+p151	p151neg	nf05_static_cast_class_to_long	neg	refuse		
+p151	p151neg	nf06_c_style_cast_class_to_long	neg	refuse		
+p151	p151neg	nf07_functional_cast_class_to_long	neg	refuse		
+p152	p152	lb01_bitset	pos	output	0	
+p152	p152	lb02_deque_stack_queue	pos	output	0	
+p152	p152	lb03_function_bind_tuple	pos	output	0	
+p152	p152	lb04_iterator	pos	output	0	
+p152	p152	lb05_list_forward_list	pos	output	0	
+p152	p152	lb06_string_ranges	pos	output	0	
+p152	p152	lb07_string_traits_and_allocator	pos	output	0	
+p152	p152	lb08_unordered_map_set	pos	output	0	
+p152	p152	lb09_vector_allocator_and_bool	pos	output	0	
+p152	p152	lb10_tuple_uses_allocator	pos	output	0	
+p152	p152	lc01_new_scalar_from_forwarded_pack	pos	output	0	
+p152	p152	lc02_parameter_naming_no_template_parameter_converts	pos	output	0	
+p152	p152	lc03_member_template_string_parameter	pos	output	0	
+p152	p152	lc04_member_template_calls_itself	pos	output	0	
+p152	p152	lc05_member_template_recursion_plain_class	pos	output	0	
+p152	p152	lc06_base_rvalue_reference_binds_subobject	pos	output	0	
+p152	p152	lc07_lvalue_derived_not_viable_for_base_rvalue_ref	pos	output	0	
+p152	p152	lc08_member_class_returned_by_value_is_instantiated	pos	output	0	
+p152	p152	lc09_member_template_names_its_namespace	pos	output	0	
+p152	p152	lc10_pair_piecewise_and_forwarding	pos	output	0	
+p152	p152	lc11_qualified_operator_through_member_typedef	pos	output	0	
+p152	p152	lc12_compound_assignment_on_class_prvalue	pos	output	0	
+p152	p152	lc13_adl_through_class_template_specialization	pos	output	0	
+p152	p152	lc14_operator_through_converting_constructor_template	pos	output	0	
+p152	p152	lc15_static_member_through_typedef_chain	pos	output	0	
+p152	p152	lc16_void_prvalue_in_trailing_return	pos	output	0	
+p152	p152	lc17_void_prvalue_expression	pos	output	0	
+p152	p152	lc18_reference_return_keeps_address	pos	output	0	
+p152	p152	lc19_stream_insertion_returning_reference	pos	output	0	
+p152	p152	lc20_failed_explicit_list_leaves_no_angle_state	pos	output	0	
+p152	p152	lc21_trait_trial_leaves_no_guards	pos	output	0	
+p152	p152	lc22_unordered_emplace_from_literal	pos	output	0	
+p152	p152	lc23_implicit_move_copies_const_member	pos	output	0	
+p152	p152	lc24_forwarding_member_initialiser	pos	output	0	
+p152	p152	lc25_member_template_partial_ordering	pos	output	0	
+p152	p152	lc26_tag_dispatch_through_derived_class	pos	output	0	
+p152	p152	lc27_empty_pack_in_trait_arguments	pos	output	0	
+p152	p152	lc28_block_using_hides_member_and_scalar_pack_init	pos	output	0	
+p152	p152neg	nc01_lvalue_derived_to_base_rvalue_reference	neg	refuse		
+p152	p152neg	nc02_member_template_given_too_many_arguments	neg	refuse		
+p152	p152neg	nc03_const_member_moved_into_rvalue_reference	neg	refuse		
+p153	p153	la01_node_containers_use_allocator	pos	output	0	
+p153	p153	lt01_template_template_pack_and_passed_on	pos	output	0	
+p153	p153	lt02_member_default_reads_class_typedef_and_parameter_hides_name	pos	output	0	
+p153	p153	lt03_map_of_move_only_values	pos	output	0	
+p153	p153	lt04_containers_of_unique_ptr	pos	output	0	
+p153	p153	lt05_rebind_alloc_from_member_or_template	pos	output	0	
+p153	p153	lt06_traits_on_move_only_link	pos	output	0	
+p153	p153neg	nl01_map_index_needs_default_constructible	neg	refuse		
+p154	p154	ct01_default_argument_less_than_and_split_angle	pos	output	0	
+p154	p154	ct02_bound_parameter_static_member_in_member_template	pos	output	0	
+p154	p154	ct03_partly_explicit_call_enable_if_return	pos	output	0	
+p154	p154	ct04_decltype_nested_name_specifier	pos	output	0	
+p154	p154	ct05_block_typedef_per_specialization	pos	output	0	
+p154	p154	ct06_member_value_init_default_arguments	pos	output	0	
+p154	p154	ct07_constexpr_typedefs_short_circuit_friend_template_id	pos	output	0	
+p154	p154	lc01_chrono_durations_clocks	pos	output	0	
+p154	p154	lc02_c_headers_cfenv_cinttypes_cwchar_cuchar	pos	output	0	
+p154	p154	lm01_cmath_float_long_double_integer_overloads	pos	output	0	
+p154	p154	lr01_ratio_arithmetic_and_comparison	pos	output	0	
+p154	p154	lr02_random_engines_seed_seq_distributions	pos	output	0	
+p154	p154	ls01_system_error_codes_conditions	pos	output	0	
+p154	p154	ls02_ios_failure_is_system_error	pos	output	0	
+p154	p154	lt01_type_index_in_map	pos	output	0	
+p154	p154	lv01_valarray_slices_masks_shifts	pos	output	0	
+p154	p154	lx01_complex_arithmetic_and_functions	pos	output	0	
+p154	p154neg	nc01_duration_negative_period	neg	refuse		
+p154	p154neg	nr01_ratio_multiply_overflow	neg	refuse		
+p154	p154neg	nr02_random_device_not_copyable	neg	refuse		
+p154	p154neg	ns01_errc_is_scoped	neg	refuse		
+p154	p154neg	nt01_constexpr_typedef_body_calls_non_constexpr	neg	refuse		
+p154	p154neg	nx01_complex_narrowing_is_explicit	neg	refuse		
+p155	p155	ct01_packs_survive_a_nested_instantiation	pos	output	0	
+p155	p155	lt01_threads_mutexes_atomics_futures	pos	output	0	
+p155	p155	lt02_packaged_task_on_a_thread	pos	output	0	
+p155	p155	lt03_async_deferred_lambda	pos	output	0	
+p155	p155neg	na01_atomic_not_copyable	neg	refuse		
+p155	p155neg	nf01_future_not_copyable	neg	refuse		
+p155	p155neg	nm01_mutex_not_copyable	neg	refuse		
+p155	p155neg	nt01_thread_not_copyable	neg	refuse		
+p156	p156	ct02_empty_function_call_throws	pos	output	0	
+p156	p156	ct03_qualification_conversions_ranked	pos	output	0	
+p156	p156	ct04_typedef_of_specialization_declared_before_definition	pos	output	0	
+p156	p156	ct05_base_of_virtual_base_from_derived_class	pos	output	0	
+p156	p156	ct06_default_template_argument_from_earlier_declaration	pos	output	0	
+p156	p156	ct07_pointer_to_specialization_inside_its_base	pos	output	0	
+p156	p156	ct08_written_template_argument_must_match	pos	output	0	
+p156	p156	ct09_base_member_operator_binds_derived_by_conversion	pos	output	0	
+p156	p156	st01_ostream_formatting_flags	pos	output	0	
+p156	p156	st02_istream_extraction_and_getline	pos	output	0	
+p156	p156	st03_stream_iterators	pos	output	0	
+p156	p156	st04_wide_string_streams	pos	output	0	
+p156	p156	st05_file_streams_round_trip	pos	output	0	
+p156	p156	st06_user_streambuf	pos	output	0	
+p156	p156	st07_manipulator_templates_and_state	pos	output	0	
+p156	p156neg	sn01_stream_copy_constructor_deleted	neg	refuse		
+p156	p156neg	sn02_stream_bool_conversion_is_explicit	neg	refuse		
+p156	p156neg	sn03_ios_base_constructor_protected	neg	refuse		
+p156	p156neg	sn04_written_template_argument_mismatch_no_candidate	neg	refuse		
+p156	p156neg	sn05_stream_copy_assignment_deleted	neg	refuse		
+p157	p157	ct01_function_from_lambda_in_variadic_template	pos	output	0	
+p157	p157	ct02_new_expression_flag_stays_in_its_constructor	pos	output	0	
+p157	p157	ls01_strstreams	pos	output	0	
+p157	p157neg	sn01_strstreambuf_not_copyable	neg	refuse		
+p158	p158	ct01_operator_member_templates_defined_outside	pos	output	0	
+p158	p158	ct02_protected_base_destructor_implicit	pos	output	0	
+p158	p158	ct03_default_argument_in_its_namespace	pos	output	0	
+p158	p158	ct04_conditional_same_type_arms	pos	output	0	
+p158	p158	ct05_wide_literal_escapes_are_code_units	pos	output	0	
+p158	p158	lo01_locale_facets_and_codecvt	pos	output	0	
+p158	p158	lo02_numpunct_through_streams	pos	output	0	
+p158	p158	lo03_convert_time_money_messages	pos	output	0	
+p158	p158neg	ln01_locale_facet_destructor_protected	neg	refuse		
+p158	p158neg	ln02_locale_id_not_copyable	neg	refuse		
+p158	p158neg	ln03_private_base_destructor_implicit	neg	refuse		
+p159	p159	ct01_qualified_name_is_its_namespaces	pos	output	0	
+p159	p159	ct02_function_template_default_in_its_namespace	pos	output	0	
+p159	p159	rx01_ecmascript_grammar	pos	output	0	
+p159	p159	rx02_posix_grammars_and_flags	pos	output	0	
+p159	p159	rx03_replace_iterators_results	pos	output	0	
+p159	p159	rx04_errors_traits_and_assign	pos	output	0	
+p159	p159neg	rn01_regex_constructor_is_explicit	neg	refuse		
+p159	p159neg	rn02_syntax_option_from_int	neg	refuse		
+p160	p160	cv01_member_pointer_to_bool	pos	output	0	
+p160	p160	cv02_friend_of_a_type_specifier	pos	output	0	
+p160	p160	cv03_boolean_conversion_ranks_last	pos	output	0	
+p160	p160	dt01_function_type_parameters	pos	output	0	
+p160	p160	dt02_decltype_of_a_function	pos	output	0	
+p160	p160	eh01_destructor_throws_at_scope_end	pos	output	0	
+p160	p160	eh02_no_specification_is_the_implicit_ones	pos	output	0	
+p160	p160	eh03_throw_in_noexcept_terminates	pos	output	0	
+p160	p160	eh04_noexcept_operator_on_a_pointer	pos	output	0	
+p160	p160	eh05_throw_prvalue_is_the_exception_object	pos	output	0	
+p160	p160	ic01_inherited_constructor_templates	pos	output	0	
+p160	p160	il01_list_of_lists	pos	output	0	
+p160	p160	ov01_other_argument_decides_the_function	pos	output	0	
+p160	p160	st01_temporary_statements	pos	output	0	
+p160	p160	tm01_lvalue_reference_more_specialized	pos	output	0	
+p160	p160	tp01_pack_of_template_templates	pos	output	0	
+p160	p160neg	cn01_member_pointer_is_no_number	neg	refuse		
+p160	p160neg	cn02_bool_is_not_a_member_pointer	neg	refuse		
+p160	p160neg	ic02_inherited_template_keeps_explicit	neg	refuse		
+p160	p160neg	in01_inner_list_narrows	neg	refuse		
+p160	p160neg	ov02_other_arguments_leave_it_ambiguous	neg	refuse		
+p160	p160neg	tn01_pack_takes_templates_alone	neg	refuse		
+p161	p161	cl01_closures_copied_through_templates	pos	output	0	
+p161	p161	ds01_a_throwing_destructor_leaves_the_rest	pos	output	0	
+p161	p161	ds02_return_in_a_destructor	pos	output	0	
+p161	p161	ds03_temporaries_of_an_initialiser	pos	output	1	
+p161	p161	dt03_decltype_of_function_lvalues	pos	output	0	
+p161	p161	fr01_friends_defined_in_a_namespaces_template	pos	output	0	
+p161	p161	nx01_noexcept_on_parameters_members_friends	pos	output	0	
+p161	p161	ov03_object_binding_through_a_base	pos	output	0	
+p161	p161	qm01_member_typedef_as_a_qualifier	pos	output	0	
+p161	p161	rf01_a_reference_binds_a_derived_object	pos	output	0	
+p161	p161	sa01_scoped_allocator_adaptor	pos	output	0	
+p161	p161	sa02_scoped_allocator_members	pos	output	0	
+p161	p161	td01_tag_dispatch_leaves_the_other_bodies	pos	output	0	
+p161	p161	tr01_traits_ask_for_no_bodies	pos	output	0	
+p161	p161	tt01_a_template_parameter_hides_the_type_around_it	pos	output	0	
+p161	p161neg	dn01_destructor_noexcept_mismatch	neg	refuse		
+p161	p161neg	fn01_friend_disagrees_on_noexcept	neg	refuse		
+p161	p161neg	qn01_member_typedef_of_no_base	neg	refuse		
+p161	p161neg	qn02_private_base_from_outside	neg	refuse		
+p161	p161neg	tn02_the_chosen_bodys_error_is_said	neg	refuse		
+p162	p162	ns01_class_templates_of_one_name	pos	output	0	
+p162	p162	ns02_a_programs_template_beside_the_librarys	pos	output	0	
+p162	p162	ns03_using_declarations_of_class_templates	pos	output	0	
+p162	p162	ns04_function_templates_of_one_name	pos	output	0	
+p162	p162	ns05_a_program_of_the_librarys_names	pos	output	0	
+p162	p162	ns06_a_member_hides_a_namespaces_template	pos	output	0	
+p162	p162neg	nn01_a_template_out_of_reach	neg	refuse		
+p162	p162neg	nn02_qualified_through_the_wrong_namespace	neg	refuse		
+p162	p162neg	nn03_two_directives_two_templates	neg	refuse		
+p162	p162neg	nn04_redefined_in_one_namespace	neg	refuse		
+p162	p162neg	nn05_using_names_what_is_not_there	neg	refuse		
+q200	limits	b01_blocks_256	pos	own	0	cl: C1061 at 256 nested blocks; clang accepts
+q200	limits	b02_parens_256	pos	output	0
+q200	limits	b03_cond_incl_256	pos	output	0
+q200	limits	b04_declarators_256	pos	output	0
+q200	limits	b05_identifier_1024	pos	output	0
+q200	limits	b06_params_256	pos	output	0
+q200	limits	b07_macro_params_256	pos	own	0	cl: C1112, 127 macro parameters at most; clang accepts
+q200	limits	b08_logical_line_65536	pos	output	0
+q200	limits	b09_string_65536	pos	output	0
+q200	limits	b10_object_262144	pos	output	0
+q200	limits	b11_include_256	pos	own	0	clang stops at 200 nested includes; cl builds it
+q200	limits	b12_case_labels_16384	pos	output	0
+q200	limits	b13_data_members_16384	pos	output	0
+q200	limits	b14_enumerators_4096	pos	output	0
+q200	limits	b15_nested_classes_256	pos	own	0	cl: C1061 at 256 nested classes; clang does not finish
+q200	limits	b16_atexit_32	pos	output	0
+q200	limits	b17_direct_bases_1024	pos	output	0
+q200	limits	b18_indirect_bases_16384	pos	output	0	clang does not finish the 16384-deep chain; cl builds it
+q200	limits	b19_members_4096	pos	output	0
+q200	limits	b20_overriders_16384	pos	output	0
+q200	limits	b21_virtual_bases_1024	pos	output	0
+q200	limits	b22_static_members_1024	pos	output	0
+q200	limits	b23_friends_4096	pos	output	0
+q200	limits	b24_access_decls_4096	pos	output	0
+q200	limits	b25_mem_inits_6144	pos	output	0
+q200	limits	b26_scope_quals_256	pos	own	0	cl: C1061 at 256 nested namespaces; clang accepts
+q200	limits	b27_extern_nest_1024	pos	own	0	cl: C1026 parser stack at 1024 nested linkage specifications; clang accepts
+q200	limits	b28_constexpr_recursion_512	pos	own	0	cl: C2131, its constexpr depth is below 512; clang -fconstexpr-depth=2048 accepts
+q200	limits	b29_constexpr_fullexprs_1048576	pos	output	0	clang with -fconstexpr-steps=8388608
+q200	limits	b30_template_args_1024	pos	output	0
+q200	limits	b31_instantiation_1024	pos	output	0	cl /templateDepth:2048, clang -ftemplate-depth=4096
+q200	limits	b32_handlers_256	pos	output	0
+q200	limits	b33_throw_specs_256	pos	output	0
+q200	limits	b34_placeholders_10	pos	output	0	clang 22 cannot read cl's <functional> as C++11; cl builds it
+q200	limits	b35_block_ids_1024	pos	output	0
+q200	limits	b36_external_ids_65536	pos	output	0
+q200	limits	b37_macros_65536	pos	output	0
+q200	limits	b38_control_nesting_256	pos	own	0	cl: C1061 at 256 nested statements; clang accepts
+q200	limits	b39_at_quick_exit_32	pos	output	0
+p163	p163	ab01_abstract_through_later_bases	pos	output	0	
+p163	p163	io01_openmode_through_every_stream	pos	output	0	
+p163	p163	ty01_a_null_pointer_under_typeid	pos	output	0	
+p163	p163neg	ab01_abstract_through_its_second_base	neg	refuse		
+p164	p164	wl01_a_constant_condition_left_by_a_break	pos	output	0	
+p164	p164	wl02_a_value_made_on_the_way_out_of_a_byte_loop	pos	output	0	
+p164	p164	wl03_an_address_past_a_load_into_its_base	pos	output	0	
+p165	p165	dc01_delegating_with_virtual_bases	pos	output	0	cl and clang, both on the Microsoft ABI, destroy V twice in the last line, where one V was built; [except.ctor]/2 and sim6747 agree with this
+p165	p165	ed01_empty_declarations	pos	output	0	
+p165	p165	fl01_atomic_flag_set_and_cleared	pos	output	0	
+p165	p165	fl02_atomic_flag_a_spin_lock_between_threads	pos	output	0	
+p165	p165	te01_typeid_of_a_pointer_to_member	pos	output	0	
+p166	p166	nh01_a_pointer_handler_catches_a_thrown_nullptr	pos	own	0	cl lets a thrown nullptr past every pointer handler and the program ends; [except.handle]/3 matches them, and sim6747 agrees
+p166	p166	nh02_throwing_every_kind_of_pointer	pos	output	0	
+p166	p166	va01_structs_through_the_ellipsis	pos	output	0	
+p167	p167	da01_a_definition_after_a_function_that_used_a_string	pos	output	0	
+p167	p167	wl04_an_int_made_double_after_a_byte_is_loaded	pos	output	0	
+p168	p168	cv01_a_cv_qualifier_after_the_type_name	pos	output	0	
+p168	p168neg	cv02_const_written_twice_after_a_class	neg	refuse		
+p168	p168neg	cv03_const_written_twice_around_int	neg	refuse		
+p168	p168neg	cv04_volatile_written_twice_after_a_typedef	neg	refuse		
+p169	p169	pd01_pointer_difference_is_ptrdiff_t	pos	output	0	
+p169	p169	th01_stdcpp_threads_says_whether_threads_run	pos	output	0	
+p169	p169	ts01_a_class_only_a_throw_list_names	pos	output	0	
+p170	p170	hl01_a_handlers_locals_when_an_exception_leaves_it	pos	output	0	
+p170	p170	hl02_a_by_value_parameter_left_four_ways	pos	output	0	
+p171	p171	ep01_an_exception_outlives_its_handler	pos	output	0	
+p173	p173	mk01_a_map_keyed_by_a_pair	pos	output	0	

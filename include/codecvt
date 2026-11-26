@@ -1,0 +1,269 @@
+// <codecvt> - [locale.stdcvt]: UTF-8 and UTF-16 for a wide character type, as codecvt facets a program makes
+// and hands to a locale, wstring_convert or wbuffer_convert. Maxcode bounds the code points; consume_header reads
+// a byte order mark, generate_header writes one, little_endian orders UTF-16's bytes.
+#ifndef _CXX1_CODECVT
+#define _CXX1_CODECVT
+
+#include <cwchar>
+#include <__locale>
+
+namespace std {
+
+enum codecvt_mode { consume_header = 4, generate_header = 2, little_endian = 1 };
+
+// What every one of the three shares: the public face of codecvt<Elem, char, mbstate_t> with its own id, and a
+// state that remembers whether the header has been read or written.
+template <class Elem, class Self> class __cxx1_stdcvt : public codecvt<Elem, char, mbstate_t> {
+public:
+    typedef codecvt_base::result result;
+    explicit __cxx1_stdcvt(size_t refs) : codecvt<Elem, char, mbstate_t>(refs) {}
+
+protected:
+    // The first byte of the state: 1 once the header is behind it.
+    static bool headerDone(const mbstate_t &st) { return reinterpret_cast<const unsigned char *>(&st)[0] != 0; }
+    static void markHeader(mbstate_t &st) { reinterpret_cast<unsigned char *>(&st)[0] = 1; }
+    virtual bool do_always_noconv() const noexcept { return false; }
+    virtual int do_encoding() const noexcept { return 0; }
+    virtual codecvt_base::result do_unshift(mbstate_t &, char *to, char *, char *&to_next) const {
+        to_next = to;
+        return codecvt_base::noconv;
+    }
+};
+
+template <class Elem, unsigned long Maxcode = 0x10ffff, codecvt_mode Mode = (codecvt_mode)0>
+class codecvt_utf8 : public __cxx1_stdcvt<Elem, codecvt_utf8<Elem, Maxcode, Mode> > {
+public:
+    explicit codecvt_utf8(size_t refs = 0) : __cxx1_stdcvt<Elem, codecvt_utf8<Elem, Maxcode, Mode> >(refs) {}
+    ~codecvt_utf8() {}
+
+protected:
+    typedef codecvt_base::result result;
+    static unsigned long top() { return Maxcode < limit() ? Maxcode : limit(); }
+    static unsigned long limit() { return sizeof(Elem) >= 4 ? 0x10FFFFul : sizeof(Elem) == 2 ? 0xFFFFul : 0xFFul; }
+    virtual result do_out(mbstate_t &st, const Elem *from, const Elem *from_end, const Elem *&from_next, char *to,
+                          char *to_end, char *&to_next) const {
+        if ((Mode & generate_header) != 0 && !this->headerDone(st)) {
+            if (to_end - to < 3) { from_next = from; to_next = to; return codecvt_base::partial; }
+            *to++ = '\xEF'; *to++ = '\xBB'; *to++ = '\xBF';
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from != from_end) {
+            const unsigned long cp = static_cast<unsigned long>(*from);
+            if (cp > top()) { r = codecvt_base::error; break; }
+            const int n = __cxx1_utf8_write(cp, to, to_end);
+            if (n < 0) { r = codecvt_base::error; break; }
+            if (n == 0) { r = codecvt_base::partial; break; }
+            ++from;
+        }
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual result do_in(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, Elem *to,
+                         Elem *to_end, Elem *&to_next) const {
+        if ((Mode & consume_header) != 0 && !this->headerDone(st)) {
+            if (from_end - from < 3 && from != from_end) { from_next = from; to_next = to; return codecvt_base::partial; }
+            if (from_end - from >= 3 && from[0] == '\xEF' && from[1] == '\xBB' && from[2] == '\xBF') from += 3;
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from != from_end && to != to_end) {
+            const char *at = from;
+            const long cp = __cxx1_utf8_read(at, from_end, top());
+            if (cp == -1) { r = codecvt_base::error; break; }
+            if (cp == -2) { r = codecvt_base::partial; break; }
+            *to++ = static_cast<Elem>(cp);
+            from = at;
+        }
+        if (r == codecvt_base::ok && from != from_end) r = codecvt_base::partial;
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual int do_length(mbstate_t &, const char *from, const char *end, size_t max) const {
+        const char *p = from;
+        for (size_t k = 0; k < max && p != end; k++) {
+            const char *at = p;
+            if (__cxx1_utf8_read(at, end, top()) < 0) break;
+            p = at;
+        }
+        return static_cast<int>(p - from);
+    }
+    virtual int do_max_length() const noexcept { return (Mode & consume_header) != 0 ? 7 : 4; }
+};
+
+// UTF-16 bytes, big-endian unless little_endian; an Elem past 0xFFFF becomes a surrogate pair.
+template <class Elem, unsigned long Maxcode = 0x10ffff, codecvt_mode Mode = (codecvt_mode)0>
+class codecvt_utf16 : public __cxx1_stdcvt<Elem, codecvt_utf16<Elem, Maxcode, Mode> > {
+public:
+    explicit codecvt_utf16(size_t refs = 0) : __cxx1_stdcvt<Elem, codecvt_utf16<Elem, Maxcode, Mode> >(refs) {}
+    ~codecvt_utf16() {}
+
+protected:
+    typedef codecvt_base::result result;
+    static unsigned long top() {
+        const unsigned long lim = sizeof(Elem) >= 4 ? 0x10FFFFul : 0xFFFFul;
+        return Maxcode < lim ? Maxcode : lim;
+    }
+    static void unit(char *&to, unsigned long u) {
+        if ((Mode & little_endian) != 0) { *to++ = static_cast<char>(u & 0xFF); *to++ = static_cast<char>(u >> 8); }
+        else { *to++ = static_cast<char>(u >> 8); *to++ = static_cast<char>(u & 0xFF); }
+    }
+    static unsigned long read(const char *p) {
+        const unsigned long a = static_cast<unsigned char>(p[0]), b = static_cast<unsigned char>(p[1]);
+        return (Mode & little_endian) != 0 ? (b << 8) | a : (a << 8) | b;
+    }
+    virtual result do_out(mbstate_t &st, const Elem *from, const Elem *from_end, const Elem *&from_next, char *to,
+                          char *to_end, char *&to_next) const {
+        if ((Mode & generate_header) != 0 && !this->headerDone(st)) {
+            if (to_end - to < 2) { from_next = from; to_next = to; return codecvt_base::partial; }
+            unit(to, 0xFEFF);
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from != from_end) {
+            const unsigned long cp = static_cast<unsigned long>(*from);
+            if (cp > top() || (cp >= 0xD800 && cp <= 0xDFFF)) { r = codecvt_base::error; break; }
+            const int need = cp >= 0x10000 ? 4 : 2;
+            if (to_end - to < need) { r = codecvt_base::partial; break; }
+            if (cp >= 0x10000) {
+                unit(to, 0xD800 + ((cp - 0x10000) >> 10));
+                unit(to, 0xDC00 + ((cp - 0x10000) & 0x3FF));
+            } else {
+                unit(to, cp);
+            }
+            ++from;
+        }
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual result do_in(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, Elem *to,
+                         Elem *to_end, Elem *&to_next) const {
+        if ((Mode & consume_header) != 0 && !this->headerDone(st)) {
+            if (from_end - from >= 2 && read(from) == 0xFEFF) from += 2;
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from_end - from >= 2 && to != to_end) {
+            unsigned long cp = read(from);
+            int used = 2;
+            if (cp >= 0xD800 && cp <= 0xDBFF) {
+                if (from_end - from < 4) { r = codecvt_base::partial; break; }
+                const unsigned long lo = read(from + 2);
+                if (lo < 0xDC00 || lo > 0xDFFF) { r = codecvt_base::error; break; }
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                used = 4;
+            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                r = codecvt_base::error;
+                break;
+            }
+            if (cp > top()) { r = codecvt_base::error; break; }
+            *to++ = static_cast<Elem>(cp);
+            from += used;
+        }
+        if (r == codecvt_base::ok && from != from_end) r = codecvt_base::partial;
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual int do_length(mbstate_t &, const char *from, const char *end, size_t max) const {
+        const char *p = from;
+        for (size_t k = 0; k < max && end - p >= 2; k++) {
+            const unsigned long u = read(p);
+            if (u >= 0xD800 && u <= 0xDBFF) {
+                if (end - p < 4) break;
+                p += 4;
+            } else {
+                p += 2;
+            }
+        }
+        return static_cast<int>(p - from);
+    }
+    virtual int do_max_length() const noexcept { return (Mode & consume_header) != 0 ? 6 : 4; }
+};
+
+// UTF-16 code units in Elem against UTF-8 bytes: a surrogate pair is one four-byte sequence.
+template <class Elem, unsigned long Maxcode = 0x10ffff, codecvt_mode Mode = (codecvt_mode)0>
+class codecvt_utf8_utf16 : public __cxx1_stdcvt<Elem, codecvt_utf8_utf16<Elem, Maxcode, Mode> > {
+public:
+    explicit codecvt_utf8_utf16(size_t refs = 0) : __cxx1_stdcvt<Elem, codecvt_utf8_utf16<Elem, Maxcode, Mode> >(refs) {}
+    ~codecvt_utf8_utf16() {}
+
+protected:
+    typedef codecvt_base::result result;
+    virtual result do_out(mbstate_t &st, const Elem *from, const Elem *from_end, const Elem *&from_next, char *to,
+                          char *to_end, char *&to_next) const {
+        if ((Mode & generate_header) != 0 && !this->headerDone(st)) {
+            if (to_end - to < 3) { from_next = from; to_next = to; return codecvt_base::partial; }
+            *to++ = '\xEF'; *to++ = '\xBB'; *to++ = '\xBF';
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from != from_end) {
+            unsigned long cp = static_cast<unsigned long>(*from) & 0xFFFF;
+            int units = 1;
+            if (cp >= 0xD800 && cp <= 0xDBFF) {
+                if (from + 1 == from_end) { r = codecvt_base::partial; break; }
+                const unsigned long lo = static_cast<unsigned long>(from[1]) & 0xFFFF;
+                if (lo < 0xDC00 || lo > 0xDFFF) { r = codecvt_base::error; break; }
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                units = 2;
+            }
+            if (cp > Maxcode) { r = codecvt_base::error; break; }
+            const int n = __cxx1_utf8_write(cp, to, to_end);
+            if (n < 0) { r = codecvt_base::error; break; }
+            if (n == 0) { r = codecvt_base::partial; break; }
+            from += units;
+        }
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual result do_in(mbstate_t &st, const char *from, const char *from_end, const char *&from_next, Elem *to,
+                         Elem *to_end, Elem *&to_next) const {
+        if ((Mode & consume_header) != 0 && !this->headerDone(st)) {
+            if (from_end - from >= 3 && from[0] == '\xEF' && from[1] == '\xBB' && from[2] == '\xBF') from += 3;
+            this->markHeader(st);
+        }
+        result r = codecvt_base::ok;
+        while (from != from_end && to != to_end) {
+            const char *at = from;
+            const long cp = __cxx1_utf8_read(at, from_end, Maxcode < 0x10FFFFul ? Maxcode : 0x10FFFFul);
+            if (cp == -1) { r = codecvt_base::error; break; }
+            if (cp == -2) { r = codecvt_base::partial; break; }
+            if (cp >= 0x10000) {
+                if (to_end - to < 2) { r = codecvt_base::partial; break; }
+                *to++ = static_cast<Elem>(0xD800 + ((cp - 0x10000) >> 10));
+                *to++ = static_cast<Elem>(0xDC00 + ((cp - 0x10000) & 0x3FF));
+            } else {
+                *to++ = static_cast<Elem>(cp);
+            }
+            from = at;
+        }
+        if (r == codecvt_base::ok && from != from_end) r = codecvt_base::partial;
+        from_next = from;
+        to_next = to;
+        return r;
+    }
+    virtual int do_length(mbstate_t &, const char *from, const char *end, size_t max) const {
+        const char *p = from;
+        size_t units = 0;
+        while (p != end && units < max) {
+            const char *at = p;
+            const long cp = __cxx1_utf8_read(at, end, 0x10FFFF);
+            if (cp < 0) break;
+            const size_t need = cp >= 0x10000 ? 2 : 1;
+            if (units + need > max) break;
+            units += need;
+            p = at;
+        }
+        return static_cast<int>(p - from);
+    }
+    virtual int do_max_length() const noexcept { return (Mode & consume_header) != 0 ? 7 : 4; }
+};
+
+}  // namespace std
+
+#endif

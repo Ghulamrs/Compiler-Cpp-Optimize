@@ -8,14 +8,20 @@
 #include "../Source.h"
 
 #include <climits>
+#include <limits>
 #include <cstring>
 
 // The pointer-width integer an offset is computed in: `long` where it is as wide as a pointer, else
 // `long long` (x86_64-windows), so an index is scaled once at pointer width - and never wider, which on
 // the C6000's four-byte pointer would make every index 64-bit arithmetic.
+// **It is the type <cstddef> calls ptrdiff_t** ([expr.add]/6: the difference of two pointers is of that type, and
+// `decltype(q - p)` shows which): `int` where an int is as wide as a pointer (the C6000, as TI's headers have it),
+// `long` where a long is (Linux, macOS), `long long` on x86_64-windows. Until 1.68 the C6000 got `long` - as wide,
+// another type, and another letter in a mangled name than the header's own.
 const Type *Parser::ptrdiffType() {
-    const Type *l = types_.get(Kind::Long);
-    return target_.sizeOf(Kind::Long) == target_.sizeOf(Kind::Pointer) ? l : types_.get(Kind::LongLong);
+    const int pointer = target_.sizeOf(Kind::Pointer);
+    if (target_.sizeOf(Kind::Int) == pointer) return types_.get(Kind::Int);
+    return target_.sizeOf(Kind::Long) == pointer ? types_.get(Kind::Long) : types_.get(Kind::LongLong);
 }
 
 ExprPtr Parser::pointerAdd(ExprPtr p, ExprPtr n) {
@@ -78,16 +84,64 @@ const char *binOpSpelling(BinOp op) {
     return "";
 }
 
-// [over.match.oper]: where an operand has class type, `a @ b` is a *call* and not
-// the built-in operation. Null when neither operand is a class. **A member is
-// looked for on the left operand only, and the two halves are ranked together.**
+// [expr.unary.op]/3 through a template-id: the qualifier read as a type from a
+// copy of its tokens, the member's name left where it is.
+const Type *Parser::templateIdQualifier(std::size_t *member) {
+    std::size_t i = at_;
+    if (tokens_[i].is("::")) i++;
+    bool angle = false;
+    std::size_t lastColon = 0;
+    std::string written;
+    for (;;) {
+        if (tokens_[i].kind != TokenKind::Ident) return nullptr;
+        written += (written.empty() ? "" : "::") + tokens_[i].text;
+        i++;
+        if (tokens_[i].is("<")) {
+            // `&a < b > ::c` with `a` an object is two comparisons.
+            if (!isClassTemplate(written)) return nullptr;
+            angle = true;
+            int depth = 0;
+            for (; i < tokens_.size(); i++) {
+                if (depth > 0 && (tokens_[i].is("(") || tokens_[i].is("["))) { i = groupCloseAt(i); continue; }
+                if (tokens_[i].is("<")) depth++;
+                else if (tokens_[i].is(">")) depth--;
+                else if (tokens_[i].is(">>")) depth -= 2;
+                else if (tokens_[i].is(";") || tokens_[i].is("{") || tokens_[i].kind == TokenKind::End) return nullptr;
+                if (depth <= 0) break;
+            }
+            if (depth != 0) return nullptr;
+            i++;
+        }
+        if (!tokens_[i].is("::")) return nullptr;
+        lastColon = i++;
+        if (tokens_[i].kind == TokenKind::Ident && !tokens_[i + 1].is("::") && !tokens_[i + 1].is("<")) break;
+    }
+    if (!angle) return nullptr;
+    const std::size_t resume = at_;
+    const std::size_t copy = tokens_.size();
+    for (std::size_t k = at_; k < lastColon; k++) tokens_.push_back(tokens_[k]);
+    Token stop;
+    stop.kind = TokenKind::End;
+    stop.pos = tokens_[lastColon].pos;
+    tokens_.push_back(stop);
+    at_ = copy;
+    StorageClass sc;
+    const Type *t = specifiers(&sc);
+    const bool whole = peek().kind == TokenKind::End;
+    tokens_.resize(copy);
+    at_ = resume;
+    if (!whole || t == nullptr || !t->unqualified()->isStructOrUnion()) return nullptr;
+    *member = lastColon + 1 - at_;
+    return t->unqualified();
+}
+
 ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                                  std::size_t pos) {
     const Type *lt = lhs->type();
     const Type *rt = rhs->type();
-    // **An enumeration operand asks for an operator too** - [over.match.oper]/1 names class *or enumeration* type,
-    // and /3 finds `N::operator|(Flag, Flag)` by ADL (1.27, review of 1.25, item 3); else the built-in goes
-    // on. A pointer to a member function is a struct here, no class: `mf == nullptr` is built-in, [expr.eq]/2.
+    // **An enumeration operand asks for an operator too** -
+    // [over.match.oper]/1,3: `N::operator|(Flag, Flag)` by ADL, else the
+    // built-in; a member function pointer is no class ([expr.eq]/2).
     const bool leftIsClass = lt->unqualified()->isStructOrUnion() &&
                              !lt->unqualified()->isMemberFunctionPointer();
     const bool rightIsClass = rt->unqualified()->isStructOrUnion() &&
@@ -112,7 +166,7 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
         std::vector<ExprPtr> args;
         args.push_back(std::move(lhs));
         args.push_back(std::move(rhs));
-        const Signature &sig = resolveOverloadBraced(name, args, pos);
+        const Signature &sig = resolveChosenOperator(name, args, pos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                             sig.variadic, pos, std::move(args),
                             !sig.owner.empty());
@@ -145,6 +199,16 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                                std::move(none));
             moved = true;
         }
+        const bool compares = op == BinOp::Eq || op == BinOp::Ne || op == BinOp::Lt || op == BinOp::Le ||
+                              op == BinOp::Gt || op == BinOp::Ge;
+        // a comparison goes back to its own rules with what the classes became: two pointers, a pointer and
+        // `nullptr` (1.80: `p == nullptr` of a class that converts to a pointer was "cannot be combined")
+        if (moved && compares && !l->type()->unqualified()->isStructOrUnion() &&
+            !r->type()->unqualified()->isStructOrUnion()) {
+            lhs = std::move(l);
+            rhs = std::move(r);
+            return nullptr;
+        }
         if (moved && !l->type()->unqualified()->isStructOrUnion() &&
             !r->type()->unqualified()->isStructOrUnion())
             return arithmetic(op, std::move(l), std::move(r), pos);
@@ -156,6 +220,38 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                    "' cannot be combined with '" + spelling + "' - one of them "
                    "is a class, and no '" + name + "' is declared that takes "
                    "them");
+}
+
+// `a && b`, `a || b`, `a, b`, `a ->* b` with a class or enum operand: a call
+// where an operator function takes them ([over.match.oper]/1, both evaluated),
+// else the built-in. Null for the built-in, the operands untouched.
+ExprPtr Parser::overloadedSpelled(const char *spelling, ExprPtr &lhs, ExprPtr &rhs, std::size_t pos) {
+    const Type *lt = lhs->type(), *rt = rhs->type();
+    if (lt == nullptr || rt == nullptr || lt->isVoid() || rt->isVoid()) return nullptr;
+    auto operand = [](const Type *t) {
+        const Type *u = t->unqualified();
+        return (u->isStructOrUnion() && !u->isMemberFunctionPointer()) || u->isEnumeration();
+    };
+    if (!operand(lt) && !operand(rt)) return nullptr;
+    const std::string name = std::string("operator") + spelling;
+    switch (resolveOperator(name, *lhs, rhs.get(), pos)) {
+    case OperatorChoice::Member: {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(rhs));
+        return memberCallWith(std::move(lhs), lt, name, pos, std::move(args));
+    }
+    case OperatorChoice::NonMember: {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(lhs));
+        args.push_back(std::move(rhs));
+        const Signature &sig = resolveChosenOperator(name, args, pos);
+        return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
+                            sig.variadic, pos, std::move(args), !sig.owner.empty());
+    }
+    case OperatorChoice::None:
+        break;
+    }
+    return nullptr;
 }
 
 // `-v`, `!v`, `~v`, `*v`, `&v` and the two increments - the same merged candidate
@@ -178,7 +274,7 @@ ExprPtr Parser::overloadedUnary(const char *spelling, ExprPtr &operand,
     case OperatorChoice::NonMember: {
         std::vector<ExprPtr> args;
         args.push_back(std::move(operand));
-        const Signature &sig = resolveOverloadBraced(name, args, pos);
+        const Signature &sig = resolveChosenOperator(name, args, pos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                             sig.variadic, pos, std::move(args),
                             !sig.owner.empty());
@@ -205,7 +301,12 @@ ExprPtr Parser::arithmetic(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
     }
     if (op == BinOp::Sub && lhs->type()->isPointer()) {
         if (rhs->type()->isInteger()) {
+            // **The index is widened to the pointer's width before it is
+            // negated** ([expr.add]/4): negated narrow, `p - n` for an
+            // unsigned n was p + (2^32 - n); as wide (the C6000), as it was.
             const Type *lt = promote(rhs->type());
+            const Type *pd = ptrdiffType();
+            if (lt->size(target_) < pd->size(target_)) lt = pd;
             ExprPtr neg(new Unary('-', convert(std::move(rhs), lt)));
             neg->setType(lt);
             return pointerAdd(std::move(lhs), std::move(neg));
@@ -299,6 +400,9 @@ ExprPtr Parser::staticCast(std::size_t pos) {
     ExprPtr v;
     { OverloadTarget hold(*this, to); v = expr(); }
     expect(")");
+    // [class.abstract]/3: no object of an abstract class is made, a cast's result included.
+    if (to->unqualified()->isStructOrUnion())
+        checkNotAbstract(to->unqualified(), pos, "the result of this 'static_cast'");
 
     if (to->isReference()) {
         const Type *referent = to->referent();
@@ -334,15 +438,33 @@ ExprPtr Parser::staticCast(std::size_t pos) {
                 return obj;
             }
         }
+        // **[expr.static.cast]/2-3: a derived lvalue cast to a reference to its base** - the
+        // derived-to-base conversion `B &b = d;` makes, written as a cast (R2: refused before).
+        if (v->type()->unqualified() != referent->unqualified() &&
+            v->type()->unqualified()->isStructOrUnion() && referent->unqualified()->isStructOrUnion() &&
+            accessibleBaseOffset(v->type()->unqualified(), referent->unqualified()) >= 0) {
+            if (v->type()->isConst() && !referent->isConst())
+                src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
+                               v->type()->describe() + "' - a cast does not take const off");
+            const Type *dst = v->type()->isConst() || referent->isConst()
+                            ? types_.withConst(referent->unqualified()) : referent->unqualified();
+            const Type *srcPtr = types_.pointerTo(v->type());
+            ExprPtr addr(new Unary('&', std::move(v)));
+            addr->setType(srcPtr);
+            ExprPtr obj(new Unary('*', convert(std::move(addr), types_.pointerTo(dst))));
+            obj->setType(dst);
+            if (to->isRValueReference()) obj->setXvalue();
+            return obj;
+        }
         if (v->type()->unqualified() != referent->unqualified())
             src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
                            v->type()->describe() + "' - casting a reference "
                            "to a different type is not supported yet, and "
                            "this one names '" + referent->describe() + "'");
-        if (v->type()->isConst() && !referent->isConst())
+        if ((v->type()->isConst() && !referent->isConst()) || (v->type()->isVolatile() && !referent->isVolatile()))
             src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
                            v->type()->describe() + "' - a cast does not take "
-                           "const off; 'const_cast' is what does, and the two "
+                           "const or volatile off; 'const_cast' is what does, and the two "
                            "are written separately on purpose");
         // An lvalue reference cast leaves an lvalue and there is nothing to
         // mark; an rvalue reference cast is the whole point of this function.
@@ -377,9 +499,9 @@ ExprPtr Parser::staticCast(std::size_t pos) {
             }
         }
         refuseUnrelatedClassCast(*v, to, pos, "'static_cast'");
-        // [expr.static.cast]: between object pointers only `void *` either way or a base-derived line above;
-        // `static_cast<int *>(&someDouble)` is a type pun for reinterpret_cast, and must be refused (1.28,
-        // 2026-10-22, review of 1.25, neg38: it was accepted).
+        // [expr.static.cast]: between object pointers only `void *` either
+        // way or along a base-derived line; `static_cast<int *>(&someDouble)`
+        // is a pun, reinterpret_cast's, and is refused.
         if (to->isPointer() && v->type()->isPointer()) {
             const Type *tp = to->pointee()->unqualified(), *vp = v->type()->pointee()->unqualified();
             if (tp != vp && !tp->isVoid() && !vp->isVoid() && !tp->isFunction() && !vp->isFunction() &&
@@ -388,11 +510,27 @@ ExprPtr Parser::staticCast(std::size_t pos) {
                                "' - the pointees are unrelated types, and static_cast converts a "
                                "pointer only to or from 'void *' or along a base-derived line; "
                                "reinterpret_cast is the cast that reads the bytes as another type");
+            refuseCastingAwayConst(v->type(), to, pos, "static_cast");
         }
+        if (ExprPtr copy = castToOwnClass(v, to, pos)) return copy;
         return convert(std::move(v), to, true);
     }();
     r->setDeclCategory(Expr::Category::Prvalue);
     return r;
+}
+
+// **[expr.static.cast]/1 and [expr.reinterpret.cast]/2: neither casts away constness**
+// ([expr.const.cast]/8) - at any level of the pointer, a const in the source the target drops.
+// `static_cast<int *>(&constInt)` and its reinterpret_cast were accepted (review of 1.30, A1).
+void Parser::refuseCastingAwayConst(const Type *from, const Type *to, std::size_t pos,
+                                    const char *cast) const {
+    for (const Type *f = from, *t = to; f != nullptr && t != nullptr && f->isPointer() && t->isPointer();
+         f = f->pointee(), t = t->pointee())
+        if ((f->pointee()->isConst() && !t->pointee()->isConst()) ||
+            (f->pointee()->isVolatile() && !t->pointee()->isVolatile()))
+            src_.fail(pos, std::string("'") + cast + "<" + to->describe() + ">' of a '" + from->describe() +
+                           "' - a cast does not take const or volatile off; 'const_cast' is what does, "
+                           "and the two are written separately on purpose");
 }
 
 int Parser::downcastOffset(const Type *derived, const Type *base, bool *viaVirtual) const {
@@ -585,9 +723,7 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
     } else if (to->isPointer() && from->isInteger()) {
         // An integer becoming an address.
     } else if (to->unqualified() == from->unqualified()) {
-        // `reinterpret_cast<int>(n)` where n is already an int. Legal, and
-        // does nothing, which is what it should do.
-        return v;
+        return v;  // reinterpret_cast<int>(n) of an int: legal, a no-op
     } else {
         src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
                        from->describe() + "' - reinterpret_cast reads one set "
@@ -630,9 +766,16 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
     // `T(x)` is a prvalue ([expr.type.conv]/2), whatever node the conversion hands back.
     ExprPtr r = [&]() -> ExprPtr {
         expect("(");
-        if (consume(")")) {
-            if (to->isVoid())
-                src_.fail(pos, "'void()' has no value");
+        auto zero = [&]() {
+            // [expr.type.conv]/2: `void()` is a prvalue of void and initialises nothing -
+            // `decltype(a.f(), void())` is how a trailing return type asks for an expression alone.
+            if (to->isVoid()) {
+                ExprPtr none(new Num(0LL));
+                none->setType(types_.intType());
+                ExprPtr c(new Cast(to, std::move(none)));
+                c->setType(to);
+                return c;
+            }
             // The zero that convert can carry to any scalar: a null pointer
             // constant for a pointer, 0.0 for a floating type, 0 for the rest.
             ExprPtr z;
@@ -647,6 +790,22 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
                 z->setType(types_.intType());
             }
             return convert(std::move(z), types_.withoutConst(to), true);
+        };
+        if (consume(")")) return zero();
+        // `T(std::forward<A>(a)...)` for a T that is no class: the expansion makes none or one operand.
+        std::vector<ExprPtr> expanded;
+        if (expandPackPattern(expanded)) {
+            if (expanded.size() > 1)
+                src_.fail(pos, "'" + to->describe() + "(a, b)' would need a constructor, and '" +
+                               to->describe() + "' is not a class");
+            expect(")");
+            if (expanded.empty()) return zero();
+            if (to->isVoid()) {
+                ExprPtr c(new Cast(to, decay(std::move(expanded[0]))));
+                c->setType(to);
+                return c;
+            }
+            return convert(decay(std::move(expanded[0])), types_.withoutConst(to), true);
         }
         ExprPtr v = decay(assign());
         if (peek().is(","))
@@ -659,6 +818,7 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
             c->setType(to);
             return c;
         }
+        refuseUnrelatedClassCast(*v, to, pos, "a functional cast");
         return convert(std::move(v), types_.withoutConst(to), true);
     }();
     r->setDeclCategory(Expr::Category::Prvalue);
@@ -680,7 +840,8 @@ const Parser::Signature *Parser::pickByTarget(const std::vector<std::size_t> &se
     for (std::size_t i : set) {
         const Signature &f = functions_[i];
         const Type *fn = !f.owner.empty() && !f.isStaticMember ? member : plain;
-        if (fn == nullptr || types_.functionType(f.returns, f.params, f.variadic, f.refThis) != fn) continue;
+        if (fn == nullptr || types_.functionType(f.returns, f.params, f.variadic, f.refThis,
+                                                 thisCvOf(f)) != fn) continue;
         if (found != nullptr) return nullptr;
         found = &f;
     }
@@ -707,6 +868,12 @@ ExprPtr Parser::functionAsValue(const std::string &key, std::size_t pos) {
 }
 
 ExprPtr Parser::functionAddress(const Signature &sig, const std::string &key) {
+    if (sig.name == "main" && sig.cLinkage && sig.owner.empty()) {
+        if (mainDefinedHere())
+            src_.fail(peek().pos, "the address of 'main' cannot be taken - [basic.start.main]/3 forbids "
+                                  "using it within the program");
+        mainUses_.push_back(peek().pos);
+    }
     Var *v = Var::global(key);
     v->setSymbol(sig.symbol);
     ExprPtr target(v);
@@ -720,6 +887,9 @@ ExprPtr Parser::functionAddress(const Signature &sig, const std::string &key) {
 // `&S::f` for a member function: the ABI's pair, built in a slot of this frame the way a class temporary is.
 ExprPtr Parser::memberFunctionAddress(const Type *cls, const Signature &f, const std::string &key,
                                       std::size_t pos) {
+    // [basic.def.odr]/2: taking its address uses it - a specialization's member is defined only where used.
+    for (Signature &g : functions_)
+        if (g.symbol == f.symbol) g.used = true;
     // [expr.unary.op]/3: a static member function's address is an ordinary pointer.
     if (f.isStaticMember) return functionAddress(f, key);
     // **A virtual one holds the slot, not the function.**
@@ -729,7 +899,7 @@ ExprPtr Parser::memberFunctionAddress(const Type *cls, const Signature &f, const
         int index = -1;
         const std::vector<VSlot> &slots = vtables_[cls->tag()];
         for (std::size_t i = 0; i < slots.size(); i++)
-            if (overrides(slots[i], f.name, f.params, f.constThis, f.refThis))
+            if (overrides(slots[i], f.name, f.params, f.constThis, f.refThis, f.volatileThis))
                 index = static_cast<int>(i);
         if (index < 0)
             src_.fail(pos, "'" + key + "' is virtual but has "
@@ -746,7 +916,7 @@ ExprPtr Parser::memberFunctionAddress(const Type *cls, const Signature &f, const
     return boundMemberPointer(cls, f, pos);
 }
 
-bool Parser::atBareFunctionArgument() const {
+bool Parser::atBareFunctionArgument(bool braced, bool shifted) const {
     std::size_t k = 0, open = 0;
     for (; peekAt(k).is("&") || peekAt(k).is("("); k++) open += peekAt(k).is("(") ? 1 : 0;
     if (peekAt(k).is("::")) k++;
@@ -754,7 +924,22 @@ bool Parser::atBareFunctionArgument() const {
     while (peekAt(k + 1).is("::") && peekAt(k + 2).kind == TokenKind::Ident) k += 2;
     for (; open > 0; open--, k++)
         if (!peekAt(k + 1).is(")")) return false;
-    return peekAt(k + 1).is(",") || peekAt(k + 1).is(")");
+    const Token &after = peekAt(k + 1);
+    if (shifted)
+        return after.is("<<") || after.is(">>") || after.is(";") || after.is(")") || after.is(",") ||
+               after.is("}") || after.is(":");
+    return after.is(",") || after.is(braced ? "}" : ")");
+}
+
+// [over.over]/1: an overloaded name kept behind its placeholder is resolved by the type it initialises.
+void Parser::resolveOverloadPlaceholder(ExprPtr &value, const Type *to, std::size_t pos) {
+    const OverloadArg *oa = value != nullptr ? overloadArgOf(*value) : nullptr;
+    if (oa == nullptr) return;
+    ExprPtr picked = overloadArgumentFor(to, *oa);
+    if (picked == nullptr)
+        src_.fail(pos, "'" + oa->key + "' names " + std::to_string(oa->set.size()) + " functions, and "
+                       "none of them is of the type '" + to->describe() + "' it initialises here");
+    value = std::move(picked);
 }
 
 // [basic.lookup.unqual]/8: a member function named bare in a member is the class's before the namespace's.
@@ -799,7 +984,14 @@ const Parser::OverloadArg *Parser::overloadArgOf(const Expr &e) const {
 }
 
 ExprPtr Parser::overloadArgumentFor(const Type *param, const OverloadArg &oa) {
-    const Signature *f = pickByTarget(oa.set, oa.cls, param);
+    std::vector<std::size_t> set = oa.set;
+    if (!oa.templates.empty()) {
+        const OverloadArg with = oa;
+        const std::vector<std::size_t> made = specializationsFor(with.templates, param, with.pos);
+        set.insert(set.end(), made.begin(), made.end());
+    }
+    const Signature *f = pickByTarget(set, oa.cls, param);
+    if (f != nullptr && f->fromTemplate) markUsed(f);
     if (f == nullptr) return nullptr;
     const OverloadArg mine = oa;
     for (std::size_t i = 0; i < overloadArgs_.size(); i++)
@@ -995,9 +1187,9 @@ ExprPtr Parser::userDefinedLiteral(Program *program) {
     return made;
 }
 
-// [class.mfct.non-static]/3: inside a member function of the class or one derived from it, `PB::v` is
-// `(*this).PB::v` - reaching a base's member past one of the same name, and `Base<T>::v` in a class template
-// (1.27, 2026-10-21, review of 1.25, item 3: "needs an object here"). Null where no `this` has the member.
+// [class.mfct.non-static]/3: in a member function of the class or a derived
+// one, `PB::v` is `(*this).PB::v` (also `Base<T>::v` in a class template).
+// Null where there is no `this` of a class the member belongs to.
 ExprPtr Parser::qualifiedMemberThroughThis(const Type *cls, const Member &m,
                                             const std::string &member, std::size_t pos) {
     const Local *self = findLocal("this");
@@ -1012,8 +1204,7 @@ ExprPtr Parser::qualifiedMemberThroughThis(const Type *cls, const Member &m,
     checkAccessible(obj->type(), m, pos);
     const Type *objType = obj->type();
     ExprPtr acc(new MemberAccess(std::move(obj), member, m.offset, m.width, m.bitOffset));
-    acc->setType(objType->isConst() && !m.type->isReference() && !m.isMutable
-                     ? types_.withConst(m.type) : m.type);
+    acc->setType(memberTypeIn(objType, m));
     return useReference(std::move(acc));
 }
 
@@ -1026,10 +1217,33 @@ ExprPtr Parser::primary(Program *program) {
         if (!(peek().kind == TokenKind::Ident || peek().is("::")))
             src_.fail(pos, "'typename' introduces a qualified type name, and this is not one");
     }
+    // [expr.prim.general]/8: a decltype-specifier as the class of a nested-name-specifier - `decltype(c)::den`.
+    if (peek().is("decltype")) {
+        std::size_t k = 1;
+        for (int depth = 0; peekAt(k).kind != TokenKind::End; k++) {
+            if (peekAt(k).is("(")) depth++;
+            else if (peekAt(k).is(")") && --depth == 0) break;
+        }
+        if (peekAt(k + 1).is("::") && peekAt(k + 2).kind == TokenKind::Ident) {
+            const std::size_t pos = peek().pos;
+            const Type *cls = realizeMemberClass(decltypeSpecifier()->unqualified(), true);
+            if (!cls->isStructOrUnion())
+                src_.fail(pos, "'" + cls->describe() + "' is not a class, so nothing can be named in it with '::'");
+            at_++;
+            return templateIdMember(cls, pos);
+        }
+    }
     if (peek().is("typeid")) {
         std::size_t pos = peek().pos;
         at_++;
         return typeidExpression(pos);
+    }
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("(") && isTypeTraitName(peek().text))
+        return typeTrait();
+    if (peek().kind == TokenKind::Ident && peek().text.compare(0, 6, "$trait") == 0) {
+        const std::size_t k = static_cast<std::size_t>(std::stoul(peek().text.substr(6)));
+        at_++;
+        return traitOperand(traitOperands_.at(k));
     }
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
@@ -1085,6 +1299,14 @@ ExprPtr Parser::primary(Program *program) {
         // object's** - [expr.prim.lambda]. The closure's own `this` is not
         // what the reader wrote and is of no use to them.
         if (ExprPtr held = capturedThisPointer()) return held;
+        // [expr.prim.general]/3: `this` may be written in a member function's declarator after its
+        // cv-qualifiers - a trailing return type, an exception-specification - where nothing evaluates it:
+        // `auto g() -> decltype(this->v);` in the class body (1.80).
+        if (unevaluated_ > 0 && !classStack_.empty() && !classStack_.back()->isComplete() && !inStaticMember_) {
+            ExprPtr v(Var::local("this", thisOffset_));
+            v->setType(types_.pointerTo(classStack_.back()->unqualified()));
+            return v;
+        }
         if (currentClass_ == nullptr)
             src_.fail(pos, "'this' is only inside a member function, and this "
                            "is not one");
@@ -1094,6 +1316,10 @@ ExprPtr Parser::primary(Program *program) {
                            "function - it is not called on an object, so there "
                            "is none to point at");
         const Local *slot = findLocal("this");
+        // (a `this` left standing by the last function defined is not this class's - see the bare call below)
+        if (slot != nullptr && (slot->type == nullptr || !slot->type->isPointer() ||
+                                slot->type->pointee()->unqualified() != currentClass_->unqualified()))
+            slot = nullptr;
         ExprPtr v(Var::local("this", slot != nullptr ? slot->offset : thisOffset_));
         v->setType(slot != nullptr ? slot->type
                                    : types_.pointerTo(currentClass_));
@@ -1132,15 +1358,26 @@ ExprPtr Parser::primary(Program *program) {
         // the rule R1 fixed for a name and this is the same rule for a *call*.
         // A data member hides one too - `vector[0]` in a class with a member `vector` - unless a `<` follows.
         const bool memberFirst =
-            currentClass_ != nullptr &&
+            currentClass_ != nullptr && !blockUsingFunctions_.count(peek().text) &&
             ((peekAt(1).is("(") &&
               (findMemberOwner(currentClass_, peek().text) != nullptr ||
                memberTemplateOwner(currentClass_, peek().text) != nullptr)) ||
+             // `get<T>(key)` names the class's member template before std::get (1.82: the namespace's
+             // template was called, and the class's second `get` was never instantiated).
+             (peekAt(1).is("<") && memberTemplateOwner(currentClass_, peek().text) != nullptr) ||
              (!peekAt(1).is("<") && (currentClass_->findMember(peek().text) != nullptr ||
                                      currentClass_->findStaticMember(peek().text) != nullptr)));
         if (!memberFirst) return templateCall(program);
     }
 
+    // HUGE_VAL, which a literal could only spell by being out of range.
+    if (peek().is("__builtin_huge_val") && peekAt(1).is("(")) {
+        at_ += 2;
+        expect(")");
+        ExprPtr n(new Num(std::numeric_limits<long double>::infinity()));
+        n->setType(types_.get(Kind::Double));
+        return n;
+    }
     if (peek().is("__builtin_va_start")) {
         std::size_t pos = peek().pos;
         at_++;
@@ -1191,10 +1428,19 @@ ExprPtr Parser::primary(Program *program) {
                            "reaches a variadic function, so va_arg cannot ask "
                            "for it - ask for '" + promotes + "'");
 
-        if (want->isStructOrUnion() || want->isArray())
-            src_.fail(pos, "va_arg of an aggregate is not supported yet");
+        if (want->isArray())
+            src_.fail(pos, "an array decays on its way to a variadic function, so va_arg cannot ask for one");
+        // [expr.call]/7: one with a non-trivial copy or destructor is conditionally-supported, and is not here.
+        if (want->isStructOrUnion() && (want->nonTrivialCopy() || want->hasDestructor()))
+            src_.fail(pos, "'" + want->describe() + "' has a non-trivial copy or destructor, which going through "
+                           "'...' is conditionally-supported by [expr.call]/7, and va_arg does not support it");
 
-        ExprPtr n(new VaArg(std::move(list)));
+        VaArg *read = new VaArg(std::move(list));
+        if (want->isStructOrUnion()) {
+            const long long words = (want->size(target_) + 7) / 8;
+            read->setSlot(allocateFrameSlot(types_.arrayOf(types_.get(Kind::LongLong), words > 0 ? words : 1)));
+        }
+        ExprPtr n(read);
         n->setType(want);
         return n;
     }
@@ -1285,6 +1531,10 @@ ExprPtr Parser::primary(Program *program) {
                              "number. It is refused rather than "
                              "approximated: write it as a 'double', or as a "
                              "hexadecimal float once those arrive");
+        // [lex.fcon]/1: past its type's range a literal is ill-formed; this is that diagnostic.
+        if (t.dvalue > (t.suffixF ? static_cast<long double>(std::numeric_limits<float>::max())
+                                  : static_cast<long double>(std::numeric_limits<double>::max())))
+            src_.warn(t.pos, "this floating constant is outside the range of its type, and is taken as infinity");
         ExprPtr n(new Num(t.dvalue));
         n->setType(types_.get(t.suffixF ? Kind::Float
                             : t.suffixL ? Kind::LongDouble : Kind::Double));
@@ -1417,11 +1667,96 @@ ExprPtr Parser::primary(Program *program) {
     // name rather than left to "expected an expression", which points at a
     // '::' and says nothing.
     if (ExprPtr e = enumeratorThroughEnum()) return e;
+    // **`::g`, `::f()` - [basic.lookup.qual]/4: the name looked up in the global namespace alone**, so a
+    // local, a member or an enclosing namespace's name of the same spelling is passed over; `::N::x` is
+    // N's x. The arguments of a call are read first, in the scope the call is written in.
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        if (peekAt(2).is("::")) { at_++; return primary(program); }
+        const std::size_t qpos = peek().pos;
+        const std::string name = peekAt(1).text;
+        // Only a template the global namespace declares counts: `::sqrt(x)` inside std, which has a
+        // sqrt template of its own, is C's function.
+        bool globalTemplate = isTemplateName(name, true);
+        const std::map<std::string, std::vector<TemplateDecl> >::const_iterator ft = fnTemplates_.find(name);
+        if (globalTemplate && ft != fnTemplates_.end()) {
+            globalTemplate = false;
+            for (const TemplateDecl &d : ft->second) globalTemplate = globalTemplate || d.ns.empty();
+        }
+        // `::g<int>(1)`: the template-id is read from the global namespace, as the plain call below is.
+        if (globalTemplate && !peekAt(2).is("(")) {
+            struct Back {
+                std::vector<std::string> &stack; std::vector<std::string> was;
+                ~Back() { stack = was; }
+            } back{ namespaceStack_, namespaceStack_ };
+            at_++;
+            namespaceStack_.clear();
+            return templateCall(program, std::string());
+        }
+        at_ += 2;
+        struct Outer {
+            std::vector<std::string> &stack; std::vector<std::string> was;
+            ~Outer() { stack = was; }
+        } outer{ namespaceStack_, namespaceStack_ };
+        if (consume("(")) {
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+            namespaceStack_.clear();
+            // The global namespace's templates alone, not the specializations other namespaces' left under the name.
+            std::string key = name;
+            if (globalTemplate) {
+                std::vector<const Type *> argTypes;
+                for (const ExprPtr &a : args) argTypes.push_back(deductionArgType(*a));
+                std::string reachedIn;
+                std::set<std::string> deduced;
+                instantiateViableTemplates(templatesNamed(name, std::string(), &reachedIn), argTypes, qpos, &deduced);
+                std::vector<std::size_t> mine;
+                if (const std::vector<std::size_t> *all = overloadsOf(name))
+                    for (std::size_t i : *all) if (!functions_[i].fromTemplate) mine.push_back(i);
+                if (const std::vector<std::size_t> *own = overloadsOf("::" + name))
+                    mine.insert(mine.end(), own->begin(), own->end());
+                key = "$global:" + name;
+                functionIndex_[key] = mine;
+            }
+            const Signature sig = resolveOverloadBraced(key, args, qpos);
+            applyDefaults(sig, args, qpos);
+            return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params, sig.variadic, qpos,
+                                std::move(args));
+        }
+        namespaceStack_.clear();
+        if (ExprPtr v = globalRef(name)) return v;
+        if (const EnumConst *e = findEnum(name)) {
+            ExprPtr n(new Num(e->value));
+            n->setType(e->type != nullptr ? e->type : types_.intType());
+            return n;
+        }
+        if (ExprPtr fn = functionAsValue(name, qpos)) return fn;
+        src_.fail(qpos, "'::" + name + "' was not declared in the global namespace");
+    }
+    // **`::operator new(n)`, `::operator delete(p)`** - [expr.call] of the global allocation and deallocation
+    // functions by name, [basic.stc.dynamic]/2 declaring them in every unit (item 32).
+    if (peek().is("::") && peekAt(1).is("operator") && (peekAt(2).is("new") || peekAt(2).is("delete"))) {
+        const std::size_t qpos = peek().pos;
+        std::string name = "operator" + peekAt(2).text;
+        at_ += 3;
+        if (peek().is("[") && peekAt(1).is("]")) { at_ += 2; name += "[]"; }
+        expect("(");
+        std::vector<ExprPtr> args;
+        parseArguments(args);
+        struct Outer {
+            std::vector<std::string> &stack; std::vector<std::string> was;
+            ~Outer() { stack = was; }
+        } outer{ namespaceStack_, namespaceStack_ };
+        namespaceStack_.clear();
+        if (overloadsOf(name) == nullptr)
+            src_.fail(qpos, "'::" + name + "' is not declared - include <new>");
+        const Signature sig = resolveOverload(name, args, qpos);
+        applyDefaults(sig, args, qpos);
+        return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params, sig.variadic, qpos,
+                            std::move(args));
+    }
     if (peek().is("::"))
-        src_.fail(peek().pos, "a name qualified with '::' alone is not "
-                              "supported yet in an expression - as a type, "
-                              "'::Lexer *p;' works. Write the name without it "
-                              "where nothing shadows it");
+        src_.fail(peek().pos, "'::' here is followed by no name this compiler can look up in the "
+                              "global namespace - a destructor is not supported yet");
 
     // ...and `N::S::n` is not this: the chain reaches a *class*, and what follows a
     // class is a member, which the branch below already knows how to find. Asked
@@ -1442,9 +1777,15 @@ ExprPtr Parser::primary(Program *program) {
             scope += "::" + peek().text;
             at_ += 2;
         }
-        // **`std::copy(a, b, c)` - a function template named qualified.**
-        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text, true))
-            return templateCall(program, scope);
+        // **`std::copy(a, b, c)` - a function template named qualified**, one the namespace itself declares.
+        // [namespace.qual]: `k::collate` is k's - a class template of that name in an enclosing namespace is not.
+        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text, true)) {
+            const auto t = findTemplate(scope + "::" + peek().text);
+            std::string reachedIn;
+            if ((t != templates_.end() && t->second.isClass && t->second.ns == scope + "::") ||
+                !templatesNamed(peek().text, scope, &reachedIn).empty())
+                return templateCall(program, scope);
+        }
 
         std::string full = scope + "::" + expectIdent("a name");
         // **A member of N's unnamed namespace is reached as `N::x`** -
@@ -1480,24 +1821,25 @@ ExprPtr Parser::primary(Program *program) {
 
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         peekAt(2).kind == TokenKind::Ident) {
-        // The longest prefix that names a class and has such a member wins, so
-        // that `Outer::Inner::shared` finds Inner's rather than stopping at
-        // Outer.
+        // The longest prefix naming a class with such a member wins
+        // (`Outer::Inner::shared` finds Inner's); each prefix is the class it
+        // names, so `WI::flag::value` reaches flag as a member type of WI's.
         std::string q = peek().text;
+        const Type *cls = findTypedef(q);
         const Type *owner = nullptr;
         std::string member;
         std::size_t consumed = 0;
         for (std::size_t k = 1; peekAt(k).is("::") &&
                                 peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
             const std::string component = peekAt(k + 1).text;
-            if (const Type *cls = findTypedef(q))
-                if (cls->isStructOrUnion() &&
-                    cls->findStaticMember(component) != nullptr) {
-                    owner = cls;
-                    member = component;
-                    consumed = k + 2;
-                }
+            if (cls != nullptr && cls->isStructOrUnion() &&
+                cls->findStaticMember(component) != nullptr) {
+                owner = cls;
+                member = component;
+                consumed = k + 2;
+            }
             q += "::" + component;
+            cls = memberClassAlong(q, cls, component);
         }
         if (owner != nullptr) {
             const std::size_t qpos = peek().pos;
@@ -1510,20 +1852,24 @@ ExprPtr Parser::primary(Program *program) {
         // the same walk one step over: the longest prefix that names a class
         // and has an enumerator of that name.
         std::string e = peek().text;
+        const Type *in = findTypedef(e);
         const EnumConst *found = nullptr;
+        const Type *foundIn = nullptr;
         std::size_t took = 0;
         for (std::size_t k = 1; peekAt(k).is("::") &&
                                 peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
             const std::string component = peekAt(k + 1).text;
-            if (const Type *cls = findTypedef(e))
-                if (cls->isStructOrUnion())
-                    if (const EnumConst *c = enumInClass(cls, component)) {
-                        found = c;
-                        took = k + 2;
-                    }
+            if (in != nullptr && in->isStructOrUnion())
+                if (const EnumConst *c = enumInClass(in, component)) {
+                    found = c;
+                    foundIn = in;
+                    took = k + 2;
+                }
             e += "::" + component;
+            in = memberClassAlong(e, in, component);
         }
         if (found != nullptr) {
+            if (!currentFunction_.empty()) checkMemberEnumAccess(foundIn, peekAt(took - 1).text, peekAt(took - 1).pos);
             at_ += took;
             ExprPtr n(new Num(found->value));
             n->setType(found->type != nullptr ? found->type : types_.intType());
@@ -1548,7 +1894,7 @@ ExprPtr Parser::primary(Program *program) {
                 const Local *self = findLocal("this");
                 const bool related = self != nullptr && !inStaticMember_ && currentClass_ != nullptr &&
                                      (currentClass_->unqualified() == cls->unqualified() ||
-                                      publicBaseOffset(currentClass_, cls->unqualified()) >= 0);
+                                      accessibleBaseOffset(currentClass_, cls->unqualified()) >= 0);
                 if (!related) return memberTemplateCall(nullptr, cls, component, qpos);
                 ExprPtr me(Var::local("this", self->offset));
                 me->setType(self->type);
@@ -1565,17 +1911,21 @@ ExprPtr Parser::primary(Program *program) {
     // same way.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
         std::string q = peek().text;
+        const Type *cls = findTypedef(q);
         std::string key;
         std::size_t consumed = 0;
         for (std::size_t k = 1; peekAt(k).is("::") &&
                                 peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
             const std::string component = peekAt(k + 1).text;
-            // **Through findTypedef, as the static *data* member walk above
+            // **Through the class each prefix names, as the static *data* member walk above
             // does.**
             std::string candidate = q + "::" + component;
-            if (const Type *cls = findTypedef(q))
-                if (cls->isStructOrUnion())
-                    candidate = cls->tag() + "::" + component;
+            if (cls != nullptr && cls->isStructOrUnion()) {
+                // [class.member.lookup]: a base declares it as well as the class does - `Tr::length(s)` for a
+                // traits class derived from char_traits<char>.
+                const Type *owner = findMemberOwner(cls, component);
+                candidate = (owner != nullptr ? owner->tag() : cls->tag()) + "::" + component;
+            }
             if (peekAt(k + 2).is("(") && hasStaticMemberNamed(candidate)) {
                 key = candidate;
                 consumed = k + 2;
@@ -1596,6 +1946,7 @@ ExprPtr Parser::primary(Program *program) {
                 return functionAsValue(candidate, qpos);
             }
             q += "::" + component;
+            cls = memberClassAlong(q, cls, component);
         }
         if (!key.empty()) {
             const std::size_t qpos = peek().pos;
@@ -1654,11 +2005,31 @@ ExprPtr Parser::primary(Program *program) {
             }
             q += "::" + component;
         }
+        // `base::operator=(o)` - an operator function named through the class the same way.
+        if (owner == nullptr) {
+            std::size_t k = 1;
+            while (peekAt(k).is("::") && peekAt(k + 1).kind == TokenKind::Ident) k += 2;
+            if (peekAt(k).is("::") && peekAt(k + 1).is("operator")) {
+                const Type *cls = findTypedef(q);
+                if (cls == nullptr) cls = FindBase::named(currentClass_, q);
+                if (cls != nullptr && cls->isStructOrUnion()) {
+                    const std::size_t from = at_;
+                    at_ += k + 1;
+                    const std::string op = operatorName();
+                    if (peek().is("(") && overloadsOf(cls->tag() + "::" + op) != nullptr) {
+                        owner = cls;
+                        member = op;
+                        consumed = at_ - from;
+                    }
+                    at_ = from;
+                }
+            }
+        }
         // Only a class this one *is* - itself or a base of it. Anything else is
         // some other class's member and has no object here to be called on.
         if (owner != nullptr &&
             currentClass_->unqualified() != owner->unqualified() &&
-            publicBaseOffset(currentClass_, owner->unqualified()) < 0)
+            accessibleBaseOffset(currentClass_, owner->unqualified()) < 0)
             owner = nullptr;
         if (owner != nullptr) {
             const std::size_t qpos = peek().pos;
@@ -1685,10 +2056,13 @@ ExprPtr Parser::primary(Program *program) {
         std::size_t pos = peek().pos;
 
         const Local *l = findLocal(name);
+        if (l != nullptr && l->unset) noteUnsetLocal(*l, pos);
         // A bound non-type template parameter hides a member and a namespace's name alike ([temp.local]/6).
         if (l == nullptr && boundValueParams_.count(name) != 0 && !peekAt(1).is("::"))
             if (const EnumConst *e = findEnum(name)) {
                 at_++;
+                if (e->paramType != nullptr && takesAddress(e->paramType))
+                    return addressExpression(e->value, e->paramType, pos);
                 ExprPtr n(new Num(e->value));
                 n->setType(e->type != nullptr ? e->type : types_.intType());
                 return n;
@@ -1719,9 +2093,9 @@ ExprPtr Parser::primary(Program *program) {
                         callsThroughObject = callable(m->type);
         }
 
-        // **An unqualified static member, in a member function, the class's body or a lambda in them** - as an
-        // array bound (`static const int n = 8;`): no object needed, a nearer local or global won above. **Then
-        // the enclosing classes'** ([basic.lookup.unqual]/7; 1.27, 2026-10-21, review of 1.25, item 3).
+        // **An unqualified static member** in a member function, the class
+        // body or a lambda in either (`n` as an array bound), needing no
+        // object; then enclosing classes' ([basic.lookup.unqual]/7).
         std::vector<const Type *> staticScopes;
         for (const Type *c = currentClass_ != nullptr ? currentClass_
                              : classStack_.empty() ? nullptr : classStack_.back();
@@ -1742,10 +2116,13 @@ ExprPtr Parser::primary(Program *program) {
 
         // **A member function template called by its bare name** is `this->init(...)` too, and it
         // has no declaration to find until it is instantiated, so it is asked for as a template.
-        if ((peekAt(1).is("(") || peekAt(1).is("<")) && !callsThroughObject &&
-            currentClass_ != nullptr && l == nullptr && g == nullptr) {
-            const Type *owner = currentClass_->unqualified();
-            const Local *self = findLocal("this");
+        // In the class's own body too - a static member's initialiser, the sizeof idiom's `sizeof(test<T>(0))`.
+        const Type *enclosingClass = currentClass_ != nullptr ? currentClass_
+                                   : classStack_.empty() ? nullptr : classStack_.back();
+        if ((peekAt(1).is("(") || peekAt(1).is("<")) && !callsThroughObject && !blockUsingFunctions_.count(name) &&
+            enclosingClass != nullptr && l == nullptr && g == nullptr) {
+            const Type *owner = enclosingClass->unqualified();
+            const Local *self = currentClass_ != nullptr ? findLocal("this") : nullptr;
             // Beside an ordinary member of the name, overload resolution below ranks the two.
             // A specialization of the template already made is listed under the name too, and is not one.
             bool alone = peekAt(1).is("<");
@@ -1772,18 +2149,32 @@ ExprPtr Parser::primary(Program *program) {
         // An unqualified call inside a member function looks for a member of this class first -
         // [class.mfct.non-static] makes `secret()` mean `this->secret()` - before the free-function
         // branch calls it undeclared. **A class's own name inside it is not a member function.**
+        // In a member's declarator inside the class body - a trailing return type, an exception-specification -
+        // the class is the one being defined, and an operand that is not evaluated may call its members.
+        // (There currentClass_ is not this class - it is null, or still the class of the last member function
+        // defined before it - so the class being defined is asked of classStack_.)
+        const bool inClassBody = !classStack_.empty() && !classStack_.back()->isComplete();
+        const Type *memberScope = inClassBody && unevaluated_ > 0 ? classStack_.back()->unqualified() : currentClass_;
         bool inherited = false;
-        for (const Type *c = currentClass_; c != nullptr; c = c->base()) {
+        for (const Type *c = memberScope; c != nullptr; c = c->base()) {
             if (name == localOf(c->tag())) break;
+            if (c != memberScope && inDependentBase(memberScope, c)) break;
             if (overloadsOf(c->tag() + "::" + name) != nullptr) { inherited = true; break; }
         }
         // **A static member called by its bare name, from inside the class.**
         // [class.static]/1 makes it `C::f(...)` and not `this->f(...)`: the
         // object is not merely unused, it is absent.
-        if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
+        // A friend's body written in its class looks there too, [basic.lookup.unqual]/9 (1.82: it did not, and
+        // all three users of the trial of Setup 1.10.5 qualified their static helpers by hand).
+        const Type *staticHome = currentClass_ != nullptr ? currentClass_ : friendScope_;
+        if (peekAt(1).is("(") && !callsThroughObject && !blockUsingFunctions_.count(name) && staticHome != nullptr &&
             l == nullptr && g == nullptr) {
             std::string key;
-            const Type *roots[2] = { currentClass_, lambdaScope() };
+            // Then the classes around it, [basic.lookup.unqual]/7, as the static data members above.
+            std::vector<const Type *> roots(1, staticHome);
+            if (!inherited)
+                for (const Type *e = staticHome->enclosing(); e != nullptr; e = e->enclosing()) roots.push_back(e);
+            roots.push_back(lambdaScope());
             for (const Type *root : roots)
                 for (const Type *c = root; c != nullptr && key.empty(); c = c->base())
                     if (hasStaticMemberNamed(c->tag() + "::" + name))
@@ -1824,15 +2215,25 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
-        if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
+        if (peekAt(1).is("(") && !callsThroughObject && !blockUsingFunctions_.count(name) && memberScope != nullptr &&
             l == nullptr && g == nullptr && inherited) {
-            if (const Local *self = findLocal("this")) {
+            const Local *self = inClassBody && unevaluated_ > 0 ? nullptr : findLocal("this");
+            // A held body's declarator is read again before its function begins, and the `this` then standing
+            // is the last function's - another class's, as likely as not. Only this class's own is the object.
+            if (self != nullptr && (self->type == nullptr || !self->type->isPointer() ||
+                                    self->type->pointee()->unqualified() != memberScope->unqualified()))
+                self = nullptr;
+            // [expr.prim.general]/3: in a member function's declarator `this` is there too, for an operand
+            // that is not evaluated - `noexcept(noexcept(helper()))`, `-> decltype(helper())` - as the
+            // `this` expression has it (1.80: the bare call was "not declared" where `this->helper()` was read).
+            if (self != nullptr || (unevaluated_ > 0 && !inStaticMember_)) {
                 at_ += 2;
-                ExprPtr me(Var::local("this", self->offset));
-                me->setType(self->type);
+                const Type *selfType = self != nullptr ? self->type : types_.pointerTo(memberScope);
+                ExprPtr me(Var::local("this", self != nullptr ? self->offset : thisOffset_));
+                me->setType(selfType);
                 ExprPtr obj(new Unary('*', std::move(me)));
-                obj->setType(self->type->pointee());
-                return memberCall(std::move(obj), self->type->pointee(), name, pos);
+                obj->setType(selfType->pointee());
+                return memberCall(std::move(obj), selfType->pointee(), name, pos);
             }
         }
 
@@ -1903,7 +2304,16 @@ ExprPtr Parser::primary(Program *program) {
         // Class scope.
         if (currentClass_ != nullptr) {
             const Local *self = findLocal("this");
-            if (const Member *m = currentClass_->findMember(name)) {
+            const Member *m = currentClass_->findMember(name);
+            // [temp.dep]/3: a base that depends on a template parameter is not looked in.
+            if (m != nullptr && m->declaredIn != nullptr && inDependentBase(currentClass_, m->declaredIn)) {
+                if (g == nullptr)
+                    src_.fail(pos, "'" + name + "' is a member of '" + m->declaredIn->describe() + "', a base "
+                                   "that depends on a template parameter, and [temp.dep]/3 leaves such a base "
+                                   "out of unqualified lookup - write 'this->" + name + "'");
+                m = nullptr;
+            }
+            if (m != nullptr) {
                 if (m->ambiguous) refuseAmbiguousMember(currentClass_, *m, pos);
                 // **[class.access]/1 applies however the member is spelled**, and this path checked
                 // nothing: `x` inside a derived class reached a private member of its base where
@@ -1931,9 +2341,7 @@ ExprPtr Parser::primary(Program *program) {
                 // The same two rules as the `.` and `->` paths: a const
                 // object does not reach through a reference member, and a
                 // reference member is read by dereferencing what it holds.
-                acc->setType(held->isConst() && !m->type->isReference() &&
-                             !m->isMutable
-                                 ? types_.withConst(m->type) : m->type);
+                acc->setType(memberTypeIn(held, *m));
                 return useReference(std::move(acc));
             }
 
@@ -1952,9 +2360,7 @@ ExprPtr Parser::primary(Program *program) {
                     // The same two rules the three ordinary member paths
                     // follow, which this one did not: a const object reaches
                     // its members as const, a reference or `mutable` apart.
-                    acc->setType(of->isConst() && !om->type->isReference() &&
-                                 !om->isMutable
-                                     ? types_.withConst(om->type) : om->type);
+                    acc->setType(memberTypeIn(of, *om));
                     return useReference(std::move(acc));
                 }
             }
@@ -2050,6 +2456,7 @@ bool Parser::atNamePath() const {
             for (;; k++) {
                 const Token &t = peekAt(k);
                 if (t.kind == TokenKind::End || t.is(";")) return false;
+                if (depth > 0 && (t.is("(") || t.is("["))) { k = groupCloseAt(at_ + k) - at_; continue; }
                 if (t.is("<")) depth++;
                 else if (t.is(">")) { if (--depth == 0) { k++; break; } }
                 else if (t.is(">>")) { depth -= 2; if (depth <= 0) { k++; break; } }
@@ -2129,6 +2536,7 @@ const Type *Parser::decltypeSpecifier() {
     // nothing in it happens, so nothing it registered may outlive the read.
     Discarded held(this);
     Unevaluated unevaluated(this);
+    NotCounted notCounted(this);
     const std::size_t from = at_;
     // Inside `decltype(...)` a `>` is an operator again, as inside parentheses: `Same<decltype(a > b),
     // bool>` read its `>` as the template-id's close (1.27, 2026-10-21, review of 1.25, item 3).
@@ -2142,13 +2550,36 @@ const Type *Parser::decltypeSpecifier() {
     if (t == nullptr)
         src_.fail(pos, "'decltype' needs an expression with a type, and this "
                        "one has none");
-    if (namePath) return t;
-    // **An unparenthesised member access answers the member's declared type** whatever its object -
-    // `decltype(T().v)` is `double` as `decltype(s.v)` is, though the object is a temporary.
+    // **An unparenthesised member access answers the declared type**
+    // whatever its object (`decltype(T().v)` is double; `decltype(cs.m)` int,
+    // no const): the record's where name and offset match, else the access's.
     if (to >= from + 3 && tokens_[to - 1].kind == TokenKind::Ident &&
-        (tokens_[to - 2].is(".") || tokens_[to - 2].is("->")) &&
-        dynamic_cast<const MemberAccess *>(e.get()) != nullptr)
-        return t;
+        (tokens_[to - 2].is(".") || tokens_[to - 2].is("->"))) {
+        // A reference member is read through the address it holds, `*(s.r)`.
+        const Expr *access = e.get();
+        const Unary *through = dynamic_cast<const Unary *>(access);
+        if (through != nullptr && through->op() == '*') access = &through->operand();
+        if (const MemberAccess *ma = dynamic_cast<const MemberAccess *>(access)) {
+            const Type *cls = ma->object().type() != nullptr ? ma->object().type()->unqualified() : nullptr;
+            if (cls != nullptr && cls->isStructOrUnion())
+                if (const Member *m = cls->findMember(ma->name()))
+                    if (!m->ambiguous && m->offset == ma->offset() && m->type != nullptr &&
+                        (access == e.get() || m->type->isReference()))
+                        return m->type;
+            if (access == e.get()) return t;
+        }
+    }
+    // [dcl.type.simple]/4 asks of the function a name names, not of the pointer it decays to.
+    std::size_t opened = from;
+    while (tokens_[opened].is("(")) opened++;
+    if (!tokens_[opened].is("&") && functionDesignated(*e) != nullptr && t->isPointer())
+        return namePath ? t->pointee() : types_.referenceTo(t->pointee());
+    if (t->isFunction() && !namePath) return types_.referenceTo(t);
+    // `*pf` is pf itself as far as the tree goes, and a function lvalue all the same.
+    if (tokens_[opened].is("*") && t->isPointer() && t->pointee()->isFunction() &&
+        dynamic_cast<const Var *>(e.get()) != nullptr)
+        return types_.referenceTo(t->pointee());
+    if (namePath) return t;
     // [dcl.type.simple]/4: an xvalue answers `T &&`, an lvalue `T &`, a prvalue `T` - without cv where
     // T is not a class or an array, [expr]/6. A temporary is marked an xvalue so it binds to `T &&` and
     // is a prvalue all the same, so the prvalue mark is asked first; the xvalue mark before the lvalue.
@@ -2172,6 +2603,26 @@ ExprPtr Parser::useReference(ExprPtr e) {
     ExprPtr deref(new Unary('*', std::move(e)));
     deref->setType(referent);
     return deref;
+}
+
+// [expr.ref]/4: a member of a cv object has the cv-union of the object's and its own - const unless it
+// is mutable, volatile whatever it is; a reference member is its referent's type alone.
+const Type *Parser::memberTypeIn(const Type *obj, const Member &m) const {
+    if (m.type->isReference()) return m.type;
+    const Type *t = obj->isConst() && !m.isMutable ? types_.withConst(m.type) : m.type;
+    return obj->isVolatile() ? types_.withVolatile(t) : t;
+}
+// [dcl.init.ref]/5: a reference binds an lvalue whose cv it keeps or adds to, never one it would drop.
+void Parser::refuseDroppedQualifier(const Type *it, const Type *referent, const Type *ref,
+                                    const std::string &what, std::size_t pos) const {
+    if (it->isConst() && !referent->isConst())
+        src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                       it->describe() + "' - a reference that can write "
+                       "cannot bind to a const");
+    if (it->isVolatile() && !referent->isVolatile())
+        src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                       it->describe() + "' - a reference to a non-volatile type "
+                       "cannot bind to a volatile object, whose every access is the program's");
 }
 
 // What is stored in a reference is an address, so binding one is taking the
@@ -2199,8 +2650,12 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
 
     // **An assignment and a prefix `++` are lvalues naming their left operand** ([expr.ass]/1): bound
     // as `*(a = b, &a)`, the operand named again - which needs it free of effects to be named twice.
-    if (init->declCategory() == Expr::Category::Lvalue)
-        if (const Assign *as = dynamic_cast<const Assign *>(init.get()))
+    if (init->declCategory() == Expr::Category::Lvalue) {
+        const Assign *as = dynamic_cast<const Assign *>(init.get());
+        // `int &r = (a = b) = c;` - the last of the assignments names the object
+        if (as == nullptr)
+            if (const Comma *c = dynamic_cast<const Comma *>(init.get())) as = dynamic_cast<const Assign *>(&c->right());
+        if (as != nullptr)
             if (ExprPtr again = clonePure(as->target())) {
                 const Type *obj = as->target().type();
                 ExprPtr at(new Unary('&', std::move(again)));
@@ -2211,6 +2666,7 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
                 init->setType(obj);
                 it = obj;
             }
+    }
 
     // Binding takes an address, so the two things that have none cannot be bound to
     // directly. A const reference still may: it copies them into a temporary below,
@@ -2228,24 +2684,43 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
             noAddressName = v->name();
         }
 
-    // **An rvalue reference takes exactly what an lvalue one will not.**
-    // [dcl.init.ref]: `T &&` binds to a value with nowhere to live and refuses an
-    // object that has somewhere - which is how a move takes an object apart.
-    if (ref->isRValueReference() && isLvalue(*init))
+    // **An rvalue reference takes exactly what an lvalue one will not**
+    // ([dcl.init.ref]): a value with nowhere to live, not an object; an
+    // lvalue of another type that converts makes such a value first (/5).
+    const bool sameKind = it->unqualified() == referent->unqualified() ||
+                          accessibleBaseOffset(it, referent) > -1 ||
+                          (it->isArray() && referent->isArray() && it->sameArrayShape(referent));
+    if (ref->isRValueReference() && isLvalue(*init) && sameKind)
         src_.fail(pos, what + " is '" + ref->describe() + "' and this is an "
                        "object with an address of its own - an rvalue "
                        "reference binds only to a value that has none, so "
                        "that taking it apart harms nobody");
 
-    // The direct binding: an addressable glvalue of exactly the type named,
-    // which the reference then *is*.
+    // The direct binding: an addressable glvalue of the type named. A string
+    // literal is an lvalue array ([expr.prim.general]/1): `const char (&)[3]`
+    // from "cd" holds the literal's own address.
+    if (referent->isArray() && it->isArray() && dynamic_cast<const StrLit *>(init.get()) != nullptr &&
+        it->sameArrayShape(referent) &&
+        it->innermostElement()->unqualified() == referent->innermostElement()->unqualified() &&
+        referent->innermostElement()->isConst() && !ref->isRValueReference()) {
+        ExprPtr first = decay(std::move(init));
+        ExprPtr at(new Cast(types_.pointerTo(referent), std::move(first)));
+        at->setType(types_.pointerTo(referent));
+        return at;
+    }
+
+    // [dcl.init.ref]/5: an lvalue reference to other than a non-volatile const binds an lvalue and nothing else.
+    if (!ref->isRValueReference() && (!referent->isConst() || referent->isVolatile()) && sameKind &&
+        (init->isXvalue() || init->declCategory() == Expr::Category::Prvalue))
+        src_.fail(pos, what + " is '" + ref->describe() + "' and this is an rvalue - an lvalue reference "
+                       "that is not to a non-volatile const binds an lvalue alone, [dcl.init.ref]/5");
+
+    // An xvalue binds `B &&` to its base subobject as an lvalue binds `B &` - [dcl.init.ref]/5: `base(std::move(o))`
+    // in a derived move constructor moves o's own base, not a copy of it. An lvalue was refused above.
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         it->unqualified() != referent->unqualified() &&
-        accessibleBaseOffset(it, referent) > -1 && !ref->isRValueReference()) {
-        if (it->isConst() && !referent->isConst())
-            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
-                           it->describe() + "' - a reference that can write "
-                           "cannot bind to a const");
+        accessibleBaseOffset(it, referent) > -1) {
+        refuseDroppedQualifier(it, referent, ref, what, pos);
         ExprPtr addr(new Unary('&', std::move(init)));
         addr->setType(types_.pointerTo(it->unqualified()));
         return convert(std::move(addr), types_.pointerTo(referent));
@@ -2262,18 +2737,33 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
 
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         (it->unqualified() == referent->unqualified() || arrayBind)) {
-        if (!arrayBind && it->isConst() && !referent->isConst())
-            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
-                           it->describe() + "' - a reference that can write "
-                           "cannot bind to a const");
+        if (!arrayBind) refuseDroppedQualifier(it, referent, ref, what, pos);
         ExprPtr addr(new Unary('&', std::move(init)));
         addr->setType(types_.pointerTo(referent));
         return addr;
     }
 
+    // [dcl.init.ref]/5: a class that converts to an lvalue the reference binds directly - a conversion function
+    // returning `U &`, U the referent's type and no more qualified than it - is bound to what that function
+    // returns: `int &r = std::ref(n);`, which is what reference_wrapper is for, and make_tuple(std::ref(n)).
+    // (Until 1.75 a reference to non-const refused it, and one to const took a copy.)
+    if (!ref->isRValueReference() && it->unqualified()->isStructOrUnion() && !referent->isArray()) {
+        const Signature *via = referenceConversion(it, referent);
+        if (via != nullptr) {
+            const Type *object = it;
+            const std::string name = via->name;
+            std::vector<ExprPtr> none;
+            ExprPtr got = memberCallWith(std::move(init), object, name, pos, std::move(none));
+            return bindReference(ref, std::move(got), pos, what);
+        }
+    }
+
     // Anything else needs a temporary to bind to, and only a const reference may
-    // have one - [dcl.init.ref]/5. The refusals are separate: a type that does not
-    // match, and a value with no address. An rvalue reference is allowed one.
+    // have one - [dcl.init.ref]/5, a non-volatile one. The refusals are separate: a type
+    // that does not match, and a value with no address. An rvalue reference is allowed one.
+    if (referent->isConst() && referent->isVolatile() && !ref->isRValueReference())
+        src_.fail(pos, what + " is '" + ref->describe() + "', and this would have to be a temporary - "
+                       "[dcl.init.ref]/5 binds one to a reference to non-volatile const alone");
     if (!referent->isConst() && !ref->isRValueReference()) {
         if (noAddressBecause != nullptr)
             src_.fail(pos, "'" + noAddressName + "' is " + noAddressBecause +
@@ -2300,12 +2790,12 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
                        "copy of it instead");
     }
 
-    // **A class a call returns is an object already** - in its result slot - so the reference binds there,
-    // not a copy made below (review of 1.25, fix 1: `T &&r = make();` copied, and its own object died late).
-    // extendTemporary then keeps it, [class.temporary]/5; a derived result bound to a base is converted as below.
+    // **A class a call returns is an object of this frame already** (the
+    // callee's result slot): the reference binds to it, not a copy, and it
+    // is what extendTemporary keeps or the full-expression ends (/5).
     if (it->unqualified()->isStructOrUnion() && referent->unqualified()->isStructOrUnion() &&
         (it->unqualified() == referent->unqualified() || accessibleBaseOffset(it, referent) > -1))
-        if (const Call *c = dynamic_cast<const Call *>(init.get()))
+        if (const Call *c = resultCall(init.get()))
             if (c->resultSlot() != 0) {
                 const Type *whole = it->unqualified();
                 ExprPtr held(Var::local("$ret", c->resultSlot()));
@@ -2341,6 +2831,13 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
         both->setType(baseType);
         return both;
     }
+    // [dcl.init.ref]/5 with [conv.array] and [conv.func]: the temporary the reference binds is copy-initialised
+    // from the expression, so an array or a function given for a reference to a pointer decays first -
+    // `void f(const char *const &); f("s");`, and with it `std::tuple<int, const char *> t(1, "s");` (1.79:
+    // "is 'const char * const' and this is 'const char [2]'").
+    if (referent->isPointer() && init->type() != nullptr &&
+        (init->type()->isArray() || init->type()->isFunction()))
+        init = decay(std::move(init));
     checkAssignable(*init, referent, pos, what);
     const Type *store = referent->unqualified();
     const Type *addrType = types_.pointerTo(referent);
@@ -2359,8 +2856,7 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
 
     ExprPtr both(new Comma(std::move(keep), std::move(addr)));
     both->setType(addrType);
-    // **This copy is not registered for destruction, deliberately.**
-    return both;
+    return both;  // not registered for destruction, deliberately
 }
 
 // **Block scope and namespace scope are separate questions**, because [basic.lookup.unqual] puts
@@ -2393,11 +2889,21 @@ bool Parser::classScopeDeclares(const std::string &name) {
                              lambdaScope() };
     for (const Type *root : roots) {
         if (root == nullptr) continue;
-        if (root->findMember(name) != nullptr || root->findStaticMember(name) != nullptr)
+        // Not through a base that depends on a template parameter - [temp.dep]/3.
+        const Member *m = root->findMember(name);
+        if (m != nullptr && m->declaredIn != nullptr && inDependentBase(root, m->declaredIn)) m = nullptr;
+        if (m != nullptr || root->findStaticMember(name) != nullptr)
             return true;
-        for (const Type *c = root; c != nullptr; c = c->base())
+        for (const Type *c = root; c != nullptr; c = c->base()) {
+            if (c != root && inDependentBase(root, c)) break;
             if (name != localOf(c->tag()) && overloadsOf(c->tag() + "::" + name) != nullptr)
                 return true;
+            // A member function template too: it has no entry among the overloads until one is asked for, and a
+            // global variable of the name took its place - a program's `bool go;` beside a class's `template
+            // <class T> int go(T)` made `go(4)` in a member "not declared", and <future>'s packaged_task has
+            // such a member (1.76).
+            if (name != localOf(c->tag()) && isMemberTemplate(c, name)) return true;
+        }
     }
     return findClassEnum(name) != nullptr;
 }
@@ -2433,8 +2939,7 @@ ExprPtr Parser::globalRef(const std::string &name) {
         if (g->isThreadLocal) tlsVar(v, g->tlsViaWrapper, g->tlsExternal);
         ExprPtr n(v);
         n->setType(g->type);
-        // A reference at file scope is a slot holding an address, as a local
-        // one is, so a mention of it is a dereference of the slot.
+        // A file-scope reference, like a local one, is a slot of its address
         return useReference(std::move(n));
     }
     return nullptr;
@@ -2462,17 +2967,57 @@ const Type *Parser::qualifiedMemberScope(const Type *obj, std::string &name,
         if (!peek().is("::") || peekAt(1).kind != TokenKind::Ident) break;
         q += "::" + name;
     }
-    const Type *cls = findTypedef(q);
+    // [basic.lookup.classref]/4: the class of the object is looked in first - `d.base::f()` for its typedef.
+    const std::function<const Type *(const Type *)> memberType = [&](const Type *c) -> const Type * {
+        if (const Type *t = findTypedef(c->unqualified()->tag() + "::" + q)) return t;
+        for (const Type::BaseSpec &b : c->unqualified()->bases())
+            if (const Type *t = memberType(b.type)) return t;
+        return nullptr;
+    };
+    const Type *cls = memberType(obj);
+    if (cls == nullptr) cls = findTypedef(q);
     if (cls == nullptr) cls = FindBase::named(obj, q);
     if (cls == nullptr || !cls->isStructOrUnion())
         src_.fail(pos, "'" + q + "' is not a class, so '" + q + "::" + name +
                        "' names no member of '" + obj->describe() + "'");
     cls = cls->unqualified();
-    if (cls != obj->unqualified() && publicBaseOffset(obj, cls) < 0)
+    if (cls != obj->unqualified() && accessibleBaseOffset(obj, cls) < 0)
         src_.fail(pos, "'" + q + "' is not '" + obj->describe() + "' or a base "
                        "of it, so '" + q + "::" + name + "' is not one of its "
                        "members");
     return cls;
+}
+
+// The offset of `base` in `derived` where every step to it is a direct non-virtual base, or -1.
+static int fixedBaseOffset(const Type *derived, const Type *base) {
+    const Type *d = derived->unqualified();
+    if (d == base->unqualified()) return 0;
+    for (const Type::BaseSpec &s : d->bases()) {
+        if (!s.direct || s.isVirtual) continue;
+        const int deeper = fixedBaseOffset(s.type, base);
+        if (deeper >= 0) return s.offset + deeper;
+    }
+    return -1;
+}
+
+// **`d.L::v`: L's member in d's L subobject** ([class.qual], [expr.ref]/4),
+// `m` L's record: a constant offset leaves the object and sets *offset; a
+// virtual step converts the object to L by derived-to-base, which knows all.
+ExprPtr Parser::qualifiedSubobject(ExprPtr object, const Type *obj, const Type *base,
+                                   const Member &m, int *offset) {
+    *offset = 0;
+    if (base == nullptr || base->unqualified() == obj->unqualified()) return object;
+    const int fixed = fixedBaseOffset(obj, base);
+    if (fixed >= 0 && m.inVirtualBase == nullptr) {
+        *offset = fixed;
+        return object;
+    }
+    const Type *to = obj->isConst() ? types_.withConst(base->unqualified()) : base->unqualified();
+    ExprPtr at(new Unary('&', std::move(object)));
+    at->setType(types_.pointerTo(obj));
+    ExprPtr there(new Unary('*', convert(std::move(at), types_.pointerTo(to))));
+    there->setType(to);
+    return there;
 }
 
 // [class.dtor]/14 and [expr.pseudo]: the object is the pointee for `->` and
@@ -2480,20 +3025,98 @@ const Type *Parser::qualifiedMemberScope(const Type *obj, std::string &name,
 // its class, or a base of it - and for a scalar the whole thing is a no-op.
 ExprPtr Parser::explicitDestructorCall(ExprPtr &object, std::size_t pos) {
     const bool arrow = peek().is("->");
+    // One name of the path: an identifier, and its template arguments where a `<` after it closes just before
+    // `next` - `One<int>::~One`, `~One<int>()`, `~Held<>()` ([class.dtor]/14 names the class by any type-name,
+    // and a template-id is one; until 1.74 the path was identifiers only and these were "expected '('").
+    // Answers where the name ends, 0 where none stands at k.
+    auto nameEnd = [&](std::size_t k, const char *next) -> std::size_t {
+        if (peekAt(k).kind != TokenKind::Ident) return 0;
+        if (!peekAt(k + 1).is("<")) return k + 1;
+        int depth = 0;
+        for (std::size_t j = k + 1;; j++) {
+            const Token &t = peekAt(j);
+            if (t.kind == TokenKind::End || t.is(";") || t.is("{") || t.is("}")) return 0;
+            if (depth > 0 && (t.is("(") || t.is("["))) { j = groupCloseAt(at_ + j) - at_; continue; }
+            if (t.is("<")) depth++;
+            else if (t.is(">")) depth--;
+            else if (t.is(">>")) depth -= 2;
+            if (depth <= 0) return depth == 0 && peekAt(j + 1).is(next) ? j + 1 : 0;
+        }
+    };
     std::size_t k = 1;
-    while (peekAt(k).kind == TokenKind::Ident && peekAt(k + 1).is("::")) k += 2;
+    bool pathHasArguments = false;
+    for (;;) {
+        const std::size_t e = nameEnd(k, "::");
+        if (e == 0 || !peekAt(e).is("::")) break;
+        pathHasArguments = pathHasArguments || e != k + 1;
+        k = e + 1;
+    }
     if (!peekAt(k).is("~") || peekAt(k + 1).kind != TokenKind::Ident) return nullptr;
+    const bool nameHasArguments = peekAt(k + 2).is("<");
+    if (nameHasArguments && nameEnd(k + 1, "(") == 0) return nullptr;
     if (arrow && object->type()->unqualified()->isStructOrUnion()) return nullptr;
+    const std::size_t tildeAt = at_ + k;
     at_++;
     std::string qualifier;
-    while (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
-        if (!qualifier.empty()) qualifier += "::";
-        qualifier += peek().text;
-        at_ += 2;
+    const Type *pathType = nullptr;          // the path read as a type, when a name of it has arguments
+    if (pathHasArguments) {
+        const std::size_t pathPos = peek().pos;
+        // the `::` before `~` is the path's end, not a member of the type before it: read up to it
+        const Token colons = tokens_[tildeAt - 1];
+        tokens_[tildeAt - 1].kind = TokenKind::End;
+        StorageClass psc;
+        Qualifiers pquals;
+        pathType = specifiers(&psc, &pquals);
+        const bool whole = at_ == tildeAt - 1;
+        tokens_[tildeAt - 1] = colons;
+        if (pathType == nullptr || !whole)
+            src_.fail(pathPos, "the name before '::~' names no type, so no destructor either");
+        pathType = pathType->unqualified();
+        qualifier = pathType->describe();
+        at_ = tildeAt;
+    } else {
+        while (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
+            if (!qualifier.empty()) qualifier += "::";
+            qualifier += peek().text;
+            at_ += 2;
+        }
     }
     at_++;
     const std::string name = peek().text;
-    at_++;
+    // a class template's own name stands for the specialization ([temp.local]/1): `p->~Held()`, `One<int>::~One`
+    auto templateNamed = [&](const Type *cls) {
+        const Type *u = cls->unqualified();
+        return u->isStructOrUnion() && !u->templateName().empty() &&
+               (u->templateName() == name || localOf(u->templateName()) == name);
+    };
+    const Type *nameType = nullptr;          // `~Name<arguments>`, read as the type it is
+    if (nameHasArguments) {
+        const std::size_t namePos = peek().pos;
+        // [basic.lookup.classref]/3: the name is also looked up in the class of the object, where the template's
+        // own name is - `a->~Arr<char, 3>()` for an `ns::Arr` that nothing brings into this scope.
+        const Type *in = pathType;
+        if (in == nullptr) {
+            const Type *ot = object->type();
+            if (arrow) ot = ot->isPointer() ? ot->pointee() : nullptr;
+            if (ot != nullptr && ot->unqualified()->isStructOrUnion()) in = ot->unqualified();
+        }
+        std::map<std::string, TemplateDecl>::const_iterator own = templates_.end();
+        if (in != nullptr && templateNamed(in)) own = templates_.find(templateKeyOf(in));
+        if (own != templates_.end() && own->second.isClass) {
+            const TemplateDecl decl = own->second;
+            at_++;
+            nameType = instantiateClass(decl, namePos);
+        } else {
+            StorageClass nsc;
+            Qualifiers nquals;
+            nameType = specifiers(&nsc, &nquals);
+        }
+        if (nameType == nullptr)
+            src_.fail(namePos, "'~" + name + "<...>' names no type this compiler knows, so it is not a destructor");
+        nameType = nameType->unqualified();
+    } else {
+        at_++;
+    }
     expect("(");
     expect(")");
 
@@ -2508,21 +3131,25 @@ ExprPtr Parser::explicitDestructorCall(ExprPtr &object, std::size_t pos) {
     // which must be the object's class or a base; a typedef reaches either.
     const Type *named = nullptr;
     if (!qualifier.empty()) {
-        named = findTypedef(qualifier);
+        named = pathType != nullptr ? pathType : findTypedef(qualifier);
         if (named == nullptr && plain->isStructOrUnion())
             named = FindBase::named(plain, qualifier);
         if (named == nullptr)
             src_.fail(pos, "'" + qualifier + "' names no type, so '" + qualifier +
                            "::~" + name + "' names no destructor");
-        const Type *inner = findTypedef(name);
-        if (name != localOf(named->unqualified()->tag()) &&
+        const Type *inner = nameType != nullptr ? nameType : findTypedef(name);
+        // [basic.lookup.qual]/6: the name after `::~` is looked up where the path's last name was -
+        // `s->std::string::~string()`, with no `string` in this scope.
+        if (inner == nullptr && pathType == nullptr && qualifier.rfind("::") != std::string::npos)
+            inner = findTypedef(qualifier.substr(0, qualifier.rfind("::") + 2) + name);
+        if ((nameType != nullptr || (name != localOf(named->unqualified()->tag()) && !templateNamed(named))) &&
             (inner == nullptr || inner->unqualified() != named->unqualified()))
             src_.fail(pos, "'~" + name + "' is not the destructor of '" +
                            named->describe() + "'");
     } else {
-        named = findTypedef(name);
+        named = nameType != nullptr ? nameType : findTypedef(name);
         if (named == nullptr && plain->isStructOrUnion() &&
-            plain->localName() == name)
+            (plain->localName() == name || templateNamed(plain)))
             named = plain;
         if (named == nullptr)
             src_.fail(pos, "'~" + name + "' names no type this compiler knows, "
@@ -2608,6 +3235,28 @@ ExprPtr Parser::postfix() {
         // candidate set is the class's own and memberCall's resolution is it.
         if (peek().is("(") && n->type()->unqualified()->isStructOrUnion()) {
             const Type *self = n->type();
+            // **[over.call.object]/2: the surrogate call** - a class with no `operator()` of its own that
+            // converts to a pointer or a reference to a function is called through what it converts to
+            // (R5). The conversion is called here; the `(` is read below as a call through the pointer.
+            if (!self->isMemberFunctionPointer() && findMemberOwner(self->unqualified(), "operator()") == nullptr) {
+                const Signature *surrogate = nullptr;
+                bool several = false;
+                for (const Type *c = self->unqualified(); c != nullptr; c = c->base())
+                    for (std::size_t k = 0; k < functions_.size(); k++) {
+                        const Signature &f = functions_[k];
+                        if (f.owner != c->tag() || !isConversionName(f.name) || !f.params.empty() || f.isExplicit)
+                            continue;
+                        const Type *gives = f.returns->isReference() ? f.returns->referent() : f.returns;
+                        if (!gives->isFunctionPointer() && !gives->isFunction()) continue;
+                        if (surrogate != nullptr) several = true;
+                        surrogate = &f;
+                    }
+                if (surrogate != nullptr && !several) {
+                    const std::string conv = surrogate->name;
+                    n = memberCallWith(std::move(n), self, conv, pos, std::vector<ExprPtr>());
+                    continue;
+                }
+            }
             at_++;
             n = memberCall(std::move(n), self, "operator()", pos);
             continue;
@@ -2637,7 +3286,10 @@ ExprPtr Parser::postfix() {
                 for (std::size_t i = 0; i < written.size(); i++)
                     args.push_back(std::move(written[i]));
                 std::vector<const Type *> full;
-                full.push_back(types_.pointerTo(types_.get(Kind::Void)));
+                const Type *thisAs = types_.get(Kind::Void);
+                if (fn->cvThis() & Type::kThisConst) thisAs = types_.withConst(thisAs);
+                if (fn->cvThis() & Type::kThisVolatile) thisAs = types_.withVolatile(thisAs);
+                full.push_back(types_.pointerTo(thisAs));
                 for (std::size_t i = 0; i < fn->params().size(); i++)
                     full.push_back(fn->params()[i]);
                 // A call through a member function pointer is a member call, and the
@@ -2657,7 +3309,8 @@ ExprPtr Parser::postfix() {
             at_++;
             ExprPtr index = expr();
             expect("]");
-            // **A class is subscripted by its own operator, not by pointer arithmetic.**
+            // **A class is subscripted by its own operator, not by pointer
+            // arithmetic.**
             const Type *subscripted = n->type()->unqualified();
             // [over.built]/14: `T &operator[](std::ptrdiff_t, T *)` - a class with one conversion to an
             // integer in front of a pointer or an array is the subscript written the other way round,
@@ -2668,6 +3321,15 @@ ExprPtr Parser::postfix() {
                 const Signature *asInteger = soleNumericConversion(subscripted);
                 if (asInteger != nullptr && asInteger->returns->unqualified()->isInteger()) {
                     n.swap(index);
+                    subscripted = n->type()->unqualified();
+                }
+            }
+            // [over.built]/13: `T &operator[](T *, std::ptrdiff_t)` - a class with no operator[] and one
+            // conversion to a pointer is subscripted as the pointer it converts to.
+            if (subscripted->isStructOrUnion() && findMemberOwner(subscripted, "operator[]") == nullptr) {
+                const Signature *asPointer = soleNumericConversion(n->type());
+                if (asPointer != nullptr && asPointer->returns->unqualified()->isPointer()) {
+                    n = builtinOperand(std::move(n), pos);
                     subscripted = n->type()->unqualified();
                 }
             }
@@ -2729,7 +3391,9 @@ ExprPtr Parser::postfix() {
             if (!n->type()->isPointer() || !n->type()->pointee()->isStructOrUnion())
                 src_.fail(pos, "'->' needs a pointer to a struct or union, not '" +
                                n->type()->describe() + "'");
-            const Type *obj = n->type()->pointee();
+            // A member class of a specialization is made when it is first needed ([temp.inst]/1), and naming a
+            // member through a pointer to it is that need: `p_->__call(...)` in function<R(Args...)>.
+            const Type *obj = realizeMemberClass(n->type()->pointee(), true);
             ExprPtr deref(new Unary('*', std::move(n)));
             deref->setType(obj);
             n = std::move(deref);
@@ -2738,8 +3402,6 @@ ExprPtr Parser::postfix() {
             consume("template");
             std::string name = declaredName("a member name");
             const Type *scope = qualifiedMemberScope(obj, name, pos);
-            const int adjust = scope == nullptr || scope == obj->unqualified()
-                             ? 0 : publicBaseOffset(obj, scope);
             const Type *in = scope != nullptr ? scope : obj;
             // **A member function template**, `p->head<3>()` - told from `<` as
             // a comparison only because the member is a registered template.
@@ -2781,12 +3443,15 @@ ExprPtr Parser::postfix() {
             if (!m) src_.fail(pos, "'" + in->describe() + "' has no member '" + name + "'");
             if (m->ambiguous) refuseAmbiguousMember(in, *m, pos);
             checkAccessible(obj, *m, pos);
+            int adjust = 0;
+            n = qualifiedSubobject(std::move(n), obj, scope, *m, &adjust);
             // A member of a virtual base is not at a constant offset. The test
             // comes first because the call consumes the object: asking
             // unconditionally moved `n` away from every ordinary access too.
             if (m->inVirtualBase != nullptr) {
-                refuseVirtualBaseMember(obj, *m, name, pos);
-                if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
+                const Type *from = n->type();
+                refuseVirtualBaseMember(from, *m, name, pos);
+                if (ExprPtr viaVb = virtualBaseMember(std::move(n), from, *m)) {
                     n = std::move(viaVb);
                     continue;
                 }
@@ -2796,9 +3461,7 @@ ExprPtr Parser::postfix() {
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
             // referent**: [dcl.ref] stops the const at the reference itself.
-            acc->setType(obj->isConst() && !m->type->isReference() &&
-                         !m->isMutable
-                             ? types_.withConst(m->type) : m->type);
+            acc->setType(memberTypeIn(obj, *m));
             // A reference member holds an address, so reading one is a
             // dereference - the same `useReference` every mention of a
             // reference local already goes through.
@@ -2819,14 +3482,12 @@ ExprPtr Parser::postfix() {
             if (!n->type()->isStructOrUnion())
                 src_.fail(pos, "'.' needs a struct or union, not '" +
                                n->type()->describe() + "'");
-            const Type *obj = n->type();
+            const Type *obj = realizeMemberClass(n->type(), true);
             // [temp.names]/4: `p->template f<3>()` - the keyword only says a `<` opens arguments, which
             // token replay already knows; it is read and dropped, as `typename` is.
             consume("template");
             std::string name = declaredName("a member name");
             const Type *scope = qualifiedMemberScope(obj, name, pos);
-            const int adjust = scope == nullptr || scope == obj->unqualified()
-                             ? 0 : publicBaseOffset(obj, scope);
             const Type *in = scope != nullptr ? scope : obj;
             // **A member function template**, `v.head<3>()`.
             if ((peek().is("<") || (peek().is("(") && !hasOrdinaryMember(obj, name))) &&
@@ -2867,28 +3528,29 @@ ExprPtr Parser::postfix() {
             if (!m) src_.fail(pos, "'" + in->describe() + "' has no member '" + name + "'");
             if (m->ambiguous) refuseAmbiguousMember(in, *m, pos);
             checkAccessible(obj, *m, pos);
-            // A member of a virtual base is not at a constant offset. The test
-            // comes first because the call consumes the object: asking
-            // unconditionally moved `n` away from every ordinary access too.
-            if (m->inVirtualBase != nullptr) {
-                refuseVirtualBaseMember(obj, *m, name, pos);
-                if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
-                    n = std::move(viaVb);
-                    continue;
-                }
-            }
             // [expr.ref]/4: a non-reference member of an rvalue object is an xvalue - `std::move(s).s`
             // and `make().s` bind `std::string &&` (1.27, 2026-10-21, review of 1.25, item 3: they
             // were lvalues, and `take(const std::string &)` took them).
             const bool objectIsRvalue = n->isXvalue() || !isLvalue(*n);
+            int adjust = 0;
+            n = qualifiedSubobject(std::move(n), obj, scope, *m, &adjust);
+            // A member of a virtual base is not at a constant offset. The test
+            // comes first because the call consumes the object: asking
+            // unconditionally moved `n` away from every ordinary access too.
+            if (m->inVirtualBase != nullptr) {
+                const Type *from = n->type();
+                refuseVirtualBaseMember(from, *m, name, pos);
+                if (ExprPtr viaVb = virtualBaseMember(std::move(n), from, *m)) {
+                    n = std::move(viaVb);
+                    continue;
+                }
+            }
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset + adjust,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
             // referent**: [dcl.ref] stops the const at the reference itself.
-            acc->setType(obj->isConst() && !m->type->isReference() &&
-                         !m->isMutable
-                             ? types_.withConst(m->type) : m->type);
+            acc->setType(memberTypeIn(obj, *m));
             if (objectIsRvalue && !m->type->isReference()) acc->setXvalue();
             // A reference member holds an address, so reading one is a
             // dereference - the same `useReference` every mention of a
@@ -2934,7 +3596,7 @@ ExprPtr Parser::unary() {
     if (consume("~")) {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("~", v, pos)) return call;
-        v = decay(std::move(v));
+        v = decay(builtinOperand(std::move(v), pos));
         refuseScopedOperand(v->type(), nullptr, "~", pos);
         if (!v->type()->isInteger())
             src_.fail(pos, "'~' needs an integer, not '" + v->type()->describe() + "'");
@@ -2957,7 +3619,7 @@ ExprPtr Parser::unary() {
     if (consume("-")) {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("-", v, pos)) return call;
-        v = decay(std::move(v));
+        v = decay(builtinOperand(std::move(v), pos));
         refuseScopedOperand(v->type(), nullptr, "-", pos);
         if (!v->type()->isArithmetic())
             src_.fail(pos, "unary '-' needs a number, not '" + v->type()->describe() + "'");
@@ -2977,13 +3639,16 @@ ExprPtr Parser::unary() {
             qualified += (q == 0 ? "" : "::") + peekAt(q).text;
             q += 2;
         }
-        if (q > 0) {
-            const std::string memberName = peekAt(q).text;
-            if (const Type *cls = findTypedef(qualified))
+        // `&std::pair<int, int>::first` stops the walk at `pair<`: its qualifier is a template-id.
+        std::size_t named = peekAt(q + 1).is("<") ? 0 : q;
+        const Type *qualifiedClass = named > 0 ? findTypedef(qualified) : templateIdQualifier(&named);
+        if (named > 0) {
+            const std::string memberName = peekAt(named).text;
+            if (const Type *cls = qualifiedClass)
                 if (cls->isStructOrUnion()) {
                     if (const Member *m = cls->findMember(memberName)) {
                         checkAccessible(cls, *m, pos);
-                        at_ += q + 1;
+                        at_ += named + 1;
                         ExprPtr off(new Num(static_cast<long long>(m->offset)));
                         off->setType(types_.memberPointerTo(cls, m->type));
                         return off;
@@ -2995,7 +3660,7 @@ ExprPtr Parser::unary() {
                         const Signature *picked = set->size() > 1 ? pickByTarget(*set, cls, overloadTarget_)
                                                                   : nullptr;
                         if (set->size() > 1 && picked == nullptr && overloadArgument_) {
-                            at_ += q + 1;
+                            at_ += named + 1;
                             return overloadPlaceholder(*set, key, cls, pos);
                         }
                         if (set->size() > 1 && picked == nullptr)
@@ -3004,8 +3669,12 @@ ExprPtr Parser::unary() {
                                            " functions, and which one this is "
                                            "cannot be told from the use alone");
                         const Signature &f = picked != nullptr ? *picked : functions_[(*set)[0]];
-                        at_ += q + 1;
-                        return memberFunctionAddress(cls, f, key, pos);
+                        at_ += named + 1;
+                        // [expr.unary.op]/3: `&S::f` is a prvalue, though its pair is built in a slot - a
+                        // forwarding reference deduces the pointer's type itself from it, not a reference.
+                        ExprPtr made = memberFunctionAddress(cls, f, key, pos);
+                        made->setDeclCategory(Expr::Category::Prvalue);
+                        return made;
                     }
                     // `&Outer::K` for a static member: the object itself, whose value a plain mention
                     // folds to a constant - [class.static.data]/3 wants its definition for this (1.27,
@@ -3016,8 +3685,25 @@ ExprPtr Parser::unary() {
                                 !isFriendOf(cls))
                                 src_.fail(pos, "'" + cls->tag() + "::" + s->name + "' is " +
                                                (s->access == Access::Private ? "private" : "protected"));
-                            at_ += q + 1;
+                            at_ += named + 1;
                             if (unevaluated_ == 0) usedStaticMembers_.insert(s->symbol);
+                            // With none written outside the class, the one cl lays down where it is used:
+                            // weak, the value the class gave it, and a later definition adding nothing.
+                            if (s->folded && unevaluated_ == 0 && !inClassConstexprStatics_.count(s->symbol)) {
+                                bool defined = false;
+                                for (const Global &g : current_->globals) defined = defined || g.symbol == s->symbol;
+                                if (!defined) {
+                                    GlobalPiece p;
+                                    p.offset = 0;
+                                    p.size = s->type->size(target_);
+                                    p.value = s->value;
+                                    current_->globals.push_back(Global{ cls->tag() + "::" + s->name, s->symbol, s->type,
+                                                                        std::vector<GlobalPiece>(1, p), true, false,
+                                                                        true });
+                                    current_->globals.back().isInline = true;
+                                    inClassConstexprStatics_.insert(s->symbol);
+                                }
+                            }
                             Var *sv = Var::global(cls->tag() + "::" + s->name);
                             sv->setSymbol(s->symbol);
                             ExprPtr object(sv);
@@ -3033,8 +3719,17 @@ ExprPtr Parser::unary() {
         ExprPtr v = castExpr();
         // `&f` for an overloaded f as an argument is the set itself, still waiting for its parameter.
         if (overloadArgOf(*v) != nullptr) return v;
+        // `&*pf`: the address of the function `*pf` is, which is pf's value (1.80: it was `&pf`).
+        if (v->isFunctionDesignator()) { v->setFunctionDesignator(false); return v; }
         // Only when the class declared one.
         if (ExprPtr call = overloadedUnary("&", v, pos)) return call;
+        // `&(a = b)`, `&++a`: the address of the operand the assignment names ([expr.ass]/1), once it is done.
+        if (ExprPtr first = takeAssigned(v)) {
+            const Type *obj = v->type();
+            ExprPtr at(new Unary('&', std::move(v)));
+            at->setType(types_.pointerTo(obj));
+            return afterAssigned(std::move(first), std::move(at));
+        }
         // **`&f` and `f` are the same thing for a function.** [conv.func] has already
         // turned the designator into a pointer, so taking its address again built a
         // pointer to a pointer. `&p` for a variable is an ordinary address-of.
@@ -3064,16 +3759,25 @@ ExprPtr Parser::unary() {
     if (consume("*")) {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("*", v, pos)) return call;
-        v = decay(std::move(v));
+        v = decay(builtinOperand(std::move(v), pos));
         if (!v->type()->isPointer())
             src_.fail(pos, "'*' needs a pointer, not '" + v->type()->describe() + "'");
 
-        if (v->type()->pointee()->isFunction()) return v;
+        if (v->type()->pointee()->isFunction()) { v->setFunctionDesignator(true); return v; }
         const Type *elem = v->type()->pointee();
         if (elem->isVoid()) src_.fail(pos, "'void *' cannot be dereferenced");
         ExprPtr n(new Unary('*', std::move(v)));
         n->setType(elem);
         return n;
+    }
+    // `::new` and `::delete` - [expr.new]/9, [expr.delete]/9: the global allocation functions, a class's
+    // own passed over (R27's `::new (buf) S(2)`).
+    if (peek().is("::") && (peekAt(1).is("new") || peekAt(1).is("delete"))) {
+        std::size_t pos = peek().pos;
+        const bool isNew = peekAt(1).is("new");
+        at_ += 2;
+        globalNewDelete_ = true;
+        return isNew ? newExpression(pos) : deleteExpression(pos);
     }
     if (peek().is("new")) {
         std::size_t pos = peek().pos;
@@ -3128,8 +3832,7 @@ ExprPtr Parser::unary() {
         for (std::size_t i = tempsBefore; quiet && i < pendingTemps_.size(); i++) {
             const Type *made = pendingTemps_[i].type;
             if (made == nullptr || !made->unqualified()->isStructOrUnion()) continue;
-            const Signature *dtor = destructorOf(made->unqualified());
-            if (dtor != nullptr && !dtor->isNoexcept) quiet = false;
+            if (destructorMayThrow(made->unqualified())) quiet = false;
         }
         mayThrow_ = outer;
         expect(")");
@@ -3147,6 +3850,7 @@ ExprPtr Parser::unary() {
         const Type *measured = declarator(specifiers(&sc), true).type;
         expect(")");
         if (measured->isReference()) measured = measured->referent();
+        realizeMemberClass(measured, true);
         if (!measured->isComplete())
             src_.fail(pos, "alignof needs a complete type");
         ExprPtr n(new Num(static_cast<long long>(measured->align(target_))));
@@ -3168,19 +3872,28 @@ ExprPtr Parser::unary() {
             // slot for destruction and no object is ever built in it.
             Discarded held(this);
             Unevaluated unevaluated(this);
+            NotCounted notCounted(this);
+            std::size_t first = at_;
+            while (tokens_[first].is("(")) first++;
             ExprPtr operand = unary();
             if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(operand.get()))
                 if (m->isBitField())
                     src_.fail(pos, "sizeof cannot be applied to '" + m->name() +
                                    "', which is a bit-field");
+            // [expr.sizeof]/1: a function designator is no operand - `sizeof(&f)` is the pointer's.
+            if (!tokens_[first].is("&") && functionDesignated(*operand) != nullptr)
+                src_.fail(pos, "sizeof cannot be applied to a function - [expr.sizeof]/1");
             measured = operand->type();
         }
+        if (measured->isFunction())
+            src_.fail(pos, "sizeof cannot be applied to a function type - [expr.sizeof]/1");
         // **A dependent `sizeof` outside a template argument or a `decltype`** - an array bound, a
         // `noexcept` - is the one the expression reader is not reached from.
         if (patternOnly_ && (measured->kind() == Kind::TemplateParam ||
                              measured->kind() == Kind::DependentMember))
             src_.fail(pos, "'sizeof' of a template parameter is not supported yet in this place "
                            "of a signature - in a template argument or a 'decltype' it is read");
+        realizeMemberClass(measured, true);
         if (!measured->isComplete())
             src_.fail(pos, "sizeof needs a complete type");
         ExprPtr n(new Num(static_cast<long long>(measured->size(target_))));

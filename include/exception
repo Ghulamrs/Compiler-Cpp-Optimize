@@ -23,10 +23,13 @@
 // no C++ runtime library to take one from.
 //
 // `terminate`, `set_terminate`, `get_terminate` and `uncaught_exception` are declared off
-// Windows, defined by libc++abi, libstdc++ or RTS6x; MSVC's CRT spells them its own way.
-// So are `set_unexpected` and `unexpected`, which a `throw(T...)` list reaches through
-// `__cxa_call_unexpected`, and `bad_exception` on the hosts, whose runtimes own its class.
-// What is NOT here is the rest of [exception]: `exception_ptr`, `current_exception`, `nested_exception`.
+// Windows, defined by libc++abi, libstdc++ or RTS6x. So are `set_unexpected`, `get_unexpected`
+// and `unexpected`, which a `throw(T...)` list reaches through `__cxa_call_unexpected`, and
+// `bad_exception` on the hosts, whose runtimes own its class. On Windows the handler
+// functions are the UCRT's and the vcruntime's, with C linkage, as corecrt_terminate.h and
+// eh.h declare them, and `uncaught_exception` is libcpmt's. std's are inline functions over
+// the C ones rather than using-declarations of them, because cpp11 finds a C-linkage function
+// only unqualified: `&std::terminate` through a using-declaration is refused.
 //
 // **`what()` is virtual and const, and returns a pointer the caller does not
 // own.** [exception]/8 says the string is valid until the object is destroyed
@@ -42,20 +45,49 @@ struct __std_exception_data {
 };
 extern "C" void __std_exception_copy(const __std_exception_data *, __std_exception_data *);
 extern "C" void __std_exception_destroy(__std_exception_data *);
+namespace __cxx1_crt {
+typedef void (*handler)();
+extern "C" {
+void terminate() noexcept;
+handler set_terminate(handler) throw();
+handler _get_terminate();
+void unexpected();
+handler set_unexpected(handler) throw();
+handler _get_unexpected();
+}
+inline void callTerminate() noexcept { terminate(); }
+inline handler setTerminate(handler f) { return set_terminate(f); }
+inline handler getTerminate() { return _get_terminate(); }
+inline void callUnexpected() { unexpected(); }
+inline handler setUnexpected(handler f) { return set_unexpected(f); }
+inline handler getUnexpected() { return _get_unexpected(); }
+}
+// libcpmt's exception_ptr, over the vcruntime's record of the exception being handled.
+void __ExceptionPtrCreate(void *) noexcept;
+void __ExceptionPtrDestroy(void *) noexcept;
+void __ExceptionPtrCopy(void *, const void *) noexcept;
+void __ExceptionPtrAssign(void *, const void *) noexcept;
+bool __ExceptionPtrCompare(const void *, const void *) noexcept;
+bool __ExceptionPtrToBool(const void *) noexcept;
+void __ExceptionPtrSwap(void *, void *) noexcept;
+void __ExceptionPtrCurrentException(void *) noexcept;
+void __ExceptionPtrRethrow(const void *);
 #endif
+
+#include <type_traits>
 
 namespace std {
 
 #if defined(_WIN32)
 class exception {
 public:
-    exception() { data_.what = 0; data_.doFree = false; }
+    exception() noexcept { data_.what = 0; data_.doFree = false; }
     // `char const *const`, as vcruntime_exception.h writes them: cl spells the parameter QEBD.
     explicit exception(const char *const msg) { data_.what = 0; data_.doFree = false;
                                  __std_exception_data d; d.what = msg; d.doFree = true;
                                  __std_exception_copy(&d, &data_); }
-    exception(const char *const msg, int) { data_.what = msg; data_.doFree = false; }
-    exception(const exception &o) { data_.what = 0; data_.doFree = false;
+    exception(const char *const msg, int) noexcept { data_.what = msg; data_.doFree = false; }
+    exception(const exception &o) noexcept { data_.what = 0; data_.doFree = false;
                                     __std_exception_copy(&o.data_, &data_); }
     virtual ~exception() { __std_exception_destroy(&data_); }
     virtual const char *what() const {
@@ -68,37 +100,256 @@ private:
 #elif defined(__TMS320C6X__)
 class exception {
 public:
-    exception() {}
+    exception() noexcept {}
     virtual ~exception() {}
     virtual const char *what() const { return "std::exception"; }
 };
 #else
 class exception {
 public:
-    exception() {}
+    exception() noexcept {}
     virtual ~exception();
     virtual const char *what() const;
 };
 #endif
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+typedef void (*terminate_handler)();
+inline terminate_handler set_terminate(terminate_handler f) throw() { return __cxx1_crt::setTerminate(f); }
+inline terminate_handler get_terminate() throw() { return __cxx1_crt::getTerminate(); }
+inline void terminate() noexcept { __cxx1_crt::callTerminate(); }
+bool uncaught_exception() throw();
+typedef void (*unexpected_handler)();
+inline unexpected_handler set_unexpected(unexpected_handler f) throw() { return __cxx1_crt::setUnexpected(f); }
+inline unexpected_handler get_unexpected() throw() { return __cxx1_crt::getUnexpected(); }
+inline void unexpected() { __cxx1_crt::callUnexpected(); }
+#else
 typedef void (*terminate_handler)();
 terminate_handler set_terminate(terminate_handler) throw();
 terminate_handler get_terminate() throw();
-void terminate();
+void terminate() noexcept;
 bool uncaught_exception() throw();
 typedef void (*unexpected_handler)();
 unexpected_handler set_unexpected(unexpected_handler) throw();
+unexpected_handler get_unexpected() throw();
 void unexpected();
 #endif
-#if !defined(_WIN32) && !defined(__TMS320C6X__)
+#if defined(_WIN32)
 class bad_exception : public exception {
 public:
-    bad_exception() {}
+    bad_exception() noexcept : exception("bad exception", 1) {}
+    virtual ~bad_exception() {}
+};
+#elif defined(__TMS320C6X__)
+class bad_exception : public exception {
+public:
+    bad_exception() noexcept {}
+    virtual ~bad_exception() {}
+    virtual const char *what() const { return "std::bad_exception"; }
+};
+#else
+class bad_exception : public exception {
+public:
+    bad_exception() noexcept {}
     virtual ~bad_exception();
     virtual const char *what() const;
 };
 #endif
+
+// [propagation]: exception_ptr is the platform library's, as the exception itself is - on Windows
+// over libcpmt's functions in cl's layout, on Linux libstdc++'s __exception_ptr::exception_ptr and
+// on the Mac libc++'s, each declared with the members those libraries export. The C6000's runtime
+// has none: there a program naming one compiles and does not link.
+//
+// The comparisons every form has, beside its class so that they are found from its namespace.
+#define _CXX1_EXCEPTION_PTR_COMPARISONS                                                                  \
+inline bool operator!=(const exception_ptr &a, const exception_ptr &b) noexcept { return !(a == b); }   \
+inline bool operator==(const exception_ptr &a, decltype(nullptr)) noexcept { return !a; }              \
+inline bool operator==(decltype(nullptr), const exception_ptr &a) noexcept { return !a; }              \
+inline bool operator!=(const exception_ptr &a, decltype(nullptr)) noexcept { return (bool)a; }         \
+inline bool operator!=(decltype(nullptr), const exception_ptr &a) noexcept { return (bool)a; }
+
+#if defined(_WIN32)
+class exception_ptr {
+public:
+    exception_ptr() noexcept { __ExceptionPtrCreate(this); }
+    exception_ptr(decltype(nullptr)) noexcept { __ExceptionPtrCreate(this); }
+    exception_ptr(const exception_ptr &o) noexcept { __ExceptionPtrCopy(this, &o); }
+    ~exception_ptr() noexcept { __ExceptionPtrDestroy(this); }
+    exception_ptr &operator=(const exception_ptr &o) noexcept {
+        __ExceptionPtrAssign(this, &o);
+        return *this;
+    }
+    exception_ptr &operator=(decltype(nullptr)) noexcept {
+        exception_ptr none;
+        __ExceptionPtrAssign(this, &none);
+        return *this;
+    }
+    explicit operator bool() const noexcept { return __ExceptionPtrToBool(this); }
+
+private:
+    void *data1_;
+    void *data2_;
+};
+
+inline bool operator==(const exception_ptr &a, const exception_ptr &b) noexcept { return __ExceptionPtrCompare(&a, &b); }
+inline void swap(exception_ptr &a, exception_ptr &b) noexcept { __ExceptionPtrSwap(&a, &b); }
+_CXX1_EXCEPTION_PTR_COMPARISONS
+
+inline exception_ptr current_exception() noexcept {
+    exception_ptr e;
+    __ExceptionPtrCurrentException(&e);
+    return e;
+}
+
+inline void rethrow_exception(exception_ptr p) { __ExceptionPtrRethrow(&p); }
+#elif defined(__APPLE__)
+class exception_ptr {
+public:
+    exception_ptr() noexcept : ptr_(0) {}
+    exception_ptr(decltype(nullptr)) noexcept : ptr_(0) {}
+    exception_ptr(const exception_ptr &) noexcept;
+    ~exception_ptr() noexcept;
+    exception_ptr &operator=(const exception_ptr &) noexcept;
+    exception_ptr &operator=(decltype(nullptr)) noexcept {
+        exception_ptr none;
+        return *this = none;
+    }
+    explicit operator bool() const noexcept { return ptr_ != 0; }
+    bool __cxx1_same(const exception_ptr &o) const noexcept { return ptr_ == o.ptr_; }
+
+private:
+    void *ptr_;
+};
+
+inline bool operator==(const exception_ptr &a, const exception_ptr &b) noexcept { return a.__cxx1_same(b); }
+inline void swap(exception_ptr &a, exception_ptr &b) noexcept {
+    exception_ptr held = a;
+    a = b;
+    b = held;
+}
+_CXX1_EXCEPTION_PTR_COMPARISONS
+
+exception_ptr current_exception() noexcept;
+void rethrow_exception(exception_ptr);
+#else
+namespace __exception_ptr {
+class exception_ptr {
+public:
+    exception_ptr() noexcept;
+    exception_ptr(decltype(nullptr)) noexcept : object_(0) {}
+    exception_ptr(const exception_ptr &) noexcept;
+    ~exception_ptr() noexcept;
+    exception_ptr &operator=(const exception_ptr &) noexcept;
+    exception_ptr &operator=(decltype(nullptr)) noexcept {
+        exception_ptr none;
+        swap(none);
+        return *this;
+    }
+    void swap(exception_ptr &) noexcept;
+    explicit operator bool() const noexcept { return object_ != 0; }
+
+private:
+    void *object_;
+};
+
+bool operator==(const exception_ptr &, const exception_ptr &) noexcept;
+inline void swap(exception_ptr &a, exception_ptr &b) noexcept { a.swap(b); }
+_CXX1_EXCEPTION_PTR_COMPARISONS
+}  // namespace __exception_ptr
+
+using __exception_ptr::exception_ptr;
+
+exception_ptr current_exception() noexcept;
+void rethrow_exception(exception_ptr);
+#endif
+
+#undef _CXX1_EXCEPTION_PTR_COMPARISONS
+
+template <class E>
+exception_ptr make_exception_ptr(E e) noexcept {
+    try {
+        throw e;
+    } catch (...) {
+        return current_exception();
+    }
+}
+
+// [except.nested]
+class nested_exception {
+public:
+    nested_exception() noexcept : nested_(current_exception()) {}
+    nested_exception(const nested_exception &o) noexcept : nested_(o.nested_) {}
+    nested_exception &operator=(const nested_exception &o) noexcept {
+        nested_ = o.nested_;
+        return *this;
+    }
+    virtual ~nested_exception() noexcept {}
+
+    void rethrow_nested() const {
+        if (!nested_) terminate();
+        rethrow_exception(nested_);
+    }
+    exception_ptr nested_ptr() const noexcept { return nested_; }
+
+private:
+    exception_ptr nested_;
+};
+
+// What throw_with_nested and rethrow_if_nested ask of a type, by overload rather than <type_traits>'
+// is_class, is_base_of and is_polymorphic, which wait on the compiler.
+template <class T> char __cxx1_exception_class_test(int T::*) { return 0; }
+template <class T> long __cxx1_exception_class_test(...) { return 0; }
+inline char __cxx1_exception_nested_test(const volatile nested_exception *) { return 0; }
+inline long __cxx1_exception_nested_test(...) { return 0; }
+
+template <class T> struct __cxx1_nest {
+    typedef typename remove_cv<typename remove_reference<T>::type>::type type;
+    static const bool wrap = sizeof(std::__cxx1_exception_class_test<type>(0)) == 1 &&
+                             sizeof(std::__cxx1_exception_nested_test((type *)0)) != 1;
+};
+
+template <class E, bool = sizeof(std::__cxx1_exception_class_test<E>(0)) == 1>
+struct __cxx1_is_polymorphic { static const bool value = false; };
+template <class E> struct __cxx1_is_polymorphic<E, true> {
+    struct __plain : E { char __c; };
+    struct __virtual : E { virtual ~__virtual() {} char __c; };
+    static const bool value = sizeof(__plain) == sizeof(__virtual);
+};
+
+template <class U>
+struct __cxx1_nested_with : U, nested_exception {
+    __cxx1_nested_with(const U &u) : U(u) {}
+    __cxx1_nested_with(U &&u) : U(static_cast<U &&>(u)) {}
+};
+
+template <class T, class U>
+void __cxx1_throw_nested(T &&t, U *, integral_constant<bool, true>) {
+    throw __cxx1_nested_with<U>(static_cast<T &&>(t));
+}
+template <class T, class U>
+void __cxx1_throw_nested(T &&t, U *, integral_constant<bool, false>) {
+    throw static_cast<T &&>(t);
+}
+
+template <class T>
+void throw_with_nested(T &&t) {
+    std::__cxx1_throw_nested(static_cast<T &&>(t), (typename __cxx1_nest<T>::type *)0,
+                             integral_constant<bool, __cxx1_nest<T>::wrap>());
+}
+
+template <class E>
+void __cxx1_rethrow_if_nested(const E &e, integral_constant<bool, true>) {
+    const nested_exception *n = dynamic_cast<const nested_exception *>(&e);
+    if (n != 0) n->rethrow_nested();
+}
+template <class E>
+void __cxx1_rethrow_if_nested(const E &, integral_constant<bool, false>) {}
+
+template <class E>
+void rethrow_if_nested(const E &e) {
+    std::__cxx1_rethrow_if_nested(e, integral_constant<bool, __cxx1_is_polymorphic<E>::value>());
+}
 
 }  // namespace std
 

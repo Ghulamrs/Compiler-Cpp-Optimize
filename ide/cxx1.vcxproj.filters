@@ -33,6 +33,7 @@
     <ClCompile Include="..\src\parser\ParserStmt.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserTemplate.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserTopLevel.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserTraits.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserType.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\parser\ParserVtable.cpp"><Filter>Source Files\parser</Filter></ClCompile>
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp"><Filter>Source Files\backend</Filter></ClCompile>

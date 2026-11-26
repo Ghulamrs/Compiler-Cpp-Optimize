@@ -1,0 +1,11 @@
+substr(0): [abc]
+substr(2, 5): [c]
+substr(3): []
+substr(3, 0): []
+substr(4): out_of_range
+substr(4, 0): out_of_range
+substr(npos): out_of_range
+one-argument: out_of_range
+compare: out_of_range
+compare2: out_of_range
+as logic_error

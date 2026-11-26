@@ -140,6 +140,43 @@ void Source::fail(std::size_t pos, const std::string &message) const {
         throw SubstitutionFailure{ message, unsupported, pos };
     }
 
+    failed_ = true;
+    for (const std::string &name : quiet_)
+        if (message.find("'" + name + "'") != std::string::npos) compileFailed();
+    if (!said_.insert(std::to_string(pos) + message).second) compileFailed();
+    errorsReported_++;
+    std::string text = described(pos, "error", message);
+    // The chain, innermost first; a deep one keeps both ends, which are the ones read.
+    const std::size_t depth = chain_.size();
+    for (std::size_t i = 0; i < depth; i++) {
+        if (depth > 10 && i == 7) {
+            text += "    ... " + std::to_string(depth - 10) + " more instantiations ...\n";
+            i = depth - 3;
+        }
+        const Context &c = chain_[depth - 1 - i];
+        if (i > 0 && c.pos == chain_[depth - i].pos && c.what == chain_[depth - i].what) continue;
+        text += described(c.pos, "note", c.what);
+    }
+    {
+        std::lock_guard<std::mutex> hold(diagnosticLock());
+        std::fwrite(text.data(), 1, text.size(), stderr);
+    }
+    compileFailed();
+}
+
+void Source::warn(std::size_t pos, const std::string &message) const {
+    if (trials_ > 0) return;
+    const Place at = locate(pos < text_.size() ? pos : text_.size());
+    const std::string &file = files_[static_cast<std::size_t>(at.file)];
+    for (const std::string &dir : systemDirs_)
+        if (file.compare(0, dir.size(), dir) == 0) return;
+    if (!said_.insert(std::to_string(pos) + message).second) return;
+    const std::string text = described(pos, "warning", message);
+    std::lock_guard<std::mutex> hold(diagnosticLock());
+    std::fwrite(text.data(), 1, text.size(), stderr);
+}
+
+std::string Source::described(std::size_t pos, const char *kind, const std::string &message) const {
     if (pos > text_.size()) pos = text_.size();
 
     int lineNo = 1;
@@ -153,7 +190,7 @@ void Source::fail(std::size_t pos, const std::string &message) const {
     const std::string &file = files_[static_cast<std::size_t>(at.file)];
 
     std::string text = file + ":" + std::to_string(at.line) + ":" +
-                       std::to_string(at.column) + ": error: " +
+                       std::to_string(at.column) + ": " + kind + ": " +
                        readableNames(message) + "\n";
 
     text += "    ";
@@ -163,11 +200,5 @@ void Source::fail(std::size_t pos, const std::string &message) const {
     for (std::size_t i = lineStart; i < pos; i++)
         text += (text_[i] == '\t') ? '\t' : ' ';
     text += "^\n";
-
-    {
-        std::lock_guard<std::mutex> hold(diagnosticLock());
-        std::fwrite(text.data(), 1, text.size(), stderr);
-    }
-    errors_++;
-    compileFailed();
+    return text;
 }

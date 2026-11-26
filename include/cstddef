@@ -18,6 +18,7 @@ namespace std {
 // The types first: a function below may be declared in terms of one.
 using ::ptrdiff_t;
 using ::size_t;
+using ::max_align_t;
 
 // [support.types]/9: the type of `nullptr`, which <stddef.h> has no name for.
 typedef decltype(nullptr) nullptr_t;

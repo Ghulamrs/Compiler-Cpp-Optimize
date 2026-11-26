@@ -1,35 +1,115 @@
-// <iostream> - the three streams every program starts with.
+// <iostream> - [iostream.objects]: cin, cout, cerr, clog and their wide twins.
 //
-// **They are objects at file scope with no constructor**, which is the whole
-// trick this header turns. A `std::cout` built by a constructor would need that
-// constructor to run before `main`, and this compiler has nowhere to put the
-// code that would do it - so `ostream` is an aggregate, these are constant
-// initialisers, and the `FILE *` is resolved at the point of use instead. See
-// the comment at the top of <ostream>.
+// **One object each for the whole program**, as [iostream.objects]/2 has them, with no library to define them
+// in: their storage is a static data member of a class template, which every translation unit may define and
+// the linker keeps once. [iostream.objects]/2 also has them made before any static of a unit that includes this
+// header: that is ios_base::Init's work, one Init object here per unit, ordered before the unit's own statics,
+// the first of them in the program building the streams in that storage and the last flushing them.
+// Each stream's buffer is a basic_filebuf over the C library's stdin, stdout or stderr that leaves the FILE
+// open; cerr and wcerr are unitbuf, and cin, cerr and their wide twins are tied to cout and wcout.
 //
-// **`static`, so each translation unit gets its own.** A header-only library
-// has no other choice: an `extern` object would need a definition in some
-// object file, and there is none to put it in, and an `inline` variable is
-// C++17. The functions moved to `inline` on 2026-09-19; these cannot follow.
-// The observable difference is nil for a program compiled as one unit, and
-// for one compiled as several it is a `width`/`precision` per unit.
+// **The four wide streams are made in a program that names one of them, and in no other** (1.76). Until then
+// every Init made all eight, so a program that printed one line with `std::cout` carried basic_filebuf<wchar_t>,
+// basic_ostream<wchar_t>, basic_istream<wchar_t> and the wide facets they reach: a quarter of its code, 39 KB
+// unoptimized on the C6747. A library in object files leaves that to the linker; this one is headers, so each of
+// wcin, wcout, wcerr and wclog is declared `[[__cxx1::when_spelled(...)]]` - cpp11 reads the declaration only in
+// a unit that spells the name - and the first of them a unit initialises makes the four, once for the program.
+// The last Init flushes them through a pointer that is null until then. Another compiler ignores the attribute
+// and has the four in every unit, as before.
 #ifndef _CXX1_IOSTREAM
 #define _CXX1_IOSTREAM
 
+#include <cstdio>
+#include <fstream>
 #include <istream>
+#include <new>
 #include <ostream>
 
 namespace std {
 
-// { fp_, which_, state_, buf_ } - a null FILE * and the number that says
-// which standard stream to resolve to. 1 is stdout, 2 is stderr, and the null
-// buf_ is what says this writes to a file rather than to a string.
-static ostream cout = { 0, 1, 0, 0, 0, 6 };
-static ostream cerr = { 0, 2, 0, 0, 0, 6 };
-// clog is cerr without the flush the standard does not promise either way.
-static ostream clog = { 0, 2, 0, 0, 0, 6 };
+template <class C> struct __cxx1_std_streams {
+    struct out_stream : basic_ostream<C> {
+        basic_filebuf<C> buf;
+        out_stream(FILE *f, bool unit) : basic_ostream<C>(&buf) {
+            buf.__cxx1_attach(f, ios_base::out);
+            if (unit) this->setf(ios_base::unitbuf);
+        }
+    };
+    struct in_stream : basic_istream<C> {
+        basic_filebuf<C> buf;
+        explicit in_stream(FILE *f) : basic_istream<C>(&buf) { buf.__cxx1_attach(f, ios_base::in); }
+    };
+    template <class S> struct slot {
+        alignas(S) unsigned char bytes[sizeof(S)];
+        S &get() { return *reinterpret_cast<S *>(bytes); }
+    };
+    static slot<out_stream> cout_, cerr_, clog_;
+    static slot<in_stream> cin_;
 
-static istream cin = { 0, 1, 0, 0, 0 };
+    static void make() {
+        ::new (static_cast<void *>(cout_.bytes)) out_stream(stdout, false);
+        ::new (static_cast<void *>(cerr_.bytes)) out_stream(stderr, true);
+        ::new (static_cast<void *>(clog_.bytes)) out_stream(stderr, false);
+        ::new (static_cast<void *>(cin_.bytes)) in_stream(stdin);
+        cin_.get().tie(&cout_.get());
+        cerr_.get().tie(&cout_.get());
+    }
+    static void flush() {
+        cout_.get().flush();
+        cerr_.get().flush();
+        clog_.get().flush();
+    }
+};
+template <class C> typename __cxx1_std_streams<C>::template slot<typename __cxx1_std_streams<C>::out_stream> __cxx1_std_streams<C>::cout_;
+template <class C> typename __cxx1_std_streams<C>::template slot<typename __cxx1_std_streams<C>::out_stream> __cxx1_std_streams<C>::cerr_;
+template <class C> typename __cxx1_std_streams<C>::template slot<typename __cxx1_std_streams<C>::out_stream> __cxx1_std_streams<C>::clog_;
+template <class C> typename __cxx1_std_streams<C>::template slot<typename __cxx1_std_streams<C>::in_stream> __cxx1_std_streams<C>::cin_;
+
+// The count of Init objects alive in the program, one per including unit: a template's static, so one.
+template <class T> struct __cxx1_init_count { static int n; };
+template <class T> int __cxx1_init_count<T>::n = 0;
+
+// Whether the wide streams are made, and how the last Init flushes them: a template's statics, so one of each
+// in the program, and neither names a wide stream.
+template <class T> struct __cxx1_wide_streams {
+    static bool made;
+    static void (*flush)();
+};
+template <class T> bool __cxx1_wide_streams<T>::made = false;
+template <class T> void (*__cxx1_wide_streams<T>::flush)() = 0;
+
+inline ios_base::Init::Init() {
+    if (__cxx1_init_count<void>::n++ == 0) __cxx1_std_streams<char>::make();
+}
+inline ios_base::Init::~Init() {
+    if (--__cxx1_init_count<void>::n == 0) {
+        __cxx1_std_streams<char>::flush();
+        void (*wide)() = __cxx1_wide_streams<void>::flush;
+        if (wide != 0) wide();
+    }
+}
+
+static ios_base::Init __cxx1_ioinit;
+
+static basic_istream<char> &cin = __cxx1_std_streams<char>::cin_.get();
+static basic_ostream<char> &cout = __cxx1_std_streams<char>::cout_.get();
+static basic_ostream<char> &cerr = __cxx1_std_streams<char>::cerr_.get();
+static basic_ostream<char> &clog = __cxx1_std_streams<char>::clog_.get();
+
+// One wide stream's storage, the four made first where they are not yet. A template, so that a unit which keeps
+// none of the four declarations below instantiates nothing of it.
+template <class S> S &__cxx1_wide_stream(S &stream) {
+    if (!__cxx1_wide_streams<void>::made) {
+        __cxx1_wide_streams<void>::made = true;
+        __cxx1_std_streams<wchar_t>::make();
+        __cxx1_wide_streams<void>::flush = &__cxx1_std_streams<wchar_t>::flush;
+    }
+    return stream;
+}
+[[__cxx1::when_spelled(wcin)]] static basic_istream<wchar_t> &wcin = __cxx1_wide_stream(__cxx1_std_streams<wchar_t>::cin_.get());
+[[__cxx1::when_spelled(wcout)]] static basic_ostream<wchar_t> &wcout = __cxx1_wide_stream(__cxx1_std_streams<wchar_t>::cout_.get());
+[[__cxx1::when_spelled(wcerr)]] static basic_ostream<wchar_t> &wcerr = __cxx1_wide_stream(__cxx1_std_streams<wchar_t>::cerr_.get());
+[[__cxx1::when_spelled(wclog)]] static basic_ostream<wchar_t> &wclog = __cxx1_wide_stream(__cxx1_std_streams<wchar_t>::clog_.get());
 
 }  // namespace std
 

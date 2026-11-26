@@ -1,0 +1,78 @@
+#include <iostream>
+#include <sstream>
+#include <limits>
+#include <string>
+int main() {
+    std::istringstream a("hello world\nnext line\nlast");
+    int c = a.get();
+    std::cout << (char)c << ' ' << a.gcount() << '\n';
+    char ch = 0;
+    a.get(ch);
+    std::cout << ch << ' ' << a.gcount() << '\n';
+    char buf[32];
+    a.get(buf, 4);
+    std::cout << buf << ' ' << a.gcount() << ' ' << a.rdstate() << '\n';
+    a.get(buf, 32, '\n');
+    std::cout << '[' << buf << "] " << a.gcount() << ' ' << a.rdstate() << '\n';
+    int nl = a.peek();
+    std::cout << nl << ' ' << a.gcount() << '\n';
+    a.ignore();
+    std::cout << a.gcount() << '\n';
+    a.getline(buf, 32);
+    std::cout << '[' << buf << "] " << a.gcount() << ' ' << a.rdstate() << '\n';
+    a.getline(buf, 3);
+    std::cout << '[' << buf << "] " << a.gcount() << ' ' << a.rdstate() << '\n';
+    a.clear();
+    a.getline(buf, 32, 't');
+    std::cout << '[' << buf << "] " << a.gcount() << ' ' << a.rdstate() << '\n';
+    a.getline(buf, 32);
+    std::cout << '[' << buf << "] " << a.gcount() << ' ' << a.rdstate() << '\n';
+    std::istringstream b("one,two,three");
+    b.ignore(100, ',');
+    std::cout << b.gcount() << ' ';
+    b.ignore(std::numeric_limits<std::streamsize>::max(), ',');
+    std::cout << b.gcount() << ' ';
+    std::string rest;
+    b >> rest;
+    std::cout << rest << ' ' << b.rdstate() << '\n';
+    std::istringstream r("abcdef");
+    char rb[8] = "";
+    r.read(rb, 4);
+    std::cout << std::string(rb, 4) << ' ' << r.gcount() << ' ' << r.rdstate() << '\n';
+    r.read(rb, 4);
+    std::cout << std::string(rb, 2) << ' ' << r.gcount() << ' ' << r.rdstate() << '\n';
+    std::istringstream s("xyz");
+    char sb[8];
+    std::streamsize n1 = s.readsome(sb, 2);
+    std::streamsize n2 = s.readsome(sb + 2, 5);
+    std::streamsize n3 = s.readsome(sb, 5);
+    std::cout << n1 << ' ' << n2 << ' ' << n3 << ' ' << std::string(sb, 3) << ' ' << s.rdstate() << '\n';
+    std::istringstream u("pq");
+    int u1 = u.get();
+    u.unget();
+    int u2 = u.get();
+    int u3 = u.get();
+    u.putback('q');
+    int u4 = u.get();
+    u.putback('z');
+    std::cout << (char)u1 << (char)u2 << (char)u3 << (char)u4 << ' ' << u.rdstate() << '\n';
+    std::istringstream e("");
+    char eb[4] = "zz";
+    e.get(eb, 4);
+    std::cout << '[' << eb << "] " << e.rdstate() << '\n';
+    std::istringstream f("k");
+    f.get();
+    int after = f.get();
+    std::cout << after << ' ' << f.rdstate() << '\n';
+    f.clear();
+    f.unget();
+    int again = f.get();
+    std::cout << (char)again << ' ' << f.rdstate() << ' ' << f.sync() << '\n';
+    std::istringstream w("  lead");
+    w >> std::ws;
+    std::cout << w.peek() << ' ';
+    std::istringstream w2("   ");
+    w2 >> std::ws;
+    std::cout << w2.rdstate() << '\n';
+    return 0;
+}

@@ -1,0 +1,59 @@
+// <stack> - [stack]: the last in first out, over a container - a deque unless another is named.
+#ifndef _CXX1_STACK
+#define _CXX1_STACK
+
+#include <deque>
+#include <utility>
+#include <memory>
+
+namespace std {
+
+template <class T, class Container = deque<T> > class stack {
+public:
+    typedef typename Container::value_type value_type;
+    typedef typename Container::reference reference;
+    typedef typename Container::const_reference const_reference;
+    typedef typename Container::size_type size_type;
+    typedef Container container_type;
+
+protected:
+    Container c;
+
+public:
+    explicit stack(const Container &x) : c(x) {}
+    explicit stack(Container &&x = Container()) : c(std::move(x)) {}
+    template <class A> explicit stack(const A &a, typename enable_if<uses_allocator<Container, A>::value>::type * = 0) : c(a) {}
+    template <class A> stack(const Container &x, const A &a, typename enable_if<uses_allocator<Container, A>::value>::type * = 0) : c(x, a) {}
+    template <class A> stack(Container &&x, const A &a, typename enable_if<uses_allocator<Container, A>::value>::type * = 0) : c(std::move(x), a) {}
+    template <class A> stack(const stack &s, const A &a, typename enable_if<uses_allocator<Container, A>::value>::type * = 0) : c(s.c, a) {}
+    template <class A> stack(stack &&s, const A &a, typename enable_if<uses_allocator<Container, A>::value>::type * = 0) : c(std::move(s.c), a) {}
+
+    bool empty() const { return c.empty(); }
+    size_type size() const { return c.size(); }
+    reference top() { return c.back(); }
+    const_reference top() const { return c.back(); }
+    void push(const value_type &x) { c.push_back(x); }
+    void push(value_type &&x) { c.push_back(std::move(x)); }
+    template <class... A> void emplace(A &&... a) { c.emplace_back(std::forward<A>(a)...); }
+    void pop() { c.pop_back(); }
+    void swap(stack &s) {
+        using std::swap;
+        swap(c, s.c);
+    }
+
+    bool __cxx1_equal(const stack &y) const { return c == y.c; }
+    bool __cxx1_less(const stack &y) const { return c < y.c; }
+};
+
+template <class T, class C> inline bool operator==(const stack<T, C> &x, const stack<T, C> &y) { return x.__cxx1_equal(y); }
+template <class T, class C> inline bool operator<(const stack<T, C> &x, const stack<T, C> &y) { return x.__cxx1_less(y); }
+template <class T, class C> inline bool operator!=(const stack<T, C> &x, const stack<T, C> &y) { return !(x == y); }
+template <class T, class C> inline bool operator>(const stack<T, C> &x, const stack<T, C> &y) { return y < x; }
+template <class T, class C> inline bool operator>=(const stack<T, C> &x, const stack<T, C> &y) { return !(x < y); }
+template <class T, class C> inline bool operator<=(const stack<T, C> &x, const stack<T, C> &y) { return !(y < x); }
+template <class T, class C> inline void swap(stack<T, C> &x, stack<T, C> &y) { x.swap(y); }
+template <class T, class C, class A> struct uses_allocator<stack<T, C>, A> : uses_allocator<C, A>::type {};
+
+}  // namespace std
+
+#endif

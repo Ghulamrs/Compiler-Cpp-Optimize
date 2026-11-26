@@ -35,6 +35,7 @@ public:
     const char *const *identityMacros() const override;
     std::unique_ptr<CodeGen> codegen(std::ostream &sink, Syntax syntax) const override;
     bool emitsLineTable(Syntax) const override { return true; }
+    bool optimizesAroundVolatile() const override { return true; }
 private:
     LinuxX86_64Target target_;
 };
@@ -69,6 +70,10 @@ public:
 protected:
 
     virtual bool writesDwarf() const { return true; }
+    // -g's records: CodeView for Microsoft's tools, DWARF elsewhere; the MASM path spells the same
+    // CodeView for GRIDE's masm (1.29).
+    virtual void writeDebug(const std::vector<DwarfFunction> &fns,
+                            const std::vector<DwarfGlobal> &globals);
     // **The MASM path writes its own RTTI records**, so the COFF ones must not.
     virtual bool emitsOwnRtti() const { return false; }
 
@@ -76,7 +81,7 @@ protected:
     bool usesFunclets() const override { return target_.microsoftNames(); }
     bool terminateScopes() const override { return !target_.microsoftNames(); }
     std::string terminatePad(int id) override;
-    std::string beginFunclet() override;
+    std::string beginFunclet(std::size_t pos, int number, bool cleanup) override;
     void funcletLeave(const std::string &label) override;
     void endCleanupFunclet() override;
     void endFunclet(const std::string &resume) override;
@@ -100,9 +105,11 @@ protected:
     // lifting the text back out - what the body appended, in order, IS the
     // funclet, so moving it costs no second code path.
     std::string funclets_;
-    std::size_t funcletMark_ = 0;
+    std::vector<std::size_t> funcletMarks_;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;
+    // The funclets the one being walked was opened inside, with their entries' -g locations.
+    std::vector<std::pair<std::string, std::string> > outerFunclets_;
     // The Microsoft type descriptors this file has laid down, so a class both
     // described for RTTI and thrown gets its `??_R0` once.
     std::set<std::string> msDescriptors_;
@@ -115,6 +122,14 @@ protected:
     bool fnMergeable_ = false;
     // **A funclet's .pdata goes last, after every ordinary function's.**
     std::string funcletPdata_;
+    // **-g describes a funclet as a procedure of its own**: opened with it,
+    // after its function's record, taking the lines until it closes;
+    // `funcletEntryLoc_` is its first instruction's (the `catch` line).
+    void funcletDebugBegin(const std::string &symbol, std::size_t pos, int number, bool cleanup);
+    void funcletDebugEnd();
+    std::string funcletEntryLoc_;
+    // The function being emitted, among dwarfFns_: its funclets' records follow it.
+    std::size_t dwarfFnAt_ = 0;
 
     std::string out_;
     std::size_t emittedSize() override { return out_.size() + (optimizer_ ? optimizer_->held() : 0); }
@@ -140,6 +155,10 @@ protected:
     Op local(long long slot) const { return realign_ > 0 ? mem(top_ - slot, "%rbx") : mem(-slot, "%rbp"); }
     Op frameSlot(long long disp) const { return disp < 0 ? local(-disp) : mem(disp, "%rbp"); }   // below rbp a slot, above it the caller's
     int realign_ = 0;
+    // The function being written reads or writes a volatile lvalue, so the optimizer is passed by (emit).
+    bool volatileHere_ = false;
+    // Which callees touch one, asked once each: such a callee is never walked in place.
+    mutable std::map<const Function *, bool> volatileBodies_;
     int top_ = 0;
     Spelling *plain_ = nullptr;   // under the optimizer, written to directly for a realigned frame - see emit()
     bool optimizing() const { return optimizer_ && a_ == optimizer_.get(); }
@@ -156,7 +175,7 @@ protected:
         // Microsoft frames carry FH3 tables, not an LSDA.
         if (target_.microsoftNames()) {
             // One table for cleanups and tries alike, nested or not: a state tree.
-            if (msStates().empty()) {
+            if (msStates().empty() && fn.msUnwindHelp() == 0) {
                 out_ += funclets_; funclets_.clear(); funcletIndex_ = 0;
             } else {
                 emitCoffEhTables(fn);
@@ -182,10 +201,11 @@ private:
     const Abi &abi_;
     int depth_ = 0;
     std::string returnLabel_;
-    // Not in a funclet: its code is in another section, which its function's CodeView line table cannot measure to.
-    void emitLoc(int file, int line, int column) override { if (!inFunclet_) a_->location(file, line, column); }
+    // In a funclet too (1.29): its lines are a table of the funclet's own, since its code is in another section - see Spelling::funcletLinesBegin.
+    void emitLoc(int file, int line, int column) override { a_->location(file, line, column); }
     void defineLabel(const std::string &l) override;
     void defineStateLabel(const std::string &l) override;
+    void defineBlockLabel(const std::string &l) override;
     void jump(const std::string &l) override;
     void branchIfZero(const std::string &l) override;
     void branchIfNotZero(const std::string &l) override;
@@ -210,6 +230,7 @@ private:
     bool inlining() const;
     int inlineReserve_ = 0;
     void finishChunk();
+    void vaArgClass(const VaArg &n);
     std::string label(const char *kind, int id) const override;
     std::string userLabel(const std::string &name) const override;
     void emitData(const Program &program);
@@ -307,9 +328,11 @@ private:
     // whole call placed - what visit(Call) and the outgoing area both ask.
     bool returnsThroughPointer(const Call &n) const;
     Placement placeCall(const Call &n) const;
-    // Whether evaluating `e` may make a call at the floor that writes the
-    // outgoing area above its shadow space - see visit(Call).
+    // Whether `e` may call at the floor and write the outgoing area - or move the floor, by an `_alloca`
     bool mayWriteArea(const Expr &e) const;
+    // `_alloca(n)`: rsp moves down by n rounded to 16, probed first on Windows, and the block sits above the
+    // outgoing area and whatever this function has pushed, both of which move down with rsp.
+    void genAlloca(const Call &n);
 };
 
 std::vector<bool> classifyEightbytes(const Type *t, const Target &target);

@@ -17,7 +17,8 @@
 // [expr.new]/12, measured from clang on both ABIs for a class with a
 // destructor. The replaceable `operator new(size_t)` and `operator delete(void
 // *)` need no declaration to be replaced, a definition of either being the
-// replacement.
+// replacement; they are declared below as [new.syn] has them, so that a program
+// - or std::allocator - can call them by name.
 //
 // x86_64-windows: `std::bad_alloc` follows the MSVC layout `<exception>`
 // gives its base; catching one the CRT threw needs a class throw and catch on
@@ -40,49 +41,57 @@ new_handler get_new_handler() throw();
 #if defined(_WIN32)
 class bad_alloc : public exception {
 public:
-    bad_alloc() : exception("bad allocation", 1) {}
+    bad_alloc() noexcept : exception("bad allocation", 1) {}
     virtual ~bad_alloc() {}
 protected:   // private in vcruntime, with a friend class this compiler does not take
-    bad_alloc(const char *const msg) : exception(msg, 1) {}
+    bad_alloc(const char *const msg) noexcept : exception(msg, 1) {}
 };
 
 class bad_array_new_length : public bad_alloc {
 public:
-    bad_array_new_length() : bad_alloc("bad array new length") {}
+    bad_array_new_length() noexcept : bad_alloc("bad array new length") {}
     virtual ~bad_array_new_length() {}
 };
 #elif defined(__TMS320C6X__)
 class bad_alloc : public exception {
 public:
-    bad_alloc() {}
+    bad_alloc() noexcept {}
     virtual ~bad_alloc() {}
     virtual const char *what() const { return "std::bad_alloc"; }
 };
 
 class bad_array_new_length : public bad_alloc {
 public:
-    bad_array_new_length() {}
+    bad_array_new_length() noexcept {}
     virtual ~bad_array_new_length() {}
     virtual const char *what() const { return "bad_array_new_length"; }
 };
 #else
 class bad_alloc : public exception {
 public:
-    bad_alloc() {}
+    bad_alloc() noexcept {}
     virtual ~bad_alloc();
     virtual const char *what() const;
 };
 
 class bad_array_new_length : public bad_alloc {
 public:
-    bad_array_new_length() {}
+    bad_array_new_length() noexcept {}
     virtual ~bad_array_new_length();
     virtual const char *what() const;
 };
 #endif
 
+// [expr.new]/7: what `new T[n]` calls, instead of allocating, when n is negative or n elements
+// would not fit in a size_t - the compiler names it, where this header has been read.
+inline void __throw_bad_array_new_length() { throw bad_array_new_length(); }
+
 }  // namespace std
 
+void *operator new(std::size_t);
+void *operator new[](std::size_t);
+void operator delete(void *) throw();
+void operator delete[](void *) throw();
 void *operator new(std::size_t, const std::nothrow_t &) throw();
 void *operator new[](std::size_t, const std::nothrow_t &) throw();
 void operator delete(void *, const std::nothrow_t &) throw();

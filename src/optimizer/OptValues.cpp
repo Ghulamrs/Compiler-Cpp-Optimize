@@ -114,11 +114,7 @@ public:
     }
 
 private:
-    struct Pushed {
-        Value v; int at; int xmm;   // xmm: the register a movsd stored, or -1
-        // C++11 has no aggregate with a member initialiser, so the braces call this.
-        Pushed(Value v = Value(), int at = 0, int xmm = -1) : v(v), at(at), xmm(xmm) {}
-    };
+    struct Pushed { Value v; int at; int xmm = -1; };   // xmm: the register a movsd stored, or -1
     enum class Pop { Kept, Copy, Gone };
 
     Stream &s_;
@@ -139,12 +135,7 @@ private:
     Value cond_;
     // **The copy each register last received**, good while neither end has
     // been written since - which the versions, bumped on every write, tell.
-    struct Copy {
-        int from; int width; unsigned fromVersion, toVersion;
-        // C++11 has no aggregate with a member initialiser, so the braces call this.
-        Copy(int from = -1, int width = 0, unsigned fromVersion = 0, unsigned toVersion = 0)
-            : from(from), width(width), fromVersion(fromVersion), toVersion(toVersion) {}
-    };
+    struct Copy { int from = -1; int width = 0; unsigned fromVersion = 0, toVersion = 0; };
     Copy copies_[kGprs];
     unsigned version_[kGprs] = {};
     int nextId_ = 1;

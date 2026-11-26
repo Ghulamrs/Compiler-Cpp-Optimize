@@ -1,0 +1,228 @@
+// <iterator> - [iterator.synopsis]: the iterator base class, advance/distance/next/prev, the insert iterators,
+// move_iterator, the stream iterators and the free begin/end. The tags, iterator_traits and reverse_iterator
+// are <__iterator_base>'s, which the containers include before this.
+//
+// The stream iterators read and write a basic_istream and a basic_ostream of their CharT, and the buffer
+// iterators its basic_streambuf.
+#ifndef _CXX1_ITERATOR
+#define _CXX1_ITERATOR
+
+#include <cstddef>
+#include <utility>
+#include <istream>
+#include <ostream>
+#include <streambuf>
+#include <__sbuf_iterator>
+#include <__iterator_base>
+
+namespace std {
+
+// [iterator.basic]'s iterator is <__iterator_base>'s, which the stream buffers' iterators derive from.
+
+// [iterator.operations]
+template <class It, class D> inline void advance(It &it, D n) { std::__cxx1_advance(it, n); }
+template <class It> inline typename iterator_traits<It>::difference_type distance(It first, It last) {
+    return std::__cxx1_distance(first, last);
+}
+template <class It> inline It next(It x, typename iterator_traits<It>::difference_type n = 1) {
+    std::__cxx1_advance(x, n);
+    return x;
+}
+template <class It> inline It prev(It x, typename iterator_traits<It>::difference_type n = 1) {
+    std::__cxx1_advance(x, -n);
+    return x;
+}
+
+// [insert.iterators]: an assignment through one is a push_back, a push_front or an insert.
+template <class C> class back_insert_iterator : public iterator<output_iterator_tag, void, void, void, void> {
+protected:
+    C *container;
+
+public:
+    typedef C container_type;
+    explicit back_insert_iterator(C &x) : container(&x) {}
+    back_insert_iterator &operator=(const typename C::value_type &v) {
+        container->push_back(v);
+        return *this;
+    }
+    back_insert_iterator &operator=(typename C::value_type &&v) {
+        container->push_back(std::move(v));
+        return *this;
+    }
+    back_insert_iterator &operator*() { return *this; }
+    back_insert_iterator &operator++() { return *this; }
+    back_insert_iterator operator++(int) { return *this; }
+};
+template <class C> inline back_insert_iterator<C> back_inserter(C &x) { return back_insert_iterator<C>(x); }
+
+template <class C> class front_insert_iterator : public iterator<output_iterator_tag, void, void, void, void> {
+protected:
+    C *container;
+
+public:
+    typedef C container_type;
+    explicit front_insert_iterator(C &x) : container(&x) {}
+    front_insert_iterator &operator=(const typename C::value_type &v) {
+        container->push_front(v);
+        return *this;
+    }
+    front_insert_iterator &operator=(typename C::value_type &&v) {
+        container->push_front(std::move(v));
+        return *this;
+    }
+    front_insert_iterator &operator*() { return *this; }
+    front_insert_iterator &operator++() { return *this; }
+    front_insert_iterator operator++(int) { return *this; }
+};
+template <class C> inline front_insert_iterator<C> front_inserter(C &x) { return front_insert_iterator<C>(x); }
+
+template <class C> class insert_iterator : public iterator<output_iterator_tag, void, void, void, void> {
+protected:
+    C *container;
+    typename C::iterator iter;
+
+public:
+    typedef C container_type;
+    insert_iterator(C &x, typename C::iterator i) : container(&x), iter(i) {}
+    insert_iterator &operator=(const typename C::value_type &v) {
+        iter = container->insert(iter, v);
+        ++iter;
+        return *this;
+    }
+    insert_iterator &operator=(typename C::value_type &&v) {
+        iter = container->insert(iter, std::move(v));
+        ++iter;
+        return *this;
+    }
+    insert_iterator &operator*() { return *this; }
+    insert_iterator &operator++() { return *this; }
+    insert_iterator &operator++(int) { return *this; }
+};
+template <class C> inline insert_iterator<C> inserter(C &x, typename C::iterator i) { return insert_iterator<C>(x, i); }
+
+// [move.iterators]: the element as an rvalue.
+template <class It> class move_iterator {
+public:
+    typedef It iterator_type;
+    typedef typename iterator_traits<It>::difference_type difference_type;
+    typedef It pointer;
+    typedef typename iterator_traits<It>::value_type value_type;
+    typedef typename iterator_traits<It>::iterator_category iterator_category;
+    typedef value_type &&reference;
+
+    move_iterator() : current() {}
+    explicit move_iterator(It i) : current(i) {}
+    template <class U> move_iterator(const move_iterator<U> &u) : current(u.base()) {}
+    template <class U> move_iterator &operator=(const move_iterator<U> &u) {
+        current = u.base();
+        return *this;
+    }
+
+    It base() const { return current; }
+    reference operator*() const { return std::move(*current); }
+    pointer operator->() const { return current; }
+    move_iterator &operator++() { ++current; return *this; }
+    move_iterator operator++(int) { move_iterator t = *this; ++current; return t; }
+    move_iterator &operator--() { --current; return *this; }
+    move_iterator operator--(int) { move_iterator t = *this; --current; return t; }
+    move_iterator operator+(difference_type n) const { return move_iterator(current + n); }
+    move_iterator &operator+=(difference_type n) { current += n; return *this; }
+    move_iterator operator-(difference_type n) const { return move_iterator(current - n); }
+    move_iterator &operator-=(difference_type n) { current -= n; return *this; }
+    reference operator[](difference_type n) const { return std::move(current[n]); }
+
+private:
+    It current;
+};
+template <class I1, class I2> inline bool operator==(const move_iterator<I1> &a, const move_iterator<I2> &b) { return a.base() == b.base(); }
+template <class I1, class I2> inline bool operator!=(const move_iterator<I1> &a, const move_iterator<I2> &b) { return !(a == b); }
+template <class I1, class I2> inline bool operator<(const move_iterator<I1> &a, const move_iterator<I2> &b) { return a.base() < b.base(); }
+template <class I1, class I2> inline bool operator<=(const move_iterator<I1> &a, const move_iterator<I2> &b) { return !(b < a); }
+template <class I1, class I2> inline bool operator>(const move_iterator<I1> &a, const move_iterator<I2> &b) { return b < a; }
+template <class I1, class I2> inline bool operator>=(const move_iterator<I1> &a, const move_iterator<I2> &b) { return !(a < b); }
+template <class I1, class I2>
+inline auto operator-(const move_iterator<I1> &a, const move_iterator<I2> &b) -> decltype(a.base() - b.base()) {
+    return a.base() - b.base();
+}
+template <class It>
+inline move_iterator<It> operator+(typename move_iterator<It>::difference_type n, const move_iterator<It> &x) {
+    return x + n;
+}
+template <class It> inline move_iterator<It> make_move_iterator(It i) { return move_iterator<It>(i); }
+
+// [istream.iterator]: one value read ahead; the end-of-stream iterator is the one whose stream has failed.
+template <class T, class CharT = char, class Traits = char_traits<CharT>, class Distance = std::ptrdiff_t>
+class istream_iterator : public iterator<input_iterator_tag, T, Distance, const T *, const T &> {
+public:
+    typedef CharT char_type;
+    typedef Traits traits_type;
+    typedef basic_istream<CharT, Traits> istream_type;
+
+    constexpr istream_iterator() : in_(0), value_() {}
+    istream_iterator(istream_type &s) : in_(&s), value_() { read(); }
+    const T &operator*() const { return value_; }
+    const T *operator->() const { return &value_; }
+    istream_iterator &operator++() {
+        read();
+        return *this;
+    }
+    istream_iterator operator++(int) {
+        istream_iterator t = *this;
+        read();
+        return t;
+    }
+    bool __cxx1_equal(const istream_iterator &o) const { return in_ == o.in_; }
+
+private:
+    void read() {
+        if (in_ != 0 && !(*in_ >> value_)) in_ = 0;
+    }
+    istream_type *in_;
+    T value_;
+};
+template <class T, class C, class Tr, class D>
+inline bool operator==(const istream_iterator<T, C, Tr, D> &a, const istream_iterator<T, C, Tr, D> &b) {
+    return a.__cxx1_equal(b);
+}
+template <class T, class C, class Tr, class D>
+inline bool operator!=(const istream_iterator<T, C, Tr, D> &a, const istream_iterator<T, C, Tr, D> &b) {
+    return !a.__cxx1_equal(b);
+}
+
+// [ostream.iterator]: each value written, and the delimiter after it when one was given.
+template <class T, class CharT = char, class Traits = char_traits<CharT> >
+class ostream_iterator : public iterator<output_iterator_tag, void, void, void, void> {
+public:
+    typedef CharT char_type;
+    typedef Traits traits_type;
+    typedef basic_ostream<CharT, Traits> ostream_type;
+
+    ostream_iterator(ostream_type &s) : out_(&s), delim_(0) {}
+    ostream_iterator(ostream_type &s, const CharT *d) : out_(&s), delim_(d) {}
+    ostream_iterator &operator=(const T &v) {
+        *out_ << v;
+        if (delim_ != 0) *out_ << delim_;
+        return *this;
+    }
+    ostream_iterator &operator*() { return *this; }
+    ostream_iterator &operator++() { return *this; }
+    ostream_iterator &operator++(int) { return *this; }
+
+private:
+    ostream_type *out_;
+    const CharT *delim_;
+};
+
+// istreambuf_iterator and ostreambuf_iterator are <__sbuf_iterator>'s, which <streambuf> includes.
+
+// [iterator.range]
+template <class C> inline auto begin(C &c) -> decltype(c.begin()) { return c.begin(); }
+template <class C> inline auto begin(const C &c) -> decltype(c.begin()) { return c.begin(); }
+template <class C> inline auto end(C &c) -> decltype(c.end()) { return c.end(); }
+template <class C> inline auto end(const C &c) -> decltype(c.end()) { return c.end(); }
+template <class T, std::size_t N> inline T *begin(T (&a)[N]) { return a; }
+template <class T, std::size_t N> inline T *end(T (&a)[N]) { return a + N; }
+
+}  // namespace std
+
+#endif

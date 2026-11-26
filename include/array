@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
+#include <__iterator_base>
 
 namespace std {
 
@@ -29,19 +30,30 @@ template <class T, size_t N> struct array {
     typedef const T *const_pointer;
     typedef T *iterator;
     typedef const T *const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    // What tuple_size and tuple_element read, in <utility>.
+    static const size_t __cxx1_tuple_size = N;
+    typedef T __cxx1_tuple_element;
 
     T elems_[N];
 
-    iterator begin() { return elems_; }
-    const_iterator begin() const { return elems_; }
-    iterator end() { return elems_ + N; }
-    const_iterator end() const { return elems_ + N; }
-    const_iterator cbegin() const { return elems_; }
-    const_iterator cend() const { return elems_ + N; }
+    iterator begin() noexcept { return elems_; }
+    const_iterator begin() const noexcept { return elems_; }
+    iterator end() noexcept { return elems_ + N; }
+    const_iterator end() const noexcept { return elems_ + N; }
+    const_iterator cbegin() const noexcept { return elems_; }
+    const_iterator cend() const noexcept { return elems_ + N; }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
 
-    size_type size() const { return N; }
-    size_type max_size() const { return N; }
-    bool empty() const { return false; }
+    size_type size() const noexcept { return N; }
+    size_type max_size() const noexcept { return N; }
+    bool empty() const noexcept { return false; }
 
     reference operator[](size_type i) { return elems_[i]; }
     const_reference operator[](size_type i) const { return elems_[i]; }
@@ -51,12 +63,12 @@ template <class T, size_t N> struct array {
     const_reference front() const { return elems_[0]; }
     reference back() { return elems_[N - 1]; }
     const_reference back() const { return elems_[N - 1]; }
-    T *data() { return elems_; }
-    const T *data() const { return elems_; }
+    T *data() noexcept { return elems_; }
+    const T *data() const noexcept { return elems_; }
 
     void fill(const T &v) { for (size_type i = 0; i < N; i++) elems_[i] = v; }
     // Element by element, each exchange by moves - what std::swap does (1.27).
-    void swap(array &o) {
+    void swap(array &o) noexcept(noexcept(std::__cxx1_swap_adl(std::declval<T &>(), std::declval<T &>()))) {
         for (size_type i = 0; i < N; i++) std::swap(elems_[i], o.elems_[i]);
     }
 };
@@ -64,19 +76,36 @@ template <class T, size_t N> struct array {
 template <class T> struct array<T, 0> {
     typedef T value_type;
     typedef size_t size_type;
+    typedef ptrdiff_t difference_type;
+    typedef T &reference;
+    typedef const T &const_reference;
+    typedef T *pointer;
+    typedef const T *const_pointer;
     typedef T *iterator;
     typedef const T *const_iterator;
-    iterator begin() { return 0; }
-    const_iterator begin() const { return 0; }
-    iterator end() { return 0; }
-    const_iterator end() const { return 0; }
-    size_type size() const { return 0; }
-    size_type max_size() const { return 0; }
-    bool empty() const { return true; }
-    T *data() { return 0; }
-    const T *data() const { return 0; }
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    static const size_t __cxx1_tuple_size = 0;
+    typedef T __cxx1_tuple_element;
+    iterator begin() noexcept { return 0; }
+    const_iterator begin() const noexcept { return 0; }
+    iterator end() noexcept { return 0; }
+    const_iterator end() const noexcept { return 0; }
+    const_iterator cbegin() const noexcept { return 0; }
+    const_iterator cend() const noexcept { return 0; }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
+    size_type size() const noexcept { return 0; }
+    size_type max_size() const noexcept { return 0; }
+    bool empty() const noexcept { return true; }
+    T *data() noexcept { return 0; }
+    const T *data() const noexcept { return 0; }
     void fill(const T &) {}
-    void swap(array &) {}
+    void swap(array &) noexcept {}
 };
 
 template <class T, size_t N> bool operator==(const array<T, N> &a, const array<T, N> &b) {
@@ -85,6 +114,32 @@ template <class T, size_t N> bool operator==(const array<T, N> &a, const array<T
 }
 template <class T, size_t N> bool operator!=(const array<T, N> &a, const array<T, N> &b) {
     return !(a == b);
+}
+// [array.special]: lexicographically, as [container.requirements] orders every sequence.
+template <class T, size_t N> bool operator<(const array<T, N> &a, const array<T, N> &b) {
+    for (size_t i = 0; i < N; i++) {
+        if (a.elems_[i] < b.elems_[i]) return true;
+        if (b.elems_[i] < a.elems_[i]) return false;
+    }
+    return false;
+}
+template <class T, size_t N> bool operator>(const array<T, N> &a, const array<T, N> &b) { return b < a; }
+template <class T, size_t N> bool operator<=(const array<T, N> &a, const array<T, N> &b) { return !(b < a); }
+template <class T, size_t N> bool operator>=(const array<T, N> &a, const array<T, N> &b) { return !(a < b); }
+template <class T, size_t N> void swap(array<T, N> &a, array<T, N> &b) noexcept(noexcept(a.swap(b))) { a.swap(b); }
+
+// [array.tuple]: tuple_size and tuple_element are <utility>'s, over the members above.
+template <size_t I, class T, size_t N> T &get(array<T, N> &a) noexcept {
+    static_assert(I < N, "get<I>(array<T, N>) needs I < N");
+    return a.elems_[I];
+}
+template <size_t I, class T, size_t N> const T &get(const array<T, N> &a) noexcept {
+    static_assert(I < N, "get<I>(array<T, N>) needs I < N");
+    return a.elems_[I];
+}
+template <size_t I, class T, size_t N> T &&get(array<T, N> &&a) noexcept {
+    static_assert(I < N, "get<I>(array<T, N>) needs I < N");
+    return static_cast<T &&>(a.elems_[I]);
 }
 
 }  // namespace std

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -93,8 +94,14 @@ public:
     enum class Category { Natural, Lvalue, Prvalue };
     Category declCategory() const { return category_; }
     void setDeclCategory(Category c) { category_ = c; }
+    // **`*pf` for a pointer to a function is the function, and the parser keeps the pointer for it** - a
+    // function is called through its address either way. The mark says the node stands for the function
+    // itself, so `&*pf` is the pointer again and not a pointer to it ([expr.unary.op]/1,3). Only `&` reads it.
+    bool isFunctionDesignator() const { return designator_; }
+    void setFunctionDesignator(bool d) { designator_ = d; }
 private:
     const Type *type_ = nullptr;
+    bool designator_ = false;
     bool xvalue_ = false;
     Category category_ = Category::Natural;
 };
@@ -192,9 +199,13 @@ class VaArg final : public Expr {
 public:
     explicit VaArg(ExprPtr list) : list_(std::move(list)) {}
     const Expr &list() const { return *list_; }
+    // Where a class is put back together if it came in pieces, in whole eightbytes; a class type only.
+    int slot() const { return slot_; }
+    void setSlot(int s) { slot_ = s; }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     ExprPtr list_;
+    int slot_ = 0;
 };
 
 class Assign final : public Expr {
@@ -244,6 +255,8 @@ public:
     const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
     void setSymbol(std::string s) { symbol_ = std::move(s); }
     const std::vector<ExprPtr> &args() const { return args_; }
+    // An argument replaced: a constructor's `this` pointed at the object it is to build instead.
+    void setArg(std::size_t i, ExprPtr e) { args_[i] = std::move(e); }
     const Expr *callee() const { return callee_.get(); }
     bool isVariadic() const { return variadic_; }
     int resultSlot() const { return resultSlot_; }
@@ -261,6 +274,10 @@ public:
     // return pointer second. A lowered member call needs this to be told apart.
     bool hasThis() const { return hasThis_; }
     void setHasThis(bool t) { hasThis_ = t; }
+    // **`_alloca(n)` and `alloca(n)` are the compiler's own** (docs\Runtime_Design.md 9.4): nothing is
+    // called - the stack pointer moves by n rounded up, and the block's address is the value.
+    bool isAlloca() const { return alloca_; }
+    void setAlloca() { alloca_ = true; }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     std::string name_;
@@ -272,6 +289,7 @@ private:
     int namedArgs_;
     std::vector<int> argSlots_;
     bool hasThis_ = false;
+    bool alloca_ = false;
 };
 
 class Postfix final : public Expr {
@@ -376,11 +394,16 @@ public:
     // resume - so a throw out of it is [except.terminate]'s, not a new one.
     void setUnwindCleanup() { unwindCleanup_ = true; }
     bool unwindCleanup() const { return unwindCleanup_; }
+    // What a typedef, static_assert, using or null statement leaves: [dcl.constexpr]/3 lets these stand
+    // beside a constexpr function's return.
+    void setDeclarative() { declarative_ = true; }
+    bool declarative() const { return declarative_; }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     std::vector<StmtPtr> body_;
     int scope_ = -1;
     bool unwindCleanup_ = false;
+    bool declarative_ = false;
 };
 
 class If final : public Stmt {
@@ -530,7 +553,9 @@ struct MsHandler {
     int objectSize = 0;
     bool byReference = false;  // the slot takes the runtime's pointer, not a copy
     bool constPointer = false; // `catch (const T *)`: HT_IsConst, the const off the name
+    std::string orNullptr;     // a pointer handler: nullptr_t's descriptor, a second row to the same funclet
     StmtPtr body;
+    std::size_t pos = 0;       // where `catch` is written: the line the funclet's entry is named by under -g (1.29)
 };
 
 class Try final : public Stmt {
@@ -607,14 +632,8 @@ struct Local {
 
     std::string staticName;
 
-    int scope;
+    int scope = 0;
     int align = 0;      // the slot's alignment, alignas included: what a backend laying the frame out must keep
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Local(std::string name = std::string(), const Type *type = nullptr, int offset = 0,
-          bool isParam = false, std::string staticName = std::string(), int scope = 0)
-        : name(std::move(name)), type(type), offset(offset), isParam(isParam),
-          staticName(std::move(staticName)), scope(scope) {}
 };
 
 class Function {
@@ -630,6 +649,13 @@ public:
     const std::string &name() const { return name_; }
     const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
     void setSymbol(std::string s) { symbol_ = std::move(s); }
+    // **The name a debugger shows** (1.29): a template specialization's with its scope and arguments as cl
+    // spells them - `biggest<int>`, `Counter::head<3>` - where that differs from the name it was written
+    // under; the plain name for everything else, the backend qualifying it from the symbol.
+    const std::string &displayName() const { return displayName_.empty() ? name_ : displayName_; }
+    // Whether one was given (it may spell the same as the name: `geo::Tally::~Tally`, which needs no qualifying).
+    bool hasDisplayName() const { return !displayName_.empty(); }
+    void setDisplayName(std::string s) { displayName_ = std::move(s); }
 
     // The definition side of Call::hasThis - the same question asked of the
     // function being emitted rather than of a call to one.
@@ -679,13 +705,19 @@ public:
     // `throw(T...)`'s type_info symbols, for a target whose table states the list; empty where none was written.
     const std::vector<std::string> &exceptionSpec() const { return spec_; }
     void setExceptionSpec(std::vector<std::string> s) { spec_ = std::move(s); }
+    // **Microsoft: a noexcept frame FH3 has to see** though it has no state of its own, the scratch word
+    // the runtime reads; its FuncInfo says noexcept and the runtime ends the program there (Phase 6).
+    int msUnwindHelp() const { return msUnwindHelp_; }
+    void setMsUnwindHelp(int slot) { msUnwindHelp_ = slot; }
 private:
+    int msUnwindHelp_ = 0;
     bool noexcept_ = false;
     std::vector<std::string> spec_;
     bool hasThis_ = false;
     bool isInline_ = false;
     std::string name_;
     std::string symbol_;
+    std::string displayName_;
     std::string alias_;
     const Type *returns_;
     std::vector<Param> params_;
@@ -724,24 +756,15 @@ struct Global {
     bool isConst;
 
     // **One 8-byte pointer laid down immediately before this object's label.**
-    std::string prefixWord;
+    std::string prefixWord = std::string();
 
     // **Folded rather than rejected**, for an object several translation units each define: a
     // vtable, a typeinfo and its name string. clang marks all three weak, and without it two units
     // that share a polymorphic class collide on every one of them.
-    bool isInline;
+    bool isInline = false;
     int align = 0;   // `alignas(N)` on the object: what it asked for beyond its type's, else 0
     // `thread_local`: one copy per thread, in the target's TLS segment rather than .data or .bss.
     bool isThreadLocal = false;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Global(std::string name = std::string(), std::string symbol = std::string(),
-           const Type *type = nullptr, std::vector<GlobalPiece> init = std::vector<GlobalPiece>(),
-           bool hasInit = false, bool isStatic = false, bool isConst = false,
-           std::string prefixWord = std::string(), bool isInline = false)
-        : name(std::move(name)), symbol(std::move(symbol)), type(type), init(std::move(init)),
-          hasInit(hasInit), isStatic(isStatic), isConst(isConst),
-          prefixWord(std::move(prefixWord)), isInline(isInline) {}
 };
 
 // **One Itanium TLS wrapper this unit writes** - `_ZTW<name>`, the function every other unit calls
@@ -770,15 +793,37 @@ struct Program {
     std::vector<MicrosoftThrow> msThrows;
     // **The classes wanting a Microsoft run-time description**, five each.
     std::vector<const Type *> rtti;
+    // A locator per vftable where a class has more than one, each naming the vfptr's offset (Phase 6);
+    // a class with none listed has the one `??_R4...6B@` at offset 0.
+    // `cdOffset` 4 where a vtordisp is in front of the virtual base holding the vfptr.
+    struct MsLocator { const Type *cls; std::string name; int offset; int cdOffset = 0; };
+    std::vector<MsLocator> msLocators;
+    // A class's base class array where the parser wrote it - one with a virtual base, whose rows read
+    // the vbtable (Phase 6, M3); the others are made from the class alone.
+    struct MsRtti { const Type *cls; int attributes; std::vector<MicrosoftBaseClass> rows; };
+    std::vector<MsRtti> msRtti;
+    // A class's rows: the parser's where it wrote them, else made from the class.
+    std::vector<MicrosoftBaseClass> msRttiRowsOf(const Type *cls, int *attributes) const {
+        for (const MsRtti &r : msRtti)
+            if (r.cls == cls) { *attributes = r.attributes; return r.rows; }
+        return microsoftRttiRows(cls, attributes);
+    }
     // **The function that runs before main** - [basic.start.init]/2.
     std::string initFunction;
     // Whether it names __dso_handle, which ELF wants declared hidden.
     bool usesDsoHandle = false;
+    // Whether it calls atomic_flag's exchange, which no library defines: the backend writes it into this file.
+    bool usesFlagExchange = false;
+    // The interlocked operations of <atomic> this file calls - `__cxx1_atomic_cas_4` and the like, fifteen more -
+    // which no library defines either: the backend writes each one named here into the file (1.75).
+    std::set<std::string> atomicHelpers;
     // **The function that initialises this unit's thread_locals in a thread**, `__tls_init`, which
     // Itanium's `_ZTH` aliases name and the Microsoft CRT runs from .CRT$XDU; empty where none needs one.
     std::string tlsInitFunction;
     std::vector<TlsWrapper> tlsWrappers;
-    // **Whether the file wrote `volatile`**: the type system drops it, so -O is off (Driver::compile).
+    // **Whether the file wrote `volatile` anywhere.** The type system keeps it, and the
+    // optimiser's passes do not ask it, so they cannot tell a volatile read from a plain
+    // one: such a file is compiled without -O (see Driver::compile).
     bool usesVolatile = false;
     // Where the first `volatile` is, `file:line:col`, for the warning that says so.
     std::string volatileAt;

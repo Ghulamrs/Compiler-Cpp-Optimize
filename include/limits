@@ -1,16 +1,17 @@
 // <limits> - what a type can hold.
 //
-// [numeric.limits]: `std::numeric_limits<T>` answers about one arithmetic type.
-// The primary template answers about nothing - is_specialized is false and every
-// value is T() - which is what the standard asks for a type nobody specialised,
-// and is honest here: a program that asks about a type this file does not name
-// gets a zero rather than a wrong number.
+// [numeric.limits]: `std::numeric_limits<T>` answers about one arithmetic type, and the
+// cv-qualified forms answer as the type does. The primary template answers about nothing -
+// is_specialized is false and every value is T() - which is what the standard asks for a type
+// nobody specialised.
 //
-// The numbers themselves come from <limits.h> and <float.h>, so this file states
-// no bound of its own. `infinity()` is the largest value squared, which
-// overflows to the infinity the target has - written that way rather than as a
-// literal too large to represent, which is what lib/math.h does for HUGE_VAL and
-// which every compiler warns about when it reads one.
+// The bounds come from <limits.h> and <float.h>, so this file states no bound of its own. Where
+// the standard leaves a value to the implementation (traps, tinyness_before), it is cl's.
+//
+// **Two values are not constant expressions here.** signaling_NaN() has no spelling as one
+// without a compiler built-in, so it is read from its bits at run time; and x87's long double
+// bounds lie beyond the double this compiler carries a floating constant in, so on x86_64-linux
+// min(), max(), lowest() and denorm_min() are read from their bits as well.
 #ifndef _CXX1_LIMITS
 #define _CXX1_LIMITS
 
@@ -19,76 +20,235 @@
 
 namespace std {
 
+enum float_round_style {
+    round_indeterminate       = -1,
+    round_toward_zero         = 0,
+    round_to_nearest          = 1,
+    round_toward_infinity     = 2,
+    round_toward_neg_infinity = 3
+};
+
+enum float_denorm_style {
+    denorm_indeterminate = -1,
+    denorm_absent        = 0,
+    denorm_present       = 1
+};
+
 template <class T>
 class numeric_limits {
 public:
-    static const bool is_specialized = false;
-    static const bool is_signed      = false;
-    static const bool is_integer     = false;
-    static const bool has_infinity   = false;
-    static T min()       { return T(); }
-    static T max()       { return T(); }
-    static T lowest()    { return T(); }
-    static T epsilon()   { return T(); }
-    static T infinity()  { return T(); }
+    static constexpr bool is_specialized = false;
+    static constexpr T min() noexcept { return T(); }
+    static constexpr T max() noexcept { return T(); }
+    static constexpr T lowest() noexcept { return T(); }
+    static constexpr int digits = 0;
+    static constexpr int digits10 = 0;
+    static constexpr int max_digits10 = 0;
+    static constexpr bool is_signed = false;
+    static constexpr bool is_integer = false;
+    static constexpr bool is_exact = false;
+    static constexpr int radix = 0;
+    static constexpr T epsilon() noexcept { return T(); }
+    static constexpr T round_error() noexcept { return T(); }
+    static constexpr int min_exponent = 0;
+    static constexpr int min_exponent10 = 0;
+    static constexpr int max_exponent = 0;
+    static constexpr int max_exponent10 = 0;
+    static constexpr bool has_infinity = false;
+    static constexpr bool has_quiet_NaN = false;
+    static constexpr bool has_signaling_NaN = false;
+    static constexpr float_denorm_style has_denorm = denorm_absent;
+    static constexpr bool has_denorm_loss = false;
+    static constexpr T infinity() noexcept { return T(); }
+    static constexpr T quiet_NaN() noexcept { return T(); }
+    static constexpr T signaling_NaN() noexcept { return T(); }
+    static constexpr T denorm_min() noexcept { return T(); }
+    static constexpr bool is_iec559 = false;
+    static constexpr bool is_bounded = false;
+    static constexpr bool is_modulo = false;
+    static constexpr bool traps = false;
+    static constexpr bool tinyness_before = false;
+    static constexpr float_round_style round_style = round_toward_zero;
 };
 
-// An integer type: no infinity, and lowest() is min().
-#define _CXX1_INT_LIMITS(T, LO, HI, SIGNED)                                   \
+// The functions are restated because this compiler finds a base's static member function only
+// through the base's own name.
+#define _CXX1_CV_LIMITS(CV)                                                                    \
+template <class T> class numeric_limits<CV T> : public numeric_limits<T> {                    \
+public:                                                                                       \
+    static constexpr T min() noexcept { return numeric_limits<T>::min(); }                    \
+    static constexpr T max() noexcept { return numeric_limits<T>::max(); }                    \
+    static constexpr T lowest() noexcept { return numeric_limits<T>::lowest(); }              \
+    static constexpr T epsilon() noexcept { return numeric_limits<T>::epsilon(); }            \
+    static constexpr T round_error() noexcept { return numeric_limits<T>::round_error(); }    \
+    static constexpr T infinity() noexcept { return numeric_limits<T>::infinity(); }          \
+    static constexpr T quiet_NaN() noexcept { return numeric_limits<T>::quiet_NaN(); }        \
+    static constexpr T signaling_NaN() noexcept { return numeric_limits<T>::signaling_NaN(); } \
+    static constexpr T denorm_min() noexcept { return numeric_limits<T>::denorm_min(); }      \
+};
+
+_CXX1_CV_LIMITS(const)
+_CXX1_CV_LIMITS(volatile)
+_CXX1_CV_LIMITS(const volatile)
+
+#undef _CXX1_CV_LIMITS
+
+// Division by zero traps on x86_64, for int and wider (cl's library says so of those alone).
+#if defined(_WIN32) || defined(__linux__)
+#define _CXX1_INT_TRAPS true
+#else
+#define _CXX1_INT_TRAPS false
+#endif
+
+// An integer type: exact, radix 2, digits10 is floor(digits * log10 2), and an unsigned one wraps.
+#define _CXX1_INT_LIMITS(T, LO, HI, DIGITS, SIGNED, TRAPS)                    \
 template <> class numeric_limits<T> {                                         \
 public:                                                                       \
-    static const bool is_specialized = true;                                  \
-    static const bool is_signed      = SIGNED;                                \
-    static const bool is_integer     = true;                                  \
-    static const bool has_infinity   = false;                                 \
-    static T min()      { return LO; }                                        \
-    static T max()      { return HI; }                                        \
-    static T lowest()   { return LO; }                                        \
-    static T epsilon()  { return 0; }                                         \
-    static T infinity() { return 0; }                                         \
+    static constexpr bool is_specialized = true;                              \
+    static constexpr T min() noexcept { return LO; }                          \
+    static constexpr T max() noexcept { return HI; }                          \
+    static constexpr T lowest() noexcept { return LO; }                       \
+    static constexpr int digits = (DIGITS);                                   \
+    static constexpr int digits10 = (DIGITS) * 643 / 2136;                   \
+    static constexpr int max_digits10 = 0;                                    \
+    static constexpr bool is_signed = SIGNED;                                 \
+    static constexpr bool is_integer = true;                                  \
+    static constexpr bool is_exact = true;                                    \
+    static constexpr int radix = 2;                                           \
+    static constexpr T epsilon() noexcept { return 0; }                       \
+    static constexpr T round_error() noexcept { return 0; }                   \
+    static constexpr int min_exponent = 0;                                    \
+    static constexpr int min_exponent10 = 0;                                  \
+    static constexpr int max_exponent = 0;                                    \
+    static constexpr int max_exponent10 = 0;                                  \
+    static constexpr bool has_infinity = false;                               \
+    static constexpr bool has_quiet_NaN = false;                              \
+    static constexpr bool has_signaling_NaN = false;                          \
+    static constexpr float_denorm_style has_denorm = denorm_absent;           \
+    static constexpr bool has_denorm_loss = false;                            \
+    static constexpr T infinity() noexcept { return 0; }                      \
+    static constexpr T quiet_NaN() noexcept { return 0; }                     \
+    static constexpr T signaling_NaN() noexcept { return 0; }                 \
+    static constexpr T denorm_min() noexcept { return 0; }                    \
+    static constexpr bool is_iec559 = false;                                  \
+    static constexpr bool is_bounded = true;                                  \
+    static constexpr bool is_modulo = !(SIGNED) && (DIGITS) > 1;              \
+    static constexpr bool traps = TRAPS;                                      \
+    static constexpr bool tinyness_before = false;                            \
+    static constexpr float_round_style round_style = round_toward_zero;       \
 };
 
-_CXX1_INT_LIMITS(bool,               false,     true,      false)
-_CXX1_INT_LIMITS(char,               CHAR_MIN,  CHAR_MAX,  true)
-_CXX1_INT_LIMITS(signed char,        SCHAR_MIN, SCHAR_MAX, true)
-_CXX1_INT_LIMITS(unsigned char,      0,         UCHAR_MAX, false)
-_CXX1_INT_LIMITS(short,              SHRT_MIN,  SHRT_MAX,  true)
-_CXX1_INT_LIMITS(unsigned short,     0,         USHRT_MAX, false)
-_CXX1_INT_LIMITS(int,                INT_MIN,   INT_MAX,   true)
-_CXX1_INT_LIMITS(unsigned int,       0,         UINT_MAX,  false)
-_CXX1_INT_LIMITS(long,               LONG_MIN,  LONG_MAX,  true)
-_CXX1_INT_LIMITS(unsigned long,      0,         ULONG_MAX, false)
-_CXX1_INT_LIMITS(long long,          LLONG_MIN, LLONG_MAX, true)
-_CXX1_INT_LIMITS(unsigned long long, 0,         ULLONG_MAX, false)
+_CXX1_INT_LIMITS(bool,               false,     true,       1,  false, false)
+_CXX1_INT_LIMITS(char,               CHAR_MIN,  CHAR_MAX,   CHAR_BIT - 1, true, false)
+_CXX1_INT_LIMITS(signed char,        SCHAR_MIN, SCHAR_MAX,  CHAR_BIT - 1, true, false)
+_CXX1_INT_LIMITS(unsigned char,      0,         UCHAR_MAX,  CHAR_BIT, false, false)
+#if defined(_WIN32) || defined(__TMS320C6X__)
+_CXX1_INT_LIMITS(wchar_t,            0,         0xffff,     16, false, false)
+#else
+_CXX1_INT_LIMITS(wchar_t,            -0x7fffffff - 1, 0x7fffffff, 31, true, false)
+#endif
+_CXX1_INT_LIMITS(char16_t,           0,         0xffff,     16, false, false)
+_CXX1_INT_LIMITS(char32_t,           0,         0xffffffff, 32, false, false)
+_CXX1_INT_LIMITS(short,              SHRT_MIN,  SHRT_MAX,   15, true, false)
+_CXX1_INT_LIMITS(unsigned short,     0,         USHRT_MAX,  16, false, false)
+_CXX1_INT_LIMITS(int,                INT_MIN,   INT_MAX,    31, true, _CXX1_INT_TRAPS)
+_CXX1_INT_LIMITS(unsigned int,       0,         UINT_MAX,   32, false, _CXX1_INT_TRAPS)
+_CXX1_INT_LIMITS(long,               LONG_MIN,  LONG_MAX,   CHAR_BIT * (int)sizeof(long) - 1, true, _CXX1_INT_TRAPS)
+_CXX1_INT_LIMITS(unsigned long,      0,         ULONG_MAX,  CHAR_BIT * (int)sizeof(long), false, _CXX1_INT_TRAPS)
+_CXX1_INT_LIMITS(long long,          LLONG_MIN, LLONG_MAX,  63, true, _CXX1_INT_TRAPS)
+_CXX1_INT_LIMITS(unsigned long long, 0,         ULLONG_MAX, 64, false, _CXX1_INT_TRAPS)
 
 #undef _CXX1_INT_LIMITS
+#undef _CXX1_INT_TRAPS
 
-// A floating type: min() is the smallest *positive* normal value, which is why
-// lowest() exists at all - it is the most negative, and the two differ.
-#define _CXX1_FLT_LIMITS(T, LO, HI, EPS)                                      \
+// The bits of a signalling NaN, and on x86_64-linux of the x87 bounds, as the value they spell.
+template <class T, class B>
+inline T __cxx1_from_bits(B bits) noexcept {
+    union { B b; T t; } u;
+    u.b = bits;
+    return u.t;
+}
+
+struct __cxx1_x87_bits { unsigned long long significand; unsigned short exponent; };
+
+// A floating type: IEEE 754 binary, denormals present, and min() the smallest *positive* normal
+// value, which is why lowest() exists at all - it is the most negative, and the two differ.
+// **Not on the C6747** (1.83): the C674x flushes a subnormal operand or result to zero, as sim6747 does, and
+// CCS 7.4's own <limits> says `denorm_absent` for all three types - so denorm_min() is min()
+// ([numeric.limits.members]: "if has_denorm is denorm_absent, the minimum positive normalized value"), and
+// is_iec559 is false, IEC 559 having gradual underflow.
+#if defined(__TMS320C6X__)
+#define _CXX1_FLT_DENORM denorm_absent
+#define _CXX1_FLT_IEC559 false
+#define _CXX1_DENORM_MIN(MIN, SUBNORMAL) MIN
+#else
+#define _CXX1_FLT_DENORM denorm_present
+#define _CXX1_FLT_IEC559 true
+#define _CXX1_DENORM_MIN(MIN, SUBNORMAL) SUBNORMAL
+#endif
+#define _CXX1_FLT_LIMITS(T, MIN, MAX, DENORM_MIN, EPS, SNAN, DIGITS, DIGITS10, MAX_DIGITS10,  \
+                         MIN_EXP, MIN_10_EXP, MAX_EXP, MAX_10_EXP, CONSTEXPR)                   \
 template <> class numeric_limits<T> {                                         \
 public:                                                                       \
-    static const bool is_specialized = true;                                  \
-    static const bool is_signed      = true;                                  \
-    static const bool is_integer     = false;                                 \
-    static const bool has_infinity   = true;                                  \
-    static T min()      { return LO; }                                        \
-    static T max()      { return HI; }                                        \
-    static T lowest()   { return -HI; }                                       \
-    static T epsilon()  { return EPS; }                                       \
-    static T infinity() { T big = HI; return big * big; }                     \
+    static constexpr bool is_specialized = true;                              \
+    static CONSTEXPR T min() noexcept { return MIN; }                         \
+    static CONSTEXPR T max() noexcept { return MAX; }                         \
+    static CONSTEXPR T lowest() noexcept { return -max(); }                   \
+    static constexpr int digits = DIGITS;                                     \
+    static constexpr int digits10 = DIGITS10;                                 \
+    static constexpr int max_digits10 = MAX_DIGITS10;                         \
+    static constexpr bool is_signed = true;                                   \
+    static constexpr bool is_integer = false;                                 \
+    static constexpr bool is_exact = false;                                   \
+    static constexpr int radix = 2;                                           \
+    static constexpr T epsilon() noexcept { return EPS; }                     \
+    static constexpr T round_error() noexcept { return 0.5; }                 \
+    static constexpr int min_exponent = MIN_EXP;                              \
+    static constexpr int min_exponent10 = MIN_10_EXP;                         \
+    static constexpr int max_exponent = MAX_EXP;                              \
+    static constexpr int max_exponent10 = MAX_10_EXP;                         \
+    static constexpr bool has_infinity = true;                                \
+    static constexpr bool has_quiet_NaN = true;                               \
+    static constexpr bool has_signaling_NaN = true;                           \
+    static constexpr float_denorm_style has_denorm = _CXX1_FLT_DENORM;        \
+    static constexpr bool has_denorm_loss = false;                            \
+    static constexpr T infinity() noexcept { return (T)1e400; }               \
+    static constexpr T quiet_NaN() noexcept { return -((T)1e400 * 0); }       \
+    static T signaling_NaN() noexcept { return SNAN; }                        \
+    static CONSTEXPR T denorm_min() noexcept { return DENORM_MIN; }           \
+    static constexpr bool is_iec559 = _CXX1_FLT_IEC559;                       \
+    static constexpr bool is_bounded = true;                                  \
+    static constexpr bool is_modulo = false;                                  \
+    static constexpr bool traps = false;                                      \
+    static constexpr bool tinyness_before = false;                            \
+    static constexpr float_round_style round_style = round_to_nearest;        \
 };
 
-_CXX1_FLT_LIMITS(float,       FLT_MIN, FLT_MAX, FLT_EPSILON)
-_CXX1_FLT_LIMITS(double,      DBL_MIN, DBL_MAX, DBL_EPSILON)
-// **`long double` is deliberately left unspecialized.** Its bounds on an x87
-// target need more precision than a double holds, and this compiler refuses a
-// floating literal it cannot carry exactly rather than approximating it - the
-// rule that keeps every build machine reading the same number. So there is no
-// honest way to state them here, and is_specialized stays false rather than a
-// wrong bound being written down.
+_CXX1_FLT_LIMITS(float, FLT_MIN, FLT_MAX, _CXX1_DENORM_MIN(FLT_MIN, 1.40129846432481707092e-45F), FLT_EPSILON,
+                 (__cxx1_from_bits<float, unsigned int>(0x7f800001u)),
+                 24, 6, 9, -125, -37, 128, 38, constexpr)
+_CXX1_FLT_LIMITS(double, DBL_MIN, DBL_MAX, _CXX1_DENORM_MIN(DBL_MIN, 4.94065645841246544177e-324), DBL_EPSILON,
+                 (__cxx1_from_bits<double, unsigned long long>(0x7ff0000000000001ull)),
+                 53, 15, 17, -1021, -307, 1024, 308, constexpr)
+#if defined(_WIN32) || defined(__APPLE__) || defined(__TMS320C6X__)
+_CXX1_FLT_LIMITS(long double, LDBL_MIN, LDBL_MAX, _CXX1_DENORM_MIN(LDBL_MIN, 4.94065645841246544177e-324L), LDBL_EPSILON,
+                 (__cxx1_from_bits<long double, unsigned long long>(0x7ff0000000000001ull)),
+                 53, 15, 17, -1021, -307, 1024, 308, constexpr)
+#else
+#define _CXX1_X87(SIGNIFICAND, EXPONENT) \
+    (__cxx1_from_bits<long double, __cxx1_x87_bits>(__cxx1_x87_bits{SIGNIFICAND, EXPONENT}))
+_CXX1_FLT_LIMITS(long double, _CXX1_X87(0x8000000000000000ull, 0x0001),
+                 _CXX1_X87(0xffffffffffffffffull, 0x7ffe), _CXX1_X87(1, 0),
+                 (long double)1.08420217248550443401e-19,
+                 _CXX1_X87(0xa000000000000000ull, 0x7fff),
+                 64, 18, 21, -16381, -4931, 16384, 4932, )
+#undef _CXX1_X87
+#endif
 
 #undef _CXX1_FLT_LIMITS
+#undef _CXX1_FLT_DENORM
+#undef _CXX1_FLT_IEC559
+#undef _CXX1_DENORM_MIN
 
 }  // namespace std
 

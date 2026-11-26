@@ -93,12 +93,12 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
 // `clsType` feeds Itanium's substitution table, where the class is candidate S_.
 bool itaniumMemberName(const std::string &cls, const Type *clsType,
                        const std::string &name,
-                       const Type *fn, bool constThis, RefQual refThis,
+                       const Type *fn, unsigned cvThis, RefQual refThis,
                        std::string *out, std::string *problem);
 
 bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          const std::string &name,
-                         const Type *fn, char access, bool constThis, RefQual refThis,
+                         const Type *fn, char access, unsigned cvThis, RefQual refThis,
                          std::string *out, std::string *problem);
 
 // A member *function template* specialization: the member name with its own
@@ -106,13 +106,13 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
 bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
                                const std::string &name, const Type *fn,
                                const std::vector<TemplateArg> &args,
-                               bool constThis, RefQual refThis,
+                               unsigned cvThis, RefQual refThis,
                                std::string *out, std::string *problem);
 
 bool microsoftMemberTemplateName(const std::string &cls, const Type *clsType,
                                  const std::string &name, const Type *fn,
                                  const std::vector<TemplateArg> &args,
-                                 char access, bool constThis, RefQual refThis,
+                                 char access, unsigned cvThis, RefQual refThis,
                                  std::string *out, std::string *problem);
 
 // A member function of a class defined inside a function body: both ABIs wrap the
@@ -120,12 +120,12 @@ bool microsoftMemberTemplateName(const std::string &cls, const Type *clsType,
 // name. One with no decorated name is `4main` to Itanium and `?main@@9` to cl.
 bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
                             const Type *clsType, const std::string &name,
-                            const Type *fn, bool constThis, RefQual refThis,
+                            const Type *fn, unsigned cvThis, RefQual refThis,
                             std::string *out, std::string *problem);
 
 bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
                               const Type *clsType, const std::string &name,
-                              const Type *fn, char access, bool constThis, RefQual refThis,
+                              const Type *fn, char access, unsigned cvThis, RefQual refThis,
                               std::string *out, std::string *problem);
 
 // A constructor template specialization: C1/C2 and `??$?0`, the arguments as a template-id.
@@ -168,6 +168,31 @@ std::string itaniumDeletingDestructorName(const std::string &cls,
 
 std::string microsoftDeletingDestructorName(const std::string &cls,
                                             const Type *clsType);
+
+// **An adjustor thunk** (Phase 6): `this -= adjust` and on to a virtual function, named as the function
+// with `W` for its `U` and the adjustment after it - ?b@X@@W7EAAHXZ, ??_GX@@WBA@EAAPEAXI@Z, as cl writes.
+// `vtordisp`: the thunk reads the vtordisp in front of the virtual base first, `$4PPPPPPPM@...`.
+bool microsoftAdjustorThunkName(const std::string &cls, const Type *clsType, const std::string &name,
+                                const Type *fn, bool constThis, RefQual refThis, long long adjust,
+                                std::string *out, std::string *problem, bool vtordisp = false);
+std::string microsoftDeletingDestructorThunkName(const std::string &cls, const Type *clsType,
+                                                 long long adjust, bool vtordisp = false);
+// The bases naming one of a class's vftables, `I2@@` in `??_7X@@6BI2@@@`; empty for `??_7X@@6B@`.
+std::string microsoftVftablePath(const std::vector<const Type *> &path);
+// **One row of a class's _RTTIBaseClassArray** (Phase 6): the class or a base at any depth, in cl's
+// order, where it sits, how many of its own bases follow it, its attributes, and the descriptor's name
+// that spells all of them - ??_R1BA@?0A@EA@I2@@8. False where a virtual or repeated base is met.
+struct MicrosoftBaseClass {
+    const Type *cls = nullptr;
+    int mdisp = 0, contained = 0, attributes = 0x40;
+    int pdisp = -1, vdisp = 0;      // a virtual base's: the vbptr it is read through, its entry there
+    std::string name;
+};
+std::string microsoftBaseDescriptorName(const MicrosoftBaseClass &row);
+bool microsoftBaseClassArray(const Type *cls, std::vector<MicrosoftBaseClass> *out,
+                             int *hierarchyAttributes, std::string *problem);
+// A class's RTTI rows: that array where it can be, else its first-base chain
+std::vector<MicrosoftBaseClass> microsoftRttiRows(const Type *cls, int *hierarchyAttributes);
 
 // The copy assignment operator. Itanium spells `operator=` as the code `aS` and
 // writes no return type; Microsoft replaces `?name@` with `??4` and does write
@@ -214,7 +239,8 @@ std::string vtableSymbol(const Type *cls, bool microsoft);
 // **A class's vbtable, which only the Microsoft ABI has.**
 std::string vbtableSymbol(const std::string &tag);
 // The same, for a class holding more than one.
-std::string vbtableSymbol(const std::string &tag, const std::string &base);
+std::string vbtableSymbol(const std::string &tag, const std::string &base,
+                          const std::string &via = std::string());
 // The vbase destructor: Itanium's D1 under a Microsoft name. `??1` destroys
 // the class's own part; this one calls it and then the virtual bases.
 std::string vbaseDestructorSymbol(const std::string &tag);

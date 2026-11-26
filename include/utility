@@ -1,9 +1,13 @@
-// <utility> - `pair`, the two functions that go with it, and the two casts a
-// C++11 program moves things with.
+// <utility> - `pair` and what goes with it, the casts a C++11 program moves
+// things with, and swap.
 //
 // It is here because `<map>` needs it: a map's element *is* a pair, and its
 // iterator is a pointer to one, so `it->first` and `it->second` are an ordinary
 // member access through an ordinary pointer.
+//
+// **Not here: pair's `template <class U1, class U2> pair(U1 &&, U2 &&)`**: this
+// compiler binds a string literal to a forwarding reference as something other
+// than the array, so `pair<string, int> p("x", 1)` would read garbage through it.
 #ifndef _CXX1_UTILITY
 #define _CXX1_UTILITY
 
@@ -11,6 +15,89 @@
 #include <type_traits>
 
 namespace std {
+
+// **move and forward - [forward].** Each is a cast and nothing else, written as the
+// standard writes them: `move` takes a forwarding reference, so an lvalue deduces T as
+// `U &` and the parameter collapses to `U &`, and names its argument as an rvalue;
+// `forward<T>` hands an argument on with the value category T carries, `T &&` collapsing
+// to `U &` for an lvalue's T and staying `U &&` for an rvalue's. The second `forward` is
+// [forward]/4's: an rvalue may be forwarded as an rvalue and never as an lvalue.
+template <class T>
+typename remove_reference<T>::type &&move(T &&t) noexcept {
+    return static_cast<typename remove_reference<T>::type &&>(t);
+}
+
+template <class T>
+T &&forward(typename remove_reference<T>::type &t) noexcept {
+    return static_cast<T &&>(t);
+}
+
+template <class T>
+T &&forward(typename remove_reference<T>::type &&t) noexcept {
+    static_assert(!is_lvalue_reference<T>::value, "an rvalue cannot be forwarded as an lvalue");
+    return static_cast<T &&>(t);
+}
+
+// [declval]: an rvalue of T that no object has to exist for - the operand of a `decltype` or a
+// `noexcept`, `noexcept(T(std::declval<T>()))`, and never evaluated (1.27, 2026-10-21, review of
+// 1.25, item 3). The standard leaves it undefined; this compiler instantiates what it names, so a
+// body it is, one that no program runs. `T &&` collapses to `U &` for a `U &`, which is what
+// add_rvalue_reference would say.
+template <class T>
+T &&declval() noexcept {
+    return static_cast<T &&>(*static_cast<typename remove_reference<T>::type *>(0));
+}
+
+// [utility.swap]: by moves since 1.27 (2026-10-21, review of 1.25, item 4) - it copied, so a
+// program counting its copies and moves counted three copies where cl counts a move and two move
+// assignments, and a move-only type could not be swapped at all. Below `move`, which it uses.
+template <class T>
+void swap(T &a, T &b) noexcept(is_nothrow_move_constructible<T>::value && is_nothrow_move_assignable<T>::value) {
+    T held(std::move(a));
+    a = std::move(b);
+    b = std::move(held);
+}
+
+// [operators]' rel_ops is not here: this compiler's argument-dependent lookup reaches into a
+// namespace nested in std, so its four templates would join every comparison of a std type.
+
+template <class T, std::size_t N>
+void swap(T (&a)[N], T (&b)[N]) noexcept(noexcept(swap(*a, *b)));
+
+// `swap(a, b)` as [swappable.requirements] calls it, from here: a type's own swap if it has one.
+template <class T>
+void __cxx1_swap_adl(T &a, T &b) noexcept(noexcept(swap(a, b))) {
+    swap(a, b);
+}
+
+template <class T, std::size_t N>
+void swap(T (&a)[N], T (&b)[N]) noexcept(noexcept(swap(*a, *b))) {
+    for (std::size_t i = 0; i != N; ++i) std::__cxx1_swap_adl(a[i], b[i]);
+}
+
+// [utility]: an rvalue unless moving may throw and a copy can be made, which a const lvalue then asks for.
+template <class T, bool Move> struct __cxx1_move_if { typedef const T &type; };
+template <class T> struct __cxx1_move_if<T, true> { typedef T &&type; };
+template <class T> struct __cxx1_move_if_noexcept {
+    typedef typename __cxx1_move_if<T, is_nothrow_move_constructible<T>::value ||
+                                           !is_copy_constructible<T>::value>::type type;
+};
+
+template <class T>
+typename __cxx1_move_if_noexcept<T>::type move_if_noexcept(T &x) noexcept {
+    return std::move(x);
+}
+
+struct piecewise_construct_t {};
+constexpr piecewise_construct_t piecewise_construct = piecewise_construct_t();
+
+// What pair's piecewise constructor needs of <tuple> before <tuple> is read: 0, 1, ..., N - 1 as a pack, and
+// element I of a tuple through a class whose member is found when the constructor is instantiated.
+template <class... T> class tuple;
+template <std::size_t... I> struct __cxx1_indices {};
+template <std::size_t N, std::size_t... I> struct __cxx1_make_indices : __cxx1_make_indices<N - 1, N - 1, I...> {};
+template <std::size_t... I> struct __cxx1_make_indices<0, I...> { typedef __cxx1_indices<I...> type; };
+template <std::size_t I> struct __cxx1_tuple_fetch;
 
 // **`first` and `second` are public and that is the whole of the type.** The
 // constructors are here so a pair can be built in one expression; the copy and
@@ -24,20 +111,54 @@ struct pair {
     pair() : first(), second() {}
     pair(const T1 &a, const T2 &b) : first(a), second(b) {}
     // A `pair<K, V>` from a map's `pair<const K, V>` - `vector<pair<int, char> > pv(m.begin(), m.end())`
-    // copies one - by a constructor of its own; the specialization below has the other direction.
-    // Neither is a template: see there (1.27, 2026-10-21, review of 1.25, item 4).
+    // copies one - by a constructor of its own, which a non-template wins with; the specialization
+    // below has the other direction (1.27, 2026-10-21, review of 1.25, item 4).
     pair(const pair<const T1, T2> &p) : first(p.first), second(p.second) {}
+    template <class U1, class U2> pair(const pair<U1, U2> &p) : first(p.first), second(p.second) {}
+    template <class U1, class U2> pair(pair<U1, U2> &&p)
+        : first(std::forward<U1>(p.first)), second(std::forward<U2>(p.second)) {}
+    // [pairs.pair]/9: two values of any types that convert, each forwarded as it was given.
+    template <class U1, class U2,
+              class = typename enable_if<is_convertible<U1, T1>::value && is_convertible<U2, T2>::value>::type>
+    pair(U1 &&a, U2 &&b) : first(std::forward<U1>(a)), second(std::forward<U2>(b)) {}
+    // [pairs.pair]/14: each member made in place from its tuple's elements.
+    template <class... A1, class... A2>
+    pair(piecewise_construct_t, tuple<A1...> a, tuple<A2...> b)
+        : pair(a, b, typename __cxx1_make_indices<sizeof...(A1)>::type(),
+               typename __cxx1_make_indices<sizeof...(A2)>::type()) {}
+
+private:
+    template <class... A1, class... A2, std::size_t... I1, std::size_t... I2>
+    pair(tuple<A1...> &a, tuple<A2...> &b, __cxx1_indices<I1...>, __cxx1_indices<I2...>)
+        : first(std::forward<A1>(__cxx1_tuple_fetch<I1>::of(a))...),
+          second(std::forward<A2>(__cxx1_tuple_fetch<I2>::of(b))...) {}
+
+public:
+    // Spelled pair<T1, T2> &: a member template returning the injected name is "expected a type" here.
+    template <class U1, class U2> pair<T1, T2> &operator=(const pair<U1, U2> &p) {
+        first = p.first;
+        second = p.second;
+        return *this;
+    }
+    template <class U1, class U2> pair<T1, T2> &operator=(pair<U1, U2> &&p) {
+        first = std::forward<U1>(p.first);
+        second = std::forward<U2>(p.second);
+        return *this;
+    }
+
+    void swap(pair &p) noexcept(noexcept(std::__cxx1_swap_adl(std::declval<T1 &>(), std::declval<T1 &>())) &&
+                                noexcept(std::__cxx1_swap_adl(std::declval<T2 &>(), std::declval<T2 &>()))) {
+        std::__cxx1_swap_adl(first, p.first);
+        std::__cxx1_swap_adl(second, p.second);
+    }
 
     T1 first;
     T2 second;
 };
 
 // **`pair<const K, V>`, a map's element**: the same pair, with a constructor from the `pair<K, V>`
-// that make_pair gives. [pairs.pair]/7's `template <class U1, class U2> pair(const pair<U1, U2> &)`
-// is not written: a constructor template whose parameter names the class's own T2 is deduced as if
-// T2 were a parameter of its own, so a `pair<pair<A, B>, C>` instantiated it from a `pair<A, B>` while
-// ranking a conversion and failed in its body (cppparse's Sema.cpp, 2026-10-21). Two plain
-// constructors say what a map needs and deduce nothing (1.27, 2026-10-21, review of 1.25, item 4).
+// that make_pair gives, as a plain constructor beside the template (1.27, 2026-10-21, review of
+// 1.25, item 4).
 template <class T1, class T2>
 struct pair<const T1, T2> {
     typedef const T1 first_type;
@@ -46,6 +167,24 @@ struct pair<const T1, T2> {
     pair() : first(), second() {}
     pair(const T1 &a, const T2 &b) : first(a), second(b) {}
     pair(const pair<T1, T2> &p) : first(p.first), second(p.second) {}
+    template <class U1, class U2> pair(const pair<U1, U2> &p) : first(p.first), second(p.second) {}
+    template <class U1, class U2> pair(pair<U1, U2> &&p)
+        : first(std::forward<U1>(p.first)), second(std::forward<U2>(p.second)) {}
+    template <class U1, class U2,
+              class = typename enable_if<is_convertible<U1, const T1>::value && is_convertible<U2, T2>::value>::type>
+    pair(U1 &&a, U2 &&b) : first(std::forward<U1>(a)), second(std::forward<U2>(b)) {}
+    template <class... A1, class... A2>
+    pair(piecewise_construct_t, tuple<A1...> a, tuple<A2...> b)
+        : pair(a, b, typename __cxx1_make_indices<sizeof...(A1)>::type(),
+               typename __cxx1_make_indices<sizeof...(A2)>::type()) {}
+
+private:
+    template <class... A1, class... A2, std::size_t... I1, std::size_t... I2>
+    pair(tuple<A1...> &a, tuple<A2...> &b, __cxx1_indices<I1...>, __cxx1_indices<I2...>)
+        : first(std::forward<A1>(__cxx1_tuple_fetch<I1>::of(a))...),
+          second(std::forward<A2>(__cxx1_tuple_fetch<I2>::of(b))...) {}
+
+public:
 
     const T1 first;
     T2 second;
@@ -68,50 +207,50 @@ template <class T1, class T2>
 bool operator>=(const pair<T1, T2> &a, const pair<T1, T2> &b) { return !(a < b); }
 
 template <class T1, class T2>
-pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
-    return pair<T1, T2>(a, b);
+void swap(pair<T1, T2> &a, pair<T1, T2> &b) noexcept(noexcept(a.swap(b))) {
+    a.swap(b);
 }
 
-// **move and forward - [forward].** Each is a cast and nothing else, written as the
-// standard writes them: `move` takes a forwarding reference, so an lvalue deduces T as
-// `U &` and the parameter collapses to `U &`, and names its argument as an rvalue;
-// `forward<T>` hands an argument on with the value category T carries, `T &&` collapsing
-// to `U &` for an lvalue's T and staying `U &&` for an rvalue's. The second `forward` is
-// [forward]/4's: an rvalue may be forwarded as an rvalue and never as an lvalue.
-template <class T>
-typename remove_reference<T>::type &&move(T &&t) {
-    return static_cast<typename remove_reference<T>::type &&>(t);
+// [pairs.spec]/9: each argument forwarded into a pair of its decayed type, a reference_wrapper<T> giving T &.
+template <class T> class reference_wrapper;
+template <class T> struct __cxx1_pair_unwrap { typedef T type; };
+template <class T> struct __cxx1_pair_unwrap<reference_wrapper<T> > { typedef T &type; };
+template <class T1, class T2>
+pair<typename __cxx1_pair_unwrap<typename decay<T1>::type>::type, typename __cxx1_pair_unwrap<typename decay<T2>::type>::type>
+make_pair(T1 &&a, T2 &&b) {
+    return pair<typename __cxx1_pair_unwrap<typename decay<T1>::type>::type,
+                typename __cxx1_pair_unwrap<typename decay<T2>::type>::type>(std::forward<T1>(a), std::forward<T2>(b));
 }
 
-template <class T>
-T &&forward(typename remove_reference<T>::type &t) {
-    return static_cast<T &&>(t);
-}
+// [pair.astuple]: a pair as a tuple of two. An array answers through the two members it carries,
+// which the primary templates read: a partial specialization on array<T, N> is refused by this
+// compiler, which does not deduce N from it yet.
+template <class T> struct tuple_size : integral_constant<std::size_t, T::__cxx1_tuple_size> {};
+template <std::size_t I, class T> struct tuple_element { typedef typename T::__cxx1_tuple_element type; };
 
-template <class T>
-T &&forward(typename remove_reference<T>::type &&t) {
-    static_assert(!is_lvalue_reference<T>::value, "an rvalue cannot be forwarded as an lvalue");
-    return static_cast<T &&>(t);
-}
+template <class T1, class T2> struct tuple_size<pair<T1, T2> > : integral_constant<std::size_t, 2> {};
+template <class T1, class T2> struct tuple_element<0, pair<T1, T2> > { typedef T1 type; };
+template <class T1, class T2> struct tuple_element<1, pair<T1, T2> > { typedef T2 type; };
 
-// [declval]: an rvalue of T that no object has to exist for - the operand of a `decltype` or a
-// `noexcept`, `noexcept(T(std::declval<T>()))`, and never evaluated (1.27, 2026-10-21, review of
-// 1.25, item 3). The standard leaves it undefined; this compiler instantiates what it names, so a
-// body it is, one that no program runs. `T &&` collapses to `U &` for a `U &`, which is what
-// add_rvalue_reference would say.
-template <class T>
-T &&declval() noexcept {
-    return static_cast<T &&>(*static_cast<typename remove_reference<T>::type *>(0));
-}
+// [pair.astuple]'s get: the member chosen by overloading on I.
+template <class T1, class T2> T1 &__cxx1_pair_get(pair<T1, T2> &p, integral_constant<std::size_t, 0>) { return p.first; }
+template <class T1, class T2> T2 &__cxx1_pair_get(pair<T1, T2> &p, integral_constant<std::size_t, 1>) { return p.second; }
+template <class T1, class T2>
+const T1 &__cxx1_pair_get(const pair<T1, T2> &p, integral_constant<std::size_t, 0>) { return p.first; }
+template <class T1, class T2>
+const T2 &__cxx1_pair_get(const pair<T1, T2> &p, integral_constant<std::size_t, 1>) { return p.second; }
 
-// [utility.swap]: by moves since 1.27 (2026-10-21, review of 1.25, item 4) - it copied, so a
-// program counting its copies and moves counted three copies where cl counts a move and two move
-// assignments, and a move-only type could not be swapped at all. Below `move`, which it uses.
-template <class T>
-void swap(T &a, T &b) {
-    T held(std::move(a));
-    a = std::move(b);
-    b = std::move(held);
+template <std::size_t I, class T1, class T2>
+typename tuple_element<I, pair<T1, T2> >::type &get(pair<T1, T2> &p) noexcept {
+    return std::__cxx1_pair_get(p, integral_constant<std::size_t, I>());
+}
+template <std::size_t I, class T1, class T2>
+const typename tuple_element<I, pair<T1, T2> >::type &get(const pair<T1, T2> &p) noexcept {
+    return std::__cxx1_pair_get(p, integral_constant<std::size_t, I>());
+}
+template <std::size_t I, class T1, class T2>
+typename tuple_element<I, pair<T1, T2> >::type &&get(pair<T1, T2> &&p) noexcept {
+    return static_cast<typename tuple_element<I, pair<T1, T2> >::type &&>(std::__cxx1_pair_get(p, integral_constant<std::size_t, I>()));
 }
 
 }  // namespace std

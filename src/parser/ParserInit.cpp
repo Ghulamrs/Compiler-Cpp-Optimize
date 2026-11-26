@@ -31,7 +31,18 @@ Parser::Init Parser::parseInitialiser() {
         // of an `Init` below takes no items as "zero it", so none tests for this.
         if (consume("}")) return in;
         for (;;) {
-            if (!expandPackInitialiser(in.items)) in.items.push_back(parseInitialiser());
+            if (expandPackInitialiser(in.items)) {
+            } else if (atBareFunctionArgument(true)) {
+                // An overloaded name waits for the element it initialises, as a call argument does
+                // for its parameter - `{ &S::f, &S::f }` for two pointers to members (a4).
+                OverloadTarget waits(*this, nullptr, true);
+                Init item;
+                item.pos = peek().pos;
+                item.value = assign();
+                in.items.push_back(std::move(item));
+            } else {
+                in.items.push_back(parseInitialiser());
+            }
             if (consume("}")) break;
             expect(",");
             if (consume("}")) break;
@@ -70,7 +81,37 @@ bool Parser::initialiserNames(const std::string &name) const {
     }
 }
 
-const StrLit *Parser::stringInitialiser(const Init &in, const Type *type) {
+// A string literal's code units as its element type has them: bytes for char, UTF-16 units for char16_t, code
+// points for char32_t and wchar_t - [lex.string]/8-10, the text being UTF-8.
+static std::vector<long long> literalUnits(const StrLit *s) {
+    std::vector<long long> units;
+    const std::string &text = s->text();
+    const Kind k = s->type()->pointee()->kind();
+    if (k == Kind::Char || k == Kind::SChar || k == Kind::UChar) {
+        for (unsigned char ch : text) units.push_back(ch);
+        return units;
+    }
+    for (std::size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        const int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        long long cp = extra == 0 ? c : c & (0x3F >> extra);
+        i++;
+        for (int n = 0; n < extra && i < text.size(); n++, i++) cp = (cp << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+        if (k == Kind::Char16 && cp >= 0x10000) {
+            units.push_back(0xD800 + ((cp - 0x10000) >> 10));
+            units.push_back(0xDC00 + ((cp - 0x10000) & 0x3FF));
+        } else {
+            units.push_back(cp);
+        }
+    }
+    return units;
+}
+
+const StrLit *Parser::stringInitialiser(const Init &given, const Type *type) {
+    // **[dcl.init.string]/1: "optionally enclosed in braces"** - `char s[] = {"ab"};` is the string,
+    // and was read as a list of chars whose first was a pointer (R14).
+    const Init &in = given.isList && given.items.size() == 1 && !given.items[0].isList
+                   ? given.items[0] : given;
     if (in.isList || !type->isArray()) return nullptr;
     const StrLit *s = dynamic_cast<const StrLit *>(in.value.get());
     if (s == nullptr) return nullptr;
@@ -125,7 +166,7 @@ void Parser::skipInit(const Type *type, InitCursor &c) {
 
 long long Parser::inferredLength(const Init &in, const Type *element, std::size_t pos) {
     if (const StrLit *s = stringInitialiser(in, types_.arrayOf(element, 1)))
-        return static_cast<long long>(s->text().size()) + 1;
+        return static_cast<long long>(literalUnits(s).size()) + 1;
     if (!in.isList)
         src_.fail(pos, "an array with no length needs a braced initialiser to "
                        "count, or a string to measure");
@@ -152,7 +193,13 @@ long long Parser::inferredLength(const Init &in, const Type *element, std::size_
 
 ExprPtr Parser::targetFor(const std::string &name,
                           const std::vector<InitStep> &path) {
-    ExprPtr e = objectRef(name);
+    ExprPtr e;
+    if (initRootMember_ != nullptr) {
+        e = thisMember(initRootThis_, initRootClass_, *initRootMember_);
+        e->setType(initRootMember_->type);
+    } else {
+        e = objectRef(name);
+    }
     for (const InitStep &s : path) {
         if (s.member != nullptr) {
             const Member *m = s.member;
@@ -182,9 +229,11 @@ bool Parser::isAggregateClass(const Type *t) const {
         return false;
     for (const Member &m : t->members())
         if (m.declaredIn == nullptr && m.access != Access::Public) return false;
+    // [dcl.init.aggr]/1: no user-provided constructor, and one defaulted or deleted where it is first
+    // declared is not user-provided ([dcl.fct.def.default]/4) - `atomic_flag f = ATOMIC_FLAG_INIT;`.
     if (const std::vector<std::size_t> *set = overloadsOf(constructorKey(t->tag())))
         for (std::size_t i : *set)
-            if (!functions_[i].implicit) return false;
+            if (!functions_[i].implicit && !functions_[i].deleted) return false;
     return true;
 }
 
@@ -216,12 +265,22 @@ void Parser::initConstruct(const std::string &name, std::vector<InitStep> &path,
                            std::vector<ExprPtr> args, bool valueInit, std::size_t pos,
                            std::vector<StmtPtr> &out) {
     const Type *cls = type->unqualified();
+    // A prvalue of the class itself is built where the member is, the copy left out ([class.copy]/31).
+    if (args.size() == 1) {
+        ExprPtr at(new Unary('&', targetFor(name, path)));
+        at->setType(types_.pointerTo(cls));
+        if (constructInPlace(*args[0], cls, at)) {
+            out.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
+            return;
+        }
+    }
     if (args.size() == 1 && args[0]->type() != nullptr && args[0]->type()->unqualified() == cls &&
         !cls->nonTrivialCopy()) {
         initStore(name, path, std::move(args[0]), pos, out);
         return;
     }
     checkNotAbstract(cls, pos, "'" + name + "'");
+    if (!valueInit) copyFromOtherClass(cls, args, pos);
     const Signature &ctor = resolveOverload(constructorKey(cls->tag()), args, pos);
     applyDefaults(ctor, args, pos);
     if (ctor.isExplicit && !valueInit)
@@ -254,6 +313,19 @@ void Parser::initStore(const std::string &name, std::vector<InitStep> &path,
                        std::vector<StmtPtr> &out) {
     ExprPtr target = targetFor(name, path);
     const Type *to = target->type();
+    resolveOverloadPlaceholder(value, to, pos);
+    // **A reference member is bound, not assigned** - [dcl.init.aggr]/2 with [dcl.init.ref]: its slot
+    // holds the address, and a temporary it takes lives as long as it does ([class.temporary]/5).
+    if (to->isReference()) {
+        ExprPtr addr = bindReference(to, std::move(value), pos, "'" + name + "'");
+        extendTemporary(*addr, name + "$member" + std::to_string(refTemps_++));
+        const Type *slot = types_.pointerTo(to->referent());
+        target->setType(slot);
+        ExprPtr bind(new Assign(std::move(target), std::move(addr)));
+        bind->setType(slot);
+        out.push_back(StmtPtr(new ExprStmt(std::move(bind))));
+        return;
+    }
     checkAssignable(*value, to, pos, "'" + name + "'");
     ExprPtr a(new Assign(std::move(target), convert(std::move(value), to)));
     a->setType(to);
@@ -301,14 +373,11 @@ void Parser::emitString(const std::string &name, std::vector<InitStep> &path,
                         const Type *type, const StrLit *s, std::size_t pos,
                         std::vector<StmtPtr> &out) {
     long long len = type->length();
-    const std::string &text = s->text();
+    const std::vector<long long> units = literalUnits(s);
     requireStringFits(type, s, pos);
     for (long long i = 0; i < len; i++) {
         path.push_back(InitStep{ nullptr, i });
-        long long ch = i < static_cast<long long>(text.size())
-                ? static_cast<long long>(static_cast<unsigned char>(
-                      text[static_cast<std::size_t>(i)]))
-                : 0L;
+        long long ch = i < static_cast<long long>(units.size()) ? units[static_cast<std::size_t>(i)] : 0L;
         ExprPtr c(new Num(ch));
         c->setType(types_.intType());
         initStore(name, path, std::move(c), pos, out);
@@ -345,6 +414,20 @@ void Parser::emitFill(const std::string &name, std::vector<InitStep> &path,
         emitString(name, path, type, s, item.pos, out);
         return;
     }
+    // **[dcl.init.aggr]/11: an expression that converts to the member initialises it** - `W<G> w{g}` copies
+    // g into the G member; braces are elided only where it does not, into the member's own first member.
+    if (type->isStructOrUnion() && !type->isMemberFunctionPointer() && item.value != nullptr &&
+        item.value->type() != nullptr) {
+        const Type *vt = item.value->type();
+        if (vt->isReference()) vt = vt->referent();
+        vt = vt->unqualified();
+        const Type *to = type->unqualified();
+        if (vt == to || (vt->isStructOrUnion() && publicBaseOffset(vt, to) >= 0)) {
+            c.at++;
+            initStore(name, path, decay(std::move(item.value)), item.pos, out);
+            return;
+        }
+    }
     // A pointer to a member function is laid out as a struct here, and it is still one value:
     // `{&B::vf, &B::nf}` fills two of them, not the first one's fields (1.27, 2026-10-21, review
     // of 1.25, item 3 - the array's first element was asked to take `&B::vf` as a `void *`).
@@ -355,7 +438,8 @@ void Parser::emitFill(const std::string &name, std::vector<InitStep> &path,
 
     c.at++;
     checkNarrowing(type, *item.value, item.pos, "'" + name + "'");
-    initStore(name, path, decay(std::move(item.value)), item.pos, out);
+    initStore(name, path, type->isReference() ? std::move(item.value) : decay(std::move(item.value)),
+              item.pos, out);
 }
 
 void Parser::emitAggregate(const std::string &name, std::vector<InitStep> &path,
@@ -414,9 +498,20 @@ void Parser::emitInit(const std::string &name, std::vector<InitStep> &path,
             initStore(name, path, decay(std::move(in.value)), in.pos, out);
             return;
         }
+        // [dcl.init.list]/3: a list with values initialises an aggregate member by member, and a class
+        // that is not one - a base, a private member, a member initialiser in C++11 - only by a constructor.
+        if (!in.items.empty() && !type->unqualified()->tag().empty() && !type->isMemberFunctionPointer() &&
+            !isAggregateClass(type))
+            src_.fail(in.pos, "'" + type->unqualified()->describe() + "' is not an aggregate - it has a base, a "
+                              "member that is not public, a virtual function or a member initialiser - so a "
+                              "braced list initialises it through a constructor, and it has none taking these "
+                              "values ([dcl.init.aggr]/1)");
     } else {
+        // A reference member binds what it is given, an array or a function included - `int (&ra)[2]`
+        // takes `arr` itself, which decayed first was an `int *` it cannot hold (R22).
         if (!in.isList) {
-            initStore(name, path, decay(std::move(in.value)), in.pos, out);
+            initStore(name, path, type->isReference() ? std::move(in.value) : decay(std::move(in.value)),
+                      in.pos, out);
             return;
         }
         if (in.items.size() != 1)
@@ -435,6 +530,48 @@ void Parser::emitInit(const std::string &name, std::vector<InitStep> &path,
         src_.fail(c.cur().pos, "'" + name + "' is full, and there are " +
                                std::to_string(in.items.size() - c.at) +
                                " more initialiser(s) after this one");
+}
+
+// A class with a constructor takes the list through an initializer_list constructor or as the
+// arguments of one ([over.match.list]); an array or an aggregate is filled element by element, as
+// a local of its type would be, with `this->m` where the local's name would stand.
+StmtPtr Parser::listInitialiseMember(const std::string &cls, const Type *type, const Member &m,
+                                     int thisSlot, Init &in, std::size_t pos) {
+    std::vector<StmtPtr> out;
+    const Type *t = m.type->unqualified();
+    if (t->isStructOrUnion() && constructedClass(t)) {
+        // `{}` value-initialises: zeroed first where the default constructor is the implicit one.
+        if (in.items.empty()) {
+            const Signature *ctor = defaultConstructorOf(t);
+            if (ctor != nullptr && ctor->implicit) {
+                ExprPtr field = thisMember(thisSlot, type, m);
+                field->setType(m.type);
+                if (ExprPtr chain = zeroChain(*field, t)) out.push_back(StmtPtr(new ExprStmt(std::move(chain))));
+            }
+        }
+        std::vector<ExprPtr> args;
+        const Type *ilType = nullptr;
+        if (!in.items.empty() && initializerListConstructor(t, &ilType) != nullptr && initializerListFits(ilType, in))
+            args.push_back(buildInitializerList(ilType, in, pos, out));
+        else
+            listConstructor(t, in, args, false, pos);
+        StmtPtr made = constructMember(cls, type, m, thisSlot, args, pos, false);
+        if (made != nullptr) out.push_back(std::move(made));
+    } else {
+        const Member *rootWas = initRootMember_;
+        const Type *classWas = initRootClass_;
+        const int thisWas = initRootThis_;
+        initRootMember_ = &m;
+        initRootClass_ = type;
+        initRootThis_ = thisSlot;
+        std::vector<InitStep> path;
+        emitInit(m.name, path, m.type, in, out);
+        initRootMember_ = rootWas;
+        initRootClass_ = classWas;
+        initRootThis_ = thisWas;
+    }
+    if (out.size() == 1) return std::move(out[0]);
+    return StmtPtr(new Block(std::move(out)));
 }
 
 static long double inType(const Type *t, const Target &target, long double v) {
@@ -459,16 +596,32 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
             *out = slot->floating ? slot->d : static_cast<long double>(slot->i);
             return true;
         }
+        // A named integral constant, `CI * 0.9` - widened as an integer operand is ([expr.const]/2).
+        auto integral = [&](long long i) {
+            const bool sign = e.type() == nullptr || e.type()->isSigned(target);
+            unsigned long long a = sign && i < 0 ? 0ULL - static_cast<unsigned long long>(i)
+                                                 : static_cast<unsigned long long>(i);
+            while (a != 0 && (a & 1) == 0) a >>= 1;
+            if (a >= (1ULL << 53)) *past53 = true;
+            *out = sign ? static_cast<long double>(i) : static_cast<long double>(static_cast<unsigned long long>(i));
+            return true;
+        };
         if (v->isLocal()) {
-            if (const Local *l = findLocal(v->name()))
+            if (const Local *l = findLocal(v->name())) {
                 if (l->isConstantDouble) { *out = l->constantDouble; return true; }
+                if (l->isConstantValue) return integral(l->constantValue);
+            }
             return false;
         }
-        if (const GlobalSym *g = findGlobal(v->name()))
+        if (const GlobalSym *g = findGlobal(v->name())) {
             if (g->isConstantDouble) { *out = g->constantDouble; return true; }
+            if (g->isConstantValue) return integral(g->constantValue);
+        }
         // As in fold(): a static member lives under its symbol, not in globals_.
-        if (const StaticConst *sc = findStaticConst(v->symbol()))
+        if (const StaticConst *sc = findStaticConst(v->symbol())) {
             if (sc->dknown) { *out = sc->dvalue; return true; }
+            if (sc->known) return integral(sc->value);
+        }
         return false;
     }
     // A member of a constant object, as fold() reads one.
@@ -656,6 +809,13 @@ void Parser::checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
                             const std::string &what) {
     const Type *from = value.type();
     if (to == nullptr || from == nullptr) return;
+    // **A pointer to bool narrows** (P1957, a defect report clang and cl apply to C++11): `bool b = {p};`
+    // with `bool b = p;` beside it allowed.
+    if (to->unqualified()->isBool() &&
+        (from->isPointer() || from->isMemberPointer() || from->isMemberFunctionPointer()))
+        src_.fail(pos, "a '" + from->describe() + "' cannot be narrowed to 'bool' in a braced initialiser" +
+                       (what.empty() ? std::string() : " for " + what) +
+                       " - braces refuse the pointer-to-bool conversion; write '!= nullptr' or drop the braces");
     if (!to->isArithmetic() || !from->isArithmetic()) return;
 
     const std::string target = "'" + to->describe() + "'" +
@@ -752,14 +912,12 @@ void Parser::flattenFill(const Type *type, InitCursor &c, int base,
     }
     if (const StrLit *s = stringInitialiser(item, type)) {
         c.at++;
-        const std::string &text = s->text();
+        const std::vector<long long> units = literalUnits(s);
         requireStringFits(type, s, item.pos);
 
         int w = type->pointee()->size(target_);
-        for (std::size_t i = 0; i < text.size(); i++)
-            out.push_back(GlobalPiece{ base + static_cast<int>(i) * w, w,
-                                       static_cast<long long>(
-                                           static_cast<unsigned char>(text[i])), std::string() });
+        for (std::size_t i = 0; i < units.size(); i++)
+            out.push_back(GlobalPiece{ base + static_cast<int>(i) * w, w, units[i], std::string() });
         return;
     }
     if (type->isArray() || type->isStructOrUnion()) {
@@ -804,13 +962,11 @@ void Parser::flattenInit(const Type *type, Init &in, int base,
     // way a global says it: no pieces at all, which `segmentFor` reads as .bss.
     if (in.isList && in.items.empty()) return;
     if (const StrLit *s = stringInitialiser(in, type)) {
-        const std::string &text = s->text();
+        const std::vector<long long> units = literalUnits(s);
         requireStringFits(type, s, in.pos);
         int w = type->pointee()->size(target_);
-        for (std::size_t i = 0; i < text.size(); i++)
-            out.push_back(GlobalPiece{ base + static_cast<int>(i) * w, w,
-                                       static_cast<long long>(
-                                           static_cast<unsigned char>(text[i])), std::string() });
+        for (std::size_t i = 0; i < units.size(); i++)
+            out.push_back(GlobalPiece{ base + static_cast<int>(i) * w, w, units[i], std::string() });
         return;
     }
 
@@ -932,6 +1088,20 @@ void Parser::flattenScalar(const Type *type, Init &in, int base,
 }
 
 void Parser::typedefFunctionSuffix(Declared &td) {
+    // `typedef int (*Picker(double))(double);` - a function that returns a pointer to a function. The name's own
+    // parameter list stood inside the parentheses, where the declarator passed over it: it is read from there
+    // ([dcl.fct]; until 1.75 the list was dropped and the typedef named the pointer the function returns).
+    if (td.paramsAt != 0) {
+        const std::size_t after = at_;
+        at_ = td.paramsAt;
+        std::vector<const Type *> inner;
+        bool innerVariadic = false;
+        parameterTypes(inner, innerVariadic);
+        at_ = after;
+        td.type = types_.functionType(td.type, std::move(inner), innerVariadic);
+        td.paramsAt = 0;
+        return;
+    }
     if (!peek().is("(")) return;
     std::vector<const Type *> params;
     bool variadic = false;
@@ -940,6 +1110,14 @@ void Parser::typedefFunctionSuffix(Declared &td) {
 }
 
 bool Parser::foldAddress(const Expr &e, std::string *sym, long long *off) const {
+    // A constexpr call's pointer parameter, holding a named address.
+    if (const Var *v = dynamic_cast<const Var *>(&e))
+        if (const ConstexprSlot *slot = constexprSlot(*v)) {
+            if (!slot->pointer || slot->address.empty()) return false;
+            *sym = slot->address;
+            *off = slot->i;
+            return true;
+        }
     if (const Cast *c = dynamic_cast<const Cast *>(&e))
         return e.type()->isPointer() && foldAddress(c->value(), sym, off);
 
@@ -1035,10 +1213,15 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
             ci.copyInit = true;
             ci.listInit = true;
         } else if (ilCtor != nullptr) {
-            consume("=");
+            const bool copyList = consume("=");
             Init in = parseInitialiser();
-            args.push_back(buildInitializerList(ilType, in, d.pos, ci.ilSetup));
-            ci.copyInit = true;
+            if (initializerListFits(ilType, in)) {
+                args.push_back(buildInitializerList(ilType, in, d.pos, ci.ilSetup));
+                ci.copyInit = true;
+            } else {
+                listConstructor(d.type->unqualified(), in, args, copyList, d.pos);
+                ci.copyInit = copyList;
+            }
             ci.listInit = true;
         } else if (hasMemberInitialiser(d.type->tag()) &&
                    onlyImplicitConstructors(d.type->tag())) {
@@ -1052,15 +1235,31 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
         } else {
             const bool copyList = consume("=");
             Init in = parseInitialiser();
-            listConstructor(d.type->unqualified(), in, args, copyList, d.pos);
-            ci.copyInit = copyList;
+            if (listConstructorTemplate(d.type->unqualified(), in, &ilType, d.pos) != nullptr &&
+                initializerListFits(ilType, in)) {
+                args.push_back(buildInitializerList(ilType, in, d.pos, ci.ilSetup));
+                ci.copyInit = true;
+            } else {
+                listConstructor(d.type->unqualified(), in, args, copyList, d.pos);
+                ci.copyInit = copyList;
+            }
             ci.listInit = true;
         }
     }
-    // **A braced list written as the argument**, `Row r({1, 2})`: [dcl.init]/16
-    // and [over.match.list] reach the initializer_list constructor. Built here,
-    // where the target type is known - parseArguments cannot build one alone.
+    // **A braced list as the argument**, `Row r({1, 2})`: [dcl.init]/16 and
+    // [over.match.list] reach the initializer_list constructor, built here;
+    // only as the one argument (`D v({1, 2}, alloc)` goes the general road).
+    bool onlyList = false;
     if (!ci.listInit && peek().is("(") && peekAt(1).is("{")) {
+        int depth = 0;
+        for (std::size_t k = 1;; k++) {
+            const Token &t = peekAt(k);
+            if (t.kind == TokenKind::End) break;
+            if (t.is("{")) depth++;
+            else if (t.is("}") && --depth == 0) { onlyList = peekAt(k + 1).is(")"); break; }
+        }
+    }
+    if (onlyList) {
         const Type *ilType = nullptr;
         if (initializerListConstructor(d.type->unqualified(), &ilType)
                 != nullptr) {
@@ -1095,6 +1294,7 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
     // for `T t(v)` an explicit one too, [over.match.copy]/1.
     if (!ci.listInit && !ci.valueInit)
         convertThroughConversionFunction(args, d.type, !ci.copyInit, d.pos);
+    if (ci.copyInit && !ci.listInit && !ci.valueInit) copyFromOtherClass(d.type, args, d.pos);
 
     // **A derived object copied into a base whose copy is trivial is sliced**: `V v = q;` copies
     // q's V subobject, and with no copy constructor function to choose the bytes are the copy.
@@ -1126,6 +1326,13 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
         const Signature *sel = !isLvalue(*args[0]) && mc != nullptr
                              ? mc
                              : copyConstructorOf(d.type->unqualified());
+        const Type *cls = d.type->unqualified();
+        if (sel != nullptr && sel->access != Access::Public && !insideAccessOf(cls, sel->access) &&
+            !isFriendOf(cls))
+            src_.fail(d.pos, "'" + cls->describe() + "' has a " +
+                             (sel->access == Access::Private ? "private" : "protected") + " " +
+                             (sel == mc ? "move" : "copy") + " constructor, and '" + d.name + " = ...' needs "
+                             "it accessible however the copy is elided - [class.copy]/31");
         if (sel != nullptr && sel->isExplicit)
             src_.fail(d.pos, "'" + d.type->describe() + "' has an "
                              "'explicit' " +
@@ -1153,6 +1360,7 @@ Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
                          d.type->describe() + " &&>(...)' to move out "
                          "of it, or give the class a copy constructor");
 
+    if (sameClass) refuseVolatileClassCopy(args[0]->type(), d.type, "'" + d.name + "'", d.pos);
     ci.trivialCopy =
         sameClass && mover == nullptr &&
         copyConstructorOf(d.type->unqualified()) == nullptr;
@@ -1291,6 +1499,14 @@ ExprPtr Parser::functionAddress(const std::string &symbol, const Type *fnType) {
 
 // The object as an expression: a global named by its symbol, or a frame slot.
 ExprPtr Parser::objectAt(const Declared &d, const std::string &symbol, int offset) {
+    // The named return value: its slot holds the caller's address, and the object is what that points at.
+    if (symbol.empty() && offset != 0 && offset == nrvoSlot_ && d.name == nrvoName_) {
+        ExprPtr held(Var::local(d.name, offset));
+        held->setType(types_.pointerTo(d.type->unqualified()));
+        ExprPtr at(new Unary('*', std::move(held)));
+        at->setType(d.type);
+        return at;
+    }
     Var *v = symbol.empty() ? Var::local(d.name, offset) : Var::global(d.name);
     if (!symbol.empty()) v->setSymbol(symbol);
     if (!symbol.empty() && tlsObject_) tlsVar(v, false, false);
@@ -1328,11 +1544,23 @@ std::string Parser::atexitHelperName(const std::string &scoped) const {
 std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
                                                      const std::string &symbol,
                                                      const std::string &helper) {
-    CtorInit ci = readConstructorInitialiser(d);
-    if (ci.listInit && isInitializerListType(d.type))
-        src_.fail(d.pos, "'" + d.name + "' is a 'std::initializer_list' with static storage made "
-                         "from braces, whose array would have to be static too - that is not "
-                         "supported yet; give the list automatic storage");
+    // No constructor to call and no initialiser: the object is its zero-filled storage, and only its
+    // destructor is registered.
+    if (d.type->isStructOrUnion() && !d.type->tag().empty() && !hasConstructors(d.type->tag()) &&
+        !peek().is("=") && !peek().is("(") && !peek().is("{")) {
+        std::vector<StmtPtr> only;
+        registerDestruction(d, symbol, helper, only);
+        return only;
+    }
+    if (isInitializerListType(d.type)) staticIlFor_ = symbol;
+    CtorInit ci;
+    try {
+        ci = readConstructorInitialiser(d);
+    } catch (...) {
+        staticIlFor_.clear();
+        throw;
+    }
+    staticIlFor_.clear();
     std::vector<StmtPtr> out;
     for (std::size_t z = 0; z < ci.ilSetup.size(); z++)
         out.push_back(std::move(ci.ilSetup[z]));
@@ -1738,9 +1966,9 @@ StmtPtr Parser::guardOnce(const std::string &symbol, std::vector<StmtPtr> body) 
         return c;
     };
 
-    // **A throwing initialiser leaves the guard "being built"**; [stmt.dcl]/4 wants the next call to retry, so the
-    // construction runs under a cleanup calling `__cxa_guard_abort`/`_Init_thread_abort` before the exception goes
-    // on, as cl and clang do (2026-10-21, review of 1.25, fix 3). Not inside a Microsoft handler (see block()).
+    // **A throwing initialiser leaves the guard `being built`**: the build
+    // runs under a cleanup that aborts it (__cxa_guard_abort, [stmt.dcl]/4),
+    // release and footer outside; not in a Microsoft handler (see block()).
     auto guarded = [&](const char *abort) {
         std::vector<ExprPtr> a;
         a.push_back(guardAddr());
@@ -1786,9 +2014,9 @@ StmtPtr Parser::guardOnce(const std::string &symbol, std::vector<StmtPtr> body) 
     return StmtPtr(new Block(std::move(whole)));
 }
 
-// A static local's symbol: the *mangled* function plus the object's name, numbered where a name repeats (the bare
-// name made S::f, T::f, f(double) one `f.n`). **An inline function's static local is one object for the program**
-// ([basic.def.odr]/6): the ABI's name in a COMDAT (1.28, item 14) - cl `?a@?1??f@@YAHXZ@4HA`, Itanium `_ZZ1fvE1a`.
+// A static local's symbol: the function's mangled symbol and the name; an
+// inline function's is one object, [basic.def.odr]/6, with the ABI's name in a
+// COMDAT (`?a@?1??f@@YAHXZ@4HA`, `_ZZ1fvE1a`); without a type, per unit.
 std::string Parser::uniqueStaticSymbol(const std::string &name, const Type *type) {
     const std::string &owner = currentFunction_.empty() ? functionName_
                                                         : currentFunction_;
@@ -1861,16 +2089,110 @@ void Parser::staticLocalWithConstructor(Declared &d,
 void Parser::bindStaticReference(const Declared &d, const std::string &symbol,
                                  std::vector<GlobalPiece> &pieces, bool &hasInit,
                                  std::vector<StmtPtr> *into) {
-    if (!peek().is("="))
+    // `int &g(x);`, [dcl.init]/16's other spelling (1.79).
+    const bool paren = peek().is("(") && atParenInitialiser();
+    // `const int &g = {3};`, `int &&g{4};` - [dcl.init.list]/3: the list's one element, for a referent that is
+    // no class and no array (1.80: at namespace scope and for a static, where a block's had been read).
+    const bool braced = (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) &&
+                        !d.type->referent()->unqualified()->isStructOrUnion() && !d.type->referent()->isArray();
+    if (!peek().is("=") && !paren && !braced)
         src_.fail(d.pos, "'" + d.name + "' is a reference and has to be "
                          "initialised here - there is no later assignment "
                          "that would bind it, only one that writes through it");
-    at_++;
     ExprPtr init;
-    { OverloadTarget hold(*this, d.type); init = assign(); }
+    if (braced) {
+        consume("=");
+        const std::size_t bpos = peek().pos;
+        OverloadTarget hold(*this, d.type);
+        Init in = parseInitialiser();
+        if (in.items.size() != 1 || in.items[0].isList)
+            src_.fail(bpos, "'" + d.name + "' is a reference, and a braced initialiser binds it "
+                            "to one value - this list has " + std::to_string(in.items.size()));
+        init = std::move(in.items[0].value);
+    } else {
+        at_++;
+        OverloadTarget hold(*this, d.type);
+        init = assign();
+    }
+    if (paren) expect(")");
+    // [class.temporary]/5: a static reference's temporary is a static object
+    // of its own (clang's `_ZGR`, cl's `?$S`): a scalar laid down or stored
+    // before main, a class built at `into`, destroyed at exit in order.
+    const Type *held = d.type->referent()->unqualified();
+    const std::string tmp = target_.microsoftNames()
+        ? "?$RT" + std::to_string(staticTemps_ + 1) + "@" + symbol
+        : symbol.compare(0, 2, "_Z") == 0 ? "_ZGR" + symbol.substr(2) + "_"
+                                           : "_ZGR" + std::to_string(symbol.size()) + symbol + "_";
+    if ((!isGlvalue(*init) || init->declCategory() == Expr::Category::Prvalue) && init->type() != nullptr &&
+        init->type()->unqualified()->isStructOrUnion() && !tlsObject_) {
+        staticTemps_++;
+        const Type *made = init->type()->unqualified();
+        Declared td = d;
+        td.name = tmp;
+        td.type = made;
+        Var *at = Var::global(tmp);
+        at->setSymbol(tmp);
+        ExprPtr where(at);
+        where->setType(made);
+        ExprPtr addr(new Unary('&', std::move(where)));
+        addr->setType(types_.pointerTo(made));
+        if (constructInPlace(*init, made, addr)) {
+            into->push_back(StmtPtr(new ExprStmt(std::move(init))));
+        } else {
+            // A call's result, say, is made in the frame; moving it out is a copy nobody wrote, unless a trivial one.
+            if (!trivialSpecial(made, kCopyCtor) || !trivialSpecial(made, kDestructor))
+                src_.fail(d.pos, "'" + d.name + "' is a reference with static storage duration, and the '" +
+                                 made->describe() + "' temporary it binds is made where only a copy could keep it - "
+                                 "that is not supported yet. Name the object and bind to that");
+            ExprPtr store(new Assign(objectAt(td, tmp, 0), std::move(init)));
+            store->setType(made);
+            into->push_back(StmtPtr(new ExprStmt(std::move(store))));
+        }
+        flushTemporaries(*into);
+        registerDestruction(td, tmp, atexitHelperName(tmp), *into);
+        current_->globals.push_back(Global{ tmp, tmp, made, std::vector<GlobalPiece>(), false, true, false });
+        Var *named = Var::global(tmp);
+        named->setSymbol(tmp);
+        init.reset(named);
+        init->setType(made);
+        init->setXvalue();
+    }
+    if (!isGlvalue(*init) && held->isScalar() && !tlsObject_) {
+        staticTemps_++;
+        ExprPtr value = convert(decay(std::move(init)), held);
+        std::vector<GlobalPiece> made;
+        long long v = 0;
+        bool constant = held->isInteger() && fold(*value, &v, d.pos);
+        if (constant) {
+            GlobalPiece p;
+            p.offset = 0;
+            p.size = held->size(target_);
+            p.value = v;
+            made.push_back(p);
+        } else {
+            Var *at = Var::global(tmp);
+            at->setSymbol(tmp);
+            ExprPtr lhs(at);
+            lhs->setType(held);
+            ExprPtr store(new Assign(std::move(lhs), std::move(value)));
+            store->setType(held);
+            into->push_back(StmtPtr(new ExprStmt(std::move(store))));
+            flushTemporaries(*into);
+        }
+        current_->globals.push_back(Global{ tmp, tmp, held, made, constant, true,
+                                            constant && d.type->referent()->isConst() });
+        GlobalPiece p;
+        p.offset = 0;
+        p.size = types_.pointerTo(held)->size(target_);
+        p.value = 0;
+        p.symbol = tmp;
+        pieces.push_back(p);
+        hasInit = true;
+        return;
+    }
     if (!isGlvalue(*init))
         src_.fail(d.pos, "'" + d.name + "' is a reference with static storage "
-                         "duration, and binding it to a temporary is not "
+                         "duration, and binding it to a class temporary is not "
                          "supported yet - the temporary would need static "
                          "storage of its own. Name the object and bind to that");
     ExprPtr addr = bindReference(d.type, std::move(init), d.pos,

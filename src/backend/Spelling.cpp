@@ -25,8 +25,7 @@ void GnuSpelling::op(const Op &x) {
     case Op::Ind: o_ += '*'; o_ += x.text; return;
     case Op::Lbl: o_ += sym(std::string(x.text.p, x.text.n)); return;
     case Op::Seg: o_ += x.text; o_ += ':'; appendNum(o_, x.disp); return;
-    // Local-exec, measured from clang: the symbol's offset from the thread pointer, which the
-    // linker resolves for an executable's own objects.
+    // Local-exec, as clang: the offset from the thread pointer (linker's)
     case Op::Tls: o_ += sym(std::string(x.text.p, x.text.n)); o_ += "@TPOFF("; o_ += x.index; o_ += ')'; return;
     }
 }
@@ -59,7 +58,7 @@ void GnuSpelling::defLabel(const std::string &l) { o_ += sym(l); o_ += ":\n"; }
 // keeps it; a group is kept once. Measured on Compiler++ (docs/PORT-FROM-CPPI.md).
 void GnuSpelling::functionBegin(const std::string &name, bool exported,
                                 bool mergeable) {
-    if (exported) globl(name);
+    if (exported && !(mergeable && weakBindsGlobal())) globl(name);
     textSection_ = mergeable
         ? "  .section .text." + sym(name) + ",\"axG\",@progbits," + sym(name) + ",comdat\n"
         : std::string("  .text\n");
@@ -111,8 +110,8 @@ void GnuSpelling::globl(const std::string &name) {
     o_ += "  .globl "; o_ += sym(name); o_ += '\n';
 }
 
-// Measured from clang: `.weak` beside the `.globl`, which is what makes the
-// linker fold the copies of an inline function rather than reject them.
+// `.weak` is what makes the linker fold the copies of an inline function rather than reject them, and
+// it binds the symbol global by itself: clang writes no `.globl` beside it, and its assembler warns of one.
 void GnuSpelling::weakDefinition(const std::string &name) {
     o_ += "  .weak "; o_ += sym(name); o_ += '\n';
 }
@@ -143,6 +142,48 @@ void GnuSpelling::initialiserEntry(const std::string &fn, bool dsoHandle) {
     o_ += sym(fn);
     o_ += '\n';
 }
+
+void GnuSpelling::flagExchange() {
+    o_ += "  .text\n__cxx1_flag_exchange:\n  movl %esi, %eax\n  xchgb %al, (%rdi)\n  movzbl %al, %eax\n  retq\n";
+}
+
+// <atomic>'s interlocked operations in AT&T's spelling, for the System V registers (rdi, rsi, rdx) or Win64's
+// (rcx, rdx, r8): what MasmSpelling::atomicHelper writes, instruction for instruction.
+static std::string gnuAtomicHelper(const std::string &name, bool win64) {
+    const Spelling::AtomicHelper h = Spelling::atomicHelperOf(name);
+    if (h.op == Spelling::AtomicHelper::None) return std::string();
+    static const char *const suffix[] = { "b", "w", "l", "q" };
+    static const char *const acc[] = { "%al", "%ax", "%eax", "%rax" };
+    static const char *const desiredSysV[] = { "%dl", "%dx", "%edx", "%rdx" };
+    static const char *const desiredWin[] = { "%r8b", "%r8w", "%r8d", "%r8" };
+    const std::string object = win64 ? "(%rcx)" : "(%rdi)";
+    const std::string expected = win64 ? "(%rdx)" : "(%rsi)";
+    const std::string value = h.k == 3 ? (win64 ? "%rdx" : "%rsi") : (win64 ? "%edx" : "%esi");
+    const char *const desired = (win64 ? desiredWin : desiredSysV)[h.k];
+    const char *const widen = h.k == 0 ? "  movzbl %al, %eax\n" : h.k == 1 ? "  movzwl %ax, %eax\n" : "";
+    const std::string s = suffix[h.k];
+    std::string body;
+    switch (h.op) {
+    case Spelling::AtomicHelper::Load:
+        body = h.k == 0 ? "  movzbl " + object + ", %eax\n" : h.k == 1 ? "  movzwl " + object + ", %eax\n"
+             : "  mov" + s + " " + object + ", " + acc[h.k] + "\n";
+        break;
+    case Spelling::AtomicHelper::Xchg:
+    case Spelling::AtomicHelper::Add:
+        body = (h.k == 3 ? "  movq " : "  movl ") + value + (h.k == 3 ? ", %rax\n" : ", %eax\n");
+        body += (h.op == Spelling::AtomicHelper::Xchg ? "  xchg" : "  lock xadd") + s + " " + acc[h.k] + ", " + object + "\n" + widen;
+        break;
+    case Spelling::AtomicHelper::Cas:
+        body = "  mov" + s + " " + expected + ", " + acc[h.k] + "\n  lock cmpxchg" + s + " " + desired + ", " + object +
+               "\n  mov" + s + " " + acc[h.k] + ", " + expected + "\n  sete %al\n  movzbl %al, %eax\n";
+        break;
+    case Spelling::AtomicHelper::None:
+        break;
+    }
+    return "  .text\n" + name + ":\n" + body + "  retq\n";
+}
+
+void GnuSpelling::atomicHelper(const std::string &name) { o_ += gnuAtomicHelper(name, false); }
 
 void GnuSpelling::textSection()   { o_ += textSection_; }
 void GnuSpelling::rodataSection() { o_ += "  .section .rodata\n"; }
@@ -237,7 +278,38 @@ void CoffSpelling::functionBegin(const std::string &name, bool exported,
     }
     if (exported) globl(name);
     defLabel(name);
-    if (codeView_) { o_ += "  .cv_func_id "; appendNum(o_, cvFunctions_++); o_ += '\n'; }
+    if (codeView_) { cvCurrent_ = cvFunctions_++; o_ += "  .cv_func_id "; appendNum(o_, cvCurrent_); o_ += '\n'; }
+}
+
+// **A funclet's lines are a function's own** (1.29): the next id, declared where the funclet's text begins
+// (it moves to `.text$x` with it), and a fresh run of lines; the function's state waits and comes back.
+void CoffSpelling::funcletLinesBegin() {
+    if (!codeView_) return;
+    LineState s;
+    s.current = cvCurrent_; s.lastLoc = lastLoc_; s.lastLocAt = lastLocAt_;
+    s.lastLocFn = lastLocFn_; s.lastLocFile = lastLocFile_; s.lastLocLine = lastLocLine_;
+    s.linesRun = linesRun_;
+    outerLines_.push_back(s);
+    cvCurrent_ = cvFunctions_++;
+    o_ += "  .cv_func_id "; appendNum(o_, cvCurrent_); o_ += '\n';
+    lastLoc_.clear(); lastLocAt_ = 0; lastLocFn_ = -1; lastLocFile_ = lastLocLine_ = 0;
+    linesRun_.clear();
+}
+
+void CoffSpelling::funcletLinesEnd() {
+    if (!codeView_ || outerLines_.empty()) return;
+    const LineState &s = outerLines_.back();
+    cvCurrent_ = s.current; lastLoc_ = s.lastLoc; lastLocAt_ = s.lastLocAt;
+    lastLocFn_ = s.lastLocFn; lastLocFile_ = s.lastLocFile; lastLocLine_ = s.lastLocLine;
+    linesRun_ = s.linesRun;
+    outerLines_.pop_back();
+}
+
+std::string CoffSpelling::locationDirective(int fn, int file, int line, int column) const {
+    std::string o = "  .cv_loc ";
+    appendNum(o, fn); o += ' '; appendNum(o, file); o += ' '; appendNum(o, line); o += ' '; appendNum(o, column);
+    o += '\n';
+    return o;
 }
 
 // The name arrives absolute and escaped (codeViewPath); the checksum is optional and left out.
@@ -266,21 +338,22 @@ static bool holdsInstruction(const std::string &text) {
 // **One entry per run of a line, as cl writes it**: a `for` gave four, a column apiece, and cdb
 // refused `bp` on the line as ambiguous.
 void CoffSpelling::location(int file, int line, int column) {
-    if (cvFunctions_ == 0) return;
-    if (cvFunctions_ == lastLocFn_ && file == lastLocFile_ && line == lastLocLine_) return;
+    if (cvCurrent_ < 0) return;
+    if (cvCurrent_ == lastLocFn_ && file == lastLocFile_ && line == lastLocLine_) return;
     // **No second run of a line**: a loop's step written after its body was a second run of the `for`
     // line, and cdb refused `bp` on it as ambiguous; that code counts as the line before it.
-    if (cvFunctions_ != lastLocFn_) linesRun_.clear();
+    if (cvCurrent_ != lastLocFn_) linesRun_.clear();
     if (!linesRun_.insert(std::make_pair(file, line)).second) return;
-    lastLocFn_ = cvFunctions_;
+    lastLocFn_ = cvCurrent_;
     lastLocFile_ = file;
     lastLocLine_ = line;
-    if (lastLocAt_ + lastLoc_.size() <= o_.size() && o_.compare(lastLocAt_, lastLoc_.size(), lastLoc_) == 0 &&
+    if (!lastLoc_.empty() && lastLocAt_ + lastLoc_.size() <= o_.size() &&
+        o_.compare(lastLocAt_, lastLoc_.size(), lastLoc_) == 0 &&
         !holdsInstruction(o_.substr(lastLocAt_ + lastLoc_.size())))
         o_.erase(lastLocAt_, lastLoc_.size());
     lastLocAt_ = o_.size();
     o_ += "  .cv_loc ";
-    appendNum(o_, cvFunctions_ - 1);
+    appendNum(o_, cvCurrent_);
     o_ += ' ';
     appendNum(o_, file);
     o_ += ' ';
@@ -311,6 +384,12 @@ void CoffSpelling::weakDefinition(const std::string &name) {
 // Measured from clang for x86_64-pc-windows-msvc: the same pointer, in the
 // section the CRT walks before main. **`.CRT$XCU` carries no COMDAT clause**,
 // and the `unique,0` that used to be here is why this is a comment.
+void CoffSpelling::flagExchange() {
+    o_ += "  .text\n__cxx1_flag_exchange:\n  movl %edx, %eax\n  xchgb %al, (%rcx)\n  movzbl %al, %eax\n  retq\n";
+}
+
+void CoffSpelling::atomicHelper(const std::string &name) { o_ += gnuAtomicHelper(name, true); }
+
 void CoffSpelling::initialiserEntry(const std::string &fn, bool) {
     o_ += "  .section .CRT$XCU,\"dr\"\n  .p2align 3, 0x0\n  .quad ";
     o_ += sym(fn);

@@ -1,0 +1,6 @@
+T T* const T* T& T&&
+T[] T[] const T R(*)(A)
+R(A) M C::* Box<T,T>
+T,U T,T T,int int*,U
+120 3628800
+const T T

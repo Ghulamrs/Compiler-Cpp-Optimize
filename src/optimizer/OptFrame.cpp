@@ -30,10 +30,7 @@ int accessWidth(const Instr &i, const Operand &at) {
 
 struct Candidate {
     Local local;
-    bool ok;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Candidate(Local local = Local(), bool ok = true) : local(local), ok(ok) {}
+    bool ok = true;
 };
 
 }
@@ -111,7 +108,12 @@ void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves, long long top) {
     for (const Entry &e : s)
         if (e.kind == Entry::Ins && !e.dead && !(e.ins.m == "mov" && e.ins.a.isMem() && e.ins.a.reg.id == RBP))
             for (const Operand *o : {&e.ins.a, &e.ins.b}) {
-                if ((o->kind == Operand::Register || o->basedOnReg()) && o->reg.id >= 0) named |= bit(o->reg.id);
+                // A call through a register names it too (`call *%r13`). Until 1.76 it did not here: a function
+                // that kept a pointer to function in a preserved register - loaded from its frame, called in a
+                // loop - had that register's save dropped as unused, and its caller's value in the register was
+                // lost. partition_copy at -O2, its predicate the sixth argument, was one such.
+                if ((o->kind == Operand::Register || o->basedOnReg() || o->kind == Operand::Indirect) && o->reg.id >= 0)
+                    named |= bit(o->reg.id);
                 if (o->indexed()) named |= bit(o->index.id);
             }
     std::vector<SavedReg> kept;

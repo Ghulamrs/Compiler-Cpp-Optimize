@@ -1,0 +1,17 @@
+-1234567890123 ff 42
+-77 3 2 9
+divbyzero 1
+round 1
+inexact 1
+locale 1 .
+longjmp 3
+signal 2
+macros 1 1
+wcs 10 5 0
+swprintf 4 42
+wmem 0 1
+mbrtowc 1 65 1
+wctype 1 1 81
+mbrtoc16 1 66
+tgmath 1.41421 2
+errno 34

@@ -10,6 +10,7 @@ struct DwarfBlock {
     int parent;
     std::string begin;
     std::string end;
+    int funclet = 0;  // the block's funclet; 0 is the function's own
 };
 
 struct DwarfFunction {
@@ -35,6 +36,7 @@ struct DwarfFunction {
     // A realigned frame's own base register, as DWARF numbers it (rbx is 3), with the records then
     // measured `frameBias - offset` up from it; -1 is the target's frame pointer and the plain `-offset`.
     int frameBaseReg = -1;
+    int funclet = 0;  // which handler funclet: an S_LPROC32 of its own
 };
 
 struct DwarfGlobal {

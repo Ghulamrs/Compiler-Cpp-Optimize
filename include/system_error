@@ -1,0 +1,309 @@
+// <system_error> - [syserr]: error codes, error conditions, their categories, and system_error.
+//
+// generic_category's numbers are errno's, its messages strerror's. system_category's are the operating
+// system's: errno again on POSIX, GetLastError's on Windows, whose messages come from FormatMessage and
+// whose common numbers map to errc conditions. Each category is a function-local static, so an inline
+// function gives every translation unit the one object [syserr.errcat.objects]/1 compares by address.
+#ifndef _CXX1_SYSTEM_ERROR
+#define _CXX1_SYSTEM_ERROR
+
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+
+namespace std {
+
+#if defined(_WIN32)
+namespace __cxx1_os {
+extern "C" unsigned long FormatMessageA(unsigned long flags, const void *source, unsigned long id, unsigned long language,
+                                        char *buffer, unsigned long size, void *arguments);
+}
+#endif
+
+class error_category;
+class error_code;
+class error_condition;
+
+template <class T> struct is_error_code_enum : false_type {};
+template <class T> struct is_error_condition_enum : false_type {};
+
+// [syserr]/2
+enum class errc {
+    address_family_not_supported = EAFNOSUPPORT,
+    address_in_use = EADDRINUSE,
+    address_not_available = EADDRNOTAVAIL,
+    already_connected = EISCONN,
+    argument_list_too_long = E2BIG,
+    argument_out_of_domain = EDOM,
+    bad_address = EFAULT,
+    bad_file_descriptor = EBADF,
+    bad_message = EBADMSG,
+    broken_pipe = EPIPE,
+    connection_aborted = ECONNABORTED,
+    connection_already_in_progress = EALREADY,
+    connection_refused = ECONNREFUSED,
+    connection_reset = ECONNRESET,
+    cross_device_link = EXDEV,
+    destination_address_required = EDESTADDRREQ,
+    device_or_resource_busy = EBUSY,
+    directory_not_empty = ENOTEMPTY,
+    executable_format_error = ENOEXEC,
+    file_exists = EEXIST,
+    file_too_large = EFBIG,
+    filename_too_long = ENAMETOOLONG,
+    function_not_supported = ENOSYS,
+    host_unreachable = EHOSTUNREACH,
+    identifier_removed = EIDRM,
+    illegal_byte_sequence = EILSEQ,
+    inappropriate_io_control_operation = ENOTTY,
+    interrupted = EINTR,
+    invalid_argument = EINVAL,
+    invalid_seek = ESPIPE,
+    io_error = EIO,
+    is_a_directory = EISDIR,
+    message_size = EMSGSIZE,
+    network_down = ENETDOWN,
+    network_reset = ENETRESET,
+    network_unreachable = ENETUNREACH,
+    no_buffer_space = ENOBUFS,
+    no_child_process = ECHILD,
+    no_link = ENOLINK,
+    no_lock_available = ENOLCK,
+    no_message_available = ENODATA,
+    no_message = ENOMSG,
+    no_protocol_option = ENOPROTOOPT,
+    no_space_on_device = ENOSPC,
+    no_stream_resources = ENOSR,
+    no_such_device_or_address = ENXIO,
+    no_such_device = ENODEV,
+    no_such_file_or_directory = ENOENT,
+    no_such_process = ESRCH,
+    not_a_directory = ENOTDIR,
+    not_a_socket = ENOTSOCK,
+    not_a_stream = ENOSTR,
+    not_connected = ENOTCONN,
+    not_enough_memory = ENOMEM,
+    not_supported = ENOTSUP,
+    operation_canceled = ECANCELED,
+    operation_in_progress = EINPROGRESS,
+    operation_not_permitted = EPERM,
+    operation_not_supported = EOPNOTSUPP,
+    operation_would_block = EWOULDBLOCK,
+    owner_dead = EOWNERDEAD,
+    permission_denied = EACCES,
+    protocol_error = EPROTO,
+    protocol_not_supported = EPROTONOSUPPORT,
+    read_only_file_system = EROFS,
+    resource_deadlock_would_occur = EDEADLK,
+    resource_unavailable_try_again = EAGAIN,
+    result_out_of_range = ERANGE,
+    state_not_recoverable = ENOTRECOVERABLE,
+    stream_timeout = ETIME,
+    text_file_busy = ETXTBSY,
+    timed_out = ETIMEDOUT,
+    too_many_files_open_in_system = ENFILE,
+    too_many_files_open = EMFILE,
+    too_many_links = EMLINK,
+    too_many_symbolic_link_levels = ELOOP,
+    value_too_large = EOVERFLOW,
+    wrong_protocol_type = EPROTOTYPE
+};
+template <> struct is_error_condition_enum<errc> : true_type {};
+
+// [syserr.errcat]
+class error_category {
+public:
+    constexpr error_category() noexcept {}
+    virtual ~error_category() noexcept {}
+    error_category(const error_category &) = delete;
+    error_category &operator=(const error_category &) = delete;
+    virtual const char *name() const noexcept = 0;
+    virtual error_condition default_error_condition(int ev) const noexcept;
+    virtual bool equivalent(int code, const error_condition &condition) const noexcept;
+    virtual bool equivalent(const error_code &code, int condition) const noexcept;
+    virtual string message(int ev) const = 0;
+    bool operator==(const error_category &rhs) const noexcept { return this == &rhs; }
+    bool operator!=(const error_category &rhs) const noexcept { return this != &rhs; }
+    bool operator<(const error_category &rhs) const noexcept { return this < &rhs; }
+};
+
+const error_category &generic_category() noexcept;
+const error_category &system_category() noexcept;
+
+// [syserr.errcode]
+class error_code {
+    int val_;
+    const error_category *cat_;
+
+public:
+    error_code() noexcept : val_(0), cat_(&system_category()) {}
+    error_code(int val, const error_category &cat) noexcept : val_(val), cat_(&cat) {}
+    template <class E, class = typename enable_if<is_error_code_enum<E>::value>::type>
+    error_code(E e) noexcept { *this = make_error_code(e); }
+
+    void assign(int val, const error_category &cat) noexcept { val_ = val; cat_ = &cat; }
+    template <class E>
+    typename enable_if<is_error_code_enum<E>::value, error_code &>::type operator=(E e) noexcept {
+        return *this = make_error_code(e);
+    }
+    void clear() noexcept { val_ = 0; cat_ = &system_category(); }
+
+    int value() const noexcept { return val_; }
+    const error_category &category() const noexcept { return *cat_; }
+    error_condition default_error_condition() const noexcept;
+    string message() const { return cat_->message(val_); }
+    explicit operator bool() const noexcept { return val_ != 0; }
+};
+
+// [syserr.errcondition]
+class error_condition {
+    int val_;
+    const error_category *cat_;
+
+public:
+    error_condition() noexcept : val_(0), cat_(&generic_category()) {}
+    error_condition(int val, const error_category &cat) noexcept : val_(val), cat_(&cat) {}
+    template <class E, class = typename enable_if<is_error_condition_enum<E>::value>::type>
+    error_condition(E e) noexcept { *this = make_error_condition(e); }
+
+    void assign(int val, const error_category &cat) noexcept { val_ = val; cat_ = &cat; }
+    template <class E>
+    typename enable_if<is_error_condition_enum<E>::value, error_condition &>::type operator=(E e) noexcept {
+        return *this = make_error_condition(e);
+    }
+    void clear() noexcept { val_ = 0; cat_ = &generic_category(); }
+
+    int value() const noexcept { return val_; }
+    const error_category &category() const noexcept { return *cat_; }
+    string message() const { return cat_->message(val_); }
+    explicit operator bool() const noexcept { return val_ != 0; }
+};
+
+inline error_code make_error_code(errc e) noexcept { return error_code(static_cast<int>(e), generic_category()); }
+inline error_condition make_error_condition(errc e) noexcept { return error_condition(static_cast<int>(e), generic_category()); }
+
+// [syserr.compare]
+inline bool operator<(const error_code &a, const error_code &b) noexcept {
+    return a.category() < b.category() || (a.category() == b.category() && a.value() < b.value());
+}
+inline bool operator<(const error_condition &a, const error_condition &b) noexcept {
+    return a.category() < b.category() || (a.category() == b.category() && a.value() < b.value());
+}
+inline bool operator==(const error_code &a, const error_code &b) noexcept {
+    return a.category() == b.category() && a.value() == b.value();
+}
+inline bool operator==(const error_code &a, const error_condition &b) noexcept {
+    return a.category().equivalent(a.value(), b) || b.category().equivalent(a, b.value());
+}
+inline bool operator==(const error_condition &a, const error_code &b) noexcept {
+    return b.category().equivalent(b.value(), a) || a.category().equivalent(b, a.value());
+}
+inline bool operator==(const error_condition &a, const error_condition &b) noexcept {
+    return a.category() == b.category() && a.value() == b.value();
+}
+inline bool operator!=(const error_code &a, const error_code &b) noexcept { return !(a == b); }
+inline bool operator!=(const error_code &a, const error_condition &b) noexcept { return !(a == b); }
+inline bool operator!=(const error_condition &a, const error_code &b) noexcept { return !(a == b); }
+inline bool operator!=(const error_condition &a, const error_condition &b) noexcept { return !(a == b); }
+
+inline error_condition error_category::default_error_condition(int ev) const noexcept { return error_condition(ev, *this); }
+inline bool error_category::equivalent(int code, const error_condition &condition) const noexcept {
+    return default_error_condition(code) == condition;
+}
+inline bool error_category::equivalent(const error_code &code, int condition) const noexcept {
+    return *this == code.category() && code.value() == condition;
+}
+inline error_condition error_code::default_error_condition() const noexcept { return cat_->default_error_condition(val_); }
+
+class __cxx1_generic_category : public error_category {
+public:
+    virtual const char *name() const noexcept { return "generic"; }
+    virtual string message(int ev) const {
+        const char *s = std::strerror(ev);
+        return s != 0 ? string(s) : string("unknown error");
+    }
+};
+
+class __cxx1_system_category : public error_category {
+public:
+    virtual const char *name() const noexcept { return "system"; }
+#if defined(_WIN32)
+    // The Win32 numbers a portable program meets, as the errc condition each means.
+    virtual error_condition default_error_condition(int ev) const noexcept {
+        static const int table[][2] = {
+            { 0, 0 },
+            { 2, ENOENT }, { 3, ENOENT }, { 4, EMFILE }, { 5, EACCES }, { 6, EBADF }, { 8, ENOMEM },
+            { 14, ENOMEM }, { 15, ENOENT }, { 17, EXDEV }, { 19, EROFS }, { 32, EBUSY }, { 33, ENOLCK },
+            { 39, ENOSPC }, { 50, ENOTSUP }, { 80, EEXIST }, { 87, EINVAL }, { 109, EPIPE }, { 112, ENOSPC },
+            { 122, EINVAL }, { 123, EINVAL }, { 145, ENOTEMPTY }, { 170, EBUSY }, { 183, EEXIST },
+            { 206, ENAMETOOLONG }, { 232, EPIPE }, { 258, ETIMEDOUT }, { 995, ECANCELED },
+            { 1460, ETIMEDOUT }, { 10013, EACCES }, { 10022, EINVAL }, { 10035, EWOULDBLOCK },
+            { 10036, EINPROGRESS }, { 10037, EALREADY }, { 10038, ENOTSOCK }, { 10048, EADDRINUSE },
+            { 10049, EADDRNOTAVAIL }, { 10050, ENETDOWN }, { 10051, ENETUNREACH }, { 10052, ENETRESET },
+            { 10053, ECONNABORTED }, { 10054, ECONNRESET }, { 10056, EISCONN }, { 10057, ENOTCONN },
+            { 10060, ETIMEDOUT }, { 10061, ECONNREFUSED }, { 10065, EHOSTUNREACH }
+        };
+        for (unsigned i = 0; i < sizeof table / sizeof table[0]; i++)
+            if (table[i][0] == ev) return error_condition(table[i][1], generic_category());
+        return error_condition(ev, *this);
+    }
+    virtual string message(int ev) const {
+        char buffer[512];
+        unsigned long n = __cxx1_os::FormatMessageA(0x1000 | 0x200, 0, static_cast<unsigned long>(ev), 0,
+                                                    buffer, sizeof buffer, 0);   // FROM_SYSTEM, IGNORE_INSERTS
+        while (n > 0 && (buffer[n - 1] == '\n' || buffer[n - 1] == '\r' || buffer[n - 1] == ' ' || buffer[n - 1] == '.')) n--;
+        return n > 0 ? string(buffer, n) : string("unknown error");
+    }
+#else
+    virtual error_condition default_error_condition(int ev) const noexcept { return error_condition(ev, generic_category()); }
+    virtual string message(int ev) const {
+        const char *s = std::strerror(ev);
+        return s != 0 ? string(s) : string("unknown error");
+    }
+#endif
+};
+
+inline const error_category &generic_category() noexcept {
+    static const __cxx1_generic_category c;
+    return c;
+}
+inline const error_category &system_category() noexcept {
+    static const __cxx1_system_category c;
+    return c;
+}
+
+// [syserr.syserr]
+class system_error : public runtime_error {
+    error_code code_;
+
+    static string compose(const string &what, const error_code &ec) {
+        return what.empty() ? ec.message() : what + ": " + ec.message();
+    }
+
+public:
+    system_error(error_code ec, const string &what_arg) : runtime_error(compose(what_arg, ec)), code_(ec) {}
+    system_error(error_code ec, const char *what_arg) : runtime_error(compose(string(what_arg), ec)), code_(ec) {}
+    system_error(error_code ec) : runtime_error(ec.message()), code_(ec) {}
+    system_error(int ev, const error_category &cat, const string &what_arg)
+        : runtime_error(compose(what_arg, error_code(ev, cat))), code_(ev, cat) {}
+    system_error(int ev, const error_category &cat, const char *what_arg)
+        : runtime_error(compose(string(what_arg), error_code(ev, cat))), code_(ev, cat) {}
+    system_error(int ev, const error_category &cat) : runtime_error(cat.message(ev)), code_(ev, cat) {}
+    const error_code &code() const noexcept { return code_; }
+};
+
+// [syserr.hash]
+template <class T> struct hash;
+template <> struct hash<error_code> {
+    typedef error_code argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const error_code &ec) const noexcept {
+        return static_cast<std::size_t>(ec.value()) ^ reinterpret_cast<std::size_t>(&ec.category());
+    }
+};
+
+}  // namespace std
+
+#endif

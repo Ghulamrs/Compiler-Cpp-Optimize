@@ -1,0 +1,2 @@
+body ctor-caught -2 | rethrown -2
+0 30

@@ -1,0 +1,247 @@
+// <complex> - [complex.numbers]: complex<T> for the three floating types, its arithmetic, its streaming and
+// the transcendental functions with their branch cuts.
+//
+// One template serves float, double and long double: [complex.special]'s conversions are its two
+// converting constructors, implicit from a type of lower rank and explicit from a higher one, which is what
+// the three specializations' constructors say. The functions are the textbook identities over <cmath>.
+#ifndef _CXX1_COMPLEX
+#define _CXX1_COMPLEX
+
+#include <cmath>
+#include <istream>
+#include <limits>
+#include <ostream>
+#include <sstream>
+#include <type_traits>
+
+namespace std {
+
+template <class T> class complex;
+
+template <class T> struct __cxx1_fp_rank : integral_constant<int, 0> {};
+template <> struct __cxx1_fp_rank<float> : integral_constant<int, 1> {};
+template <> struct __cxx1_fp_rank<double> : integral_constant<int, 2> {};
+template <> struct __cxx1_fp_rank<long double> : integral_constant<int, 3> {};
+
+// [cmplx.over]/2-3: an integer is taken as a double, and two types as the wider of them.
+template <class T> struct __cxx1_cplx_value { typedef typename conditional<is_integral<T>::value, double, T>::type type; };
+template <class T, class U> struct __cxx1_cplx_promote {
+    typedef typename __cxx1_cplx_value<T>::type t;
+    typedef typename __cxx1_cplx_value<U>::type u;
+    typedef typename conditional<(__cxx1_fp_rank<t>::value >= __cxx1_fp_rank<u>::value), t, u>::type type;
+};
+
+template <class T> class complex {
+    T re_, im_;
+
+public:
+    typedef T value_type;
+
+    constexpr complex(const T &re = T(), const T &im = T()) : re_(re), im_(im) {}
+    template <class X, typename enable_if<(__cxx1_fp_rank<X>::value <= __cxx1_fp_rank<T>::value), int>::type = 0>
+    constexpr complex(const complex<X> &c) : re_(c.real()), im_(c.imag()) {}
+    template <class X, typename enable_if<(__cxx1_fp_rank<X>::value > __cxx1_fp_rank<T>::value), int>::type = 0>
+    constexpr explicit complex(const complex<X> &c) : re_(static_cast<T>(c.real())), im_(static_cast<T>(c.imag())) {}
+
+    constexpr T real() const { return re_; }
+    void real(T v) { re_ = v; }
+    constexpr T imag() const { return im_; }
+    void imag(T v) { im_ = v; }
+
+    complex &operator=(const T &v) { re_ = v; im_ = T(); return *this; }
+    complex &operator+=(const T &v) { re_ += v; return *this; }
+    complex &operator-=(const T &v) { re_ -= v; return *this; }
+    complex &operator*=(const T &v) { re_ *= v; im_ *= v; return *this; }
+    complex &operator/=(const T &v) { re_ /= v; im_ /= v; return *this; }
+
+    template <class X> complex &operator=(const complex<X> &c) {
+        re_ = static_cast<T>(c.real()); im_ = static_cast<T>(c.imag()); return *this;
+    }
+    template <class X> complex &operator+=(const complex<X> &c) {
+        re_ += static_cast<T>(c.real()); im_ += static_cast<T>(c.imag()); return *this;
+    }
+    template <class X> complex &operator-=(const complex<X> &c) {
+        re_ -= static_cast<T>(c.real()); im_ -= static_cast<T>(c.imag()); return *this;
+    }
+    template <class X> complex &operator*=(const complex<X> &c) {
+        const T a = re_, b = im_, x = static_cast<T>(c.real()), y = static_cast<T>(c.imag());
+        re_ = a * x - b * y; im_ = a * y + b * x; return *this;
+    }
+    // Smith's division: the larger part of the divisor scales the rest, so its square cannot overflow.
+    template <class X> complex &operator/=(const complex<X> &c) {
+        const T a = re_, b = im_, x = static_cast<T>(c.real()), y = static_cast<T>(c.imag());
+        if (std::fabs(x) >= std::fabs(y)) {
+            const T r = y / x, d = x + y * r;
+            re_ = (a + b * r) / d; im_ = (b - a * r) / d;
+        } else {
+            const T r = x / y, d = x * r + y;
+            re_ = (a * r + b) / d; im_ = (b * r - a) / d;
+        }
+        return *this;
+    }
+};
+
+// [complex.ops]
+template <class T> complex<T> operator+(const complex<T> &a, const complex<T> &b) { complex<T> r = a; return r += b; }
+template <class T> complex<T> operator+(const complex<T> &a, const T &b) { complex<T> r = a; return r += b; }
+template <class T> complex<T> operator+(const T &a, const complex<T> &b) { complex<T> r = b; return r += a; }
+template <class T> complex<T> operator-(const complex<T> &a, const complex<T> &b) { complex<T> r = a; return r -= b; }
+template <class T> complex<T> operator-(const complex<T> &a, const T &b) { complex<T> r = a; return r -= b; }
+template <class T> complex<T> operator-(const T &a, const complex<T> &b) { return complex<T>(a - b.real(), -b.imag()); }
+template <class T> complex<T> operator*(const complex<T> &a, const complex<T> &b) { complex<T> r = a; return r *= b; }
+template <class T> complex<T> operator*(const complex<T> &a, const T &b) { complex<T> r = a; return r *= b; }
+template <class T> complex<T> operator*(const T &a, const complex<T> &b) { complex<T> r = b; return r *= a; }
+template <class T> complex<T> operator/(const complex<T> &a, const complex<T> &b) { complex<T> r = a; return r /= b; }
+template <class T> complex<T> operator/(const complex<T> &a, const T &b) { complex<T> r = a; return r /= b; }
+template <class T> complex<T> operator/(const T &a, const complex<T> &b) { complex<T> r = a; return r /= b; }
+template <class T> complex<T> operator+(const complex<T> &a) { return a; }
+template <class T> complex<T> operator-(const complex<T> &a) { return complex<T>(-a.real(), -a.imag()); }
+template <class T> constexpr bool operator==(const complex<T> &a, const complex<T> &b) { return a.real() == b.real() && a.imag() == b.imag(); }
+template <class T> constexpr bool operator==(const complex<T> &a, const T &b) { return a.real() == b && a.imag() == T(); }
+template <class T> constexpr bool operator==(const T &a, const complex<T> &b) { return a == b.real() && T() == b.imag(); }
+template <class T> constexpr bool operator!=(const complex<T> &a, const complex<T> &b) { return !(a == b); }
+template <class T> constexpr bool operator!=(const complex<T> &a, const T &b) { return !(a == b); }
+template <class T> constexpr bool operator!=(const T &a, const complex<T> &b) { return !(a == b); }
+
+// [complex.ops]/12-15: `re`, `(re)` or `(re,im)` in; `(re,im)` out, padded as one field.
+template <class T> istream &operator>>(istream &is, complex<T> &x) {
+    T re = T(), im = T();
+    char c = 0;
+    is >> c;
+    if (!is) return is;
+    if (c == '(') {
+        is >> re >> c;
+        if (is && c == ',') is >> im >> c;
+        if (is && c != ')') is.setstate(ios::failbit);
+    } else {
+        is.putback(c);
+        is >> re;
+    }
+    if (is) x = complex<T>(re, im);
+    return is;
+}
+template <class T> ostream &operator<<(ostream &os, const complex<T> &x) {
+    ostringstream s;
+    s.flags(os.flags());
+    s.precision(os.precision());
+    s << '(' << x.real() << ',' << x.imag() << ')';
+    return os << s.str();
+}
+
+// [complex.value.ops]
+template <class T> constexpr T real(const complex<T> &x) { return x.real(); }
+template <class T> constexpr T imag(const complex<T> &x) { return x.imag(); }
+template <class T> T abs(const complex<T> &x) { return static_cast<T>(std::hypot(x.real(), x.imag())); }
+template <class T> T arg(const complex<T> &x) { return static_cast<T>(std::atan2(x.imag(), x.real())); }
+template <class T> T norm(const complex<T> &x) { return x.real() * x.real() + x.imag() * x.imag(); }
+template <class T> complex<T> conj(const complex<T> &x) { return complex<T>(x.real(), -x.imag()); }
+template <class T> complex<T> proj(const complex<T> &x) {
+    if (std::isinf(x.real()) || std::isinf(x.imag()))
+        return complex<T>(numeric_limits<T>::infinity(), static_cast<T>(std::copysign(0.0, x.imag())));
+    return x;
+}
+template <class T> complex<T> polar(const T &rho, const T &theta = T()) {
+    return complex<T>(rho * static_cast<T>(std::cos(theta)), rho * static_cast<T>(std::sin(theta)));
+}
+
+// [cmplx.over]/2: the value functions on a real argument.
+template <class T> constexpr typename enable_if<is_arithmetic<T>::value, typename __cxx1_cplx_value<T>::type>::type
+real(T x) { return x; }
+template <class T> constexpr typename enable_if<is_arithmetic<T>::value, typename __cxx1_cplx_value<T>::type>::type
+imag(T) { return 0; }
+template <class T> typename enable_if<is_arithmetic<T>::value, typename __cxx1_cplx_value<T>::type>::type arg(T x) {
+    return static_cast<typename __cxx1_cplx_value<T>::type>(std::atan2(0.0, static_cast<double>(x)));
+}
+template <class T> typename enable_if<is_arithmetic<T>::value, typename __cxx1_cplx_value<T>::type>::type norm(T x) {
+    typedef typename __cxx1_cplx_value<T>::type V;
+    return static_cast<V>(x) * static_cast<V>(x);
+}
+template <class T> typename enable_if<is_arithmetic<T>::value, complex<typename __cxx1_cplx_value<T>::type> >::type conj(T x) {
+    return complex<typename __cxx1_cplx_value<T>::type>(x);
+}
+template <class T> typename enable_if<is_arithmetic<T>::value, complex<typename __cxx1_cplx_value<T>::type> >::type proj(T x) {
+    return complex<typename __cxx1_cplx_value<T>::type>(x);
+}
+
+// [complex.transcendentals]
+template <class T> complex<T> exp(const complex<T> &x) { return polar(static_cast<T>(std::exp(x.real())), x.imag()); }
+template <class T> complex<T> log(const complex<T> &x) { return complex<T>(static_cast<T>(std::log(abs(x))), arg(x)); }
+template <class T> complex<T> log10(const complex<T> &x) { return log(x) / static_cast<T>(std::log(10.0)); }
+template <class T> complex<T> sqrt(const complex<T> &x) {
+    const T re = x.real(), im = x.imag();
+    if (re == T() && im == T()) return complex<T>(T(), im);
+    const T t = static_cast<T>(std::sqrt((abs(x) + std::fabs(re)) / 2));
+    if (re >= T()) return complex<T>(t, im / (2 * t));
+    return complex<T>(static_cast<T>(std::fabs(im)) / (2 * t), static_cast<T>(std::copysign(t, im)));
+}
+template <class T> complex<T> sinh(const complex<T> &x) {
+    return complex<T>(static_cast<T>(std::sinh(x.real()) * std::cos(x.imag())),
+                      static_cast<T>(std::cosh(x.real()) * std::sin(x.imag())));
+}
+template <class T> complex<T> cosh(const complex<T> &x) {
+    return complex<T>(static_cast<T>(std::cosh(x.real()) * std::cos(x.imag())),
+                      static_cast<T>(std::sinh(x.real()) * std::sin(x.imag())));
+}
+template <class T> complex<T> tanh(const complex<T> &x) {
+    const double a = 2.0 * x.real(), b = 2.0 * x.imag();
+    if (std::fabs(a) > 40.0) return complex<T>(static_cast<T>(a > 0 ? 1 : -1), T());
+    const double d = std::cosh(a) + std::cos(b);
+    return complex<T>(static_cast<T>(std::sinh(a) / d), static_cast<T>(std::sin(b) / d));
+}
+template <class T> complex<T> sin(const complex<T> &x) {
+    const complex<T> h = sinh(complex<T>(-x.imag(), x.real()));   // sin z = -i sinh(iz)
+    return complex<T>(h.imag(), -h.real());
+}
+template <class T> complex<T> cos(const complex<T> &x) { return cosh(complex<T>(-x.imag(), x.real())); }
+template <class T> complex<T> tan(const complex<T> &x) {
+    const complex<T> h = tanh(complex<T>(-x.imag(), x.real()));
+    return complex<T>(h.imag(), -h.real());
+}
+template <class T> complex<T> asinh(const complex<T> &x) { return log(x + sqrt(x * x + T(1))); }
+template <class T> complex<T> acosh(const complex<T> &x) {
+    return T(2) * log(sqrt((x + T(1)) / T(2)) + sqrt((x - T(1)) / T(2)));
+}
+template <class T> complex<T> atanh(const complex<T> &x) { return (log(T(1) + x) - log(T(1) - x)) / T(2); }
+template <class T> complex<T> asin(const complex<T> &x) {
+    const complex<T> h = asinh(complex<T>(-x.imag(), x.real()));
+    return complex<T>(h.imag(), -h.real());
+}
+template <class T> complex<T> acos(const complex<T> &x) {
+    const complex<T> s = asin(x);
+    return complex<T>(static_cast<T>(1.57079632679489661923) - s.real(), -s.imag());
+}
+template <class T> complex<T> atan(const complex<T> &x) {
+    const complex<T> h = atanh(complex<T>(-x.imag(), x.real()));
+    return complex<T>(h.imag(), -h.real());
+}
+
+// pow, each mixture of complex and real promoted as [cmplx.over]/3 says.
+template <class T, class U>
+complex<typename __cxx1_cplx_promote<T, U>::type> pow(const complex<T> &x, const complex<U> &y) {
+    typedef typename __cxx1_cplx_promote<T, U>::type P;
+    const complex<P> b(x.real(), x.imag()), e(y.real(), y.imag());
+    if (b == P()) return complex<P>((e == P()) ? P(1) : P());
+    return exp(e * log(b));
+}
+template <class T, class U>
+typename enable_if<is_arithmetic<U>::value, complex<typename __cxx1_cplx_promote<T, U>::type> >::type
+pow(const complex<T> &x, const U &y) {
+    typedef typename __cxx1_cplx_promote<T, U>::type P;
+    const complex<P> b(x.real(), x.imag());
+    if (b.imag() == P() && b.real() > P()) return complex<P>(static_cast<P>(std::pow(b.real(), static_cast<P>(y))));
+    if (b == P()) return complex<P>(y == U() ? P(1) : P());
+    return exp(static_cast<P>(y) * log(b));
+}
+template <class T, class U>
+typename enable_if<is_arithmetic<T>::value, complex<typename __cxx1_cplx_promote<T, U>::type> >::type
+pow(const T &x, const complex<U> &y) {
+    typedef typename __cxx1_cplx_promote<T, U>::type P;
+    const complex<P> e(y.real(), y.imag());
+    if (static_cast<P>(x) > P())
+        return polar(static_cast<P>(std::pow(static_cast<P>(x), e.real())), static_cast<P>(e.imag() * std::log(static_cast<P>(x))));
+    return pow(complex<P>(static_cast<P>(x)), e);
+}
+
+}  // namespace std
+
+#endif

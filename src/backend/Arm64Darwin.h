@@ -32,6 +32,7 @@ public:
     const char *const *identityMacros() const override;
     std::unique_ptr<CodeGen> codegen(std::ostream &sink, Syntax syntax) const override;
     bool emitsLineTable(Syntax) const override { return true; }
+    bool optimizesAroundVolatile() const override { return true; }
 private:
     DarwinArm64Target target_;
 };
@@ -71,6 +72,7 @@ private:
 
     std::ostringstream out_;
     int optimize_ = 0;          // -O1 and -O2 run each body through a64Peephole
+    bool volatileHere_ = false; // the function being written touches a volatile lvalue: no peephole, no promotion
     static constexpr int kCalleeArea = 144;   // x19-x28 and d8-d15, 8 bytes each, when a local is promoted
     std::size_t emittedSize() override {
         return static_cast<std::size_t>(out_.tellp());

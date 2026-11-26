@@ -1,0 +1,28 @@
+1
+2 0 1
+weak 2 0
+1 1
+~Derived 1
+~Base 1
+weak 0 1 1
+caught bad_weak_ptr
+6 5
+Tell deletes 5
+Tell deletes 6
+9
+alias 4 1
+1 2
+2 1
+~Derived 3
+~Base 3
+~Derived 2
+~Base 2
+2 1
+3 7
+~Node 7
+1 1 1
+owner_less 1 0 1
+atomic 2 2
+cas 0 2 0
+2 1
+0 1 0

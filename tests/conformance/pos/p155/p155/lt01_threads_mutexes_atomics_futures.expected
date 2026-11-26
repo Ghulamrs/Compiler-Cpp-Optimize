@@ -1,0 +1,15 @@
+counter 4000 hits 4000 once 1
+cas 1 9 0 9
+ptr 3
+flag 0 1 0
+cv 42
+timeout 0
+promise 7
+async 144 deferred 25
+task 81
+future_error 1
+caught boom
+shared 9 9
+recursive 1 timed 0
+ids 1 1
+cores 1

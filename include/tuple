@@ -1,0 +1,301 @@
+// <tuple> - [tuple]: a fixed-size collection of values of any types. tuple<H, T...> holds H and derives
+// from tuple<T...>, so element I is the head of the I-th base; tuple_size and tuple_element are
+// <utility>'s templates, specialized here; get, make_tuple, tie, forward_as_tuple, tuple_cat, the
+// comparisons and swap are as the synopsis has them.
+#ifndef _CXX1_TUPLE
+#define _CXX1_TUPLE
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+#include <__allocator>
+#include <__invoke>
+
+namespace std {
+
+template <class... T> class tuple;
+
+// [allocator.uses.construction]: an element made with an allocator is made as it is (0), with allocator_arg
+// and the allocator in front of its arguments (1), or with the allocator after them (2).
+template <class T, class Alloc, class... Args> struct __cxx1_ua_kind
+    : integral_constant<int, !uses_allocator<T, Alloc>::value ? 0
+                             : is_constructible<T, allocator_arg_t, const Alloc &, Args...>::value ? 1 : 2> {};
+struct __cxx1_from_tail {};
+
+template <> class tuple<> {
+public:
+    tuple() noexcept {}
+    template <class Alloc> tuple(allocator_arg_t, const Alloc &) noexcept {}
+    template <class Alloc> tuple(allocator_arg_t, const Alloc &, const tuple &) noexcept {}
+    void swap(tuple &) noexcept {}
+};
+
+// What a copy gives an element: the element, and for one that is an rvalue reference the reference again (a
+// tuple<int &&> from forward_as_tuple is copied where it is returned; until 1.75 that was refused).
+template <class H> struct __cxx1_copied {
+    static const H &of(const H &h) noexcept { return h; }
+};
+template <class H> struct __cxx1_copied<H &&> {
+    static H &&of(H &h) noexcept { return static_cast<H &&>(h); }
+};
+
+template <class H, class... T> class tuple<H, T...> : public tuple<T...> {
+public:
+    typedef tuple<T...> __cxx1_tail_t;
+    H __cxx1_head;
+    __cxx1_tail_t &__cxx1_tail() noexcept { return *this; }
+    const __cxx1_tail_t &__cxx1_tail() const noexcept { return *this; }
+
+    tuple() : __cxx1_tail_t(), __cxx1_head() {}
+    explicit tuple(const H &h, const T &... t) : __cxx1_tail_t(t...), __cxx1_head(h) {}
+    template <class U, class... V,
+              class = typename enable_if<sizeof...(V) == sizeof...(T) && is_constructible<H, U &&>::value>::type>
+    explicit tuple(U &&u, V &&... v) : __cxx1_tail_t(std::forward<V>(v)...), __cxx1_head(std::forward<U>(u)) {}
+    tuple(const tuple &o) noexcept(is_nothrow_copy_constructible<H>::value &&
+                                   is_nothrow_copy_constructible<__cxx1_tail_t>::value)
+        : __cxx1_tail_t(o.__cxx1_tail()), __cxx1_head(__cxx1_copied<H>::of(o.__cxx1_head)) {}
+    tuple(tuple &&o) noexcept(is_nothrow_move_constructible<H>::value &&
+                              is_nothrow_move_constructible<__cxx1_tail_t>::value)
+        : __cxx1_tail_t(std::move(o.__cxx1_tail())), __cxx1_head(std::forward<H>(o.__cxx1_head)) {}
+    template <class U, class... V>
+    tuple(const tuple<U, V...> &o) : __cxx1_tail_t(o.__cxx1_tail()), __cxx1_head(o.__cxx1_head) {}
+    template <class U, class... V>
+    tuple(tuple<U, V...> &&o)
+        : __cxx1_tail_t(std::move(o.__cxx1_tail())), __cxx1_head(std::forward<U>(o.__cxx1_head)) {}
+    // [tuple.cnstr]/17-22: from a pair, for a tuple of two elements only - tuple<pair<A, B> &&> made from a pair
+    // (forward_as_tuple of a map's pair key) is the element-wise constructor's, not this one's.
+    template <class U1, class U2,
+              class = typename enable_if<sizeof...(T) == 1 && is_constructible<H, const U1 &>::value>::type>
+    tuple(const pair<U1, U2> &p) : __cxx1_tail_t(p.second), __cxx1_head(p.first) {}
+    template <class U1, class U2,
+              class = typename enable_if<sizeof...(T) == 1 && is_constructible<H, U1 &&>::value>::type>
+    tuple(pair<U1, U2> &&p) : __cxx1_tail_t(std::forward<U2>(p.second)), __cxx1_head(std::forward<U1>(p.first)) {}
+
+    // [tuple.cnstr]/25: the allocator-extended forms, each element made by uses-allocator construction.
+    template <class Alloc> tuple(allocator_arg_t t, const Alloc &a) : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc>::value>(), t, a) {}
+    template <class Alloc>
+    tuple(allocator_arg_t t, const Alloc &a, const H &h, const T &... v)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, const H &>::value>(), t, a, h, v...) {}
+    template <class Alloc, class U, class... V,
+              class = typename enable_if<sizeof...(V) == sizeof...(T) && is_constructible<H, U &&>::value>::type>
+    tuple(allocator_arg_t t, const Alloc &a, U &&u, V &&... v)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, U &&>::value>(), t, a, std::forward<U>(u), std::forward<V>(v)...) {}
+    template <class Alloc>
+    tuple(allocator_arg_t t, const Alloc &a, const tuple &o)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, const H &>::value>(), __cxx1_from_tail(), t, a, o.__cxx1_tail(), o.__cxx1_head) {}
+    template <class Alloc>
+    tuple(allocator_arg_t t, const Alloc &a, tuple &&o)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, H &&>::value>(), __cxx1_from_tail(), t, a, std::move(o.__cxx1_tail()),
+                std::forward<H>(o.__cxx1_head)) {}
+    template <class Alloc, class U, class... V>
+    tuple(allocator_arg_t t, const Alloc &a, const tuple<U, V...> &o)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, const U &>::value>(), __cxx1_from_tail(), t, a, o.__cxx1_tail(), o.__cxx1_head) {}
+    template <class Alloc, class U, class... V>
+    tuple(allocator_arg_t t, const Alloc &a, tuple<U, V...> &&o)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, U &&>::value>(), __cxx1_from_tail(), t, a, std::move(o.__cxx1_tail()),
+                std::forward<U>(o.__cxx1_head)) {}
+    template <class Alloc, class U1, class U2,
+              class = typename enable_if<sizeof...(T) == 1 && is_constructible<H, const U1 &>::value>::type>
+    tuple(allocator_arg_t t, const Alloc &a, const pair<U1, U2> &p)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, const U1 &>::value>(), t, a, p.first, p.second) {}
+    template <class Alloc, class U1, class U2,
+              class = typename enable_if<sizeof...(T) == 1 && is_constructible<H, U1 &&>::value>::type>
+    tuple(allocator_arg_t t, const Alloc &a, pair<U1, U2> &&p)
+        : tuple(integral_constant<int, __cxx1_ua_kind<H, Alloc, U1 &&>::value>(), t, a, std::forward<U1>(p.first), std::forward<U2>(p.second)) {}
+
+private:
+    template <class Alloc>
+    tuple(integral_constant<int, 0>, allocator_arg_t t, const Alloc &a) : __cxx1_tail_t(t, a), __cxx1_head() {}
+    template <class Alloc>
+    tuple(integral_constant<int, 1>, allocator_arg_t t, const Alloc &a) : __cxx1_tail_t(t, a), __cxx1_head(allocator_arg, a) {}
+    template <class Alloc>
+    tuple(integral_constant<int, 2>, allocator_arg_t t, const Alloc &a) : __cxx1_tail_t(t, a), __cxx1_head(a) {}
+    template <class Alloc, class U, class... V>
+    tuple(integral_constant<int, 0>, allocator_arg_t t, const Alloc &a, U &&u, V &&... v)
+        : __cxx1_tail_t(t, a, std::forward<V>(v)...), __cxx1_head(std::forward<U>(u)) {}
+    template <class Alloc, class U, class... V>
+    tuple(integral_constant<int, 1>, allocator_arg_t t, const Alloc &a, U &&u, V &&... v)
+        : __cxx1_tail_t(t, a, std::forward<V>(v)...), __cxx1_head(allocator_arg, a, std::forward<U>(u)) {}
+    template <class Alloc, class U, class... V>
+    tuple(integral_constant<int, 2>, allocator_arg_t t, const Alloc &a, U &&u, V &&... v)
+        : __cxx1_tail_t(t, a, std::forward<V>(v)...), __cxx1_head(std::forward<U>(u), a) {}
+    template <class Alloc, class R, class U>
+    tuple(integral_constant<int, 0>, __cxx1_from_tail, allocator_arg_t t, const Alloc &a, R &&rest, U &&u)
+        : __cxx1_tail_t(t, a, std::forward<R>(rest)), __cxx1_head(std::forward<U>(u)) {}
+    template <class Alloc, class R, class U>
+    tuple(integral_constant<int, 1>, __cxx1_from_tail, allocator_arg_t t, const Alloc &a, R &&rest, U &&u)
+        : __cxx1_tail_t(t, a, std::forward<R>(rest)), __cxx1_head(allocator_arg, a, std::forward<U>(u)) {}
+    template <class Alloc, class R, class U>
+    tuple(integral_constant<int, 2>, __cxx1_from_tail, allocator_arg_t t, const Alloc &a, R &&rest, U &&u)
+        : __cxx1_tail_t(t, a, std::forward<R>(rest)), __cxx1_head(std::forward<U>(u), a) {}
+
+public:
+
+    tuple &operator=(const tuple &o) {
+        __cxx1_head = o.__cxx1_head;
+        __cxx1_tail() = o.__cxx1_tail();
+        return *this;
+    }
+    tuple &operator=(tuple &&o) noexcept(is_nothrow_move_assignable<H>::value &&
+                                         is_nothrow_move_assignable<__cxx1_tail_t>::value) {
+        __cxx1_head = std::forward<H>(o.__cxx1_head);
+        __cxx1_tail() = std::move(o.__cxx1_tail());
+        return *this;
+    }
+    template <class U, class... V> tuple &operator=(const tuple<U, V...> &o) {
+        __cxx1_head = o.__cxx1_head;
+        __cxx1_tail() = o.__cxx1_tail();
+        return *this;
+    }
+    template <class U, class... V> tuple &operator=(tuple<U, V...> &&o) {
+        __cxx1_head = std::forward<U>(o.__cxx1_head);
+        __cxx1_tail() = std::move(o.__cxx1_tail());
+        return *this;
+    }
+    template <class U1, class U2> tuple &operator=(const pair<U1, U2> &p) {
+        __cxx1_head = p.first;
+        __cxx1_tail().__cxx1_head = p.second;
+        return *this;
+    }
+    // [tuple.swap]: each element with `swap`, found as [swappable.requirements] finds it - so an element that
+    // is a reference (forward_as_tuple's) swaps what it refers to, and an element's own swap is the one called.
+    void swap(tuple &o) noexcept(noexcept(std::__cxx1_swap_adl(std::declval<H &>(), std::declval<H &>())) &&
+                                 noexcept(std::declval<__cxx1_tail_t &>().swap(std::declval<__cxx1_tail_t &>()))) {
+        std::__cxx1_swap_adl(__cxx1_head, o.__cxx1_head);
+        __cxx1_tail().swap(o.__cxx1_tail());
+    }
+};
+
+// Element I: the head of the I-th base, and the base itself, which get reaches it through.
+template <std::size_t I, class T> struct __cxx1_tuple_at;
+template <class H, class... T> struct __cxx1_tuple_at<0, tuple<H, T...> > {
+    typedef H type;
+    typedef tuple<H, T...> holder;
+};
+template <std::size_t I, class H, class... T>
+struct __cxx1_tuple_at<I, tuple<H, T...> > : __cxx1_tuple_at<I - 1, tuple<T...> > {};
+
+// [tuple.traits]
+template <class... T, class Alloc> struct uses_allocator<tuple<T...>, Alloc> : true_type {};
+
+template <class... T> struct tuple_size<tuple<T...> > : integral_constant<std::size_t, sizeof...(T)> {};
+template <class T> struct tuple_size<const T> : integral_constant<std::size_t, tuple_size<T>::value> {};
+// [tuple.helper]/4-5: of a cv-qualified tuple or pair too, the element taking the cv (1.75: tuple_size had const
+// alone and tuple_element none, so tuple_element<0, const pair<int, char> > was refused).
+template <class T> struct tuple_size<volatile T> : integral_constant<std::size_t, tuple_size<T>::value> {};
+template <class T> struct tuple_size<const volatile T> : integral_constant<std::size_t, tuple_size<T>::value> {};
+template <std::size_t I, class T> struct tuple_element<I, const T> {
+    typedef typename add_const<typename tuple_element<I, T>::type>::type type;
+};
+template <std::size_t I, class T> struct tuple_element<I, volatile T> {
+    typedef typename add_volatile<typename tuple_element<I, T>::type>::type type;
+};
+template <std::size_t I, class T> struct tuple_element<I, const volatile T> {
+    typedef typename add_cv<typename tuple_element<I, T>::type>::type type;
+};
+template <std::size_t I, class... T> struct tuple_element<I, tuple<T...> > {
+    typedef typename __cxx1_tuple_at<I, tuple<T...> >::type type;
+};
+
+template <std::size_t I, class... T>
+inline typename tuple_element<I, tuple<T...> >::type &get(tuple<T...> &t) noexcept {
+    return static_cast<typename __cxx1_tuple_at<I, tuple<T...> >::holder &>(t).__cxx1_head;
+}
+template <std::size_t I, class... T>
+inline const typename tuple_element<I, tuple<T...> >::type &get(const tuple<T...> &t) noexcept {
+    return static_cast<const typename __cxx1_tuple_at<I, tuple<T...> >::holder &>(t).__cxx1_head;
+}
+template <std::size_t I, class... T>
+inline typename tuple_element<I, tuple<T...> >::type &&get(tuple<T...> &&t) noexcept {
+    return std::forward<typename tuple_element<I, tuple<T...> >::type>(
+        static_cast<typename __cxx1_tuple_at<I, tuple<T...> >::holder &>(t).__cxx1_head);
+}
+// <utility>'s pair reaches element I through this, declared there before tuple is.
+template <std::size_t I> struct __cxx1_tuple_fetch {
+    template <class... T> static typename tuple_element<I, tuple<T...> >::type &of(tuple<T...> &t) noexcept {
+        return std::get<I>(t);
+    }
+};
+
+template <class... T> inline tuple<typename __cxx1_unwrap<typename decay<T>::type>::type...> make_tuple(T &&... t) {
+    return tuple<typename __cxx1_unwrap<typename decay<T>::type>::type...>(std::forward<T>(t)...);
+}
+template <class... T> inline tuple<T &&...> forward_as_tuple(T &&... t) noexcept {
+    return tuple<T &&...>(std::forward<T>(t)...);
+}
+template <class... T> inline tuple<T &...> tie(T &... t) noexcept { return tuple<T &...>(t...); }
+
+// [tuple.creation]/4: what tie leaves out - anything assigned to it is dropped.
+struct __cxx1_ignore_t {
+    template <class U> const __cxx1_ignore_t &operator=(const U &) const { return *this; }
+};
+const __cxx1_ignore_t ignore = __cxx1_ignore_t();
+
+// tuple_cat: the joined type first, the joining one pair of tuples at a time.
+template <class... T> struct __cxx1_cat_type;
+template <> struct __cxx1_cat_type<> { typedef tuple<> type; };
+template <class... A> struct __cxx1_cat_type<tuple<A...> > { typedef tuple<A...> type; };
+template <class... A, class... B, class... R>
+struct __cxx1_cat_type<tuple<A...>, tuple<B...>, R...> : __cxx1_cat_type<tuple<A..., B...>, R...> {};
+// [tuple.creation]/9: a pair is joined as the tuple of its two (1.75: tuple_cat took tuples only).
+template <class A1, class A2, class... R>
+struct __cxx1_cat_type<pair<A1, A2>, R...> : __cxx1_cat_type<tuple<A1, A2>, R...> {};
+template <class... A, class B1, class B2, class... R>
+struct __cxx1_cat_type<tuple<A...>, pair<B1, B2>, R...> : __cxx1_cat_type<tuple<A..., B1, B2>, R...> {};
+
+template <class... A, class... B, std::size_t... IA, std::size_t... IB>
+inline typename __cxx1_cat_type<tuple<A...>, tuple<B...> >::type
+__cxx1_cat2(const tuple<A...> &a, const tuple<B...> &b, __cxx1_indices<IA...>, __cxx1_indices<IB...>) {
+    return typename __cxx1_cat_type<tuple<A...>, tuple<B...> >::type(std::get<IA>(a)..., std::get<IB>(b)...);
+}
+inline tuple<> tuple_cat() { return tuple<>(); }
+template <class... A> inline tuple<A...> tuple_cat(const tuple<A...> &a) { return a; }
+template <class... A, class... B, class... R>
+inline typename __cxx1_cat_type<tuple<A...>, tuple<B...>, typename decay<R>::type...>::type
+tuple_cat(const tuple<A...> &a, const tuple<B...> &b, R &&... r) {
+    return std::tuple_cat(std::__cxx1_cat2(a, b, typename __cxx1_make_indices<sizeof...(A)>::type(),
+                                           typename __cxx1_make_indices<sizeof...(B)>::type()),
+                          std::forward<R>(r)...);
+}
+template <class A1, class A2, class... R>
+inline typename __cxx1_cat_type<pair<A1, A2>, typename decay<R>::type...>::type
+tuple_cat(const pair<A1, A2> &a, R &&... r) {
+    return std::tuple_cat(tuple<A1, A2>(a), std::forward<R>(r)...);
+}
+template <class... A, class B1, class B2, class... R>
+inline typename __cxx1_cat_type<tuple<A...>, pair<B1, B2>, typename decay<R>::type...>::type
+tuple_cat(const tuple<A...> &a, const pair<B1, B2> &b, R &&... r) {
+    return std::tuple_cat(a, tuple<B1, B2>(b), std::forward<R>(r)...);
+}
+
+// The comparisons, element by element from the first: == while they agree, < at the first that differs.
+template <std::size_t I, std::size_t N> struct __cxx1_tuple_compare {
+    template <class X, class Y> static bool equal(const X &x, const Y &y) {
+        return std::get<I>(x) == std::get<I>(y) && __cxx1_tuple_compare<I + 1, N>::equal(x, y);
+    }
+    template <class X, class Y> static bool less(const X &x, const Y &y) {
+        if (std::get<I>(x) < std::get<I>(y)) return true;
+        if (std::get<I>(y) < std::get<I>(x)) return false;
+        return __cxx1_tuple_compare<I + 1, N>::less(x, y);
+    }
+};
+template <std::size_t N> struct __cxx1_tuple_compare<N, N> {
+    template <class X, class Y> static bool equal(const X &, const Y &) { return true; }
+    template <class X, class Y> static bool less(const X &, const Y &) { return false; }
+};
+template <class... T, class... U> inline bool operator==(const tuple<T...> &x, const tuple<U...> &y) {
+    return __cxx1_tuple_compare<0, sizeof...(T)>::equal(x, y);
+}
+template <class... T, class... U> inline bool operator<(const tuple<T...> &x, const tuple<U...> &y) {
+    return __cxx1_tuple_compare<0, sizeof...(T)>::less(x, y);
+}
+template <class... T, class... U> inline bool operator!=(const tuple<T...> &x, const tuple<U...> &y) { return !(x == y); }
+template <class... T, class... U> inline bool operator>(const tuple<T...> &x, const tuple<U...> &y) { return y < x; }
+template <class... T, class... U> inline bool operator<=(const tuple<T...> &x, const tuple<U...> &y) { return !(y < x); }
+template <class... T, class... U> inline bool operator>=(const tuple<T...> &x, const tuple<U...> &y) { return !(x < y); }
+
+template <class... T> inline void swap(tuple<T...> &x, tuple<T...> &y) noexcept(noexcept(x.swap(y))) { x.swap(y); }
+
+}  // namespace std
+
+#endif

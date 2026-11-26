@@ -1,0 +1,7 @@
+function 7
+pointer to pointer 3
+void* 1
+int*const* 3
+data 2
+method 10
+const method 2

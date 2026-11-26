@@ -527,10 +527,11 @@ void buildEdges(Loop &L, const std::set<std::string> &renameable) {
                 if (nextW < 0 && !renameable.count(it->first)) { const Node &w = n[static_cast<std::size_t>(a[static_cast<std::size_t>(firstW)].first)]; Edge e = { op, a[static_cast<std::size_t>(firstW)].first, antiDelay(n[static_cast<std::size_t>(op)], w), 1, "anti1" }; L.edges.push_back(e); }
             } else if (nextW >= 0) {
                 const Node &w1 = n[static_cast<std::size_t>(op)], &w2 = n[static_cast<std::size_t>(a[static_cast<std::size_t>(nextW)].first)];
-                Edge e = { op, a[static_cast<std::size_t>(nextW)].first, std::max(1, w1.lat - w2.lat + 1), 0, "out" }; L.edges.push_back(e);
+                // (a double's low word lands a cycle before its latency - C6xSched.cpp's lowWordFirst)
+                Edge e = { op, a[static_cast<std::size_t>(nextW)].first, std::max(1, w1.lat - w2.lat + 1 + ((w2.early & bitOf(it->first)) ? 1 : 0)), 0, "out" }; L.edges.push_back(e);
             } else if (!renameable.count(it->first)) {
                 const Node &w1 = n[static_cast<std::size_t>(op)], &w2 = n[static_cast<std::size_t>(a[static_cast<std::size_t>(firstW)].first)];
-                Edge e = { op, a[static_cast<std::size_t>(firstW)].first, std::max(1, w1.lat - w2.lat + 1), 1, "out1" }; L.edges.push_back(e);
+                Edge e = { op, a[static_cast<std::size_t>(firstW)].first, std::max(1, w1.lat - w2.lat + 1 + ((w2.early & bitOf(it->first)) ? 1 : 0)), 1, "out1" }; L.edges.push_back(e);
             }
         }
     }
@@ -1310,6 +1311,19 @@ bool recogniseWindow(const std::vector<Line> &v, std::size_t back, const std::se
         else if (j == W.body.size() && l.pred == W.backPred) W.cls[i] = kCont;
         else { why = "an instruction under a predicate no branch after it takes"; return false; }
     }
+    // What an instruction on the way out writes, only that way out reads: a plain line before the branch runs on either
+    // way, and would want the old value and the new one at once.
+    for (std::size_t i = 0; i < W.body.size(); i++) {
+        if (W.cls[i] < 0 || isBranch(W.body[i].mnem)) continue;
+        std::vector<std::string> reads, writes;
+        readsAndWrites(W.body[i], reads, writes);
+        for (std::size_t j = i + 1; j < W.body.size() && !isBranch(W.body[j].mnem); j++) {
+            if (W.cls[j] == W.cls[i]) continue;
+            std::vector<std::string> r2, w2;
+            readsAndWrites(W.body[j], r2, w2);
+            for (std::size_t w = 0; w < writes.size(); w++) if (has(r2, writes[w])) { why = "a plain instruction reads what the way out wrote"; return false; }
+        }
+    }
     // The pointers stepped by one a turn, followed through copies and constant offsets to the byte loads that read them.
     std::set<std::string> tried;
     for (std::size_t k = 0; k < W.body.size(); k++) {
@@ -1819,6 +1833,7 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
         std::map<int, std::string> yOf;                 // exit -> its mask this turn
         int zFor = -1;                                  // the exit Z is made for, this turn
         bool kMade = false;
+        std::map<std::string, std::string> outward;     // what the way out being written has made so far, read by it alone
         const std::string Kk = needK ? K[static_cast<std::size_t>(k) % K.size()] : "";
         auto mask = [&](int j) {
             if (!yOf.count(j)) {
@@ -1852,6 +1867,7 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
                 const std::string y = leaveBy(W.cls[i]);
                 c.put("AND", { R, y, R });
                 exited = true;
+                outward.clear();
                 continue;
             }
             const int cl = W.cls[i];
@@ -1861,6 +1877,10 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
                 cpr = Kk;
             } else if (cl >= 0) { leaving(cl); cpr = Z; }
             const bool away = cl >= 0;          // done only on the way out: what stays on keeps the old value
+            std::map<std::string, std::string> seen = cur;
+            for (std::map<std::string, std::string>::const_iterator it = outward.begin(); it != outward.end(); ++it) seen[it->first] = it->second;
+            auto seenAs = [&](const std::string &r) { return seen.count(r) ? seen[r] : r; };
+            auto wrote = [&](const std::string &r, const std::string &value) { if (away) outward[r] = value; else cur[r] = value; };
             std::size_t ptr = W.ptrs.size();
             for (std::size_t p = 0; p < W.ptrs.size() && ptr == W.ptrs.size(); p++) if (W.ptrs[p].loads.count(i)) ptr = p;
             if (ptr < W.ptrs.size()) {
@@ -1873,19 +1893,19 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
                 if (!loaded.count(key)) {
                     if (k != 0) { why = "a byte no turn's block read was asked for"; return false; }
                     std::string x = c.fresh(sideOf(l.ops.back()));
-                    c.put(l.mnem, { byteOperand(valueOf(base), post ? 0 : off), x }, pr);
+                    c.put(l.mnem, { byteOperand(seenAs(base), post ? 0 : off), x }, pr);
                     loaded[key] = x;
                 }
                 const std::string &dst = l.ops.back();
-                cur[dst] = loaded[key];
+                wrote(dst, loaded[key]);
                 c.affine.erase(dst);
                 commit(dst, loaded[key], cpr);
                 if (post) {
-                    const std::pair<std::string, long> a = c.base(valueOf(base));
+                    const std::pair<std::string, long> a = c.base(seenAs(base));
                     std::string nv = c.fresh(sideOf(base));
                     c.put("ADD", { std::to_string(a.second + 1), a.first, nv });
                     c.affine[nv] = std::make_pair(a.first, a.second + 1);
-                    cur[base] = nv;
+                    wrote(base, nv);
                     commit(base, nv, cpr);
                 }
                 continue;
@@ -1893,17 +1913,17 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
             const std::string &dst = l.ops.back();
             if (isLoad(l.mnem)) {               // read where it stands, under the turn's mask
                 std::string x = c.fresh(sideOf(dst));
-                c.put(l.mnem, { renamedBy(l.ops[0], cur), x }, cpr.empty() ? "" : cpr);
-                if (!away) cur[dst] = x;
+                c.put(l.mnem, { renamedBy(l.ops[0], seen), x }, cpr.empty() ? "" : cpr);
+                wrote(dst, x);
                 commit(dst, x, cpr);
                 continue;
             }
             if (l.mnem == "MV" && l.ops.size() == 2 && sideOf(l.ops[0])) {
-                const std::string s = valueOf(l.ops[0]);
-                if (sideOfAny(c, s) == sideOf(dst)) { if (!away) cur[dst] = s; commit(dst, s, cpr); continue; }
+                const std::string s = seenAs(l.ops[0]);
+                if (sideOfAny(c, s) == sideOf(dst)) { wrote(dst, s); commit(dst, s, cpr); continue; }
             }
             std::vector<std::string> ops;
-            for (std::size_t o = 0; o + 1 < l.ops.size(); o++) ops.push_back(renamedBy(l.ops[o], cur));
+            for (std::size_t o = 0; o + 1 < l.ops.size(); o++) ops.push_back(renamedBy(l.ops[o], seen));
             std::string x = c.fresh(sideOf(dst));
             // A constant added to a register that is itself another plus a constant: one add from that other.
             int ki = -1;
@@ -1921,7 +1941,7 @@ bool emitWindow(const std::vector<Line> &v, Window &W, std::vector<Line> &out, s
                 c.put(l.mnem, ops);
             }
             if (startsWith(l.mnem, "CMP")) c.boolean.insert(std::atoi(x.c_str() + 1));
-            if (!away) { cur[dst] = x; }
+            wrote(dst, x);
             commit(dst, x, cpr);
         }
         // The turn's end: Y with bit k cleared, so that R keeps only the turns after this one in the block.
@@ -1967,17 +1987,33 @@ void pipelineLoops(std::vector<Line> &v) {
         if (isLabel(v[i])) labels.insert(labelName(v[i]));
         for (std::size_t o = 0; o < v[i].ops.size(); o++) named.insert(v[i].ops[o]);
     }
+    LabelIndex index;                               // v is not edited before the swap below
+    index.refresh(v);
     std::vector<Line> out;
     std::size_t copied = 0;
     for (std::size_t i = 0; i < v.size(); i++) {
         if (!v[i].instr || v[i].mnem != "B" || isCall(v[i], labels)) continue;
-        if (v[i].pred.empty()) {                    // an unconditional branch is a back branch only to a label above
-            bool above = false;
-            for (std::size_t k = 0; k < i && !above; k++) above = isLabel(v[k]) && labelName(v[k]) == v[i].ops[0];
-            if (!above) continue;
-        }
+        const bool above = index.lastBefore(v[i].ops[0], i, i) != i;
+        if (v[i].pred.empty() && !above) continue;  // an unconditional branch is a back branch only to a label above
         Loop L;
         std::string why;
+        // A forward branch to a label is neither loop's back edge: what recognise and recogniseWindow would answer, unasked.
+        if (!above && labels.count(v[i].ops[0])) {
+            const std::string &to = v[i].ops[0];
+            why = to.size() > 5 && to.compare(to.size() - 5, 5, "$fill") == 0 ? "a fill loop, memory-bound, kept as written" : "the head is not above";
+            if (tracing()) std::fprintf(stderr, "pipe %s: %s [window: %s]\n", to.c_str(), why.c_str(), "the head is not above");
+            continue;
+        }
+        // **A loop with a volatile access is kept as written**: the pipeliner reads ahead of the turn it is in and runs a
+        // prologue and an epilogue of partial turns, and a volatile object is read and written exactly when the program does.
+        if (above) {
+            bool touches = false;
+            for (std::size_t k = index.lastBefore(v[i].ops[0], i, i); k < i && !touches; k++) touches = volatileAccess(v[k]);
+            if (touches) {
+                if (tracing()) std::fprintf(stderr, "pipe %s: a volatile access, kept as written [window: a volatile access]\n", v[i].ops[0].c_str());
+                continue;
+            }
+        }
         if (v[i].pred.empty() || !recognise(v, i, labels, named, L, why)) {
             if (v[i].pred.empty()) why = "an unconditional back branch";
             // Not counted: a loop that leaves on a byte it reads takes eight turns of one aligned block at a time.

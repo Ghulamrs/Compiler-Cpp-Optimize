@@ -26,7 +26,7 @@ std::vector<int> liveInstrs(const Stream &s, const Block &blk) {
     std::vector<int> out;
     for (int k = blk.begin; k < blk.end; ++k) {
         if (s[k].dead) continue;
-        if (s[k].kind == Entry::Event) return {};
+        if (s[k].kind == Entry::Event && !s[k].debug) return {};
         if (s[k].kind == Entry::Ins) out.push_back(k);
     }
     return out;

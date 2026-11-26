@@ -47,11 +47,7 @@ bool threadJumps(Function &fn);
 struct Local {
     long long disp;
     int size;
-    bool floating;      // a float or double: never promoted, only held by hoist-xmm-slots
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Local(long long disp = 0, int size = 0, bool floating = false)
-        : disp(disp), size(size), floating(floating) {}
+    bool floating = false;      // a float or double: never promoted, only held by hoist-xmm-slots
 };
 
 // **Frame slots something outside the stream reads or writes** - a funclet of the function, or the runtime - as if their address had escaped: no register takes one, and a store to one is never dead.

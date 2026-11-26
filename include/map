@@ -1,21 +1,35 @@
-// <map> - an ordered map.
+// <map> - an ordered map, and the multimap that keeps every equal key.
 //
 // **A balanced tree whose nodes stay where they are** (<__tree>, 2026-10-21): an insertion
 // invalidates no iterator and an erasure only the erased one, as [associative.reqmts] says - so
 // `m[k] = v` inside a loop over `m` and `m.erase(it++)` both mean what they mean elsewhere. It
 // was a sorted vector with a pointer for an iterator until cppparse's `mem.erase(m++)` walked
-// off its end; the members are the ones it had, plus lower_bound and upper_bound.
+// off its end.
 //
 // `operator[]` inserts a default-constructed value when the key is absent,
 // which is what makes `m[k]++` work and what makes it a mistake to use for
 // asking whether a key is there. `find` and `count` are the questions that do
 // not insert.
+//
+// The keys are ordered by Compare, std::less by default. A constructor's optional comparison and
+// allocator are overloads rather than default arguments: this compiler does not see the class's own
+// template parameters in a member template's default argument yet. The allocator is named and handed back,
+// and not used: a node is new's, as it has been. emplace and emplace_hint build the element and
+// insert it; this compiler does not forward a pack inside a member template of a class template
+// yet, so they are written and not yet callable.
 #ifndef _CXX1_MAP
 #define _CXX1_MAP
 
 #include <cstddef>
+#include <functional>
+#include <initializer_list>
+#include <stdexcept>
 #include <utility>
+#include <__allocator>
+#include <__iterator_base>
 #include <__tree>
+#include <tuple>
+#include <type_traits>
 
 namespace std {
 
@@ -25,36 +39,96 @@ struct __map_key {
     static const K &get(const std::pair<const K, V> &v) { return v.first; }
 };
 
+// A map's value_compare, which orders two elements by their keys.
+template <class K, class V, class Compare>
+class __map_value_compare {
+public:
+    typedef bool result_type;
+    typedef std::pair<const K, V> first_argument_type;
+    typedef std::pair<const K, V> second_argument_type;
+    explicit __map_value_compare(const Compare &c) : comp(c) {}
+    bool operator()(const std::pair<const K, V> &a, const std::pair<const K, V> &b) const {
+        return comp(a.first, b.first);
+    }
+
+protected:
+    Compare comp;
+};
+
 // **An element is `pair<const K, V>`**, [map.overview], since 1.27 (2026-10-21, review of 1.25, item
 // 4): it was `pair<K, V>`, so `for (const std::pair<const std::string, int> &p : m)` - the pair
 // the standard names - was refused. The tree relinks nodes and never assigns one element to another,
 // so the const key costs nothing there; a `pair<K, V>` given to insert - `make_pair(k, v)` - goes to
-// an overload that builds the element from its two halves (pair's converting constructor deduces its
-// first member's type only, see <utility>).
-template <class K, class V>
+// an overload that builds the element from its two halves.
+template <class K, class V, class Compare = less<K>, class Alloc = allocator<std::pair<const K, V> > >
 class map {
 public:
     typedef K key_type;
     typedef V mapped_type;
     typedef std::pair<const K, V> value_type;
+    typedef Compare key_compare;
+    typedef Alloc allocator_type;
+    typedef value_type &reference;
+    typedef const value_type &const_reference;
+    typedef value_type *pointer;
+    typedef const value_type *const_pointer;
     typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
     typedef __tree_iterator<value_type> iterator;
     typedef __tree_const_iterator<value_type> const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef __map_value_compare<K, V, Compare> value_compare;
 
     map() {}
+    explicit map(const Compare &c, const Alloc &a = Alloc()) : tree_(c, a) {}
+    explicit map(const Alloc &a) : tree_(Compare(), a) {}
     template <class It>
-    map(It first, It last) { insert(first, last); }
+    map(It first, It last, const Compare &c = Compare(), const Alloc &a = Alloc()) : tree_(c, a) { insert(first, last); }
+    map(std::initializer_list<value_type> list, const Compare &c = Compare(), const Alloc &a = Alloc())
+        : tree_(c, a) { insert(list); }
+    map(const map &o) : tree_(o.tree_) {}
+    map(const map &o, const Alloc &a) : tree_(o.tree_, a) {}
+    map(map &&o) : tree_(std::move(o.tree_)) {}
+    map(map &&o, const Alloc &a) : tree_(std::move(o.tree_), a) {}
+    map &operator=(const map &o) {
+        tree_ = o.tree_;
+        return *this;
+    }
 
-    size_type size() const { return tree_.size(); }
-    bool empty() const { return tree_.empty(); }
-    void clear() { tree_.clear(); }
+    map &operator=(map &&o) {
+        tree_ = std::move(o.tree_);
+        return *this;
+    }
+    map &operator=(std::initializer_list<value_type> list) {
+        tree_.clear();
+        insert(list);
+        return *this;
+    }
+    allocator_type get_allocator() const noexcept { return tree_.allocator(); }
+
+    size_type size() const noexcept { return tree_.size(); }
+    size_type max_size() const noexcept { return tree_.max_size(); }
+    bool empty() const noexcept { return tree_.empty(); }
+    void clear() noexcept { tree_.clear(); }
     // The two maps exchange their nodes rather than their entries, so neither copies anything.
     void swap(map &other) { tree_.swap(other.tree_); }
 
-    iterator begin() { return tree_.begin(); }
-    iterator end() { return tree_.end(); }
-    const_iterator begin() const { return tree_.begin(); }
-    const_iterator end() const { return tree_.end(); }
+    iterator begin() noexcept { return tree_.begin(); }
+    iterator end() noexcept { return tree_.end(); }
+    const_iterator begin() const noexcept { return tree_.begin(); }
+    const_iterator end() const noexcept { return tree_.end(); }
+    const_iterator cbegin() const noexcept { return tree_.begin(); }
+    const_iterator cend() const noexcept { return tree_.end(); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
+
+    key_compare key_comp() const { return tree_.compare(); }
+    value_compare value_comp() const { return value_compare(tree_.compare()); }
 
     iterator find(const K &k) { return iterator(tree_.findLink(k), tree_.end().link()); }
     const_iterator find(const K &k) const { return const_iterator(tree_.findLink(k), tree_.end().link()); }
@@ -63,10 +137,38 @@ public:
     const_iterator lower_bound(const K &k) const { return const_iterator(tree_.lowerLink(k), tree_.end().link()); }
     iterator upper_bound(const K &k) { return iterator(tree_.upperLink(k), tree_.end().link()); }
     const_iterator upper_bound(const K &k) const { return const_iterator(tree_.upperLink(k), tree_.end().link()); }
+    std::pair<iterator, iterator> equal_range(const K &k) {
+        return std::pair<iterator, iterator>(lower_bound(k), upper_bound(k));
+    }
+    std::pair<const_iterator, const_iterator> equal_range(const K &k) const {
+        return std::pair<const_iterator, const_iterator>(lower_bound(k), upper_bound(k));
+    }
 
+    // [map.access]: a new element's key copied or moved in and its mapped value value-initialised in place, so
+    // V needs no copy of its own.
     V &operator[](const K &k) {
+        __tree_link *n = tree_.findLink(k);
         bool made;
-        __tree_link *n = tree_.insertUnique(value_type(k, V()), &made);
+        if (n == tree_.end().link())
+            n = tree_.emplaceUnique(&made, std::piecewise_construct, std::forward_as_tuple(k), std::tuple<>());
+        return tree_.nodeValue(n).second;
+    }
+    V &operator[](K &&k) {
+        __tree_link *n = tree_.findLink(k);
+        bool made;
+        if (n == tree_.end().link())
+            n = tree_.emplaceUnique(&made, std::piecewise_construct, std::forward_as_tuple(std::move(k)), std::tuple<>());
+        return tree_.nodeValue(n).second;
+    }
+    // [map.access]: the checked form, which never inserts; out_of_range with cl's message.
+    V &at(const K &k) {
+        __tree_link *n = tree_.findLink(k);
+        if (n == tree_.end().link()) throw out_of_range("invalid map<K, T> key");
+        return tree_.nodeValue(n).second;
+    }
+    const V &at(const K &k) const {
+        __tree_link *n = tree_.findLink(k);
+        if (n == tree_.end().link()) throw out_of_range("invalid map<K, T> key");
         return tree_.nodeValue(n).second;
     }
 
@@ -76,13 +178,25 @@ public:
         __tree_link *n = tree_.insertUnique(v, &made);
         return std::pair<iterator, bool>(iterator(n, tree_.end().link()), made);
     }
-    // `insert(std::make_pair(k, v))`: a `pair<K, V>`, which is not the element's `pair<const K, V>` (1.27).
-    std::pair<iterator, bool> insert(const std::pair<K, V> &v) { return insert(value_type(v.first, v.second)); }
+    // [map.modifiers]/2: anything the element is made from - `insert(std::make_pair(k, v))`, a pair<K, V> - is
+    // emplaced.
+    template <class P, class = typename enable_if<is_constructible<std::pair<const K, V>, P &&>::value>::type>
+    std::pair<iterator, bool> insert(P &&p) { return emplace(std::forward<P>(p)); }
     // A hint is where to start looking; the answer is where the element is.
-    iterator insert(iterator, const value_type &v) { return insert(v).first; }
-    iterator insert(iterator, const std::pair<K, V> &v) { return insert(v).first; }
+    iterator insert(const_iterator, const value_type &v) { return insert(v).first; }
+    template <class P, class = typename enable_if<is_constructible<std::pair<const K, V>, P &&>::value>::type>
+    iterator insert(const_iterator, P &&p) { return emplace(std::forward<P>(p)).first; }
     template <class It>
     void insert(It first, It last) { for (; first != last; ++first) insert(*first); }
+    void insert(std::initializer_list<value_type> list) { insert(list.begin(), list.end()); }
+    template <class... Args>
+    std::pair<iterator, bool> emplace(Args &&... args) {
+        bool made;
+        __tree_link *n = tree_.emplaceUnique(&made, std::forward<Args>(args)...);
+        return std::pair<iterator, bool>(iterator(n, tree_.end().link()), made);
+    }
+    template <class... Args>
+    iterator emplace_hint(const_iterator, Args &&... args) { return emplace(std::forward<Args>(args)...).first; }
 
     // [associative.reqmts]: by key, answering how many went; by iterator, answering what follows.
     size_type erase(const K &k) {
@@ -97,17 +211,170 @@ public:
         tree_.eraseLink(at.link());
         return next;
     }
+    iterator erase(const_iterator at) { return erase(iterator(at.link(), at.head())); }
+    iterator erase(const_iterator first, const_iterator last) {
+        iterator at(first.link(), first.head());
+        while (at.link() != last.link()) at = erase(at);
+        return at;
+    }
 
 private:
-    __tree<value_type, __map_key<K, V> > tree_;
+    __tree<value_type, __map_key<K, V>, Compare, Alloc> tree_;
 };
 
-template <class K, class V>
-bool operator==(const map<K, V> &a, const map<K, V> &b) { return __tree_equal(a, b); }
-template <class K, class V>
-bool operator!=(const map<K, V> &a, const map<K, V> &b) { return !__tree_equal(a, b); }
-template <class K, class V>
-bool operator<(const map<K, V> &a, const map<K, V> &b) { return __tree_less(a, b); }
+// [multimap.overview]: the same tree, every key kept - an equal key goes after those already there.
+template <class K, class V, class Compare = less<K>, class Alloc = allocator<std::pair<const K, V> > >
+class multimap {
+public:
+    typedef K key_type;
+    typedef V mapped_type;
+    typedef std::pair<const K, V> value_type;
+    typedef Compare key_compare;
+    typedef Alloc allocator_type;
+    typedef value_type &reference;
+    typedef const value_type &const_reference;
+    typedef value_type *pointer;
+    typedef const value_type *const_pointer;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef __tree_iterator<value_type> iterator;
+    typedef __tree_const_iterator<value_type> const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef __map_value_compare<K, V, Compare> value_compare;
+
+    multimap() {}
+    explicit multimap(const Compare &c, const Alloc &a = Alloc()) : tree_(c, a) {}
+    explicit multimap(const Alloc &a) : tree_(Compare(), a) {}
+    template <class It>
+    multimap(It first, It last, const Compare &c = Compare(), const Alloc &a = Alloc()) : tree_(c, a) { insert(first, last); }
+    multimap(std::initializer_list<value_type> list, const Compare &c = Compare(), const Alloc &a = Alloc())
+        : tree_(c, a) { insert(list); }
+    multimap(const multimap &o) : tree_(o.tree_) {}
+    multimap(const multimap &o, const Alloc &a) : tree_(o.tree_, a) {}
+    multimap(multimap &&o) : tree_(std::move(o.tree_)) {}
+    multimap(multimap &&o, const Alloc &a) : tree_(std::move(o.tree_), a) {}
+    multimap &operator=(const multimap &o) {
+        tree_ = o.tree_;
+        return *this;
+    }
+
+    multimap &operator=(multimap &&o) {
+        tree_ = std::move(o.tree_);
+        return *this;
+    }
+    multimap &operator=(std::initializer_list<value_type> list) {
+        tree_.clear();
+        insert(list);
+        return *this;
+    }
+    allocator_type get_allocator() const noexcept { return tree_.allocator(); }
+
+    size_type size() const noexcept { return tree_.size(); }
+    size_type max_size() const noexcept { return tree_.max_size(); }
+    bool empty() const noexcept { return tree_.empty(); }
+    void clear() noexcept { tree_.clear(); }
+    void swap(multimap &other) { tree_.swap(other.tree_); }
+
+    iterator begin() noexcept { return tree_.begin(); }
+    iterator end() noexcept { return tree_.end(); }
+    const_iterator begin() const noexcept { return tree_.begin(); }
+    const_iterator end() const noexcept { return tree_.end(); }
+    const_iterator cbegin() const noexcept { return tree_.begin(); }
+    const_iterator cend() const noexcept { return tree_.end(); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
+
+    key_compare key_comp() const { return tree_.compare(); }
+    value_compare value_comp() const { return value_compare(tree_.compare()); }
+
+    iterator find(const K &k) { return iterator(tree_.findLink(k), tree_.end().link()); }
+    const_iterator find(const K &k) const { return const_iterator(tree_.findLink(k), tree_.end().link()); }
+    size_type count(const K &k) const { return tree_.countKey(k); }
+    iterator lower_bound(const K &k) { return iterator(tree_.lowerLink(k), tree_.end().link()); }
+    const_iterator lower_bound(const K &k) const { return const_iterator(tree_.lowerLink(k), tree_.end().link()); }
+    iterator upper_bound(const K &k) { return iterator(tree_.upperLink(k), tree_.end().link()); }
+    const_iterator upper_bound(const K &k) const { return const_iterator(tree_.upperLink(k), tree_.end().link()); }
+    std::pair<iterator, iterator> equal_range(const K &k) {
+        return std::pair<iterator, iterator>(lower_bound(k), upper_bound(k));
+    }
+    std::pair<const_iterator, const_iterator> equal_range(const K &k) const {
+        return std::pair<const_iterator, const_iterator>(lower_bound(k), upper_bound(k));
+    }
+
+    iterator insert(const value_type &v) { return iterator(tree_.insertEqual(v), tree_.end().link()); }
+    template <class P, class = typename enable_if<is_constructible<std::pair<const K, V>, P &&>::value>::type>
+    iterator insert(P &&p) { return emplace(std::forward<P>(p)); }
+    iterator insert(const_iterator, const value_type &v) { return insert(v); }
+    template <class P, class = typename enable_if<is_constructible<std::pair<const K, V>, P &&>::value>::type>
+    iterator insert(const_iterator, P &&p) { return emplace(std::forward<P>(p)); }
+    template <class It>
+    void insert(It first, It last) { for (; first != last; ++first) insert(*first); }
+    void insert(std::initializer_list<value_type> list) { insert(list.begin(), list.end()); }
+    template <class... Args>
+    iterator emplace(Args &&... args) { return iterator(tree_.emplaceEqual(std::forward<Args>(args)...), tree_.end().link()); }
+    template <class... Args>
+    iterator emplace_hint(const_iterator, Args &&... args) { return emplace(std::forward<Args>(args)...); }
+
+    size_type erase(const K &k) {
+        size_type n = 0;
+        for (__tree_link *at = tree_.lowerLink(k), *to = tree_.upperLink(k); at != to; n++) {
+            __tree_link *next = __tree_next(at);
+            tree_.eraseLink(at);
+            at = next;
+        }
+        return n;
+    }
+    iterator erase(iterator at) {
+        iterator next = at;
+        ++next;
+        tree_.eraseLink(at.link());
+        return next;
+    }
+    iterator erase(const_iterator at) { return erase(iterator(at.link(), at.head())); }
+    iterator erase(const_iterator first, const_iterator last) {
+        iterator at(first.link(), first.head());
+        while (at.link() != last.link()) at = erase(at);
+        return at;
+    }
+
+private:
+    __tree<value_type, __map_key<K, V>, Compare, Alloc> tree_;
+};
+
+template <class K, class V, class C, class A>
+bool operator==(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return __tree_equal(a, b); }
+template <class K, class V, class C, class A>
+bool operator!=(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return !__tree_equal(a, b); }
+template <class K, class V, class C, class A>
+bool operator<(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return __tree_less(a, b); }
+template <class K, class V, class C, class A>
+bool operator>(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return __tree_less(b, a); }
+template <class K, class V, class C, class A>
+bool operator<=(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return !__tree_less(b, a); }
+template <class K, class V, class C, class A>
+bool operator>=(const map<K, V, C, A> &a, const map<K, V, C, A> &b) { return !__tree_less(a, b); }
+template <class K, class V, class C, class A>
+void swap(map<K, V, C, A> &a, map<K, V, C, A> &b) { a.swap(b); }
+
+template <class K, class V, class C, class A>
+bool operator==(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return __tree_equal(a, b); }
+template <class K, class V, class C, class A>
+bool operator!=(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return !__tree_equal(a, b); }
+template <class K, class V, class C, class A>
+bool operator<(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return __tree_less(a, b); }
+template <class K, class V, class C, class A>
+bool operator>(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return __tree_less(b, a); }
+template <class K, class V, class C, class A>
+bool operator<=(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return !__tree_less(b, a); }
+template <class K, class V, class C, class A>
+bool operator>=(const multimap<K, V, C, A> &a, const multimap<K, V, C, A> &b) { return !__tree_less(a, b); }
+template <class K, class V, class C, class A>
+void swap(multimap<K, V, C, A> &a, multimap<K, V, C, A> &b) { a.swap(b); }
 
 }  // namespace std
 

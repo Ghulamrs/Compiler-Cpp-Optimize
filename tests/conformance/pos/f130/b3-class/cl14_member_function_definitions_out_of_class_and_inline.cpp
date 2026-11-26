@@ -1,0 +1,3 @@
+#include <cstdio>
+struct S { int v; S(); S(int); S(const S &); S &operator=(const S &); ~S(); int get() const; static int st(); inline int twice() const; operator int() const; S operator+(const S &) const; }; S::S() : v(0) {} S::S(int x) : v(x) {} S::S(const S &o) : v(o.v + 100) {} S &S::operator=(const S &o) { v = o.v + 1000; return *this; } S::~S() {} int S::get() const { return v; } int S::st() { return 5; } inline int S::twice() const { return v * 2; } S::operator int() const { return v; } S S::operator+(const S &o) const { return S(v + o.v); }
+int main() { S a(1); S b = a; S c; c = a; int i = a + b; std::printf("%d %d %d %d %d %d\n", a.get(), b.v, c.v, S::st(), a.twice(), i); return 0; }

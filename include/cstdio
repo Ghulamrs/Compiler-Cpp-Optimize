@@ -21,6 +21,7 @@
 namespace std {
 
 using ::FILE;
+using ::fpos_t;
 using ::size_t;
 
 using ::clearerr;
@@ -42,6 +43,8 @@ using ::fread;
 using ::fscanf;
 using ::fseek;
 using ::ftell;
+using ::fgetpos;
+using ::fsetpos;
 using ::fwrite;
 using ::getc;
 using ::getchar;
@@ -54,16 +57,22 @@ using ::remove;
 using ::rename;
 using ::rewind;
 using ::scanf;
+using ::setbuf;
+using ::setvbuf;
 using ::snprintf;
 using ::sprintf;
 using ::sscanf;
 using ::tmpfile;
+using ::tmpnam;
 using ::ungetc;
 
 using ::vprintf;
 using ::vfprintf;
 using ::vsprintf;
 using ::vsnprintf;
+using ::vscanf;
+using ::vfscanf;
+using ::vsscanf;
 
 }  // namespace std
 

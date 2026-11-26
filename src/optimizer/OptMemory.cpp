@@ -136,8 +136,11 @@ bool foldAdd(Stream &s, Flow &f, const Convention &c, const Block &blk, int k) {
     if (add.m != "add" || add.operands != 2 || !reg64(add.a) || !reg64(add.b) || add.a.reg.id == add.b.reg.id) return false;
     const int idx = add.a.reg.id, base = add.b.reg.id;
     std::vector<Operand *> uses;
+    std::vector<int> at;                // the instructions the uses are in
     bool ok = true, ended = false, flagsSettled = false, idxGone = false;
-    for (int j = k + 1; j < blk.end && ok; ++j) {
+    // Base written again and the flags written before anything reads them: nothing further down can say no. The walk
+    // stops there rather than at the block's end - which, for every add of a long block, was the block times its adds.
+    for (int j = k + 1; j < blk.end && ok && !(ended && flagsSettled); ++j) {
         if (s[j].kind != Entry::Ins || s[j].dead) continue;
         Instr &u = s[j].ins;
         const Effects &e = f.effects[j];
@@ -146,7 +149,7 @@ bool foldAdd(Stream &s, Flow &f, const Convention &c, const Block &blk, int k) {
         if (ended) continue;
         if (readsAsValue(u, e, base) || (e.control && !jump(u)) || e.opaque) { ok = false; break; }
         for (Operand *o : {&u.a, &u.b})
-            if (o->kind == Operand::Memory && o->reg.id == base) { if (o->scale != 0 || idxGone) ok = false; else uses.push_back(o); }
+            if (o->kind == Operand::Memory && o->reg.id == base) { if (o->scale != 0 || idxGone) ok = false; else { uses.push_back(o); at.push_back(j); } }
         if (e.writes & bit(base)) ended = true;
         else if ((e.writes | e.partial) & bit(idx)) idxGone = true;
     }
@@ -155,8 +158,9 @@ bool foldAdd(Stream &s, Flow &f, const Convention &c, const Block &blk, int k) {
     if (!ok || uses.empty()) return false;
     for (Operand *o : uses) { o->index = Reg{idx, 8}; o->scale = 1; }
     s[k].dead = true;
-    for (int j = k + 1; j < blk.end; ++j)
-        if (s[j].kind == Entry::Ins && !s[j].dead) f.effects[j] = effectsOf(s[j].ins, c);
+    // fold-index starts on a flow built afresh (kTodoBuildFlow), every instruction's effects effectsOf it: only those
+    // rewritten here can have new ones. Asking again of all the rest of the block was the block times the folds.
+    for (int j : at) f.effects[j] = effectsOf(s[j].ins, c);
     return true;
 }
 
@@ -175,8 +179,10 @@ bool foldScale(Stream &s, Flow &f, const Convention &c, const Block &blk, int k)
     if (scale == 0) return false;
     const int r = s[k].ins.b.reg.id;
     std::vector<Operand *> uses;
+    std::vector<int> at;                // the instructions the uses are in
     bool ok = true, ended = false, flagsSettled = false;
-    for (int j = k + 1; j < blk.end && ok; ++j) {
+    // As foldAdd: once r is written again and the flags are settled, nothing further down can say no.
+    for (int j = k + 1; j < blk.end && ok && !(ended && flagsSettled); ++j) {
         if (s[j].kind != Entry::Ins || s[j].dead) continue;
         Instr &u = s[j].ins;
         const Effects &e = f.effects[j];
@@ -187,7 +193,7 @@ bool foldScale(Stream &s, Flow &f, const Convention &c, const Block &blk, int k)
         for (int n = 0; n < 2; ++n) {
             Operand *o = n == 0 ? &u.a : &u.b;
             const unsigned role = n == 0 ? roles.a : roles.b;
-            if (o->indexed() && o->index.id == r && o->scale == 1 && o->reg.id != r) { uses.push_back(o); continue; }
+            if (o->indexed() && o->index.id == r && o->scale == 1 && o->reg.id != r) { uses.push_back(o); at.push_back(j); continue; }
             if (o->indexed() && o->index.id == r) ok = false;
             if (o->kind != Operand::Register && !o->basedOnReg() && o->kind != Operand::Indirect) continue;
             if (o->reg.id != r) continue;
@@ -203,8 +209,7 @@ bool foldScale(Stream &s, Flow &f, const Convention &c, const Block &blk, int k)
     if (!ok || uses.empty()) return false;
     for (Operand *o : uses) o->scale = scale;
     s[k].dead = true;
-    for (int j = k + 1; j < blk.end; ++j)
-        if (s[j].kind == Entry::Ins && !s[j].dead) f.effects[j] = effectsOf(s[j].ins, c);
+    for (int j : at) f.effects[j] = effectsOf(s[j].ins, c);   // only these were rewritten (foldAdd's note)
     return true;
 }
 

@@ -1,0 +1,438 @@
+// <__hashtable> - the table under <unordered_map> and <unordered_set>, [unord.req]: buckets of singly linked
+// chains, each node keeping its key's hash so a rehash does not ask the hasher again. Equal keys are kept next to
+// one another in a chain, which the multi containers' equal_range needs. A rehash moves nodes, not elements:
+// references and pointers to elements stay valid, iterators do not ([unord.req]/14).
+//
+// Iteration walks the buckets in order, so it is no insertion order and no other library's: a program that prints
+// an unordered container prints it in this table's order.
+#ifndef _CXX1_HASHTABLE
+#define _CXX1_HASHTABLE
+
+#include <cstddef>
+#include <initializer_list>
+#include <new>
+#include <utility>
+#include <type_traits>
+#include <stdexcept>
+#include <__iterator_base>
+
+namespace std {
+
+template <class V> struct __cxx1_hash_node {
+    __cxx1_hash_node *next;
+    std::size_t code;
+    V value;
+};
+
+// The bucket counts a table grows through: primes, each about twice the last.
+inline std::size_t __cxx1_next_prime(std::size_t n) {
+    static const std::size_t primes[] = {
+        1, 5, 11, 23, 47, 97, 199, 409, 823, 1741, 3469, 6949, 14033, 28411, 57557, 116731, 236897, 480881,
+        976369, 1982627, 4026031, 8175383, 16601593, 33712729, 68460391, 139022417, 282312799, 573292817,
+        1164186217, 2364114217u, 4294967291u};
+    for (std::size_t i = 0; i < sizeof(primes) / sizeof(primes[0]); i++)
+        if (primes[i] >= n) return primes[i];
+    return n | 1;
+}
+
+template <class V, class Ref, class Ptr> class __cxx1_hash_iterator {
+public:
+    typedef forward_iterator_tag iterator_category;
+    typedef V value_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef Ptr pointer;
+    typedef Ref reference;
+    typedef __cxx1_hash_node<V> node;
+
+    __cxx1_hash_iterator() : n(0), buckets(0), count(0) {}
+    __cxx1_hash_iterator(node *p, node **b, std::size_t c) : n(p), buckets(b), count(c) {}
+    // The mutable one to its const form; the copy constructor where the two are one type.
+    __cxx1_hash_iterator(const __cxx1_hash_iterator<V, V &, V *> &o) : n(o.n), buckets(o.buckets), count(o.count) {}
+
+    Ref operator*() const { return n->value; }
+    Ptr operator->() const { return &n->value; }
+    __cxx1_hash_iterator &operator++() {
+        if (n->next != 0) {
+            n = n->next;
+            return *this;
+        }
+        for (std::size_t b = n->code % count + 1; b < count; b++)
+            if (buckets[b] != 0) {
+                n = buckets[b];
+                return *this;
+            }
+        n = 0;
+        return *this;
+    }
+    __cxx1_hash_iterator operator++(int) {
+        __cxx1_hash_iterator t = *this;
+        ++*this;
+        return t;
+    }
+
+    node *n;
+    node **buckets;
+    std::size_t count;
+};
+template <class V, class R1, class P1, class R2, class P2>
+inline bool operator==(const __cxx1_hash_iterator<V, R1, P1> &a, const __cxx1_hash_iterator<V, R2, P2> &b) { return a.n == b.n; }
+template <class V, class R1, class P1, class R2, class P2>
+inline bool operator!=(const __cxx1_hash_iterator<V, R1, P1> &a, const __cxx1_hash_iterator<V, R2, P2> &b) { return a.n != b.n; }
+
+// One bucket's chain, [unord.req]'s local_iterator.
+template <class V, class Ref, class Ptr> class __cxx1_hash_local_iterator {
+public:
+    typedef forward_iterator_tag iterator_category;
+    typedef V value_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef Ptr pointer;
+    typedef Ref reference;
+    typedef __cxx1_hash_node<V> node;
+
+    __cxx1_hash_local_iterator() : n(0), bucket(0), count(1) {}
+    __cxx1_hash_local_iterator(node *p, std::size_t b, std::size_t c) : n(p), bucket(b), count(c) {}
+    __cxx1_hash_local_iterator(const __cxx1_hash_local_iterator<V, V &, V *> &o) : n(o.n), bucket(o.bucket), count(o.count) {}
+
+    Ref operator*() const { return n->value; }
+    Ptr operator->() const { return &n->value; }
+    __cxx1_hash_local_iterator &operator++() {
+        n = n->next;
+        if (n != 0 && n->code % count != bucket) n = 0;
+        return *this;
+    }
+    __cxx1_hash_local_iterator operator++(int) {
+        __cxx1_hash_local_iterator t = *this;
+        ++*this;
+        return t;
+    }
+
+    node *n;
+    std::size_t bucket;
+    std::size_t count;
+};
+template <class V, class R1, class P1, class R2, class P2>
+inline bool operator==(const __cxx1_hash_local_iterator<V, R1, P1> &a, const __cxx1_hash_local_iterator<V, R2, P2> &b) { return a.n == b.n; }
+template <class V, class R1, class P1, class R2, class P2>
+inline bool operator!=(const __cxx1_hash_local_iterator<V, R1, P1> &a, const __cxx1_hash_local_iterator<V, R2, P2> &b) { return a.n != b.n; }
+
+// What a value's key is: the value itself for a set, its first for a map.
+template <class V> struct __cxx1_key_self {
+    typedef V key_type;
+    static const V &key(const V &v) { return v; }
+};
+template <class P> struct __cxx1_key_first {
+    typedef typename remove_const<typename P::first_type>::type key_type;
+    static const key_type &key(const P &v) { return v.first; }
+};
+
+template <class V, class KeyOf, class Hash, class Pred, class Alloc, bool Unique> class __cxx1_hashtable {
+public:
+    typedef typename KeyOf::key_type key_type;
+    typedef V value_type;
+    typedef Hash hasher;
+    typedef Pred key_equal;
+    typedef Alloc allocator_type;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef __cxx1_hash_node<V> node;
+    typedef __cxx1_hash_iterator<V, V &, V *> iterator;
+    typedef __cxx1_hash_iterator<V, const V &, const V *> const_iterator;
+    typedef __cxx1_hash_local_iterator<V, V &, V *> local_iterator;
+    typedef __cxx1_hash_local_iterator<V, const V &, const V *> const_local_iterator;
+
+    __cxx1_hashtable(size_type n, const Hash &h, const Pred &e, const Alloc &a)
+        : buckets_(0), count_(0), size_(0), maxLoad_(1.0f), hash_(h), eq_(e), alloc_(a) {
+        rehash(n);
+    }
+    __cxx1_hashtable(const __cxx1_hashtable &o)
+        : buckets_(0), count_(0), size_(0), maxLoad_(o.maxLoad_), hash_(o.hash_), eq_(o.eq_), alloc_(o.alloc_) {
+        copyFrom(o);
+    }
+    __cxx1_hashtable(const __cxx1_hashtable &o, const Alloc &a)
+        : buckets_(0), count_(0), size_(0), maxLoad_(o.maxLoad_), hash_(o.hash_), eq_(o.eq_), alloc_(a) {
+        copyFrom(o);
+    }
+    __cxx1_hashtable(__cxx1_hashtable &&o)
+        : buckets_(0), count_(0), size_(0), maxLoad_(o.maxLoad_), hash_(o.hash_), eq_(o.eq_), alloc_(o.alloc_) {
+        take(o);
+    }
+    __cxx1_hashtable(__cxx1_hashtable &&o, const Alloc &a)
+        : buckets_(0), count_(0), size_(0), maxLoad_(o.maxLoad_), hash_(o.hash_), eq_(o.eq_), alloc_(a) {
+        take(o);
+    }
+    ~__cxx1_hashtable() {
+        clear();
+        dropBuckets();
+    }
+    __cxx1_hashtable &operator=(const __cxx1_hashtable &o) {
+        if (this != &o) {
+            clear();
+            hash_ = o.hash_;
+            eq_ = o.eq_;
+            maxLoad_ = o.maxLoad_;
+            copyFrom(o);
+        }
+        return *this;
+    }
+    __cxx1_hashtable &operator=(__cxx1_hashtable &&o) {
+        if (this != &o) {
+            clear();
+            dropBuckets();
+            count_ = 0;
+            hash_ = o.hash_;
+            eq_ = o.eq_;
+            maxLoad_ = o.maxLoad_;
+            take(o);
+        }
+        return *this;
+    }
+
+    allocator_type get_allocator() const noexcept { return alloc_; }
+    bool empty() const noexcept { return size_ == 0; }
+    size_type size() const noexcept { return size_; }
+    size_type max_size() const noexcept { return (size_type)-1 / sizeof(node); }
+
+    iterator begin() noexcept { return iterator(first(), buckets_, count_); }
+    const_iterator begin() const noexcept { return const_iterator(first(), buckets_, count_); }
+    iterator end() noexcept { return iterator(0, buckets_, count_); }
+    const_iterator end() const noexcept { return const_iterator(0, buckets_, count_); }
+
+    // A node made first, then placed - or freed again where its key is already there and keys are unique.
+    template <class... A> pair<iterator, bool> emplace(A &&... a) {
+        node *n = make(std::forward<A>(a)...);
+        n->code = hash_(KeyOf::key(n->value));
+        node *had = findNode(KeyOf::key(n->value), n->code);
+        if (Unique && had != 0) {
+            destroy(n);
+            return pair<iterator, bool>(at(had), false);
+        }
+        place(n, had);
+        return pair<iterator, bool>(at(n), true);
+    }
+    template <class P> pair<iterator, bool> insertValue(P &&v) {
+        if (Unique) {
+            const key_type &k = KeyOf::key(v);
+            const size_type code = hash_(k);
+            if (node *had = findNode(k, code)) return pair<iterator, bool>(at(had), false);
+        }
+        return emplace(std::forward<P>(v));
+    }
+
+    iterator erase(const_iterator pos) {
+        node *n = pos.n;
+        iterator next(n, buckets_, count_);
+        ++next;
+        unlink(n);
+        destroy(n);
+        return next;
+    }
+    iterator erase(const_iterator first, const_iterator last) {
+        while (first != last) first = erase(first);
+        return iterator(last.n, buckets_, count_);
+    }
+    size_type eraseKey(const key_type &k) {
+        size_type n = 0;
+        node *at0 = findNode(k, hash_(k));
+        while (at0 != 0) {
+            node *next = at0->next;
+            const bool more = next != 0 && next->code == at0->code && eq_(KeyOf::key(next->value), k);
+            unlink(at0);
+            destroy(at0);
+            n++;
+            at0 = more ? next : 0;
+        }
+        return n;
+    }
+    void clear() noexcept {
+        for (size_type b = 0; b < count_; b++) {
+            node *n = buckets_[b];
+            while (n != 0) {
+                node *next = n->next;
+                destroy(n);
+                n = next;
+            }
+            buckets_[b] = 0;
+        }
+        size_ = 0;
+    }
+    void swap(__cxx1_hashtable &o) {
+        node **b = buckets_; buckets_ = o.buckets_; o.buckets_ = b;
+        size_type t = count_; count_ = o.count_; o.count_ = t;
+        t = size_; size_ = o.size_; o.size_ = t;
+        float m = maxLoad_; maxLoad_ = o.maxLoad_; o.maxLoad_ = m;
+        Hash h = hash_; hash_ = o.hash_; o.hash_ = h;
+        Pred e = eq_; eq_ = o.eq_; o.eq_ = e;
+    }
+
+    hasher hash_function() const { return hash_; }
+    key_equal key_eq() const { return eq_; }
+    iterator find(const key_type &k) { return at(findNode(k, hash_(k))); }
+    const_iterator find(const key_type &k) const {
+        return const_iterator(findNode(k, hash_(k)), buckets_, count_);
+    }
+    size_type count(const key_type &k) const {
+        size_type n = 0;
+        for (node *p = findNode(k, hash_(k)); p != 0 && eq_(KeyOf::key(p->value), k); p = p->next) {
+            n++;
+            if (Unique) break;
+        }
+        return n;
+    }
+    pair<iterator, iterator> equal_range(const key_type &k) {
+        node *f = findNode(k, hash_(k));
+        if (f == 0) return pair<iterator, iterator>(end(), end());
+        node *l = f;
+        while (l != 0 && eq_(KeyOf::key(l->value), k)) l = l->next;
+        iterator last = l != 0 ? at(l) : afterChain(f);
+        return pair<iterator, iterator>(at(f), last);
+    }
+    pair<const_iterator, const_iterator> equal_range(const key_type &k) const {
+        pair<iterator, iterator> r = const_cast<__cxx1_hashtable *>(this)->equal_range(k);
+        return pair<const_iterator, const_iterator>(r.first, r.second);
+    }
+
+    size_type bucket_count() const noexcept { return count_; }
+    size_type max_bucket_count() const noexcept { return (size_type)-1 / sizeof(node *); }
+    size_type bucket_size(size_type b) const {
+        size_type n = 0;
+        for (node *p = buckets_[b]; p != 0; p = p->next) n++;
+        return n;
+    }
+    size_type bucket(const key_type &k) const { return hash_(k) % count_; }
+    local_iterator begin(size_type b) { return local_iterator(buckets_[b], b, count_); }
+    const_local_iterator begin(size_type b) const { return const_local_iterator(buckets_[b], b, count_); }
+    local_iterator end(size_type b) { return local_iterator(0, b, count_); }
+    const_local_iterator end(size_type b) const { return const_local_iterator(0, b, count_); }
+    float load_factor() const noexcept { return count_ == 0 ? 0.0f : (float)size_ / (float)count_; }
+    float max_load_factor() const noexcept { return maxLoad_; }
+    void max_load_factor(float z) {
+        maxLoad_ = z;
+        rehash(0);
+    }
+    // [unord.req]: at least n buckets, and enough that the load stays within the maximum.
+    void rehash(size_type n) {
+        const size_type least = (size_type)((float)size_ / maxLoad_) + 1;
+        if (n < least) n = least;
+        n = __cxx1_next_prime(n);
+        if (n == count_) return;
+        node **fresh = __cxx1_nodes<node *, Alloc>::get(alloc_, n);
+        for (size_type b = 0; b < n; b++) fresh[b] = 0;
+        // Each chain is walked whole and its runs of equal keys kept together and in order.
+        for (size_type b = 0; b < count_; b++) {
+            node *p = buckets_[b];
+            while (p != 0) {
+                node *run = p, *tail = p;
+                while (tail->next != 0 && tail->next->code == run->code) tail = tail->next;
+                p = tail->next;
+                node *&head = fresh[run->code % n];
+                tail->next = head;
+                head = run;
+            }
+        }
+        dropBuckets();
+        buckets_ = fresh;
+        count_ = n;
+    }
+    void reserve(size_type n) { rehash((size_type)((float)n / maxLoad_) + 1); }
+
+    // [unord.req]/12: the same elements, each key's elements a permutation of the other's.
+    bool equals(const __cxx1_hashtable &o) const {
+        if (size_ != o.size_) return false;
+        for (const_iterator i = begin(); i != end();) {
+            const key_type &k = KeyOf::key(*i);
+            pair<const_iterator, const_iterator> mine = equal_range(k), theirs = o.equal_range(k);
+            size_type a = 0, c = 0;
+            for (const_iterator p = mine.first; p != mine.second; ++p) a++;
+            for (const_iterator p = theirs.first; p != theirs.second; ++p) c++;
+            if (a != c) return false;
+            for (const_iterator p = mine.first; p != mine.second; ++p) {
+                size_type here = 0, there = 0;
+                for (const_iterator q = mine.first; q != mine.second; ++q)
+                    if (*q == *p) here++;
+                for (const_iterator q = theirs.first; q != theirs.second; ++q)
+                    if (*q == *p) there++;
+                if (here != there) return false;
+            }
+            i = mine.second;
+        }
+        return true;
+    }
+
+private:
+    iterator at(node *n) { return iterator(n, buckets_, count_); }
+    iterator afterChain(node *n) {
+        iterator i(n, buckets_, count_);
+        while (i.n != 0 && i.n->next != 0) i.n = i.n->next;
+        ++i;
+        return i;
+    }
+    node *first() const {
+        for (size_type b = 0; b < count_; b++)
+            if (buckets_[b] != 0) return buckets_[b];
+        return 0;
+    }
+    // The first node of the key's run, or null.
+    node *findNode(const key_type &k, size_type code) const {
+        if (count_ == 0) return 0;
+        for (node *p = buckets_[code % count_]; p != 0; p = p->next)
+            if (p->code == code && eq_(KeyOf::key(p->value), k)) return p;
+        return 0;
+    }
+    // At the end of an equal run if there is one, else at the chain's head; then the table regrown if it must.
+    void place(node *n, node *equal) {
+        if (equal != 0) {
+            while (equal->next != 0 && equal->next->code == n->code && eq_(KeyOf::key(equal->next->value), KeyOf::key(n->value)))
+                equal = equal->next;
+            n->next = equal->next;
+            equal->next = n;
+        } else {
+            node *&head = buckets_[n->code % count_];
+            n->next = head;
+            head = n;
+        }
+        size_++;
+        if ((float)size_ > maxLoad_ * (float)count_) rehash(count_ * 2);
+    }
+    void unlink(node *n) {
+        node **p = &buckets_[n->code % count_];
+        while (*p != n) p = &(*p)->next;
+        *p = n->next;
+        size_--;
+    }
+    template <class... A> node *make(A &&... a) {
+        node *n = __cxx1_nodes<node, Alloc>::make(alloc_, std::forward<A>(a)...);
+        n->next = 0;
+        return n;
+    }
+    void destroy(node *n) { __cxx1_nodes<node, Alloc>::destroy(alloc_, n); }
+    // The bucket array, from the allocator rebound to node pointers.
+    void dropBuckets() {
+        if (buckets_ != 0) __cxx1_nodes<node *, Alloc>::put(alloc_, buckets_, count_);
+        buckets_ = 0;
+    }
+    void copyFrom(const __cxx1_hashtable &o) {
+        rehash(o.count_);
+        for (const_iterator i = o.begin(); i != o.end(); ++i) emplace(*i);
+    }
+    void take(__cxx1_hashtable &o) {
+        buckets_ = o.buckets_;
+        count_ = o.count_;
+        size_ = o.size_;
+        o.buckets_ = 0;
+        o.count_ = 0;
+        o.size_ = 0;
+        o.rehash(0);
+    }
+
+    node **buckets_;
+    size_type count_;
+    size_type size_;
+    float maxLoad_;
+    Hash hash_;
+    Pred eq_;
+    Alloc alloc_;
+};
+
+}  // namespace std
+
+#endif

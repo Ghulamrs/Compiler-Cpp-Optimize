@@ -57,6 +57,7 @@ public:
     void ins(const std::string &m, const Op &a, const Op &b) override;
     void defLabel(const std::string &l) override;
     void stateLabel(const std::string &l) override;
+    void blockLabel(const std::string &l) override;
 
     void functionBegin(const std::string &name, bool exported, bool mergeable) override;
     void prologue(int frameSize, const std::string &lsda, int outgoing, int realign) override;
@@ -65,7 +66,13 @@ public:
 
     void fileEntry(int n, const std::string &name) override;
     void location(int file, int line, int column) override;
+    void funcletLinesBegin() override;
+    void funcletLinesEnd() override;
+    std::string locationDirective(int fn, int file, int line, int column) const override {
+        return under_.locationDirective(fn, file, line, column);
+    }
     void predefine(const std::vector<std::string> &names) override { under_.predefine(names); }
+    void finishText(std::vector<std::string> &chunks) override { under_.finishText(chunks); }
     void preamble(std::ostream &o) override { under_.preamble(o); }
     void postamble(std::ostream &o) override { under_.postamble(o); }
 
@@ -86,8 +93,13 @@ public:
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &sym, long long off) override;
     void noteHasEh(bool yes) override;
+    void flagExchange() override;
+    void atomicHelper(const std::string &name) override;
     void initialiserEntry(const std::string &fn, bool dsoHandle) override;
     std::string labelText(const std::string &l) const override { return under_.labelText(l); }
+    std::string codeLabelText(const std::string &prefix, const std::string &symbol) override {
+        return under_.codeLabelText(prefix, symbol);
+    }
     void dataBytes(const std::string &bytes) override;
 
 private:
@@ -99,6 +111,7 @@ private:
     // waiting to be written after the function.
     opt::Function fn_;
     std::unique_ptr<opt::Function> funclet_;
+    std::vector<std::unique_ptr<opt::Function> > outerFunclets_;
     std::vector<opt::Stream> funclets_;
     int frameSize_ = 0;
     // The pipeline, built once per spelling, and the manager that runs it.
@@ -119,7 +132,7 @@ private:
     void instruction(const std::string &m, int operands, const Op *a, const Op *b);
     // A call that is not an instruction: held in its place inside a function,
     // passed on at once outside one.
-    void event(std::function<void(Spelling &)> call);
+    void event(std::function<void(Spelling &)> call, bool debug = false);
     void improve(opt::Function &fn);
     void flush();
     void replay(const opt::Stream &s);

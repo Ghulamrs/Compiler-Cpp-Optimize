@@ -1,0 +1,7 @@
+1 1
+1 1
+outside, uncaught 0
+unwinding, uncaught 1
+caught, uncaught 0
+bad exception
+terminate handler, uncaught 0

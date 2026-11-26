@@ -1,0 +1,156 @@
+// <thread> - [thread.threads]: std::thread, thread::id and this_thread.
+//
+// The callable and its arguments are decay-copied into a state on the heap in the constructing thread
+// ([thread.thread.constr]/4), the new thread runs INVOKE on them and frees the state; an exception that
+// leaves it is std::terminate. A thread is the operating system's (<__threads>).
+#ifndef _CXX1_THREAD
+#define _CXX1_THREAD
+
+#include <chrono>
+#include <cstddef>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <ostream>
+#include <system_error>
+#include <tuple>
+#include <utility>
+#include <__invoke>
+#include <__threads>
+
+namespace std {
+
+// A callable or argument kept for a call, wrapped so that a tuple of them asks nothing of the element's
+// allocator constructors: uses_allocator is false for the wrapper whatever it is for the element.
+template <class T> struct __cxx1_call_slot {
+    T v;
+    template <class U> __cxx1_call_slot(U &&u) : v(std::forward<U>(u)) {}
+};
+
+struct __cxx1_thread_state_base {
+    virtual ~__cxx1_thread_state_base() {}
+    virtual void run() = 0;
+};
+template <class F, class... A> struct __cxx1_thread_state : __cxx1_thread_state_base {
+    tuple<__cxx1_call_slot<F>, __cxx1_call_slot<A>...> call;
+    template <class G, class... B> explicit __cxx1_thread_state(G &&g, B &&... b)
+        : call(std::forward<G>(g), std::forward<B>(b)...) {}
+    template <size_t... I> void apply(__cxx1_indices<I...>) { __cxx1_invoke(std::move(std::get<I>(call).v)...); }
+    virtual void run() { apply(typename __cxx1_make_indices<1 + sizeof...(A)>::type()); }
+};
+inline void __cxx1_thread_run(void *p) {
+    unique_ptr<__cxx1_thread_state_base> state(static_cast<__cxx1_thread_state_base *>(p));
+    try {
+        state->run();
+    } catch (...) {
+        std::terminate();
+    }
+}
+
+class thread {
+public:
+    class id {
+        __cxx1_os::thread_id v_;
+        friend class thread;
+        explicit id(__cxx1_os::thread_id v) : v_(v) {}
+
+    public:
+        id() noexcept : v_(0) {}
+        __cxx1_os::thread_id __cxx1_value() const noexcept { return v_; }
+        static id __cxx1_of(__cxx1_os::thread_id v) noexcept { return id(v); }
+    };
+    typedef __cxx1_os::thread_handle native_handle_type;
+
+    thread() noexcept : h_(), id_() {}
+    template <class F, class... Args, class = typename enable_if<!is_same<typename decay<F>::type, thread>::value>::type>
+    explicit thread(F &&f, Args &&... args) : h_(), id_() {
+        typedef __cxx1_thread_state<typename decay<F>::type, typename decay<Args>::type...> state;
+        unique_ptr<state> s(new state(std::forward<F>(f), std::forward<Args>(args)...));
+        __cxx1_os::thread_id tid = 0;
+        if (!__cxx1_os::start_thread(&h_, &tid, __cxx1_thread_run, s.get()))
+            throw system_error(make_error_code(errc::resource_unavailable_try_again), "thread: could not start");
+        s.release();
+        id_ = id(tid);
+    }
+    ~thread() { if (joinable()) std::terminate(); }
+    thread(const thread &) = delete;
+    thread(thread &&t) noexcept : h_(t.h_), id_(t.id_) { t.h_ = native_handle_type(); t.id_ = id(); }
+    thread &operator=(const thread &) = delete;
+    thread &operator=(thread &&t) noexcept {
+        if (joinable()) std::terminate();
+        h_ = t.h_;
+        id_ = t.id_;
+        t.h_ = native_handle_type();
+        t.id_ = id();
+        return *this;
+    }
+
+    void swap(thread &t) noexcept { std::swap(h_, t.h_); std::swap(id_, t.id_); }
+    bool joinable() const noexcept { return id_.v_ != 0; }
+    void join();
+    void detach() {
+        if (!joinable()) throw system_error(make_error_code(errc::invalid_argument), "thread::detach: not joinable");
+        __cxx1_os::detach_thread(h_);
+        h_ = native_handle_type();
+        id_ = id();
+    }
+    id get_id() const noexcept { return id_; }
+    native_handle_type native_handle() { return h_; }
+    static unsigned hardware_concurrency() noexcept { return __cxx1_os::processors(); }
+
+private:
+    native_handle_type h_;
+    id id_;
+};
+
+inline thread::id __cxx1_this_thread_id() noexcept { return thread::id::__cxx1_of(__cxx1_os::current_thread()); }
+
+inline void thread::join() {
+    if (!joinable()) throw system_error(make_error_code(errc::invalid_argument), "thread::join: not joinable");
+    if (id_.v_ == __cxx1_os::current_thread())
+        throw system_error(make_error_code(errc::resource_deadlock_would_occur), "thread::join: joins itself");
+    __cxx1_os::join_thread(h_);
+    h_ = native_handle_type();
+    id_ = id();
+}
+
+inline void swap(thread &x, thread &y) noexcept { x.swap(y); }
+
+// [thread.thread.id]
+inline bool operator==(thread::id x, thread::id y) noexcept { return x.__cxx1_value() == y.__cxx1_value(); }
+inline bool operator!=(thread::id x, thread::id y) noexcept { return !(x == y); }
+inline bool operator<(thread::id x, thread::id y) noexcept { return x.__cxx1_value() < y.__cxx1_value(); }
+inline bool operator<=(thread::id x, thread::id y) noexcept { return !(y < x); }
+inline bool operator>(thread::id x, thread::id y) noexcept { return y < x; }
+inline bool operator>=(thread::id x, thread::id y) noexcept { return !(x < y); }
+inline ostream &operator<<(ostream &out, thread::id id) {
+    return out << static_cast<unsigned long long>(id.__cxx1_value());
+}
+template <> struct hash<thread::id> {
+    typedef thread::id argument_type;
+    typedef size_t result_type;
+    size_t operator()(thread::id v) const noexcept { return static_cast<size_t>(v.__cxx1_value()); }
+};
+
+// [thread.thread.this]
+namespace this_thread {
+inline thread::id get_id() noexcept { return __cxx1_this_thread_id(); }
+inline void yield() noexcept { __cxx1_os::yield_now(); }
+template <class Rep, class Period> void sleep_for(const chrono::duration<Rep, Period> &d) {
+    if (d <= d.zero()) return;
+    long long ms = chrono::duration_cast<chrono::milliseconds>(d).count();
+    if (chrono::milliseconds(ms) < d) ++ms;
+    while (ms > 0) {
+        const unsigned long step = ms > 0x7FFFFFFFLL ? 0x7FFFFFFFul : static_cast<unsigned long>(ms);
+        __cxx1_os::sleep_ms(step);
+        ms -= static_cast<long long>(step);
+    }
+}
+template <class Clock, class Duration> void sleep_until(const chrono::time_point<Clock, Duration> &t) {
+    while (Clock::now() < t) sleep_for(t - Clock::now());
+}
+}  // namespace this_thread
+
+}  // namespace std
+
+#endif

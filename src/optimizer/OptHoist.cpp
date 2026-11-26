@@ -434,7 +434,7 @@ bool hoistXmmSlotsIn(Function &fn, const Loops::Loop &loop) {
         const Block &blk = f.blocks[b];
         if (blk.leaves) return false;
         for (int k = blk.begin; k < blk.end; ++k) {
-            if (s[k].kind == Entry::Event) return false;
+            if (s[k].kind == Entry::Event && !s[k].debug) return false;
             if (s[k].kind != Entry::Ins || s[k].dead) continue;
             const Effects &e = f.effects[k];
             if (e.opaque || (e.control && s[k].ins.m == "call")) return false;

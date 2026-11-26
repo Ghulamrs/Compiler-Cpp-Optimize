@@ -60,8 +60,10 @@ struct EntryOf {
     std::string label;
     Payload event;
     bool dead = false;
-    // A label where the exception state changes: see Spelling::stateLabel.
-    bool state = false;
+    bool state = false;  // the exception state changes here (stateLabel)
+    // **An event -g alone writes** - a location, a lexical block's label, a funclet's line table - which no pass may
+    // stop at: the code under -g is the code without it (1.63).
+    bool debug = false;
 };
 
 // **An edge of the flow graph**, as GCC has them: from one block to another, or out of the function, with the kind that says what crosses it.
@@ -158,10 +160,16 @@ struct FlowOf {
         struct Throw { int call; std::string pad; };
         std::vector<Throw> throws;
         Block cur;
+        // **-g's events make no block** (Entry::debug): ones that open the function stay with the label after them,
+        // and ones after a block's last jump end that block, so the blocks are those of the code without -g.
+        bool onlyDebug = true;
         for (int k = 0; k < static_cast<int>(s.size()); ++k) {
             const Entry &e = s[k];
             if (e.kind == Entry::Label && e.dead) continue;       // dropped: it joins
-            if (e.kind == Entry::Label && k > cur.begin) {
+            if (e.kind == Entry::Event && e.debug) continue;
+            const bool opens = onlyDebug;
+            onlyDebug = false;
+            if (e.kind == Entry::Label && k > cur.begin && !opens) {
                 cur.end = k;
                 blocks.push_back(cur);
                 cur = Block();
@@ -181,10 +189,14 @@ struct FlowOf {
             if (c.calls)
                 for (const Region *r : open) throws.push_back(Throw{k, r->target});
             if (c.ends) {
-                cur.end = k + 1;
+                int next = k + 1;
+                while (next < static_cast<int>(s.size()) && s[next].kind == Entry::Event && s[next].debug) ++next;
+                cur.end = next;
                 blocks.push_back(cur);
                 cur = Block();
-                cur.begin = k + 1;
+                cur.begin = next;
+                onlyDebug = true;
+                k = next - 1;
             }
         }
         cur.end = static_cast<int>(s.size());

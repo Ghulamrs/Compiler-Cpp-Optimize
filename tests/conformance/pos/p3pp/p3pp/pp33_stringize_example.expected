@@ -1,0 +1,4 @@
+x1= 7, x2= two
+strncmp("abc\0d", "abc", '\4') == 0: @
+
+hello|hello, world|"hello"

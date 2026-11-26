@@ -1,0 +1,82 @@
+// <__sbuf_iterator> - [stream.buffers]'s iterators, istreambuf_iterator and ostreambuf_iterator: the ones
+// num_get and num_put read and write a stream's buffer through, so <streambuf> has them.
+#ifndef _CXX1___SBUF_ITERATOR
+#define _CXX1___SBUF_ITERATOR
+
+#include <cstddef>
+#include <iosfwd>
+#include <__iterator_base>
+
+namespace std {
+
+// [istreambuf.iterator]: characters as the buffer holds them, whitespace and all; at its end once sgetc finds
+// none. The default template arguments are <iosfwd>'s.
+template <class CharT, class Traits>
+class istreambuf_iterator
+    : public iterator<input_iterator_tag, CharT, typename Traits::off_type, CharT *, CharT> {
+public:
+    typedef CharT char_type;
+    typedef Traits traits_type;
+    typedef typename Traits::int_type int_type;
+    typedef basic_streambuf<CharT, Traits> streambuf_type;
+    typedef basic_istream<CharT, Traits> istream_type;
+
+    // [istreambuf.iterator.proxy]: what a post-increment answers, the character it passed.
+    class proxy {
+        CharT c_;
+        streambuf_type *sb_;
+        proxy(CharT c, streambuf_type *sb) : c_(c), sb_(sb) {}
+        friend class istreambuf_iterator;
+
+    public:
+        CharT operator*() { return c_; }
+    };
+
+    constexpr istreambuf_iterator() noexcept : sb_(0) {}
+    istreambuf_iterator(istream_type &s) noexcept : sb_(s.rdbuf()) {}
+    istreambuf_iterator(streambuf_type *s) noexcept : sb_(s) {}
+    istreambuf_iterator(const proxy &p) noexcept : sb_(p.sb_) {}
+    CharT operator*() const { return Traits::to_char_type(sb_->sgetc()); }
+    istreambuf_iterator &operator++() {
+        sb_->sbumpc();
+        return *this;
+    }
+    proxy operator++(int) { return proxy(Traits::to_char_type(sb_->sbumpc()), sb_); }
+    bool equal(const istreambuf_iterator &b) const { return atEnd() == b.atEnd(); }
+
+private:
+    bool atEnd() const { return sb_ == 0 || Traits::eq_int_type(sb_->sgetc(), Traits::eof()); }
+    streambuf_type *sb_;
+};
+template <class C, class Tr>
+inline bool operator==(const istreambuf_iterator<C, Tr> &a, const istreambuf_iterator<C, Tr> &b) { return a.equal(b); }
+template <class C, class Tr>
+inline bool operator!=(const istreambuf_iterator<C, Tr> &a, const istreambuf_iterator<C, Tr> &b) { return !a.equal(b); }
+
+// [ostreambuf.iterator]
+template <class CharT, class Traits> class ostreambuf_iterator : public iterator<output_iterator_tag, void, void, void, void> {
+public:
+    typedef CharT char_type;
+    typedef Traits traits_type;
+    typedef basic_streambuf<CharT, Traits> streambuf_type;
+    typedef basic_ostream<CharT, Traits> ostream_type;
+
+    ostreambuf_iterator(ostream_type &s) noexcept : sb_(s.rdbuf()), failed_(false) {}
+    ostreambuf_iterator(streambuf_type *s) noexcept : sb_(s), failed_(false) {}
+    ostreambuf_iterator &operator=(CharT c) {
+        if (!failed_ && Traits::eq_int_type(sb_->sputc(c), Traits::eof())) failed_ = true;
+        return *this;
+    }
+    ostreambuf_iterator &operator*() { return *this; }
+    ostreambuf_iterator &operator++() { return *this; }
+    ostreambuf_iterator &operator++(int) { return *this; }
+    bool failed() const noexcept { return failed_; }
+
+private:
+    streambuf_type *sb_;
+    bool failed_;
+};
+
+}  // namespace std
+
+#endif

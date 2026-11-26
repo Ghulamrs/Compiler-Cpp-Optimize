@@ -1,0 +1,1 @@
+class S { S() {} }; int main() { S s; return 0; }

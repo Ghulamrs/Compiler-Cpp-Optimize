@@ -1,0 +1,12 @@
+init g1
+init g2
+10 11 12 2
+1 2 3
+init local
+1 2
+2.5
+6
+end main
+dtor
+dtor
+dtor

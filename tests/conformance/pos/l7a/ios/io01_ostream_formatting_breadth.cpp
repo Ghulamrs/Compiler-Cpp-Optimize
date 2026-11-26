@@ -1,0 +1,7 @@
+#include <iostream>
+#include <iomanip>
+#include <string>
+int main() { std::cout << 1 << ' ' << 2u << ' ' << 3L << ' ' << 4LL << ' ' << 5ULL << ' ' << 'c' << ' ' << (signed char)'s' << ' ' << (unsigned char)'u' << ' ' << 1.5 << ' ' << 2.5f << ' ' << 3.5L << ' ' << true << ' ' << std::boolalpha << false << std::noboolalpha << ' ' << "lit" << ' ' << std::string("str") << ' ' << (short)7 << ' ' << (unsigned short)8 << '\n';
+std::cout << std::hex << 255 << ' ' << std::showbase << 255 << std::noshowbase << ' ' << std::oct << 8 << std::dec << ' ' << std::setw(5) << 42 << '|' << std::left << std::setw(5) << 42 << '|' << std::right << std::setfill('0') << std::setw(5) << 42 << std::setfill(' ') << ' ' << std::internal << std::setw(6) << -42 << ' ' << std::showpos << 5 << std::noshowpos << '\n';
+std::cout << std::fixed << std::setprecision(2) << 3.14159 << ' ' << std::scientific << 31415.9 << ' ' << std::defaultfloat << std::setprecision(6) << 2.5 << ' ' << std::showpoint << 2.0 << std::noshowpoint << ' ' << std::uppercase << std::hex << 255 << std::nouppercase << std::dec << ' ' << std::setbase(16) << 16 << std::setbase(10) << '\n';
+int *p = nullptr; const void *vp = &p; std::cout << (vp != nullptr) << ' ' << std::endl << std::flush; std::cerr << ""; std::clog << ""; std::cout.put('x').write("yz", 2) << '\n'; std::cout << std::setw(3) << "ab" << '|' << std::ends; std::cout << '\n'; return 0; }

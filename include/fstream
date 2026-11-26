@@ -1,98 +1,351 @@
-// <fstream> - the streams that read and write a file.
+// <fstream> - [file.streams]: basic_filebuf over the C library's FILE, and the streams that read and write a
+// named file through it.
 //
-// They derive from <ostream> and <istream> and add three things: a `fopen` in
-// the constructor, an `fclose` in the destructor, and the open modes. Every
-// `operator<<` and `operator>>` above them is reused untouched, because the
-// base already reaches its file through `fp_`.
-//
-// **These have constructors and destructors, and the standard streams have
-// neither.** That is not an inconsistency: an fstream is always a local or a
-// member, and a local with a constructor has always worked here - it is only
-// an object at *file scope* that has nowhere to run one, which is why
-// `std::cout` is an aggregate. See the comment at the top of <ostream>.
-//
-// **What is missing, and deliberately: `rdbuf()`.** `ss << in.rdbuf()` is the
-// idiom for reading a whole file, and it needs a `streambuf` - a layer this
-// library does not have and which is its own piece of work rather than a
-// member to add here. Read with `getline` or `read` meanwhile.
+// A narrow buffer moves bytes with fgetc, ungetc and fwrite, so the C library's own buffering is the only one
+// and a stream and stdio stay in step; a wide one converts each character through its locale's
+// codecvt<charT, char, mbstate_t> ([filebuf]/5), the facet imbue() names - UTF-8 in the "C" locale. The
+// standard streams are filebufs over stdin, stdout and stderr that do not close them.
 #ifndef _CXX1_FSTREAM
 #define _CXX1_FSTREAM
 
 #include <cstdio>
-#include <ios>
+#include <cstring>
+#include <cwchar>
 #include <istream>
 #include <ostream>
+#include <streambuf>
 #include <string>
 
 namespace std {
 
-// The `fopen` mode string a set of flags asks for. Reading and writing at once
-// is not offered: there is one `FILE *` and one direction per class here.
-inline const char *_cxx1_mode(int flags, bool reading) {
-    const bool binary = (flags & ios::binary) != 0;
-    if (reading) return binary ? "rb" : "r";
-    if ((flags & ios::app) != 0) return binary ? "ab" : "a";
-    return binary ? "wb" : "w";
+// [filebuf.members]/4, Table 132: the fopen mode for each openmode; null for a combination it does not list.
+inline const char *__cxx1_fopen_mode(ios_base::openmode m) {
+    const bool b = (m & ios_base::binary) != 0;
+    switch (m & ~(ios_base::binary | ios_base::ate)) {
+    case ios_base::out:
+    case ios_base::out | ios_base::trunc: return b ? "wb" : "w";
+    case ios_base::out | ios_base::app:
+    case ios_base::app: return b ? "ab" : "a";
+    case ios_base::in: return b ? "rb" : "r";
+    case ios_base::in | ios_base::out: return b ? "r+b" : "r+";
+    case ios_base::in | ios_base::out | ios_base::trunc: return b ? "w+b" : "w+";
+    case ios_base::in | ios_base::out | ios_base::app:
+    case ios_base::in | ios_base::app: return b ? "a+b" : "a+";
+    }
+    return 0;
 }
 
-class ofstream : public ostream {
-public:
-    ofstream() { fp_ = 0; which_ = 0; state_ = 1; buf_ = 0; base_ = 10; prec_ = 6; fmt_ = 0; width_ = 0; }
-    ofstream(const char *path) { fp_ = 0; buf_ = 0; base_ = 10; prec_ = 6; fmt_ = 0; width_ = 0; open(path, ios::out); }
-    ofstream(const char *path, int flags) { fp_ = 0; buf_ = 0; base_ = 10; prec_ = 6; fmt_ = 0; width_ = 0; open(path, flags); }
-    ~ofstream() { close(); }
-
-    void open(const char *path) { open(path, ios::out); }
-    void open(const char *path, int flags) {
-        close();
-        which_ = 0;
-        buf_ = 0;
-        fp_ = std::fopen(path, _cxx1_mode(flags, false));
-        state_ = fp_ != 0 ? 0 : 1;
+// The one character's bytes in and out: identity for char; the locale's codecvt for wider types, where a
+// character may be two units (a UTF-16 pair) - the first unit written waits in `pend` for its second, and
+// the second unit read is handed back beside the first.
+template <class C> struct __cxx1_file_chars {
+    typedef codecvt<C, char, mbstate_t> cvt_type;
+    static bool put(FILE *f, const cvt_type &cvt, C *pend, C c) {
+        C units[2];
+        int n = 0;
+        if (*pend != 0) units[n++] = *pend;
+        units[n++] = c;
+        *pend = 0;
+        char bytes[16];
+        mbstate_t st;
+        std::memset(&st, 0, sizeof st);
+        const C *fn = units;
+        char *tn = bytes;
+        const codecvt_base::result r = cvt.out(st, units, units + n, fn, bytes, bytes + sizeof bytes, tn);
+        if (r == codecvt_base::partial && fn == units) { *pend = c; return true; }
+        if (r == codecvt_base::noconv) return std::fwrite(units, sizeof(C), static_cast<size_t>(n), f) == static_cast<size_t>(n);
+        if (r != codecvt_base::ok) return false;
+        const size_t k = static_cast<size_t>(tn - bytes);
+        return std::fwrite(bytes, 1, k, f) == k;
     }
-    bool is_open() const { return fp_ != 0; }
-    void close() {
-        if (fp_ != 0) std::fclose(fp_);
-        fp_ = 0;
-    }
-};
-
-class ifstream : public istream {
-public:
-    ifstream() { fp_ = 0; which_ = 0; state_ = 1; src_ = 0; pos_ = 0; }
-    ifstream(const char *path) { fp_ = 0; src_ = 0; pos_ = 0; open(path, ios::in); }
-    ifstream(const char *path, int flags) { fp_ = 0; src_ = 0; pos_ = 0; open(path, flags); }
-    ~ifstream() { close(); }
-
-    void open(const char *path) { open(path, ios::in); }
-    void open(const char *path, int flags) {
-        close();
-        which_ = 0;
-        src_ = 0;
-        pos_ = 0;
-        fp_ = std::fopen(path, _cxx1_mode(flags, true));
-        state_ = fp_ != 0 ? 0 : 1;
-    }
-    bool is_open() const { return fp_ != 0; }
-    void close() {
-        if (fp_ != 0) std::fclose(fp_);
-        fp_ = 0;
-    }
-
-    // Whole-file read, which is what `rdbuf()` would have been used for.
-    string readAll() {
-        string all;
-        FILE *f = target();
-        if (f == 0) return all;
-        char block[512];
+    // The next character's units into out, their count returned: 0 at the end of the file; a byte the
+    // facet refuses is given as itself, as a narrow buffer would.
+    static int get(FILE *f, const cvt_type &cvt, long *bytesRead, C out[2]) {
+        char bytes[16];
+        int n = 0;
+        *bytesRead = 0;
         for (;;) {
-            std::size_t n = std::fread(block, 1, sizeof block, f);
-            if (n > 0) all.append(block, n);
-            if (n < sizeof block) break;
+            const int c = std::fgetc(f);
+            if (c == EOF) {
+                if (n == 0) return 0;
+                break;
+            }
+            bytes[n++] = static_cast<char>(c);
+            ++*bytesRead;
+            mbstate_t st;
+            std::memset(&st, 0, sizeof st);
+            const char *fn = bytes;
+            C *tn = out;
+            const codecvt_base::result r = cvt.in(st, bytes, bytes + n, fn, out, out + 2, tn);
+            if (tn != out) {
+                const long took = static_cast<long>(fn - bytes);
+                if (took < n) { std::fseek(f, took - n, SEEK_CUR); *bytesRead = took; }
+                return static_cast<int>(tn - out);
+            }
+            if (r == codecvt_base::noconv) {
+                if (n < static_cast<int>(sizeof(C))) continue;
+                std::memcpy(out, bytes, sizeof(C));
+                return 1;
+            }
+            if (r == codecvt_base::error || n == static_cast<int>(sizeof bytes)) break;
         }
-        return all;
+        if (n > 1) std::fseek(f, 1 - n, SEEK_CUR);
+        *bytesRead = 1;
+        out[0] = static_cast<C>(static_cast<unsigned char>(bytes[0]));
+        return 1;
     }
 };
+template <> struct __cxx1_file_chars<char> {
+    typedef codecvt<char, char, mbstate_t> cvt_type;
+    static bool put(FILE *f, const cvt_type &, char *, char c) { return std::fputc(static_cast<unsigned char>(c), f) != EOF; }
+    static int get(FILE *f, const cvt_type &, long *bytesRead, char out[2]) {
+        const int c = std::fgetc(f);
+        *bytesRead = c == EOF ? 0 : 1;
+        if (c == EOF) return 0;
+        out[0] = static_cast<char>(c);
+        return 1;
+    }
+};
+
+template <class C, class Tr> class basic_filebuf : public basic_streambuf<C, Tr> {
+public:
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
+
+    basic_filebuf()
+        : f_(0), owns_(false), mode_(0), held_(false), last_(0), lastBytes_(0), pendIn_(0), pendOut_(0),
+          cvt_(&use_facet<cvt_type>(this->getloc())) {}
+    basic_filebuf(const basic_filebuf &) = delete;
+    basic_filebuf(basic_filebuf &&rhs)
+        : basic_streambuf<C, Tr>(), f_(rhs.f_), owns_(rhs.owns_), mode_(rhs.mode_), held_(rhs.held_), last_(rhs.last_),
+          lastBytes_(rhs.lastBytes_), pendIn_(rhs.pendIn_), pendOut_(rhs.pendOut_), cvt_(rhs.cvt_) {
+        this->pubimbue(rhs.getloc());
+        rhs.f_ = 0;
+        rhs.owns_ = false;
+    }
+    virtual ~basic_filebuf() { close(); }
+    basic_filebuf &operator=(const basic_filebuf &) = delete;
+    basic_filebuf &operator=(basic_filebuf &&rhs) {
+        close();
+        swap(rhs);
+        return *this;
+    }
+    void swap(basic_filebuf &rhs) {
+        std::swap(f_, rhs.f_);
+        std::swap(owns_, rhs.owns_);
+        std::swap(mode_, rhs.mode_);
+        std::swap(held_, rhs.held_);
+        std::swap(last_, rhs.last_);
+        std::swap(lastBytes_, rhs.lastBytes_);
+        std::swap(pendIn_, rhs.pendIn_);
+        std::swap(pendOut_, rhs.pendOut_);
+        std::swap(cvt_, rhs.cvt_);
+        const locale mine = this->getloc();
+        this->pubimbue(rhs.getloc());
+        rhs.pubimbue(mine);
+    }
+
+    bool is_open() const { return f_ != 0; }
+    basic_filebuf *open(const char *name, ios_base::openmode mode) {
+        if (f_ != 0) return 0;
+        const char *how = __cxx1_fopen_mode(mode);
+        if (how == 0) return 0;
+        f_ = std::fopen(name, how);
+        if (f_ == 0) return 0;
+        owns_ = true;
+        mode_ = mode;
+        held_ = false;
+        if ((mode & ios_base::ate) != 0 && std::fseek(f_, 0, SEEK_END) != 0) { close(); return 0; }
+        return this;
+    }
+    basic_filebuf *open(const string &name, ios_base::openmode mode) { return open(name.c_str(), mode); }
+    basic_filebuf *close() {
+        if (f_ == 0) return 0;
+        const bool ok = !owns_ || std::fclose(f_) == 0;
+        if (!owns_) std::fflush(f_);
+        f_ = 0;
+        owns_ = false;
+        held_ = false;
+        return ok ? this : 0;
+    }
+    // The standard streams' buffers: over a FILE this does not own.
+    void __cxx1_attach(FILE *f, ios_base::openmode mode) {
+        f_ = f;
+        owns_ = false;
+        mode_ = mode;
+        held_ = false;
+    }
+
+protected:
+    // [filebuf.virtuals]: one character at a time through the C library.
+    virtual int_type underflow() {
+        if (f_ == 0) return Tr::eof();
+        if (!held_ && pendIn_ != 0) {
+            last_ = pendIn_;
+            pendIn_ = 0;
+            lastBytes_ = 0;
+            held_ = true;
+        }
+        if (!held_) {
+            long bytes = 0;
+            C units[2];
+            const int k = __cxx1_file_chars<C>::get(f_, *cvt_, &bytes, units);
+            if (k == 0) return Tr::eof();
+            last_ = units[0];
+            if (k == 2) pendIn_ = units[1];
+            lastBytes_ = bytes;
+            held_ = true;
+        }
+        return Tr::to_int_type(last_);
+    }
+    virtual int_type uflow() {
+        const int_type c = underflow();
+        held_ = false;
+        return c;
+    }
+    virtual int_type pbackfail(int_type c = Tr::eof()) {
+        if (f_ == 0 || held_) return Tr::eof();
+        held_ = true;
+        if (!Tr::eq_int_type(c, Tr::eof())) last_ = Tr::to_char_type(c);
+        return Tr::to_int_type(last_);
+    }
+    virtual streamsize showmanyc() { return held_ ? 1 : 0; }
+    virtual int_type overflow(int_type c = Tr::eof()) {
+        if (f_ == 0) return Tr::eof();
+        if (Tr::eq_int_type(c, Tr::eof())) return Tr::not_eof(c);
+        unread();
+        return __cxx1_file_chars<C>::put(f_, *cvt_, &pendOut_, Tr::to_char_type(c)) ? c : Tr::eof();
+    }
+    virtual streamsize xsputn(const char_type *s, streamsize n) {
+        if (f_ == 0) return 0;
+        unread();
+        streamsize i = 0;
+        while (i < n && __cxx1_file_chars<C>::put(f_, *cvt_, &pendOut_, s[i])) i++;
+        return i;
+    }
+    virtual void imbue(const locale &loc) { cvt_ = &use_facet<cvt_type>(loc); }
+    virtual int sync() {
+        if (f_ == 0) return 0;
+        unread();
+        return std::fflush(f_) == 0 ? 0 : -1;
+    }
+    virtual pos_type seekoff(off_type off, ios_base::seekdir way, ios_base::openmode = ios_base::in | ios_base::out) {
+        if (f_ == 0) return pos_type(off_type(-1));
+        unread();
+        if (std::fseek(f_, static_cast<long>(off), way == ios_base::beg ? SEEK_SET : way == ios_base::cur ? SEEK_CUR : SEEK_END) != 0)
+            return pos_type(off_type(-1));
+        const long at = std::ftell(f_);
+        return at < 0 ? pos_type(off_type(-1)) : pos_type(off_type(at));
+    }
+    virtual pos_type seekpos(pos_type sp, ios_base::openmode which = ios_base::in | ios_base::out) {
+        return seekoff(off_type(sp), ios_base::beg, which);
+    }
+
+private:
+    typedef typename __cxx1_file_chars<C>::cvt_type cvt_type;
+    FILE *f_;
+    bool owns_;
+    ios_base::openmode mode_;
+    bool held_;          // a character looked at and not taken
+    char_type last_;
+    long lastBytes_;     // its bytes in the file; 0 for the second unit of a pair, whose bytes went with the first
+    char_type pendIn_;   // the second unit of a pair read, not yet given out
+    char_type pendOut_;  // the first unit of a pair written, waiting for its second
+    const cvt_type *cvt_;
+
+    // A character looked at and not taken goes back to the file before anything else happens to it.
+    void unread() {
+        if (!held_) return;
+        held_ = false;
+        if (lastBytes_ == 0) pendIn_ = last_;
+        else if (lastBytes_ == 1) std::ungetc(static_cast<unsigned char>(static_cast<char>(last_)), f_);
+        else std::fseek(f_, -lastBytes_, SEEK_CUR);
+    }
+};
+template <class C, class Tr> void swap(basic_filebuf<C, Tr> &x, basic_filebuf<C, Tr> &y) { x.swap(y); }
+
+template <class C, class Tr> class basic_ifstream : public basic_istream<C, Tr> {
+    basic_filebuf<C, Tr> sb_;
+
+public:
+    basic_ifstream() : basic_istream<C, Tr>(&sb_) {}
+    explicit basic_ifstream(const char *s, ios_base::openmode mode = ios_base::in) : basic_istream<C, Tr>(&sb_) { open(s, mode); }
+    explicit basic_ifstream(const string &s, ios_base::openmode mode = ios_base::in) : basic_istream<C, Tr>(&sb_) { open(s, mode); }
+    basic_ifstream(const basic_ifstream &) = delete;
+    basic_ifstream(basic_ifstream &&rhs) : basic_istream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
+    }
+    basic_ifstream &operator=(const basic_ifstream &) = delete;
+    basic_ifstream &operator=(basic_ifstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_ifstream &rhs) { basic_istream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_filebuf<C, Tr> *rdbuf() const { return const_cast<basic_filebuf<C, Tr> *>(&sb_); }
+    bool is_open() const { return sb_.is_open(); }
+    void open(const char *s, ios_base::openmode mode = ios_base::in) {
+        if (sb_.open(s, mode | ios_base::in) == 0) this->setstate(ios_base::failbit);
+        else this->clear();
+    }
+    void open(const string &s, ios_base::openmode mode = ios_base::in) { open(s.c_str(), mode); }
+    void close() { if (sb_.close() == 0) this->setstate(ios_base::failbit); }
+};
+
+template <class C, class Tr> class basic_ofstream : public basic_ostream<C, Tr> {
+    basic_filebuf<C, Tr> sb_;
+
+public:
+    basic_ofstream() : basic_ostream<C, Tr>(&sb_) {}
+    explicit basic_ofstream(const char *s, ios_base::openmode mode = ios_base::out) : basic_ostream<C, Tr>(&sb_) { open(s, mode); }
+    explicit basic_ofstream(const string &s, ios_base::openmode mode = ios_base::out) : basic_ostream<C, Tr>(&sb_) { open(s, mode); }
+    basic_ofstream(const basic_ofstream &) = delete;
+    basic_ofstream(basic_ofstream &&rhs) : basic_ostream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
+    }
+    basic_ofstream &operator=(const basic_ofstream &) = delete;
+    basic_ofstream &operator=(basic_ofstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_ofstream &rhs) { basic_ostream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_filebuf<C, Tr> *rdbuf() const { return const_cast<basic_filebuf<C, Tr> *>(&sb_); }
+    bool is_open() const { return sb_.is_open(); }
+    void open(const char *s, ios_base::openmode mode = ios_base::out) {
+        if (sb_.open(s, mode | ios_base::out) == 0) this->setstate(ios_base::failbit);
+        else this->clear();
+    }
+    void open(const string &s, ios_base::openmode mode = ios_base::out) { open(s.c_str(), mode); }
+    void close() { if (sb_.close() == 0) this->setstate(ios_base::failbit); }
+};
+
+template <class C, class Tr> class basic_fstream : public basic_iostream<C, Tr> {
+    basic_filebuf<C, Tr> sb_;
+
+public:
+    basic_fstream() : basic_iostream<C, Tr>(&sb_) {}
+    explicit basic_fstream(const char *s, ios_base::openmode mode = ios_base::in | ios_base::out) : basic_iostream<C, Tr>(&sb_) {
+        open(s, mode);
+    }
+    explicit basic_fstream(const string &s, ios_base::openmode mode = ios_base::in | ios_base::out) : basic_iostream<C, Tr>(&sb_) {
+        open(s, mode);
+    }
+    basic_fstream(const basic_fstream &) = delete;
+    basic_fstream(basic_fstream &&rhs) : basic_iostream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
+    }
+    basic_fstream &operator=(const basic_fstream &) = delete;
+    basic_fstream &operator=(basic_fstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_fstream &rhs) { basic_iostream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_filebuf<C, Tr> *rdbuf() const { return const_cast<basic_filebuf<C, Tr> *>(&sb_); }
+    bool is_open() const { return sb_.is_open(); }
+    void open(const char *s, ios_base::openmode mode = ios_base::in | ios_base::out) {
+        if (sb_.open(s, mode) == 0) this->setstate(ios_base::failbit);
+        else this->clear();
+    }
+    void open(const string &s, ios_base::openmode mode = ios_base::in | ios_base::out) { open(s.c_str(), mode); }
+    void close() { if (sb_.close() == 0) this->setstate(ios_base::failbit); }
+};
+
+template <class C, class Tr> void swap(basic_ifstream<C, Tr> &x, basic_ifstream<C, Tr> &y) { x.swap(y); }
+template <class C, class Tr> void swap(basic_ofstream<C, Tr> &x, basic_ofstream<C, Tr> &y) { x.swap(y); }
+template <class C, class Tr> void swap(basic_fstream<C, Tr> &x, basic_fstream<C, Tr> &y) { x.swap(y); }
 
 }  // namespace std
 

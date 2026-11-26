@@ -286,6 +286,15 @@ void Allocator::coalesce() {
         if (isPseudo(copies_[c].src) && isPseudo(copies_[c].dst)) byWeight.push_back(static_cast<int>(c));
     std::stable_sort(byWeight.begin(), byWeight.end(),
                      [&](int x, int y) { return copies_[x].weight > copies_[y].weight; });
+    // **The degrees after a merge, kept up rather than counted again**: u's
+    // own, and one fewer for each node next to both u and v; counting all
+    // again after every merge was cubic (a 3000-term expression, minutes).
+    bool counted = false;
+    auto rowDegree = [&](int q) {
+        int d = popcount(nodes_[q].forbid & palette_);
+        for (int w = 0; w < words_; ++w) d += popcount(row(q)[w]);
+        return d;
+    };
     for (int c : byWeight) {
         const int u = find(indexOf(copies_[c].src)), v = find(indexOf(copies_[c].dst));
         if (u == v || interferes(u, v) || significant(u, v) >= k) continue;
@@ -293,11 +302,14 @@ void Allocator::coalesce() {
         both.insert(both.end(), physCopies_[v].begin(), physCopies_[v].end());
         const long apart = bestPreference(physCopies_[u], nodes_[u].forbid) + bestPreference(physCopies_[v], nodes_[v].forbid);
         if (copies_[c].weight + bestPreference(both, nodes_[u].forbid | nodes_[v].forbid) < apart) continue;
-        merge(u, v);
-        for (int q = 0; q < n_; ++q) if (rep_[q] == q) degree_[q] = popcount(nodes_[q].forbid & palette_);
+        if (!counted) {
+            for (int q = 0; q < n_; ++q) if (rep_[q] == q) degree_[q] = rowDegree(q);
+            counted = true;
+        }
         for (int q = 0; q < n_; ++q)
-            if (rep_[q] == q)
-                for (int w = 0; w < words_; ++w) degree_[q] += popcount(row(q)[w]);
+            if (rep_[q] == q && interferes(v, q) && interferes(u, q)) --degree_[q];
+        merge(u, v);
+        degree_[u] = rowDegree(u);
         ++coalesced_;
     }
 }
@@ -365,15 +377,22 @@ void Allocator::reserveFresh() {
     for (std::size_t i = 0; i < needy.size() && static_cast<int>(i) < fn_.costs().registers(); ++i) freshFor_[needy[i]] = true;
 }
 
-// The node select could not colour, or -1.
+// The node select could not colour, or -1. In a batch round, every such node is in failedAll_
+// and the first is the answer.
 int Allocator::select(const std::vector<int> &stack) {
     colour_.assign(n_, -1);
+    failedAll_.clear();
     for (int i = static_cast<int>(stack.size()) - 1; i >= 0; --i) {
         const int p = stack[i];
         const int reg = pick(p);
-        if (reg < 0) return p;
+        if (reg < 0) {
+            if (!batch_) return p;
+            failedAll_.push_back(p);
+            continue;
+        }
         colour_[p] = reg;
     }
+    if (!failedAll_.empty()) return failedAll_.front();
     for (int p = 0; p < n_; ++p)
         if (!demoted_[p]) colour_[p] = colour_[find(p)];
     return -1;
@@ -419,8 +438,11 @@ int Allocator::colour() {
 bool Allocator::demote(int failed) {
     std::vector<int> back(n_, Webs::kAsIs);
     bool any = false;
+    std::vector<bool> failing(n_, false);
+    failing[failed] = true;
+    if (batch_) for (int p : failedAll_) failing[p] = true;
     for (int q = nHomes_; q < n_; ++q)
-        if (!demoted_[q] && find(q) == failed) { demoted_[q] = true; back[q] = Webs::kToSlot; any = true; }
+        if (!demoted_[q] && failing[find(q)]) { demoted_[q] = true; back[q] = Webs::kToSlot; any = true; }
     if (any) Webs::assign(fn_, back);
     return any;
 }
@@ -444,7 +466,13 @@ bool Allocator::run() {
     fellBack_ = false;
     if (n_ == 0) return Webs::dropSelfCopies(fn_);
     demoted_.assign(n_, false);
+    // **One failed node a round, for the first sixteen** (their colouring
+    // kept); then every node a round cannot colour goes back together - one
+    // a round took 3000 rounds for a 3000-term expression.
+    batch_ = false;
+    int roundsRun = 0;
     for (;;) {
+        batch_ = ++roundsRun > 16;
         findUses();
         solveLiveness();
         buildInterference();

@@ -26,6 +26,7 @@ public:
     bool emits() const override { return true; }
     const char *const *identityMacros() const override;
     bool emitsLineTable(Syntax syntax) const override;
+    bool optimizesAroundVolatile() const override { return true; }
     std::unique_ptr<CodeGen> codegen(std::ostream &sink, Syntax syntax) const override;
 private:
     WindowsX86_64Target target_;

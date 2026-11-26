@@ -46,6 +46,9 @@ public:
     std::unique_ptr<CodeGen> codegen(std::ostream &sink, Syntax) const override;
     // -g writes cl6x's `.dwpsn` before each statement: the source position vm6747 and sim6747 stop on.
     bool emitsLineTable(Syntax) const override { return true; }
+    // The C6747 runs one program and no threads, so this implementation of C++11 for it is freestanding.
+    bool hosted() const override { return false; }
+    bool optimizesAroundVolatile() const override { return true; }
 private:
     Tms6747Target target_;
 };
@@ -99,6 +102,9 @@ private:
     // argument registers (A10/B10/A12/B12, arguments 7-10) saves those too.
     bool hasCall_ = false;
     int pushDepth_ = 0;                       // pairs pushed and not yet popped, which fill *B15
+    int stackBytes_ = 0;                      // under the frame's floor: pushes on the stack and open call areas
+    bool allocaHere_ = false;                 // the body calls `_alloca`: B15 moves, and the frame is always made
+    void genAlloca(const Call &n);            // B15 -= n rounded to 8; A4 = the block, above what is pushed
     std::vector<int> areas_;                  // the call areas open, innermost last
     bool usesSavedArgRegs_ = false;
     bool usesSavedPairRegs_ = false;   // A11/B11/A13/B13, written by a 64-bit argument in A10-B12
@@ -171,6 +177,19 @@ private:
     void planLocals(const Function &fn);
     void planFrame();
     int placed(int key) const;
+    // **Volatile at -O1 and -O2** (1.72; until then a function that touched a volatile object was written as at -O0).
+    // The accesses an expression that touches a volatile lvalue makes are marked in the text (C6xSched.h), and the
+    // scheduler keeps each marked one where and as often as the program has it. A VolatileScope stands at the top of
+    // every expression's visitor; the outermost one whose expression touches a volatile lvalue marks what it wrote.
+    bool fnVolatile_ = false;                  // this function touches a volatile lvalue and is optimised
+    bool volatileAsO0_ = false;                // the count of marked accesses fell in the scheduler: written again as at -O0
+    int volatileDepth_ = 0;
+    struct VolatileScope {
+        Tms6747 &b;
+        long from = -1;
+        VolatileScope(Tms6747 &backend, const Node &n);
+        ~VolatileScope();
+    };
     bool plainAccess_ = false;                 // a read or write of a whole local, not an address
     int loopDepth_ = 0;                        // a use inside a loop weighs more
     bool regCandidate(const Var &v) const;     // a whole scalar local of this function, up to 8 bytes
@@ -215,6 +234,7 @@ private:
     void bitFieldExtract(const MemberAccess &m);    // unit in A4 -> the field
     void bitFieldInsert(const MemberAccess &m);     // value in A4 -> unit at *A6
     void spAdjust(int delta);
+    void stackMoved(int bytes) { stackBytes_ += bytes; }   // what push, pop and the areas leave under the floor
     bool immediateBinary(const Binary &n);
     void openArea(int area, bool stackArgs = false);
     void closeArea();                 // B15 += delta (negative allocates)

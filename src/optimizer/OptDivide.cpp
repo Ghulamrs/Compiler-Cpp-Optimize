@@ -35,9 +35,9 @@ bool divideByConstant(Stream &s, Flow &f) {
             const int R = dv.a.reg.id;
             if (R == RAX || R == RDX || frameReg(R) || (after.regs & bit(R))) continue;
             int k1 = k - 1, k0;
-            while (k1 >= blk.begin && s[k1].kind == Entry::Ins && s[k1].dead) --k1;
+            while (k1 >= blk.begin && ((s[k1].kind == Entry::Ins && s[k1].dead) || s[k1].debug)) --k1;
             k0 = k1 - 1;
-            while (k0 >= blk.begin && s[k0].kind == Entry::Ins && s[k0].dead) --k0;
+            while (k0 >= blk.begin && ((s[k0].kind == Entry::Ins && s[k0].dead) || s[k0].debug)) --k0;
             if (k0 < blk.begin || s[k1].kind != Entry::Ins || s[k0].kind != Entry::Ins) continue;
             const Instr &ext = s[k1].ins, &mv = s[k0].ins;
             const bool sign = dv.m == "idiv";

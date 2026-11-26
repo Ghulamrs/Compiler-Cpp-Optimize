@@ -1,0 +1,239 @@
+// <bitset> - [template.bitset]: N bits in 64-bit words, the bits past N in the last word kept zero so that count,
+// comparison and to_ullong need not mask them.
+#ifndef _CXX1_BITSET
+#define _CXX1_BITSET
+
+#include <cstddef>
+#include <string>
+#include <stdexcept>
+#include <istream>
+#include <ostream>
+#include <functional>
+
+namespace std {
+
+template <std::size_t N> class bitset {
+    static const std::size_t W = N == 0 ? 1 : (N + 63) / 64;
+    unsigned long long w_[W];
+
+    void trim() {
+        if (N % 64 != 0) w_[W - 1] &= (1ULL << (N % 64)) - 1;
+        if (N == 0) w_[0] = 0;
+    }
+    static void check(std::size_t pos, const char *what) {
+        if (pos >= N) throw out_of_range(what);
+    }
+    template <class C> void fromChars(const C *s, std::size_t n, C zero, C one) {
+        for (std::size_t i = 0; i < W; i++) w_[i] = 0;
+        const std::size_t m = n < N ? n : N;
+        for (std::size_t i = 0; i < m; i++) {
+            const C c = s[i];
+            if (c != zero && c != one) throw invalid_argument("bitset");
+            if (c == one) setBit(m - 1 - i);
+        }
+    }
+    void setBit(std::size_t pos) { w_[pos / 64] |= 1ULL << (pos % 64); }
+
+public:
+    // [template.bitset]/2: the proxy operator[] hands out for a modifiable bitset.
+    class reference {
+        friend class bitset;
+        bitset *b_;
+        std::size_t pos_;
+        reference(bitset &b, std::size_t pos) : b_(&b), pos_(pos) {}
+
+    public:
+        ~reference() {}
+        reference &operator=(bool x) {
+            b_->set(pos_, x);
+            return *this;
+        }
+        reference &operator=(const reference &x) {
+            b_->set(pos_, static_cast<bool>(x));
+            return *this;
+        }
+        bool operator~() const { return !b_->test(pos_); }
+        operator bool() const { return b_->test(pos_); }
+        reference &flip() {
+            b_->flip(pos_);
+            return *this;
+        }
+    };
+
+    bitset() noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] = 0;
+    }
+    bitset(unsigned long long v) noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] = 0;
+        w_[0] = v;
+        trim();
+    }
+    template <class C, class Tr, class A>
+    explicit bitset(const basic_string<C, Tr, A> &s, typename basic_string<C, Tr, A>::size_type pos = 0,
+                    typename basic_string<C, Tr, A>::size_type n = basic_string<C, Tr, A>::npos, C zero = C('0'),
+                    C one = C('1')) {
+        if (pos > s.size()) throw out_of_range("bitset");
+        const std::size_t len = s.size() - pos < n ? s.size() - pos : n;
+        fromChars(s.data() + pos, len, zero, one);
+    }
+    template <class C>
+    explicit bitset(const C *s, std::size_t n = (std::size_t)-1, C zero = C('0'), C one = C('1')) {
+        std::size_t len = 0;
+        while ((n == (std::size_t)-1 || len < n) && s[len] != C()) len++;
+        fromChars(s, len, zero, one);
+    }
+
+    bitset &operator&=(const bitset &o) noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] &= o.w_[i];
+        return *this;
+    }
+    bitset &operator|=(const bitset &o) noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] |= o.w_[i];
+        return *this;
+    }
+    bitset &operator^=(const bitset &o) noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] ^= o.w_[i];
+        return *this;
+    }
+    bitset &operator<<=(std::size_t n) noexcept {
+        if (n >= N) return reset();
+        const std::size_t words = n / 64, bits = n % 64;
+        for (std::size_t i = W; i-- > 0;) {
+            unsigned long long v = i >= words ? w_[i - words] << bits : 0;
+            if (bits != 0 && i >= words + 1) v |= w_[i - words - 1] >> (64 - bits);
+            w_[i] = v;
+        }
+        trim();
+        return *this;
+    }
+    bitset &operator>>=(std::size_t n) noexcept {
+        if (n >= N) return reset();
+        const std::size_t words = n / 64, bits = n % 64;
+        for (std::size_t i = 0; i < W; i++) {
+            unsigned long long v = i + words < W ? w_[i + words] >> bits : 0;
+            if (bits != 0 && i + words + 1 < W) v |= w_[i + words + 1] << (64 - bits);
+            w_[i] = v;
+        }
+        return *this;
+    }
+    bitset &set() noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] = ~0ULL;
+        trim();
+        return *this;
+    }
+    bitset &set(std::size_t pos, bool val = true) {
+        check(pos, "bitset::set");
+        if (val) w_[pos / 64] |= 1ULL << (pos % 64);
+        else w_[pos / 64] &= ~(1ULL << (pos % 64));
+        return *this;
+    }
+    bitset &reset() noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] = 0;
+        return *this;
+    }
+    bitset &reset(std::size_t pos) { return set(pos, false); }
+    bitset operator~() const noexcept { return bitset(*this).flip(); }
+    bitset &flip() noexcept {
+        for (std::size_t i = 0; i < W; i++) w_[i] = ~w_[i];
+        trim();
+        return *this;
+    }
+    bitset &flip(std::size_t pos) {
+        check(pos, "bitset::flip");
+        w_[pos / 64] ^= 1ULL << (pos % 64);
+        return *this;
+    }
+
+    bool operator[](std::size_t pos) const { return (w_[pos / 64] >> (pos % 64)) & 1; }
+    reference operator[](std::size_t pos) { return reference(*this, pos); }
+
+    unsigned long to_ulong() const {
+        for (std::size_t i = 1; i < W; i++)
+            if (w_[i] != 0) throw overflow_error("bitset::to_ulong");
+        if (w_[0] > (unsigned long)-1) throw overflow_error("bitset::to_ulong");
+        return (unsigned long)w_[0];
+    }
+    unsigned long long to_ullong() const {
+        for (std::size_t i = 1; i < W; i++)
+            if (w_[i] != 0) throw overflow_error("bitset::to_ullong");
+        return w_[0];
+    }
+    // [bitset.members]/32-35: the four to_string forms, the leading template arguments given and the rest defaulted.
+    template <class C, class Tr, class A> basic_string<C, Tr, A> to_string(C zero = C('0'), C one = C('1')) const {
+        basic_string<C, Tr, A> s(N, zero);
+        for (std::size_t i = 0; i < N; i++)
+            if ((*this)[i]) Tr::assign(s[N - 1 - i], one);
+        return s;
+    }
+    template <class C, class Tr> basic_string<C, Tr, allocator<C> > to_string(C zero = C('0'), C one = C('1')) const {
+        return to_string<C, Tr, allocator<C> >(zero, one);
+    }
+    template <class C> basic_string<C, char_traits<C>, allocator<C> > to_string(C zero = C('0'), C one = C('1')) const {
+        return to_string<C, char_traits<C>, allocator<C> >(zero, one);
+    }
+    basic_string<char, char_traits<char>, allocator<char> > to_string(char zero = '0', char one = '1') const {
+        return to_string<char, char_traits<char>, allocator<char> >(zero, one);
+    }
+
+    std::size_t count() const noexcept {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < W; i++)
+            for (unsigned long long v = w_[i]; v != 0; v &= v - 1) n++;
+        return n;
+    }
+    constexpr std::size_t size() const noexcept { return N; }
+    bool operator==(const bitset &o) const noexcept {
+        for (std::size_t i = 0; i < W; i++)
+            if (w_[i] != o.w_[i]) return false;
+        return true;
+    }
+    bool operator!=(const bitset &o) const noexcept { return !(*this == o); }
+    bool test(std::size_t pos) const {
+        check(pos, "bitset::test");
+        return (*this)[pos];
+    }
+    bool all() const noexcept { return count() == N; }
+    bool any() const noexcept {
+        for (std::size_t i = 0; i < W; i++)
+            if (w_[i] != 0) return true;
+        return false;
+    }
+    bool none() const noexcept { return !any(); }
+    bitset operator<<(std::size_t n) const noexcept { return bitset(*this) <<= n; }
+    bitset operator>>(std::size_t n) const noexcept { return bitset(*this) >>= n; }
+
+    std::size_t __cxx1_hash() const noexcept {
+        std::size_t h = 14695981039346656037ULL;
+        for (std::size_t i = 0; i < W; i++) h = (h ^ (std::size_t)w_[i]) * 1099511628211ULL;
+        return h;
+    }
+};
+
+template <std::size_t N> inline bitset<N> operator&(const bitset<N> &a, const bitset<N> &b) noexcept { return bitset<N>(a) &= b; }
+template <std::size_t N> inline bitset<N> operator|(const bitset<N> &a, const bitset<N> &b) noexcept { return bitset<N>(a) |= b; }
+template <std::size_t N> inline bitset<N> operator^(const bitset<N> &a, const bitset<N> &b) noexcept { return bitset<N>(a) ^= b; }
+
+// [bitset.operators]: N characters read, or to the first that is neither '0' nor '1'; none read sets failbit.
+template <std::size_t N> inline istream &operator>>(istream &is, bitset<N> &x) {
+    string s;
+    is >> ws;
+    while (s.size() < N) {
+        const int c = is.peek();
+        if (c != '0' && c != '1') break;
+        s += (char)is.get();
+    }
+    if (s.empty() && N != 0) is.setstate(ios::failbit);
+    else x = bitset<N>(s);
+    return is;
+}
+template <std::size_t N> inline ostream &operator<<(ostream &os, const bitset<N> &x) { return os << x.to_string(); }
+
+template <std::size_t N> struct hash<bitset<N> > {
+    typedef bitset<N> argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const bitset<N> &b) const noexcept { return b.__cxx1_hash(); }
+};
+
+}  // namespace std
+
+#endif

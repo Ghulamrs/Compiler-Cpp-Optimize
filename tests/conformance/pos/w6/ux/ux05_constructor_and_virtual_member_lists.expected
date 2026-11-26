@@ -1,0 +1,4 @@
+M1 ~M1 unexpected | int 9
+M1 M3 S unexpected ~M3 ~M1 | int 9
+M1 M1 S | 4
+~M1 ~M1 

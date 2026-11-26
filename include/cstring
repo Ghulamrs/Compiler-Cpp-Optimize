@@ -14,25 +14,38 @@
 
 namespace std {
 
-using ::memchr;
+using ::size_t;
+
 using ::memcmp;
 using ::memcpy;
 using ::memmove;
 using ::memset;
 using ::strcat;
-using ::strchr;
 using ::strcmp;
+using ::strcoll;
 using ::strcpy;
 using ::strcspn;
 using ::strerror;
 using ::strlen;
+using ::strncat;
 using ::strncmp;
 using ::strncpy;
-using ::strpbrk;
-using ::strrchr;
 using ::strspn;
-using ::strstr;
 using ::strtok;
+using ::strxfrm;
+
+// [c.strings]/4: each search function as the const-correct pair C++ declares in place of C's one, over the
+// C library's; a search of a const string no longer hands back its characters as writable.
+inline const void *memchr(const void *s, int c, size_t n) { return ::memchr(s, c, n); }
+inline void *memchr(void *s, int c, size_t n) { return ::memchr(s, c, n); }
+inline const char *strchr(const char *s, int c) { return ::strchr(s, c); }
+inline char *strchr(char *s, int c) { return ::strchr(s, c); }
+inline const char *strpbrk(const char *s, const char *accept) { return ::strpbrk(s, accept); }
+inline char *strpbrk(char *s, const char *accept) { return ::strpbrk(s, accept); }
+inline const char *strrchr(const char *s, int c) { return ::strrchr(s, c); }
+inline char *strrchr(char *s, int c) { return ::strrchr(s, c); }
+inline const char *strstr(const char *s, const char *needle) { return ::strstr(s, needle); }
+inline char *strstr(char *s, const char *needle) { return ::strstr(s, needle); }
 
 }  // namespace std
 

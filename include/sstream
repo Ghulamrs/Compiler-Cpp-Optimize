@@ -1,74 +1,211 @@
-// <sstream> - the streams that read and write a string.
+// <sstream> - [string.streams]: basic_stringbuf, and the streams that read and write a string through it.
 //
-// **They derive from <ostream> and <istream> rather than repeating them**, and
-// what makes that possible is one pointer in each base: `ostream::buf_` and
-// `istream::src_`. When it is set, the three functions that actually move
-// bytes go to the string instead of the `FILE *`, and every `operator<<` and
-// `operator>>` above them is reused untouched.
-//
-// The other way to do it is a virtual `put`, and a virtual is exactly what
-// `std::cout` cannot have: it would need a vptr, a vptr needs a constructor,
-// and a file-scope object with a constructor is what this compiler refuses.
-// So the branch is a pointer test rather than a call through a table.
-//
-// **These have constructors and the standard streams do not**, which is not an
-// inconsistency: an ostringstream is always a local, and a local with a
-// constructor has always worked.
+// The buffer keeps its characters in a basic_string and the get and put areas over them: the put area is the
+// string's whole length, so writing past a get position or over earlier text needs no copy, and overflow
+// appends one character and sets both areas again.
 #ifndef _CXX1_SSTREAM
 #define _CXX1_SSTREAM
 
 #include <istream>
 #include <ostream>
+#include <streambuf>
 #include <string>
 
 namespace std {
 
-class ostringstream : public ostream {
+template <class C, class Tr, class A> class basic_stringbuf : public basic_streambuf<C, Tr> {
 public:
-    string s_;
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
+    typedef A allocator_type;
+    typedef basic_string<C, Tr, A> string_type;
 
-    ostringstream() {
-        fp_ = 0;
-        which_ = 0;
-        state_ = 0;
-        buf_ = &s_;
-        base_ = 10;
-        prec_ = 6;      // [ios_base]'s default, as <iostream> gives the console streams
-        fmt_ = 0;
-        width_ = 0;
+    explicit basic_stringbuf(ios_base::openmode which = ios_base::in | ios_base::out) : mode_(which), hi_(0) { reset(0); }
+    explicit basic_stringbuf(const string_type &s, ios_base::openmode which = ios_base::in | ios_base::out)
+        : s_(s), mode_(which), hi_(0) { reset(s.size()); }
+    basic_stringbuf(const basic_stringbuf &) = delete;
+    basic_stringbuf(basic_stringbuf &&rhs) : basic_streambuf<C, Tr>(), mode_(rhs.mode_), hi_(0) {
+        const size_t g = rhs.gptr() - rhs.eback(), p = rhs.pptr() - rhs.pbase();
+        rhs.sync_hi();
+        s_ = std::move(rhs.s_);
+        hi_ = rhs.hi_;
+        place(g, p);
+        rhs.reset(0);
+    }
+    basic_stringbuf &operator=(const basic_stringbuf &) = delete;
+    basic_stringbuf &operator=(basic_stringbuf &&rhs) {
+        basic_stringbuf(std::move(rhs)).swap(*this);
+        return *this;
+    }
+    void swap(basic_stringbuf &rhs) {
+        const size_t g = this->gptr() - this->eback(), p = this->pptr() - this->pbase();
+        const size_t rg = rhs.gptr() - rhs.eback(), rp = rhs.pptr() - rhs.pbase();
+        sync_hi();
+        rhs.sync_hi();
+        s_.swap(rhs.s_);
+        std::swap(mode_, rhs.mode_);
+        std::swap(hi_, rhs.hi_);
+        place(rg, rp);
+        rhs.place(g, p);
     }
 
-    string str() const { return s_; }
-    void str(const string &v) { s_ = v; }
+    // [stringbuf.members]: the characters written so far, or those there to read.
+    string_type str() const {
+        const_cast<basic_stringbuf *>(this)->sync_hi();
+        return string_type(s_.data(), hi_);
+    }
+    void str(const string_type &s) {
+        s_ = s;
+        reset(s_.size());
+    }
+
+protected:
+    // [stringbuf.virtuals]
+    virtual int_type underflow() {
+        sync_hi();
+        if ((mode_ & ios_base::in) == 0) return Tr::eof();
+        char_type *base = buf();
+        this->setg(base, this->gptr() == 0 ? base : this->gptr(), base + hi_);
+        if (this->gptr() < this->egptr()) return Tr::to_int_type(*this->gptr());
+        return Tr::eof();
+    }
+    virtual int_type pbackfail(int_type c = Tr::eof()) {
+        if (this->eback() == this->gptr()) return Tr::eof();
+        if (Tr::eq_int_type(c, Tr::eof())) { this->gbump(-1); return Tr::not_eof(c); }
+        if (Tr::eq(Tr::to_char_type(c), this->gptr()[-1])) { this->gbump(-1); return c; }
+        if ((mode_ & ios_base::out) == 0) return Tr::eof();
+        this->gbump(-1);
+        *this->gptr() = Tr::to_char_type(c);
+        return c;
+    }
+    virtual int_type overflow(int_type c = Tr::eof()) {
+        if (Tr::eq_int_type(c, Tr::eof())) return Tr::not_eof(c);
+        if ((mode_ & ios_base::out) == 0) return Tr::eof();
+        const size_t g = this->gptr() - this->eback(), p = this->pptr() - this->pbase();
+        sync_hi();
+        if (p < s_.size()) s_[p] = Tr::to_char_type(c);
+        else s_.push_back(Tr::to_char_type(c));
+        if (p + 1 > hi_) hi_ = p + 1;
+        place(g, p + 1);
+        return c;
+    }
+    virtual basic_streambuf<C, Tr> *setbuf(char_type *, streamsize) { return this; }
+    virtual pos_type seekoff(off_type off, ios_base::seekdir way, ios_base::openmode which = ios_base::in | ios_base::out) {
+        sync_hi();
+        const bool in = (which & ios_base::in) != 0 && (mode_ & ios_base::in) != 0;
+        const bool out = (which & ios_base::out) != 0 && (mode_ & ios_base::out) != 0;
+        if (!in && !out) return pos_type(off_type(-1));
+        if (in && out && way == ios_base::cur) return pos_type(off_type(-1));
+        const off_type g = this->gptr() - this->eback(), p = this->pptr() - this->pbase();
+        const off_type from = way == ios_base::beg ? 0 : way == ios_base::end ? static_cast<off_type>(hi_) : in ? g : p;
+        const off_type to = from + off;
+        if (to < 0 || to > static_cast<off_type>(hi_)) return pos_type(off_type(-1));
+        place(in ? static_cast<size_t>(to) : static_cast<size_t>(g), out ? static_cast<size_t>(to) : static_cast<size_t>(p));
+        return pos_type(to);
+    }
+    virtual pos_type seekpos(pos_type sp, ios_base::openmode which = ios_base::in | ios_base::out) {
+        return seekoff(off_type(sp), ios_base::beg, which);
+    }
+
+private:
+    string_type s_;
+    ios_base::openmode mode_;
+    size_t hi_;   // the high-water mark: characters of s_ that are the buffer's text
+
+    char_type *buf() { return s_.empty() ? 0 : &s_[0]; }
+    void sync_hi() {
+        if (this->pptr() != 0 && static_cast<size_t>(this->pptr() - this->pbase()) > hi_) hi_ = this->pptr() - this->pbase();
+    }
+    // The get area over the text read so far; the put area over the whole string, its next position `p`.
+    void place(size_t g, size_t p) {
+        char_type *base = buf();
+        if ((mode_ & ios_base::in) != 0) this->setg(base, base + g, base + hi_);
+        else this->setg(base, base, base);
+        if ((mode_ & ios_base::out) != 0) {
+            this->setp(base, base + s_.size());
+            this->pbump(static_cast<int>(p));
+        } else {
+            this->setp(0, 0);
+        }
+    }
+    // [stringbuf.cons]/3 and [stringbuf.members]/3: reading from the start, writing from the start or with
+    // `ate` or `app` from the end.
+    void reset(size_t n) {
+        hi_ = n;
+        place(0, (mode_ & (ios_base::ate | ios_base::app)) != 0 ? n : 0);
+    }
+};
+template <class C, class Tr, class A> void swap(basic_stringbuf<C, Tr, A> &x, basic_stringbuf<C, Tr, A> &y) { x.swap(y); }
+
+template <class C, class Tr, class A> class basic_istringstream : public basic_istream<C, Tr> {
+    basic_stringbuf<C, Tr, A> sb_;
+
+public:
+    typedef basic_string<C, Tr, A> string_type;
+    explicit basic_istringstream(ios_base::openmode which = ios_base::in)
+        : basic_istream<C, Tr>(&sb_), sb_(which | ios_base::in) {}
+    explicit basic_istringstream(const string_type &s, ios_base::openmode which = ios_base::in)
+        : basic_istream<C, Tr>(&sb_), sb_(s, which | ios_base::in) {}
+    basic_istringstream(const basic_istringstream &) = delete;
+    basic_istringstream(basic_istringstream &&rhs) : basic_istream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
+    }
+    basic_istringstream &operator=(const basic_istringstream &) = delete;
+    basic_istringstream &operator=(basic_istringstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_istringstream &rhs) { basic_istream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_stringbuf<C, Tr, A> *rdbuf() const { return const_cast<basic_stringbuf<C, Tr, A> *>(&sb_); }
+    string_type str() const { return sb_.str(); }
+    void str(const string_type &s) { sb_.str(s); }
 };
 
-class istringstream : public istream {
+template <class C, class Tr, class A> class basic_ostringstream : public basic_ostream<C, Tr> {
+    basic_stringbuf<C, Tr, A> sb_;
+
 public:
-    string s_;
-
-    istringstream() {
-        fp_ = 0;
-        which_ = 0;
-        state_ = 0;
-        s_ = string();
-        src_ = &s_;
-        pos_ = 0;
+    typedef basic_string<C, Tr, A> string_type;
+    explicit basic_ostringstream(ios_base::openmode which = ios_base::out)
+        : basic_ostream<C, Tr>(&sb_), sb_(which | ios_base::out) {}
+    explicit basic_ostringstream(const string_type &s, ios_base::openmode which = ios_base::out)
+        : basic_ostream<C, Tr>(&sb_), sb_(s, which | ios_base::out) {}
+    basic_ostringstream(const basic_ostringstream &) = delete;
+    basic_ostringstream(basic_ostringstream &&rhs) : basic_ostream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
     }
-
-    // The string is copied in, not referred to, so it outlives whatever the
-    // caller passed - which is what the standard's `istringstream(s)` does too.
-    istringstream(const string &from) {
-        fp_ = 0;
-        which_ = 0;
-        state_ = 0;
-        s_ = from;
-        src_ = &s_;
-        pos_ = 0;
-    }
-
-    string str() const { return s_; }
-    void str(const string &v) { s_ = v; pos_ = 0; state_ = 0; }
+    basic_ostringstream &operator=(const basic_ostringstream &) = delete;
+    basic_ostringstream &operator=(basic_ostringstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_ostringstream &rhs) { basic_ostream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_stringbuf<C, Tr, A> *rdbuf() const { return const_cast<basic_stringbuf<C, Tr, A> *>(&sb_); }
+    string_type str() const { return sb_.str(); }
+    void str(const string_type &s) { sb_.str(s); }
 };
+
+template <class C, class Tr, class A> class basic_stringstream : public basic_iostream<C, Tr> {
+    basic_stringbuf<C, Tr, A> sb_;
+
+public:
+    typedef basic_string<C, Tr, A> string_type;
+    explicit basic_stringstream(ios_base::openmode which = ios_base::out | ios_base::in)
+        : basic_iostream<C, Tr>(&sb_), sb_(which) {}
+    explicit basic_stringstream(const string_type &s, ios_base::openmode which = ios_base::out | ios_base::in)
+        : basic_iostream<C, Tr>(&sb_), sb_(s, which) {}
+    basic_stringstream(const basic_stringstream &) = delete;
+    basic_stringstream(basic_stringstream &&rhs) : basic_iostream<C, Tr>(std::move(rhs)), sb_(std::move(rhs.sb_)) {
+        this->set_rdbuf(&sb_);
+    }
+    basic_stringstream &operator=(const basic_stringstream &) = delete;
+    basic_stringstream &operator=(basic_stringstream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_stringstream &rhs) { basic_iostream<C, Tr>::swap(rhs); sb_.swap(rhs.sb_); }
+    basic_stringbuf<C, Tr, A> *rdbuf() const { return const_cast<basic_stringbuf<C, Tr, A> *>(&sb_); }
+    string_type str() const { return sb_.str(); }
+    void str(const string_type &s) { sb_.str(s); }
+};
+
+template <class C, class Tr, class A> void swap(basic_istringstream<C, Tr, A> &x, basic_istringstream<C, Tr, A> &y) { x.swap(y); }
+template <class C, class Tr, class A> void swap(basic_ostringstream<C, Tr, A> &x, basic_ostringstream<C, Tr, A> &y) { x.swap(y); }
+template <class C, class Tr, class A> void swap(basic_stringstream<C, Tr, A> &x, basic_stringstream<C, Tr, A> &y) { x.swap(y); }
 
 }  // namespace std
 

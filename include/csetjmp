@@ -1,0 +1,12 @@
+// <csetjmp> - [csetjmp.syn]: jmp_buf and longjmp under std::; setjmp is a macro.
+#ifndef _CXX1_CSETJMP
+#define _CXX1_CSETJMP
+
+#include <setjmp.h>
+
+namespace std {
+using ::jmp_buf;
+using ::longjmp;
+}  // namespace std
+
+#endif

@@ -1,0 +1,279 @@
+// <mutex> - [thread.mutex]: the four mutexes, the lock tags, lock_guard, unique_lock, try_lock, lock and
+// call_once.
+//
+// A mutex is the operating system's lock (<__threads>). The recursive ones keep their owner and depth beside
+// it; the timed ones are a flag under a lock and a condition variable, so a wait for them can give up.
+#ifndef _CXX1_MUTEX
+#define _CXX1_MUTEX
+
+#include <chrono>
+#include <system_error>
+#include <tuple>
+#include <utility>
+#include <__invoke>
+#include <__threads>
+
+namespace std {
+
+class mutex {
+    __cxx1_os::lock_word l_;
+
+public:
+    typedef __cxx1_os::lock_word *native_handle_type;
+    constexpr mutex() noexcept : l_() {}
+    ~mutex() {}
+    mutex(const mutex &) = delete;
+    mutex &operator=(const mutex &) = delete;
+    void lock() { l_.lock(); }
+    bool try_lock() { return l_.try_lock(); }
+    void unlock() { l_.unlock(); }
+    native_handle_type native_handle() { return &l_; }
+};
+
+class recursive_mutex {
+    __cxx1_os::lock_word l_;
+    __cxx1_os::thread_id owner_;
+    unsigned long depth_;
+
+public:
+    typedef __cxx1_os::lock_word *native_handle_type;
+    recursive_mutex() : l_(), owner_(0), depth_(0) {}
+    ~recursive_mutex() {}
+    recursive_mutex(const recursive_mutex &) = delete;
+    recursive_mutex &operator=(const recursive_mutex &) = delete;
+    void lock() {
+        const __cxx1_os::thread_id me = __cxx1_os::current_thread();
+        if (depth_ != 0 && owner_ == me) { ++depth_; return; }
+        l_.lock();
+        owner_ = me;
+        depth_ = 1;
+    }
+    bool try_lock() noexcept {
+        const __cxx1_os::thread_id me = __cxx1_os::current_thread();
+        if (depth_ != 0 && owner_ == me) { ++depth_; return true; }
+        if (!l_.try_lock()) return false;
+        owner_ = me;
+        depth_ = 1;
+        return true;
+    }
+    void unlock() {
+        if (--depth_ == 0) { owner_ = 0; l_.unlock(); }
+    }
+    native_handle_type native_handle() { return &l_; }
+};
+
+// A wait that gives up: milliseconds from now to a time point of any clock, never negative.
+template <class Clock, class Duration>
+unsigned long __cxx1_ms_until(const chrono::time_point<Clock, Duration> &t) {
+    const typename Clock::duration left = t - Clock::now();
+    if (left <= Clock::duration::zero()) return 0;
+    const long long ms = chrono::duration_cast<chrono::milliseconds>(left).count() + 1;
+    return ms >= 0xFFFFFFFELL ? 0xFFFFFFFEul : static_cast<unsigned long>(ms);
+}
+
+template <bool Recursive> class __cxx1_timed_mutex {
+    __cxx1_os::lock_word l_;
+    __cxx1_os::cond_word c_;
+    __cxx1_os::thread_id owner_;
+    unsigned long depth_;
+
+    bool mine() const { return depth_ != 0 && owner_ == __cxx1_os::current_thread(); }
+    void take() { owner_ = __cxx1_os::current_thread(); depth_ = 1; }
+
+public:
+    __cxx1_timed_mutex() : l_(), c_(), owner_(0), depth_(0) {}
+    __cxx1_timed_mutex(const __cxx1_timed_mutex &) = delete;
+    __cxx1_timed_mutex &operator=(const __cxx1_timed_mutex &) = delete;
+    void lock() {
+        l_.lock();
+        if (Recursive && mine()) { ++depth_; l_.unlock(); return; }
+        while (depth_ != 0) c_.wait(l_, ~0ul);
+        take();
+        l_.unlock();
+    }
+    bool try_lock() noexcept {
+        l_.lock();
+        bool got = false;
+        if (Recursive && mine()) { ++depth_; got = true; }
+        else if (depth_ == 0) { take(); got = true; }
+        l_.unlock();
+        return got;
+    }
+    template <class Rep, class Period> bool try_lock_for(const chrono::duration<Rep, Period> &d) {
+        return try_lock_until(chrono::steady_clock::now() + d);
+    }
+    template <class Clock, class Duration> bool try_lock_until(const chrono::time_point<Clock, Duration> &t) {
+        l_.lock();
+        if (Recursive && mine()) { ++depth_; l_.unlock(); return true; }
+        while (depth_ != 0) {
+            const unsigned long ms = __cxx1_ms_until(t);
+            if (ms == 0) { l_.unlock(); return false; }
+            c_.wait(l_, ms);
+        }
+        take();
+        l_.unlock();
+        return true;
+    }
+    void unlock() {
+        l_.lock();
+        if (--depth_ == 0) { owner_ = 0; c_.notify_one(); }
+        l_.unlock();
+    }
+};
+
+class timed_mutex : public __cxx1_timed_mutex<false> {
+public:
+    timed_mutex() {}
+    timed_mutex(const timed_mutex &) = delete;
+    timed_mutex &operator=(const timed_mutex &) = delete;
+};
+class recursive_timed_mutex : public __cxx1_timed_mutex<true> {
+public:
+    recursive_timed_mutex() {}
+    recursive_timed_mutex(const recursive_timed_mutex &) = delete;
+    recursive_timed_mutex &operator=(const recursive_timed_mutex &) = delete;
+};
+
+// [thread.lock]
+struct defer_lock_t {};
+struct try_to_lock_t {};
+struct adopt_lock_t {};
+constexpr defer_lock_t defer_lock = defer_lock_t();
+constexpr try_to_lock_t try_to_lock = try_to_lock_t();
+constexpr adopt_lock_t adopt_lock = adopt_lock_t();
+
+template <class Mutex> class lock_guard {
+    Mutex &m_;
+
+public:
+    typedef Mutex mutex_type;
+    explicit lock_guard(Mutex &m) : m_(m) { m_.lock(); }
+    lock_guard(Mutex &m, adopt_lock_t) : m_(m) {}
+    ~lock_guard() { m_.unlock(); }
+    lock_guard(const lock_guard &) = delete;
+    lock_guard &operator=(const lock_guard &) = delete;
+};
+
+template <class Mutex> class unique_lock {
+    Mutex *m_;
+    bool owns_;
+
+    void need(bool forLock) const {
+        if (m_ == 0) throw system_error(make_error_code(errc::operation_not_permitted), "unique_lock: no mutex");
+        if (forLock && owns_) throw system_error(make_error_code(errc::resource_deadlock_would_occur), "unique_lock: already locked");
+        if (!forLock && !owns_) throw system_error(make_error_code(errc::operation_not_permitted), "unique_lock: not locked");
+    }
+
+public:
+    typedef Mutex mutex_type;
+    unique_lock() noexcept : m_(0), owns_(false) {}
+    explicit unique_lock(Mutex &m) : m_(&m), owns_(false) { m.lock(); owns_ = true; }
+    unique_lock(Mutex &m, defer_lock_t) noexcept : m_(&m), owns_(false) {}
+    unique_lock(Mutex &m, try_to_lock_t) : m_(&m), owns_(m.try_lock()) {}
+    unique_lock(Mutex &m, adopt_lock_t) : m_(&m), owns_(true) {}
+    template <class Clock, class Duration> unique_lock(Mutex &m, const chrono::time_point<Clock, Duration> &t)
+        : m_(&m), owns_(m.try_lock_until(t)) {}
+    template <class Rep, class Period> unique_lock(Mutex &m, const chrono::duration<Rep, Period> &d)
+        : m_(&m), owns_(m.try_lock_for(d)) {}
+    ~unique_lock() { if (owns_) m_->unlock(); }
+    unique_lock(const unique_lock &) = delete;
+    unique_lock &operator=(const unique_lock &) = delete;
+    unique_lock(unique_lock &&u) noexcept : m_(u.m_), owns_(u.owns_) { u.m_ = 0; u.owns_ = false; }
+    unique_lock &operator=(unique_lock &&u) noexcept {
+        if (owns_) m_->unlock();
+        m_ = u.m_;
+        owns_ = u.owns_;
+        u.m_ = 0;
+        u.owns_ = false;
+        return *this;
+    }
+
+    void lock() { need(true); m_->lock(); owns_ = true; }
+    bool try_lock() { need(true); return owns_ = m_->try_lock(); }
+    template <class Rep, class Period> bool try_lock_for(const chrono::duration<Rep, Period> &d) {
+        need(true);
+        return owns_ = m_->try_lock_for(d);
+    }
+    template <class Clock, class Duration> bool try_lock_until(const chrono::time_point<Clock, Duration> &t) {
+        need(true);
+        return owns_ = m_->try_lock_until(t);
+    }
+    void unlock() { need(false); m_->unlock(); owns_ = false; }
+
+    void swap(unique_lock &u) noexcept { std::swap(m_, u.m_); std::swap(owns_, u.owns_); }
+    Mutex *release() noexcept { Mutex *m = m_; m_ = 0; owns_ = false; return m; }
+    bool owns_lock() const noexcept { return owns_; }
+    explicit operator bool() const noexcept { return owns_; }
+    Mutex *mutex() const noexcept { return m_; }
+};
+template <class Mutex> void swap(unique_lock<Mutex> &x, unique_lock<Mutex> &y) noexcept { x.swap(y); }
+
+// [thread.lock.algorithm]: try each in turn and give back what was taken; lock by taking the first and trying
+// the rest, starting again from the one that would not be taken.
+inline int __cxx1_try_rest() { return -1; }
+template <class L, class... Ls> int __cxx1_try_rest(L &l, Ls &... rest) {
+    if (!l.try_lock()) return 0;
+    int failed;
+    try {
+        failed = __cxx1_try_rest(rest...);
+    } catch (...) {
+        l.unlock();
+        throw;
+    }
+    if (failed == -1) return -1;
+    l.unlock();
+    return failed + 1;
+}
+template <class L1, class L2, class... L3> int try_lock(L1 &l1, L2 &l2, L3 &... l3) { return __cxx1_try_rest(l1, l2, l3...); }
+
+template <class L1> void __cxx1_lock_all(L1 &l1) { l1.lock(); }
+template <class L1, class L2, class... L3> void __cxx1_lock_all(L1 &l1, L2 &l2, L3 &... l3) {
+    for (;;) {
+        l1.lock();
+        int failed;
+        try {
+            failed = __cxx1_try_rest(l2, l3...);
+        } catch (...) {
+            l1.unlock();
+            throw;
+        }
+        if (failed == -1) return;
+        l1.unlock();
+        __cxx1_os::yield_now();
+    }
+}
+template <class L1, class L2, class... L3> void lock(L1 &l1, L2 &l2, L3 &... l3) { __cxx1_lock_all(l1, l2, l3...); }
+
+// [thread.once]: 0 not run, 1 running, 2 done; the program's one lock and condition guard the state.
+struct once_flag {
+    int state_;
+    constexpr once_flag() noexcept : state_(0) {}
+    once_flag(const once_flag &) = delete;
+    once_flag &operator=(const once_flag &) = delete;
+};
+
+template <class Callable, class... Args> void call_once(once_flag &flag, Callable &&f, Args &&... args) {
+    __cxx1_os::lock_word &l = __cxx1_os::global_lock();
+    l.lock();
+    while (flag.state_ == 1) __cxx1_os::global_cond().wait(l, ~0ul);
+    if (flag.state_ == 2) { l.unlock(); return; }
+    flag.state_ = 1;
+    l.unlock();
+    try {
+        __cxx1_invoke(std::forward<Callable>(f), std::forward<Args>(args)...);
+    } catch (...) {
+        l.lock();
+        flag.state_ = 0;
+        __cxx1_os::global_cond().notify_all();
+        l.unlock();
+        throw;
+    }
+    l.lock();
+    flag.state_ = 2;
+    __cxx1_os::global_cond().notify_all();
+    l.unlock();
+}
+
+}  // namespace std
+
+#endif

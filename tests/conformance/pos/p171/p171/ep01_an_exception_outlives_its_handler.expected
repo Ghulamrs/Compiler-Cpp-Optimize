@@ -1,0 +1,21 @@
+after the handler: some
+one pointer gone: some
+thrown again: 1
+both gone: none
+~l 0:2 ~l 1:2 ~l 2:2 
+three deep: 3 3 3
+two deep: 3 3
+one deep: 3
+after all three: none
+inner 4 outer later 4
+inside: 5 some
+outside: none
+0 1 1 0
+copy 6
+on the way 1 handled 0
+deep 8
+as itself 8
+9 inside second
+still second
+at the end: none
+no exception: 1

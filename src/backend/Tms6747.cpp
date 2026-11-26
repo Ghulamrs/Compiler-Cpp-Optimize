@@ -439,9 +439,11 @@ void Tms6747::openArea(int area, bool stackArgs) {
     int a = optimize_ > 0 && !stackArgs && pushDepth_ == 0 ? 0 : area;
     areas_.push_back(a);
     spAdjust(-a);
+    stackMoved(a);
 }
 void Tms6747::closeArea() {
     spAdjust(areas_.back());
+    stackMoved(-areas_.back());
     areas_.pop_back();
 }
 
@@ -449,11 +451,13 @@ void Tms6747::closeArea() {
 // callee saves A15 in - free, so a call under it needs no area; a pair fills the slot and counts.
 void Tms6747::push() {
     if (spillPush(false)) return;
+    stackMoved(8);
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << (optimize_ > 0 ? "\tSTW\tA4, *+B15(4)\n" : "\tSTW\tA4, *B15\n");
 }
 void Tms6747::pop(const char *reg) {
     if (spillPop(false, reg)) return;
+    stackMoved(-8);
     out_ << "\tLDW\t" << (optimize_ > 0 ? "*+B15(4)" : "*B15") << ", " << reg << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
@@ -610,6 +614,7 @@ void Tms6747::pushValue(const Type *t) {
     if (!isWide(t) && !inPairWide(t)) { push(); return; }
     if (spillPush(true)) return;
     pushDepth_++;
+    stackMoved(8);
     out_ << "\tSUB\tB15, 8, B15\n";
     out_ << "\tSTDW\tA5:A4, *B15\n";
 }
@@ -617,6 +622,7 @@ void Tms6747::popValue(const Type *t, const char *reg) {
     if (!isWide(t) && !inPairWide(t)) { pop(reg); return; }
     if (spillPop(true, reg)) return;
     pushDepth_--;
+    stackMoved(-8);
     out_ << "\tLDDW\t*B15, " << pairOf(reg) << "\n\tNOP\t4\n";
     out_ << "\tADD\tB15, 8, B15\n";
 }
@@ -644,6 +650,7 @@ void Tms6747::fpConst(const Type *t, double v, const char *reg) {
 
 // ---- addresses, loads, stores --------------------------------------------
 void Tms6747::genAddr(const Expr &e) {
+    VolatileScope volatileScope(*this, e);
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) {
             const Type *t = v->type();   // null where the parser typed the object through its Assign alone
@@ -808,6 +815,36 @@ static std::size_t codeBytes(const std::string &text) {
 // Past 64 KB a 16-bit scope cannot hold an offset: cl6x's pr2, 32-bit scope, the frame as byte-codes.
 static const std::size_t kLongScope = 0xF000;
 
+// **Which of a function's labels have no instruction between them.** A scope written from two such labels has
+// the length 0, and in the 32-bit form a descriptor's first word is its length alone - where the 16-bit form
+// packs the offset beside it - and a first word of 0 is how the list of descriptors ends (EHABI 9.2, and TI's
+// tdeh_pr_common.cpp reads it so, as RTS6x does). Until 1.76 such a scope was written: a `try` is split around
+// the regions inside it, a piece of it can be empty, and in a function past kLongScope every handler after
+// that piece was then no part of the table - `try { std::stoi("99999999999"); } catch (const
+// std::out_of_range &)` ended the program when an earlier `try` of a 64 KB main had an empty first piece.
+namespace {
+struct CodeLines {
+    std::map<std::string, std::size_t> label;      // a label's line
+    std::vector<char> code;                        // per line: an instruction
+    explicit CodeLines(const std::string &text) {
+        std::istringstream in(text);
+        for (std::string line; std::getline(in, line);) {
+            const std::size_t k = line.find_first_not_of(" 	|");
+            const bool isLabel = k != std::string::npos && line.back() == ':';
+            if (isLabel) label.insert(std::make_pair(line.substr(k, line.size() - 1 - k), code.size()));
+            code.push_back(k != std::string::npos && line[k] != '.' && line[k] != ';' && !isLabel);
+        }
+    }
+    // False where either label is not this text's: a range is left out only when it is known to be empty.
+    bool noneBetween(const std::string &begin, const std::string &end) const {
+        const std::map<std::string, std::size_t>::const_iterator b = label.find(begin), e = label.find(end);
+        if (b == label.end() || e == label.end() || e->second < b->second) return false;
+        for (std::size_t i = b->second + 1; i < e->second; i++) if (code[i]) return false;
+        return true;
+    }
+};
+}
+
 // The function's exception table in TI's form (lib/src/tdeh_pr_common.cpp):
 // the unwind word (pr3's compact one, or pr2's byte-codes past kLongScope),
 // then the scope descriptors the personality routine reads in order, and a zero.
@@ -856,8 +893,11 @@ void Tms6747::emitExceptionTable(const Function &fn) {
         std::snprintf(word, sizeof word, "0x%08x", w);
         t << "\t.ulong\t" << word << "\n";
     }
+    const CodeLines lines(wide ? out_.str() : std::string());
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
+        // No return address lies in a range without an instruction, and its length of 0 would end the list.
+        if (wide && lines.noneBetween(c.begin, c.end)) continue;
         std::string len = "$EXTAB_SCOPE(" + c.end + ") - $EXTAB_SCOPE(" + c.begin + ")";
         std::string off = "$EXTAB_SCOPE(" + c.begin + ") - $EXTAB_SCOPE(" + fn.symbol() + ") + 2";
         if (c.terminate) {           // catch anything, and terminate: cl6x's scope over a cleanup pad
@@ -903,6 +943,7 @@ void Tms6747::isZero(const Type *t) {
     }
 }
 void Tms6747::genTruth(const Expr &e) {
+    VolatileScope volatileScope(*this, e);
     e.accept(*this);
     if (e.type()->kind() == Kind::Bool) return;   // a bool is already 0 or 1
     isZero(e.type());
@@ -918,6 +959,7 @@ void Tms6747::visit(const Num &n) {
 // A local in a register is read from it; any other scalar local where it sits, A15-relative
 // (the review's C-B1); an aggregate answers with its address.
 void Tms6747::visit(const Var &n) {
+    VolatileScope volatileScope(*this, n);
     if (const std::string *r = regFor(n)) { regRead(*r, isWide(n.type())); return; }
     int disp;
     if (!n.type()->isArray() && !n.type()->isStructOrUnion() && frameSlot(n, disp) && frameFits(disp, accessSize(n.type()))) {
@@ -930,10 +972,28 @@ void Tms6747::visit(const Var &n) {
     load(n.type());
 }
 
+// ---- volatile ----------------------------------------------------------------
+// The outermost expression that touches a volatile lvalue: where its text begins, and at its end the marks.
+Tms6747::VolatileScope::VolatileScope(Tms6747 &backend, const Node &n) : b(backend) {
+    if (!b.fnVolatile_ || b.optimize_ <= 0) return;
+    if (b.volatileDepth_ > 0) { b.volatileDepth_++; from = -2; return; }
+    if (!touchesVolatile(n)) return;
+    from = static_cast<long>(b.out_.tellp());
+    b.volatileDepth_ = 1;
+}
+Tms6747::VolatileScope::~VolatileScope() {
+    if (from == -1) return;
+    b.volatileDepth_--;
+    if (from < 0) return;
+    b.out_.str(c6xMarkVolatile(b.out_.str(), static_cast<std::size_t>(from)));
+    b.out_.seekp(0, std::ios_base::end);
+}
+
 // ---- locals in registers ---------------------------------------------------
 bool Tms6747::regCandidate(const Var &v) const {
     if (!v.isLocal() || optimize_ <= 0) return false;
     const Type *t = v.type();   // a target the parser typed through the Assign alone stays in memory
+    if (t != nullptr && t->isVolatile()) return false;      // a volatile local is an object in memory, read and written there
     if (t == nullptr || t->isStructOrUnion() || t->isArray() || t->isFunction() || t->isVoid()) return false;
     const int size = t->size(target_);
     return size == 4 || size == 8 || size == 2 || size == 1;
@@ -1046,9 +1106,8 @@ void Tms6747::visit(const For &n) { hasLoop_ = true; loopDepth_++; Walker::visit
 void Tms6747::visit(const DoWhile &n) { hasLoop_ = true; loopDepth_++; Walker::visit(n); loopDepth_--; }
 
 // ---- bit-fields ----------------------------------------------------------
-// A bit-field is width bits from bitOffset up in the unit at the member's
-// offset. EXT/EXTU read it in one instruction (up to the top of the word,
-// back down); a write is CLR, EXTU + SHL of the new value, OR, store.
+// A bit-field is width bits from bitOffset in the unit at the member's offset:
+// read by EXT/EXTU in one instruction; written by CLR, EXTU + SHL, OR, store.
 void Tms6747::bitFieldUnitAddr(const MemberAccess &m) {
     genAddr(m.object());
     addOffset(m.offset());
@@ -1095,6 +1154,7 @@ void Tms6747::bitFieldInsert(const MemberAccess &m) {     // value A4 -> *A6
 }
 
 void Tms6747::visit(const Assign &n) {
+    VolatileScope volatileScope(*this, n);
     const MemberAccess *bf = dynamic_cast<const MemberAccess *>(&n.target());
     if (bf != nullptr && !bf->isBitField()) bf = nullptr;
 
@@ -1135,6 +1195,7 @@ void Tms6747::visit(const Assign &n) {
 }
 
 void Tms6747::visit(const Unary &n) {
+    VolatileScope volatileScope(*this, n);
     switch (n.op()) {
     case '+': n.operand().accept(*this); return;
     case '-':
@@ -1195,7 +1256,9 @@ bool Tms6747::immediateBinary(const Binary &n) {
         if (ucst) code = std::string(n.op() == BinOp::Shl ? "\tSHL" : sign ? "\tSHR" : "\tSHRU") + "\tA4, " + std::to_string(k) + ", A4\n";
         break;
     case BinOp::Eq: case BinOp::Ne: case BinOp::Lt: case BinOp::Gt: case BinOp::Le: case BinOp::Ge: {
-        if (sign ? !small : !ucst) break;
+        // CMPEQ and the signed compares take scst5; CMPGTU and CMPLTU take ucst4 - 0 to 15, not 31.
+        const bool equality = n.op() == BinOp::Eq || n.op() == BinOp::Ne;
+        if (equality || sign ? !small : !(k >= 0 && k <= 15)) break;
         // x < k is k > x, x > k is k < x; <= and >= are their opposites negated.
         const bool lt = n.op() == BinOp::Lt || n.op() == BinOp::Ge, gt = n.op() == BinOp::Gt || n.op() == BinOp::Le;
         const char *cmp = lt ? (sign ? "CMPGT" : "CMPGTU") : gt ? (sign ? "CMPLT" : "CMPLTU") : "CMPEQ";
@@ -1217,6 +1280,7 @@ bool Tms6747::immediateBinary(const Binary &n) {
 static bool low32(const Expr &e, const Target &t, unsigned &v);
 
 void Tms6747::visit(const Binary &n) {
+    VolatileScope volatileScope(*this, n);
     if (n.op() == BinOp::LAnd || n.op() == BinOp::LOr) {
         int id = nextLabel();
         std::string sc = label("shortcut", id);
@@ -1524,6 +1588,7 @@ void Tms6747::wideBinary(const Binary &n) {
 }
 
 void Tms6747::visit(const Postfix &n) {
+    VolatileScope volatileScope(*this, n);
     const Type *t = n.type();
     // The old value in A4 (A5:A4) to the new one in the same place, by the step.
     auto stepValue = [&]() {
@@ -1623,6 +1688,7 @@ void Tms6747::storePair(int size, int align) {
 }
 
 void Tms6747::visit(const Return &n) {
+    VolatileScope volatileScope(*this, n);
     markLine(n);
     if (n.hasValue()) {
         n.value().accept(*this);    // result in A4
@@ -1670,10 +1736,34 @@ void Tms6747::wideCast(const Type *from, const Type *to) {
     else     narrowInt(to);
 }
 
+// **`_alloca(n)`, lowered where it stands** (docs\Runtime_Design.md 9.4). The frame is addressed from A15 and the
+// epilogue takes B15 back from A15, so the function's own slots do not move; what is addressed from B15 is what this
+// function has pushed or opened for a call being built, and at -O1 and -O2 the 8 bytes the frame keeps at its floor for
+// the word a callee saves A15 in (kept whenever the body calls `_alloca`; at -O0 every call opens an area of its own).
+// B15 moves down by n rounded to 8, the pushed words are copied down with it, and the block is the n bytes above them
+// and a fresh floor: its top is where the old floor ended, which nothing reads once B15 has left it.
+void Tms6747::genAlloca(const Call &n) {
+    allocaHere_ = true;
+    n.args()[0]->accept(*this);
+    out_ << "\tADD\tA4, 7, A4\n\tAND\t-8, A4, A4\n\tMV\tA4, B0\n";
+    const int pushed = stackBytes_;
+    if (pushed > 0) out_ << "\tMV\tB15, B1\n";
+    out_ << "\tSUB\tB15, B0, B15\n";
+    if (pushed > 0) {
+        out_ << "\tMV\tB15, B2\n";
+        for (int k = 0; k < pushed; k += 4)
+            out_ << "\tLDW\t*B1, A4\n\tNOP\t4\n\tSTW\tA4, *B2\n\tADD\tB1, 4, B1\n\tADD\tB2, 4, B2\n";
+    }
+    out_ << "\tMV\tB15, A4\n";
+    addOffset(pushed + (optimize_ > 0 ? 8 : 0));
+}
+
 // A call under the C6000 EABI: ten word arguments in registers, the rest
 // above the reserved word at *B15, B3 built by hand, B + NOP 5, result in A4.
 // A variadic callee takes its last named argument onward on the stack.
 void Tms6747::visit(const Call &n) {
+    VolatileScope volatileScope(*this, n);
+    if (n.isAlloca()) { genAlloca(n); return; }
     const std::vector<ExprPtr> &args = n.args();
     bool pair = inPair(n.type());
     bool sret = n.type()->isStructOrUnion() && !pair;
@@ -1807,6 +1897,8 @@ const Function *Tms6747::inlineTarget(const Call &n) const {
     const std::string site = n.symbol() + " in " + (functionOf_ ? functionOf_->symbol() : std::string());
     auto decline = [&](const char *why) { if (!planning_) opt::noteDecline(why, site); return static_cast<const Function *>(nullptr); };
     if (fn.isNoexcept() || !fn.exceptionSpec().empty()) return decline("inline-callee-noexcept");
+    // A callee that touches a volatile lvalue is called: its body is never scheduled into the caller's.
+    if (touchesVolatile(fn.body())) return decline("inline-callee-volatile");
     if (inliner_->size(fn) > (inliner_->leaf(fn) ? kLeafMember : kSmallMember)) return decline("inline-callee-not-small");
     if (fn.params().size() > static_cast<std::size_t>(abi_.intCount)) return decline("inline-site-stack-arguments");
     for (const Param &p : fn.params())
@@ -1868,6 +1960,7 @@ void Tms6747::call(const std::string &target) {
 // holds every value extended to the word, so widening is nothing and an
 // array decays to the address it already is.
 void Tms6747::visit(const Cast &n) {
+    VolatileScope volatileScope(*this, n);
     n.value().accept(*this);
     const Type *from = n.value().type(), *to = n.type();
     if (to->isVoid()) return;
@@ -1915,6 +2008,7 @@ void Tms6747::visit(const VaStart &n) {
     out_ << "\tSTW\tA6, *A4\n";
 }
 void Tms6747::visit(const VaArg &n) {
+    VolatileScope volatileScope(*this, n);
     const Type *t = n.type();
     bool byRef = t->isStructOrUnion() && !inPair(t);
     int slot = isWide(t) || inPairWide(t) ? 8 : 4;
@@ -1934,6 +2028,7 @@ void Tms6747::visit(const Switch &n) {
 }
 
 void Tms6747::visit(const MemberAccess &n) {
+    VolatileScope volatileScope(*this, n);
     if (n.isBitField()) {
         bitFieldUnitAddr(n);
         load(n.type());
@@ -1950,9 +2045,8 @@ void Tms6747::visit(const MemberAccess &n) {
 }
 
 // ---- functions and the file ----------------------------------------------
-// Initialised data, in TI's directives: .byte, .short and .word (32 bits;
-// TI's .long is 32 bits too, so a 64-bit piece is two words, low first), a
-// .word of a symbol with its addend for a relocated piece, .space for a gap.
+// Initialised data in TI's directives: .byte, .short, .word (32-bit; a 64-bit
+// piece is two, low first), .word of a symbol + addend, .space for a gap.
 void Tms6747::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     // The type's own alignment: lifting a 16-byte object to 16 is x86's rule.
@@ -2148,6 +2242,8 @@ void Tms6747::walkBody(const Function &fn) {
     resetLabels();
     clearCallSites();
     hasCall_ = false;
+    allocaHere_ = false;
+    stackBytes_ = 0;
     usesSavedArgRegs_ = false;
     usesSavedPairRegs_ = false;
     loopDepth_ = 0;
@@ -2285,12 +2381,28 @@ void Tms6747::emitTypes() {
 
 void Tms6747::emitFunction(const Function &fn) {
     resetLabels();
+    // **A function that reads or writes a volatile lvalue keeps its -O** (1.72): a volatile local stays in memory
+    // (regCandidate), each expression that touches a volatile lvalue has its accesses marked (VolatileScope), and the
+    // scheduler keeps a marked access as it is, in its order, as often as the program runs it. Until 1.72 such a
+    // function was written as at -O0, the whole of it; it still is where the scheduler reports a marked access lost,
+    // which no pass should cause, and where CPP11_VOLATILE_O0 asks for the old way.
+    const int fileLevel = optimize_;
+    fnVolatile_ = optimize_ > 0 && touchesVolatile(fn.body());
+    volatileDepth_ = 0;
+    if (fnVolatile_ && (volatileAsO0_ || std::getenv("CPP11_VOLATILE_O0") != nullptr)) {
+        fnVolatile_ = false;
+        optimize_ = 0;
+        opt::noteDecline("volatile-no-scheduler", fn.symbol());
+    }
     // The symbol, not the name: with C++ linkage that is the mangled name, and
     // two overloads share a name but must not share a label.
     functionName_ = fn.symbol();
     labelPrefix_ = "L." + fn.symbol() + ".";
     returnLabel_ = "L.return." + fn.symbol();
     functionOf_ = &fn;
+    // **A landing pad sets B15 from the frame as it stands**, the floor before any `_alloca`, where the next call
+    // would write over the blocks: a cleanup leaves the function, but a catch goes on in it.
+    if (callsAlloca(fn.body()) && catchesHere(fn.body())) unsupported("_alloca in a function with a catch");
 
     sretSlot_ = fn.sretSlot();
     sretShift_ = sretSlot_ != 0 && hiddenInA4(fn.returns()) ? 1 : 0;
@@ -2373,7 +2485,7 @@ void Tms6747::emitFunction(const Function &fn) {
     std::vector<std::string> saved = savedRegs();
     // A leaf whose parameters and locals are all in registers needs no frame at all.
     bool needFrame = frame > 0 || hasCall_ || (optimize_ > 0 ? paramInFrame_ : !fn.params().empty()) || sretSlot_ != 0 ||
-                     saved.size() > 1 || fn.hasLandingPads() || fn.isVariadic();
+                     saved.size() > 1 || fn.hasLandingPads() || fn.isVariadic() || allocaHere_;
     // An odd:even pair saved side by side on an 8-aligned word (A15 is the caller's B15, 8-aligned) goes
     // in one STDW and comes back in one LDDW - one round trip to memory where there were two.
     auto pairAt = [&](std::size_t k) -> bool {
@@ -2388,7 +2500,7 @@ void Tms6747::emitFunction(const Function &fn) {
             if (pairAt(k)) { out_ << "\tSTDW\t" << saved[k] << ":" << saved[k + 1] << ", *-A15(" << 4 * (k + 1) << ")\n"; k++; continue; }
             out_ << "\tSTW\t" << saved[k] << ", *-A15(" << 4 * k << ")\n";
         }
-        spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads()) ? 8 : 0)));
+        spAdjust(-(saveBytes_ + frame + (optimize_ > 0 && (hasCall_ || fn.hasLandingPads() || allocaHere_) ? 8 : 0)));
     }
     // The globals the planner gave a register: their addresses formed once, here, for the whole body.
     for (std::map<std::string, std::string>::const_iterator g = globalReg_.begin(); g != globalReg_.end(); ++g)
@@ -2409,8 +2521,22 @@ void Tms6747::emitFunction(const Function &fn) {
     epi << "\tB\tB3\n\tNOP\t5\n";
     emitVariables(fn);                                      // -g: after the label, outside the scheduled code
     // Scheduled with the body at -O1 and -O2, so a result in flight at its end lands under the return's delay slots.
-    if (optimize_ > 0 && !backendSkipped("pro")) out_ << c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_);
-    else out_ << pro.str() << c6xSchedule(early + params + body + epi.str(), optimize_);
+    bool volatileLost = false;
+    const bool withPrologue = optimize_ > 0 && !backendSkipped("pro");
+    const std::string scheduled = withPrologue ? c6xSchedule(early + pro.str() + params + body + epi.str(), optimize_, &volatileLost)
+                                               : c6xSchedule(early + params + body + epi.str(), optimize_, &volatileLost);
+    if (volatileLost && !volatileAsO0_) {
+        // Fewer marked accesses left the scheduler than entered it: the function is written again, as at -O0.
+        opt::noteDecline("volatile-access-lost", fn.symbol());
+        out_.str(std::string());
+        optimize_ = fileLevel;
+        volatileAsO0_ = true;
+        emitFunction(fn);
+        volatileAsO0_ = false;
+        return;
+    }
+    if (withPrologue) out_ << scheduled;
+    else out_ << pro.str() << scheduled;
     // TI's index entry for a function an exception can pass through - one that calls, so saves B3 - naming the table
     // when there are handlers, holding the word itself when there are none. A function that calls nothing gets no
     // entry, as cl6x gives none: the linker covers the run it sits in with one EXIDX_CANTUNWIND.
@@ -2427,6 +2553,7 @@ void Tms6747::emitFunction(const Function &fn) {
 
     file_ += out_.str();
     out_.str(std::string());
+    optimize_ = fileLevel;
 }
 
 void Tms6747::run(const Program &program) {
@@ -2436,6 +2563,10 @@ void Tms6747::run(const Program &program) {
     file_ += out_.str();
     out_.str(std::string());
     for (const Function &fn : program.functions) emitFunction(fn);
+    // atomic_flag's exchange, private to the file. One CPU, and no interrupt is taken in a branch's delay slots:
+    // the load and the store sit in them. The byte lands in A5 for the last slot.
+    if (program.usesFlagExchange)
+        file_ += "\t.text\n__cxx1_flag_exchange:\n\tLDBU\t*A4, A5\n||\tB\tB3\n\tSTB\tB4, *A4\n\tNOP\t3\n\tMV\tA5, A4\n";
     emitTypes();
     // Dynamic initialisation: the init function's address in .init_array,
     // which the EABI's start-up code - and the VM6747 emulator - walk before

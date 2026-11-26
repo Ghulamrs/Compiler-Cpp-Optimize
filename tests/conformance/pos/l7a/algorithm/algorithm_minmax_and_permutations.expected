@@ -1,0 +1,19 @@
+p p p r
+7 3
+minmax p q
+minmax 4 9
+minmax> 9 4
+2 9
+p r
+8 2
+minmax(il) 1 9
+minmax(il) q t
+[0 0][0 0][1 0][1 2][1 2][1 4][1 4][1 6]
+2 3
+1 0 1 0
+0
+abc acb bac bca cab cba | abc
+cba cab bca bac acb abc | cba
+6 1122
+6 321
+lime kiwi

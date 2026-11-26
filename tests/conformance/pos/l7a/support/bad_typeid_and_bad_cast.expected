@@ -1,0 +1,4 @@
+bad_typeid: Attempted a typeid of nullptr pointer!
+bad cast | bad typeid
+as exception: bad cast
+as itself: bad typeid

@@ -1,309 +1,221 @@
-// <ostream> - the output stream, and the manipulators that go through it.
+// <ostream> - [output.streams]: basic_ostream, its sentry, the inserters and the manipulators that go
+// through it.
 //
-// **This class has no constructor, and that is deliberate rather than an
-// omission.** `std::cout` has to be an object at file scope, and a file-scope
-// object with a constructor would have to run one before `main` - which this
-// compiler refuses, because there is nowhere yet to put the code that would do
-// it. Leaving the class an aggregate lets `<iostream>` write
-// `static ostream cout = { 0, 1, 0 };`, which is a constant initialiser and
-// needs nothing run at all. The `FILE *` is resolved at the point of use
-// instead, by `target()`.
-//
-// That is also why the members are public. An aggregate may not have private
-// data, so the choice is between initialising `cout` without a constructor and
-// hiding these three fields, and only one of those a program can see.
-//
-// **A number is formatted with `sprintf` into a local buffer.** There is no
-// `<locale>`, no `ios::fmtflags`, and no width or precision - a stream here
-// writes a number the way `printf` writes it and nothing else.
+// **Every character goes to the stream's buffer** through sputn. A number is formatted with `snprintf` into a
+// narrow buffer, through the conversion [facet.num.put.virtuals] names for the flags - Tables 88 to 90 - widened
+// to the stream's character type and padded to the width as its stage 3 says. The "C" locale is the only one:
+// the point is '.', and nothing is grouped.
 #ifndef _CXX1_OSTREAM
 #define _CXX1_OSTREAM
 
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
+#include <exception>
 #include <ios>
+#include <streambuf>
+#include <__num_facets>
 #include <string>
 
 namespace std {
 
-class ostream {
+template <class C, class Tr> class basic_ostream : virtual public basic_ios<C, Tr> {
 public:
-    // Which file this writes to. `fp_` is what an fstream opens; `which_` is 1
-    // for stdout and 2 for stderr, and is how the standard streams name a
-    // `FILE *` that is not a constant and so cannot be a static initialiser.
-    FILE *fp_;
-    int which_;
-    // Zero while the stream is good. Nothing sets it but `write` and the
-    // fstreams; there is no exception mask to raise instead.
-    int state_;
-    // Where a stringstream sends its output. Null for a file stream, and
-    // checked by the three functions that actually write - which is what lets
-    // <sstream> reuse every `operator<<` below instead of copying the list.
-    // A virtual would have been the other way to do it, and a virtual is what
-    // `cout` cannot have: it would need a vptr, and a vptr needs a constructor.
-    string *buf_;
-    // **The conversion base, as `std::hex` and its two neighbours set it.**
-    // Zero and ten both mean decimal, so a stream built by the aggregate
-    // initialisers in <iostream> - which name four members and leave this one
-    // value-initialised - starts in decimal without naming it.
-    //
-    // The conversion base, and beside it the three <iomanip> touches. A field
-    // width (setw: applies to the next insertion, then clears), a precision
-    // (setprecision: sticky), and a float format (0 default = %g, 1 fixed = %f,
-    // 2 scientific = %e). Precision is set to 6 by the aggregate initialisers
-    // in <iostream> - [ios_base]'s own default - and a default-float %.6g is the
-    // %g this header used to write, byte for byte, so no existing output moves.
-    int base_;
-    int prec_;
-    int fmt_;
-    int width_;
-    // setfill's character; the aggregate initialisers leave it 0, which pads with a space.
-    char fill_;
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
 
-    // setw right-justifies within the field and forgets it: the width is
-    // consumed by one insertion, which is [ostream.formatted]/3. The fill is
-    // setfill's, and a space while the aggregate has left it 0.
-    ostream &rawput(const char *s) {
-        if (buf_ != 0) { *buf_ += s; return *this; }
-        FILE *f = target();
-        if (f == 0 || std::fputs(s, f) < 0) state_ = 1;
-        return *this;
-    }
-    ostream &pad(const char *s) {
-        int n = 0; while (s[n]) n++;
-        for (int i = 0; i < width_ - n; i++) put(fill_ ? fill_ : ' ');
-        width_ = 0;
-        return rawput(s);
-    }
+    explicit basic_ostream(basic_streambuf<C, Tr> *sb) { this->init(sb); }
+    virtual ~basic_ostream() {}
 
-    // **A file stream that is not open writes nowhere**, and getting this
-    // wrong is worse than it sounds: falling through to `stdout` meant an
-    // `ofstream` whose `fopen` failed quietly printed the program's file to
-    // the console. `which_` is what tells the two apart - 1 and 2 are the
-    // standard streams, 0 is a file, and a file with no `FILE *` is shut.
-    FILE *target() {
-        if (fp_ != 0) return fp_;
-        if (which_ == 1) return stdout;
-        if (which_ == 2) return stderr;
-        return 0;
-    }
+    // [ostream::sentry]: a stream that is not good writes nothing, and the stream tied to it is flushed first;
+    // `unitbuf` flushes at the end.
+    class sentry {
+        basic_ostream &os_;
+        bool ok_;
 
-    // **[ios.base]/[basic.ios.members]: the state a manipulator writes, read
-    // back and put back.** Each setter answers the old value, which is what
-    // lets `os.precision(os.precision(4))` and a save-and-restore work.
-    streamsize precision() const { return prec_; }
-    streamsize precision(streamsize n) { streamsize was = prec_; prec_ = (int)n; return was; }
-    char fill() const { return fill_ ? fill_ : ' '; }
-    char fill(char c) { char was = fill(); fill_ = c; return was; }
-    streamsize width() const { return width_; }
-    streamsize width(streamsize n) { streamsize was = width_; width_ = (int)n; return was; }
-    std::ios_base::fmtflags flags() const { return fmt_ | ((base_ == 0 ? 10 : base_) << 8); }
-    std::ios_base::fmtflags flags(std::ios_base::fmtflags f) {
-        std::ios_base::fmtflags was = flags();
-        fmt_ = f & 0xff;
-        base_ = f >> 8;
-        return was;
-    }
-    // [fmtflags.state]: the flags given set, the ones in the mask taken off, the old ones answered.
-    std::ios_base::fmtflags setf(std::ios_base::fmtflags f) { return flags(flags() | f); }
-    std::ios_base::fmtflags setf(std::ios_base::fmtflags f, std::ios_base::fmtflags mask) {
-        return flags((flags() & ~mask) | (f & mask));
-    }
-    void unsetf(std::ios_base::fmtflags mask) { flags(flags() & ~mask); }
-
-    bool good() const { return state_ == 0; }
-    bool fail() const { return state_ != 0; }
-    bool bad() const { return state_ != 0; }
-
-    // A stream in a condition - `if (out)` and `while (out << x)`. It is a
-    // conversion function, which is why this header could not have been
-    // written before they landed.
-    operator bool() { return state_ == 0; }
-
-    ostream &put(char c) {
-        if (buf_ != 0) { *buf_ += c; return *this; }
-        FILE *f = target();
-        if (f == 0 || std::fputc(c, f) < 0) state_ = 1;
-        return *this;
-    }
-
-    ostream &write(const char *s, streamsize n) {
-        if (buf_ != 0) {
-            if (n > 0) buf_->append(s, (std::size_t)n);
-            return *this;
+    public:
+        explicit sentry(basic_ostream &os) : os_(os), ok_(false) {
+            if (!os.good()) return;
+            if (os.tie() != 0) os.tie()->flush();
+            ok_ = os.good();
         }
-        FILE *f = target();
-        if (f == 0) { state_ = 1; return *this; }
-        if (n > 0)
-            if (std::fwrite(s, 1, (std::size_t)n, f) != (std::size_t)n)
-                state_ = 1;
+        ~sentry() {
+            if ((os_.flags() & ios_base::unitbuf) != 0 && !std::uncaught_exception() && os_.good()) os_.flush();
+        }
+        explicit operator bool() const { return ok_; }
+        sentry(const sentry &) = delete;
+        sentry &operator=(const sentry &) = delete;
+    };
+
+    // [ostream.inserters.arithmetic]: in hexadecimal and octal a signed value prints its unsigned
+    // reinterpretation, converted through the corresponding unsigned type.
+    basic_ostream &operator<<(bool v) { return numbered(v); }
+    basic_ostream &operator<<(short v) {
+        const ios_base::fmtflags b = this->flags() & ios_base::basefield;
+        return numbered(b == ios_base::oct || b == ios_base::hex ? static_cast<long>(static_cast<unsigned short>(v)) : static_cast<long>(v));
+    }
+    basic_ostream &operator<<(unsigned short v) { return numbered(static_cast<unsigned long>(v)); }
+    basic_ostream &operator<<(int v) {
+        const ios_base::fmtflags b = this->flags() & ios_base::basefield;
+        return numbered(b == ios_base::oct || b == ios_base::hex ? static_cast<long>(static_cast<unsigned int>(v)) : static_cast<long>(v));
+    }
+    basic_ostream &operator<<(unsigned int v) { return numbered(static_cast<unsigned long>(v)); }
+    basic_ostream &operator<<(long v) { return numbered(v); }
+    basic_ostream &operator<<(unsigned long v) { return numbered(v); }
+    basic_ostream &operator<<(long long v) { return numbered(v); }
+    basic_ostream &operator<<(unsigned long long v) { return numbered(v); }
+    basic_ostream &operator<<(float v) { return numbered(static_cast<double>(v)); }
+    basic_ostream &operator<<(double v) { return numbered(v); }
+    basic_ostream &operator<<(long double v) { return numbered(v); }
+    basic_ostream &operator<<(const void *p) { return numbered(p); }
+    // [ostream.inserters]/7: everything the buffer will give, to the end; nothing inserted is failbit.
+    basic_ostream &operator<<(basic_streambuf<C, Tr> *sb) {
+        sentry ok(*this);
+        if (!ok) return *this;
+        if (sb == 0) { this->setstate(ios_base::badbit); return *this; }
+        bool any = false;
+        for (;;) {
+            const int_type c = sb->sgetc();
+            if (Tr::eq_int_type(c, Tr::eof())) break;
+            if (Tr::eq_int_type(this->rdbuf()->sputc(Tr::to_char_type(c)), Tr::eof())) break;
+            any = true;
+            sb->sbumpc();
+        }
+        if (!any) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_ostream &operator<<(basic_ostream &(*pf)(basic_ostream &)) { return pf(*this); }
+    basic_ostream &operator<<(basic_ios<C, Tr> &(*pf)(basic_ios<C, Tr> &)) { pf(*this); return *this; }
+    basic_ostream &operator<<(ios_base &(*pf)(ios_base &)) { pf(*this); return *this; }
+
+    // [ostream.unformatted]
+    basic_ostream &put(char_type c) {
+        sentry ok(*this);
+        if (ok && Tr::eq_int_type(this->rdbuf()->sputc(c), Tr::eof())) this->setstate(ios_base::badbit);
+        return *this;
+    }
+    basic_ostream &write(const char_type *s, streamsize n) {
+        sentry ok(*this);
+        if (ok && n > 0 && this->rdbuf()->sputn(s, n) != n) this->setstate(ios_base::badbit);
+        return *this;
+    }
+    basic_ostream &flush() {
+        if (this->rdbuf() != 0 && this->rdbuf()->pubsync() == -1) this->setstate(ios_base::badbit);
         return *this;
     }
 
-    ostream &flush() {
-        FILE *f = buf_ == 0 ? target() : 0;
-        if (f != 0) std::fflush(f);
+    // [ostream.seeks]
+    pos_type tellp() {
+        if (this->fail()) return pos_type(-1);
+        return this->rdbuf()->pubseekoff(0, ios_base::cur, ios_base::out);
+    }
+    basic_ostream &seekp(pos_type pos) {
+        if (!this->fail() && this->rdbuf()->pubseekpos(pos, ios_base::out) == pos_type(-1)) this->setstate(ios_base::failbit);
+        return *this;
+    }
+    basic_ostream &seekp(off_type off, ios_base::seekdir dir) {
+        if (!this->fail() && this->rdbuf()->pubseekoff(off, dir, ios_base::out) == pos_type(-1)) this->setstate(ios_base::failbit);
         return *this;
     }
 
-    ostream &operator<<(const char *s) {
-        if (s == 0) s = "(null)";
-        return pad(s);
-    }
+    // [ostream.formatted.reqmts]/3 and stage 3 of [facet.num.put.virtuals]: padded to the width with the fill -
+    // after the text for `left`, at `split` for `internal` (after a sign or `0x`), before it otherwise - and the
+    // width forgotten. __cxx1_nfield's text is narrow - a number's, `true` - and widened character by character.
+    basic_ostream &__cxx1_field(const char_type *s, std::size_t n, std::size_t split) { return field_(s, 0, n, split); }
+    basic_ostream &__cxx1_nfield(const char *s, std::size_t n, std::size_t split) { return field_(0, s, n, split); }
 
-    ostream &operator<<(char c) { return put(c); }
-    // [ostream.inserters.character]: the other two character types print as
-    // characters too. Without these they promoted to int and printed numbers.
-    ostream &operator<<(signed char c) { return put((char)c); }
-    ostream &operator<<(unsigned char c) { return put((char)c); }
+protected:
+    basic_ostream() {}
+    basic_ostream(const basic_ostream &) = delete;
+    basic_ostream(basic_ostream &&rhs) { basic_ios<C, Tr>::move(rhs); }
+    basic_ostream &operator=(const basic_ostream &) = delete;
+    basic_ostream &operator=(basic_ostream &&rhs) { swap(rhs); return *this; }
+    void swap(basic_ostream &rhs) { basic_ios<C, Tr>::swap(rhs); }
 
-    // **A bool prints as 1 or 0, not as "true".** `boolalpha` is off by
-    // default and there are no format flags here to turn it on - measured
-    // against clang's own <ostream>, which is what caught this written the
-    // other way.
-    ostream &operator<<(bool b) { return *this << (b ? "1" : "0"); }
-
-    // **In hexadecimal and octal a signed value prints its unsigned
-    // reinterpretation** - [ostream.inserters.arithmetic] converts through the
-    // corresponding unsigned type - so -1 is `ffffffff` and not `-1`.
-    ostream &operator<<(int v) {
-        if (base_ == 16) return unumber("%x", (unsigned long)(unsigned int)v);
-        if (base_ == 8) return unumber("%o", (unsigned long)(unsigned int)v);
-        return number("%d", (long)v);
+private:
+    void put_(const char_type *s, std::size_t n) {
+        if (n != 0 && this->rdbuf()->sputn(s, static_cast<streamsize>(n)) != static_cast<streamsize>(n)) this->setstate(ios_base::badbit);
     }
-    ostream &operator<<(unsigned int v) {
-        if (base_ == 16) return unumber("%x", (unsigned long)v);
-        if (base_ == 8) return unumber("%o", (unsigned long)v);
-        return unumber("%u", (unsigned long)v);
-    }
-    ostream &operator<<(long v) {
-        if (base_ == 16) return unumber("%lx", (unsigned long)v);
-        if (base_ == 8) return unumber("%lo", (unsigned long)v);
-        return number("%ld", v);
-    }
-    ostream &operator<<(unsigned long v) {
-        if (base_ == 16) return unumber("%lx", v);
-        if (base_ == 8) return unumber("%lo", v);
-        return unumber("%lu", v);
-    }
-    // **`long long` is a type of its own, not a spelling of `long`.** Without
-    // these two, a 64-bit value written through `<<` reached every arithmetic
-    // overload by a conversion and none of them better than the rest, so the
-    // call was ambiguous - which is what a program that pins its own integer
-    // width, as one compiling for a virtual machine does, writes all day.
-    ostream &operator<<(long long v) {
-        if (base_ == 16) return ullnumber("%llx", (unsigned long long)v);
-        if (base_ == 8) return ullnumber("%llo", (unsigned long long)v);
-        return llnumber("%lld", v);
-    }
-    ostream &operator<<(unsigned long long v) {
-        if (base_ == 16) return ullnumber("%llx", v);
-        if (base_ == 8) return ullnumber("%llo", v);
-        return ullnumber("%llu", v);
-    }
-
-    ostream &operator<<(double v) {
-        char how[8];
-        char kind = fmt_ == 1 ? 'f' : fmt_ == 2 ? 'e' : 'g';
-        std::sprintf(how, "%%.%d%c", prec_, kind);
-        char buf[64];
-        std::sprintf(buf, how, v);
-        return *this << buf;
-    }
-    ostream &operator<<(float v) { return *this << (double)v; }
-
-    // **`long double` needs an overload of its own, not a conversion.**
-    // Without one, `os << x` for a long double finds `char`, `bool`, `int`
-    // and `unsigned int` through the standard conversions, all equally far
-    // away, and the insertion is ambiguous - which is where longong.cpp
-    // stopped. Measured: `sizeof(long double)` is 16 on x86_64-linux and 8 on
-    // x86_64-windows and arm64-darwin, so on two of the three this prints
-    // exactly what the `double` overload would; on the third the `L` length
-    // modifier is what keeps the eleven extra digits x87 carries.
-    //
-    // **Asked twice rather than guessed once.** The precision is the
-    // program's - `setprecision(400)` is legal - and `%Lf` of a number near
-    // LDBL_MAX is nearly five thousand digits before the point, so no fixed
-    // buffer is always enough. snprintf reports the length it wanted; the
-    // second call is made only when the first did not fit.
-    ostream &operator<<(long double v) {
-        char how[16];
-        char kind = fmt_ == 1 ? 'f' : fmt_ == 2 ? 'e' : 'g';
-        std::sprintf(how, "%%.%dL%c", prec_, kind);
-        char small[128];
-        int n = std::snprintf(small, sizeof small, how, v);
-        if (n < 0) return *this;
-        if (n < (int)sizeof small) return *this << small;
-        char *big = new char[(std::size_t)n + 1];
-        std::snprintf(big, (std::size_t)n + 1, how, v);
-        *this << big;
-        delete[] big;
+    // One of `wide` and `narrow` is the text, the other null.
+    basic_ostream &field_(const char_type *wide, const char *narrow, std::size_t n, std::size_t split) {
+        sentry ok(*this);
+        if (!ok) return *this;
+        const ios_base::fmtflags adjust = this->flags() & ios_base::adjustfield;
+        const std::size_t width = this->width() > 0 ? static_cast<std::size_t>(this->width()) : 0;
+        const std::size_t pad = width > n ? width - n : 0;
+        this->width(0);
+        const std::size_t at = adjust == ios_base::left ? n : adjust == ios_base::internal ? split : 0;
+        put_(wide, narrow, 0, at);
+        const char_type f = this->fill();
+        for (std::size_t i = 0; i < pad; i++) put_(&f, 1);
+        put_(wide, narrow, at, n);
         return *this;
     }
-
-    // A pointer prints as an address. `const char *` is taken by the overload
-    // above, which is what a program means by it.
-    ostream &operator<<(const void *p) {
-        char buf[32];
-        std::sprintf(buf, "%p", p);
-        return *this << buf;
+    void put_(const char_type *wide, const char *narrow, std::size_t from, std::size_t to) {
+        if (wide != 0) { put_(wide + from, to - from); return; }
+        for (std::size_t i = from; i < to; i++) {
+            const char_type c = this->widen(narrow[i]);
+            put_(&c, 1);
+        }
     }
-
-    ostream &operator<<(const string &s) { return write(s.data(), (streamsize)s.size()); }
-
-    // **A manipulator is a function, and this is what applies it.** `std::endl`
-    // names one without calling it, and the overload below is what gives that
-    // name a meaning - `out << endl` is `endl(out)`.
-    ostream &operator<<(ostream &(*manip)(ostream &)) { return manip(*this); }
-
-    ostream &number(const char *how, long v) {
-        char buf[32];
-        std::sprintf(buf, how, v);
-        return *this << buf;
-    }
-    ostream &unumber(const char *how, unsigned long v) {
-        char buf[32];
-        std::sprintf(buf, how, v);
-        return *this << buf;
-    }
-    ostream &llnumber(const char *how, long long v) {
-        char buf[32];
-        std::sprintf(buf, how, v);
-        return *this << buf;
-    }
-    ostream &ullnumber(const char *how, unsigned long long v) {
-        char buf[32];
-        std::sprintf(buf, how, v);
-        return *this << buf;
+    // [ostream.inserters.arithmetic]: through the num_put facet; a buffer that will not take it all is badbit.
+    template <class V> basic_ostream &numbered(V v) {
+        sentry ok(*this);
+        if (!ok) return *this;
+        typedef ostreambuf_iterator<C, Tr> It;
+        if (use_facet<num_put<C, It> >(this->ios_base::loc_).put(It(*this), *this, this->fill(), v).failed())
+            this->setstate(ios_base::badbit);
+        return *this;
     }
 };
 
-// A newline and a flush, which is the whole of what endl is - and the reason
-// it is slower than writing '\n', which is worth knowing rather than guessing.
-//
-// **`inline`, as the standard has them** - mergeable across translation units;
-// see the note above the operators in <string> for when that became possible.
-// The stream *objects* in <iostream> stay `static` for a different reason.
-inline ostream &endl(ostream &o) { return o.put('\n').flush(); }
+// [ostream.inserters.character]
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &out, C c) { return out.__cxx1_field(&c, 1, 0); }
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &out, char c) {
+    const C w = out.widen(c);
+    return out.__cxx1_field(&w, 1, 0);
+}
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, char c) { return out.__cxx1_field(&c, 1, 0); }
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, signed char c) {
+    const char n = static_cast<char>(c);
+    return out.__cxx1_field(&n, 1, 0);
+}
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, unsigned char c) {
+    const char n = static_cast<char>(c);
+    return out.__cxx1_field(&n, 1, 0);
+}
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &out, const C *s) {
+    if (s == 0) { out.setstate(ios_base::badbit); return out; }
+    return out.__cxx1_field(s, Tr::length(s), 0);
+}
+template <class C, class Tr> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &out, const char *s) {
+    if (s == 0) { out.setstate(ios_base::badbit); return out; }
+    return out.__cxx1_nfield(s, std::strlen(s), 0);
+}
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, const char *s) {
+    if (s == 0) { out.setstate(ios_base::badbit); return out; }
+    return out.__cxx1_field(s, std::strlen(s), 0);
+}
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, const signed char *s) {
+    return out << reinterpret_cast<const char *>(s);
+}
+template <class Tr> basic_ostream<char, Tr> &operator<<(basic_ostream<char, Tr> &out, const unsigned char *s) {
+    return out << reinterpret_cast<const char *>(s);
+}
 
-// **fixed, scientific and defaultfloat set the float format.** They are the
-// manipulators <ostream> owns that take no argument, so `os << std::fixed`
-// reaches the `ostream &(*)(ostream &)` overload the same way endl does. The
-// standard puts them in <ios>; there is no separate <ios> here.
-inline ostream &fixed(ostream &o)        { o.fmt_ = 1; return o; }
-inline ostream &scientific(ostream &o)   { o.fmt_ = 2; return o; }
-inline ostream &defaultfloat(ostream &o) { o.fmt_ = 0; return o; }
-inline ostream &flush(ostream &o) { return o.flush(); }
-inline ostream &ends(ostream &o) { return o.put('\0'); }
+// [ostream.rvalue]: an rvalue stream, as `std::ostringstream() << 1`.
+template <class C, class Tr, class T> basic_ostream<C, Tr> &operator<<(basic_ostream<C, Tr> &&out, const T &x) {
+    out << x;
+    return out;
+}
 
-// **The base manipulators**, which the `operator<<` taking a function pointer
-// already knew how to apply - `ss << std::hex << n` is that overload calling
-// this. The base is sticky, as the standard makes it: it holds until `dec` or
-// `oct` says otherwise, which is why a program that writes one usually writes
-// its partner afterwards.
-inline ostream &hex(ostream &o) { o.base_ = 16; return o; }
-inline ostream &dec(ostream &o) { o.base_ = 10; return o; }
-inline ostream &oct(ostream &o) { o.base_ = 8; return o; }
+// [ostream.manip]
+template <class C, class Tr> basic_ostream<C, Tr> &endl(basic_ostream<C, Tr> &o) { o.put(o.widen('\n')); o.flush(); return o; }
+template <class C, class Tr> basic_ostream<C, Tr> &ends(basic_ostream<C, Tr> &o) { o.put(C()); return o; }
+template <class C, class Tr> basic_ostream<C, Tr> &flush(basic_ostream<C, Tr> &o) { o.flush(); return o; }
 
 }  // namespace std
 

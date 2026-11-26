@@ -1,0 +1,1253 @@
+// <random> - [rand]: engines, engine adaptors, seed_seq, random_device, generate_canonical and the twenty
+// distributions.
+//
+// The engines are the standard's recurrences and give its sequences to the bit ([rand.predef] fixes the
+// 10000th value of each). The distributions' algorithms are this library's own, as [rand.dist]/3 allows:
+// uniform_int by rejection, normal by Marsaglia's polar method, gamma by Marsaglia and Tsang, poisson by
+// multiplication below a mean of 12 and Hormann's PTRS above. default_random_engine is mt19937, as cl's is.
+// random_device reads rand_s on Windows, /dev/urandom elsewhere; on a target with neither (the C6747) it is
+// a time-seeded engine, and entropy() says 0.
+#ifndef _CXX1_RANDOM
+#define _CXX1_RANDOM
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <ctime>
+#include <initializer_list>
+#include <istream>
+#include <limits>
+#include <ostream>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+namespace std {
+
+#if defined(_WIN32)
+namespace __cxx1_os {
+extern "C" int rand_s(unsigned int *value);
+}
+#endif
+
+// The engines and distributions compare and stream through members of their own; these are the namespace's
+// operators [rand.req.eng]/3 and [rand.req.dist]/3 ask for, found by argument-dependent lookup.
+struct __cxx1_rand_base {};
+template <class T> typename enable_if<is_base_of<__cxx1_rand_base, T>::value, bool>::type operator==(const T &x, const T &y) {
+    return x.__cxx1_eq(y);
+}
+template <class T> typename enable_if<is_base_of<__cxx1_rand_base, T>::value, bool>::type operator!=(const T &x, const T &y) {
+    return !x.__cxx1_eq(y);
+}
+template <class T> typename enable_if<is_base_of<__cxx1_rand_base, T>::value, ostream &>::type operator<<(ostream &os, const T &x) {
+    return x.__cxx1_out(os);
+}
+template <class T> typename enable_if<is_base_of<__cxx1_rand_base, T>::value, istream &>::type operator>>(istream &is, T &x) {
+    return x.__cxx1_in(is);
+}
+
+// Saves a stream's flags, fill and precision, and sets what [rand.req.eng]/12 asks of a text representation.
+struct __cxx1_rand_io {
+    ios &s;
+    ios_base::fmtflags flags;
+    char fill;
+    streamsize precision;
+    explicit __cxx1_rand_io(ios &st) : s(st), flags(st.flags()), fill(st.fill()), precision(st.precision()) {
+        s.flags(ios_base::dec | ios_base::left | ios_base::skipws);
+        s.fill(' ');
+        s.precision(numeric_limits<long double>::max_digits10);
+    }
+    ~__cxx1_rand_io() { s.flags(flags); s.fill(fill); s.precision(precision); }
+};
+
+// (a * x + c) mod m without overflow; m == 0 stands for 2^64.
+template <class U> U __cxx1_mulmod(U a, U x, U c, U m) {
+    typedef unsigned long long W;
+    if (m == 0) return static_cast<U>(static_cast<W>(a) * x + c);
+    if (static_cast<W>(m) <= 0xFFFFFFFFull) return static_cast<U>((static_cast<W>(a) * x + c) % m);
+    W r = 0, aa = static_cast<W>(a) % m, xx = static_cast<W>(x) % m;
+    while (xx != 0) {
+        if (xx & 1) r = (r >= m - aa) ? r - (m - aa) : r + aa;
+        aa = (aa >= m - aa) ? aa - (m - aa) : aa + aa;
+        xx >>= 1;
+    }
+    W cc = static_cast<W>(c) % m;
+    return static_cast<U>(r >= m - cc ? r - (m - cc) : r + cc);
+}
+
+// [rand.util.seedseq]
+class seed_seq {
+    vector<uint_least32_t> v_;
+
+public:
+    typedef uint_least32_t result_type;
+    seed_seq() {}
+    template <class T> seed_seq(initializer_list<T> il) {
+        for (const T *p = il.begin(); p != il.end(); ++p) v_.push_back(static_cast<uint_least32_t>(*p) & 0xFFFFFFFFu);
+    }
+    template <class InputIt> seed_seq(InputIt first, InputIt last) {
+        for (; first != last; ++first) v_.push_back(static_cast<uint_least32_t>(*first) & 0xFFFFFFFFu);
+    }
+    seed_seq(const seed_seq &) = delete;
+    void operator=(const seed_seq &) = delete;
+
+    template <class RandomIt> void generate(RandomIt begin, RandomIt end) {
+        if (begin == end) return;
+        typedef uint_least32_t W;
+        const size_t n = static_cast<size_t>(end - begin), s = v_.size();
+        for (RandomIt it = begin; it != end; ++it) *it = 0x8b8b8b8bu;
+        const size_t t = n >= 623 ? 11 : n >= 68 ? 7 : n >= 39 ? 5 : n >= 7 ? 3 : (n - 1) / 2;
+        const size_t p = (n - t) / 2, q = p + t, m = s + 1 > n ? s + 1 : n;
+        for (size_t k = 0; k < m; k++) {
+            W x = static_cast<W>(begin[k % n] ^ begin[(k + p) % n] ^ begin[(k + n - 1) % n]) & 0xFFFFFFFFu;
+            const W r1 = static_cast<W>(1664525u * (x ^ (x >> 27))) & 0xFFFFFFFFu;
+            const W r2 = static_cast<W>(r1 + (k == 0 ? s : k <= s ? k % n + v_[k - 1] : k % n)) & 0xFFFFFFFFu;
+            begin[(k + p) % n] = static_cast<W>(begin[(k + p) % n] + r1) & 0xFFFFFFFFu;
+            begin[(k + q) % n] = static_cast<W>(begin[(k + q) % n] + r2) & 0xFFFFFFFFu;
+            begin[k % n] = r2;
+        }
+        for (size_t k = m; k < m + n; k++) {
+            W x = static_cast<W>(begin[k % n] + begin[(k + p) % n] + begin[(k + n - 1) % n]) & 0xFFFFFFFFu;
+            const W r3 = static_cast<W>(1566083941u * (x ^ (x >> 27))) & 0xFFFFFFFFu;
+            const W r4 = static_cast<W>(r3 - k % n) & 0xFFFFFFFFu;
+            begin[(k + p) % n] = static_cast<W>(begin[(k + p) % n] ^ r3);
+            begin[(k + q) % n] = static_cast<W>(begin[(k + q) % n] ^ r4);
+            begin[k % n] = r4;
+        }
+    }
+    size_t size() const { return v_.size(); }
+    template <class OutputIt> void param(OutputIt out) const {
+        for (size_t i = 0; i < v_.size(); i++) *out++ = v_[i];
+    }
+};
+
+// Whether T is a seed sequence for an engine of result type R: [rand.req.eng]/4's constraint on its templates.
+template <class T, class R> struct __cxx1_is_seed_seq
+    : integral_constant<bool, !is_convertible<T, R>::value && !is_same<typename remove_cv<T>::type, R>::value> {};
+
+// The value of k 32-bit words of a seed sequence: [rand.eng.lcong]/7, [rand.eng.mers]/9, [rand.eng.sub]/7.
+template <class U, class Sseq> U __cxx1_seed_words(Sseq &q, size_t k, size_t at, vector<uint_least32_t> &a) {
+    (void)q;
+    U v = 0;
+    for (size_t j = 0; j < k; j++) v |= static_cast<U>(static_cast<unsigned long long>(a[at + j]) << (32 * j));
+    return v;
+}
+
+// [rand.eng.lcong]
+template <class UIntType, UIntType a, UIntType c, UIntType m> class linear_congruential_engine : public __cxx1_rand_base {
+    static_assert(m == 0 || (a < m && c < m), "a and c must be less than m - [rand.eng.lcong]/3");
+    UIntType x_;
+
+public:
+    typedef UIntType result_type;
+    static constexpr result_type multiplier = a;
+    static constexpr result_type increment = c;
+    static constexpr result_type modulus = m;
+    static constexpr result_type min() { return c == 0u ? 1u : 0u; }
+    static constexpr result_type max() { return m - 1u; }
+    static constexpr result_type default_seed = 1u;
+
+    explicit linear_congruential_engine(result_type s = default_seed) { seed(s); }
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type>
+    explicit linear_congruential_engine(Sseq &q) { seed(q); }
+
+    void seed(result_type s = default_seed) {
+        const result_type sm = m == 0 ? s : s % m;
+        x_ = ((m == 0 ? c : c % m) == 0 && sm == 0) ? result_type(1) : sm;
+    }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) {
+        unsigned bits = 0;
+        for (unsigned long long mm = m == 0 ? 0 : static_cast<unsigned long long>(m) - 1; mm != 0; mm >>= 1) bits++;
+        if (m == 0) bits = numeric_limits<result_type>::digits;
+        const size_t k = (bits + 31) / 32;
+        vector<uint_least32_t> arr(k + 3);
+        q.generate(arr.begin(), arr.end());
+        seed(__cxx1_seed_words<result_type>(q, k, 3, arr));
+    }
+    result_type operator()() { return x_ = __cxx1_mulmod<UIntType>(a, x_, c, m); }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+
+    bool __cxx1_eq(const linear_congruential_engine &r) const { const linear_congruential_engine &l = *this; return l.x_ == r.x_; }
+    ostream &__cxx1_out(ostream &os) const { const linear_congruential_engine &e = *this;
+        __cxx1_rand_io io(os);
+        return os << static_cast<unsigned long long>(e.x_);
+    }
+    istream &__cxx1_in(istream &is) { linear_congruential_engine &e = *this;
+        __cxx1_rand_io io(is);
+        unsigned long long v = 0;
+        if (is >> v) e.x_ = static_cast<UIntType>(v);
+        return is;
+    }
+};
+template <class U, U a, U c, U m> constexpr U linear_congruential_engine<U, a, c, m>::multiplier;
+template <class U, U a, U c, U m> constexpr U linear_congruential_engine<U, a, c, m>::increment;
+template <class U, U a, U c, U m> constexpr U linear_congruential_engine<U, a, c, m>::modulus;
+template <class U, U a, U c, U m> constexpr U linear_congruential_engine<U, a, c, m>::default_seed;
+
+// [rand.eng.mers], one value at a time over a circular buffer: X(i-n) is x_[i_].
+template <class UIntType, size_t w, size_t n, size_t m, size_t r, UIntType a, size_t u, UIntType d, size_t s,
+          UIntType b, size_t t, UIntType c, size_t l, UIntType f>
+class mersenne_twister_engine : public __cxx1_rand_base {
+    static_assert(0 < m && m <= n && r <= w && w <= static_cast<size_t>(numeric_limits<UIntType>::digits) &&
+                  u <= w && s <= w && t <= w && l <= w, "mersenne_twister_engine's parameters - [rand.eng.mers]/4");
+    UIntType x_[n];
+    size_t i_;
+
+    static constexpr UIntType mask() { return w == static_cast<size_t>(numeric_limits<UIntType>::digits) ? ~UIntType(0) : (UIntType(1) << w) - 1; }
+
+public:
+    typedef UIntType result_type;
+    static constexpr size_t word_size = w;
+    static constexpr size_t state_size = n;
+    static constexpr size_t shift_size = m;
+    static constexpr size_t mask_bits = r;
+    static constexpr UIntType xor_mask = a;
+    static constexpr size_t tempering_u = u;
+    static constexpr UIntType tempering_d = d;
+    static constexpr size_t tempering_s = s;
+    static constexpr UIntType tempering_b = b;
+    static constexpr size_t tempering_t = t;
+    static constexpr UIntType tempering_c = c;
+    static constexpr size_t tempering_l = l;
+    static constexpr UIntType initialization_multiplier = f;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return mask(); }
+    static constexpr result_type default_seed = 5489u;
+
+    explicit mersenne_twister_engine(result_type value = default_seed) { seed(value); }
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type>
+    explicit mersenne_twister_engine(Sseq &q) { seed(q); }
+
+    void seed(result_type value = default_seed) {
+        x_[0] = value & mask();
+        for (size_t i = 1; i < n; i++)
+            x_[i] = (f * (x_[i - 1] ^ (x_[i - 1] >> (w - 2))) + static_cast<UIntType>(i)) & mask();
+        i_ = 0;
+    }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) {
+        const size_t k = (w + 31) / 32;
+        vector<uint_least32_t> arr(n * k);
+        q.generate(arr.begin(), arr.end());
+        bool zero = true;
+        for (size_t i = 0; i < n; i++) {
+            x_[i] = __cxx1_seed_words<result_type>(q, k, i * k, arr) & mask();
+            if (i == 0) zero = (x_[0] >> r) == 0;
+            else zero = zero && x_[i] == 0;
+        }
+        if (zero) x_[0] = UIntType(1) << (w - 1);
+        i_ = 0;
+    }
+    result_type operator()() {
+        const UIntType upper = (~UIntType(0) << r) & mask(), lower = ~upper & mask();
+        const size_t j1 = i_ + 1 == n ? 0 : i_ + 1, jm = i_ + m >= n ? i_ + m - n : i_ + m;
+        const UIntType y = (x_[i_] & upper) | (x_[j1] & lower);
+        const UIntType xi = x_[jm] ^ (y >> 1) ^ ((y & 1) != 0 ? a : UIntType(0));
+        x_[i_] = xi;
+        i_ = j1;
+        UIntType z = xi ^ ((xi >> u) & d);
+        z ^= (z << s) & b;
+        z ^= (z << t) & c;
+        z ^= z >> l;
+        return z & mask();
+    }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+
+    bool __cxx1_eq(const mersenne_twister_engine &y) const { const mersenne_twister_engine &x = *this;
+        for (size_t k = 0; k < n; k++)
+            if (x.x_[(x.i_ + k) % n] != y.x_[(y.i_ + k) % n]) return false;
+        return true;
+    }
+    ostream &__cxx1_out(ostream &os) const { const mersenne_twister_engine &e = *this;
+        __cxx1_rand_io io(os);
+        for (size_t k = 0; k < n; k++) {
+            if (k != 0) os << ' ';
+            os << static_cast<unsigned long long>(e.x_[(e.i_ + k) % n]);
+        }
+        return os;
+    }
+    istream &__cxx1_in(istream &is) { mersenne_twister_engine &e = *this;
+        __cxx1_rand_io io(is);
+        UIntType v[n];
+        for (size_t k = 0; k < n; k++) {
+            unsigned long long x = 0;
+            if (!(is >> x)) return is;
+            v[k] = static_cast<UIntType>(x);
+        }
+        for (size_t k = 0; k < n; k++) e.x_[k] = v[k];
+        e.i_ = 0;
+        return is;
+    }
+};
+template <class U, size_t w, size_t n, size_t m, size_t r, U a, size_t u, U d, size_t s, U b, size_t t, U c, size_t l, U f>
+constexpr U mersenne_twister_engine<U, w, n, m, r, a, u, d, s, b, t, c, l, f>::default_seed;
+
+// [rand.eng.sub]
+template <class UIntType, size_t w, size_t s, size_t r> class subtract_with_carry_engine : public __cxx1_rand_base {
+    static_assert(0 < s && s < r && 0 < w && w <= static_cast<size_t>(numeric_limits<UIntType>::digits),
+                  "subtract_with_carry_engine's parameters - [rand.eng.sub]/3");
+    UIntType x_[r];
+    UIntType carry_;
+    size_t i_;
+
+    static constexpr UIntType mask() { return w == static_cast<size_t>(numeric_limits<UIntType>::digits) ? ~UIntType(0) : (UIntType(1) << w) - 1; }
+
+public:
+    typedef UIntType result_type;
+    static constexpr size_t word_size = w;
+    static constexpr size_t short_lag = s;
+    static constexpr size_t long_lag = r;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return mask(); }
+    static constexpr result_type default_seed = 19780503u;
+
+    explicit subtract_with_carry_engine(result_type value = default_seed) { seed(value); }
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type>
+    explicit subtract_with_carry_engine(Sseq &q) { seed(q); }
+
+    void seed(result_type value = default_seed) {
+        linear_congruential_engine<UIntType, 40014u, 0u, 2147483563u> e(value == 0u ? default_seed : value);
+        const size_t n = (w + 31) / 32;
+        for (size_t i = 0; i < r; i++) {
+            unsigned long long v = 0;
+            for (size_t j = 0; j < n; j++) v |= static_cast<unsigned long long>(e()) << (32 * j);
+            x_[i] = static_cast<UIntType>(v) & mask();
+        }
+        carry_ = x_[r - 1] == 0 ? 1 : 0;
+        i_ = 0;
+    }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) {
+        const size_t k = (w + 31) / 32;
+        vector<uint_least32_t> arr(r * k);
+        q.generate(arr.begin(), arr.end());
+        for (size_t i = 0; i < r; i++) x_[i] = __cxx1_seed_words<result_type>(q, k, i * k, arr) & mask();
+        carry_ = x_[r - 1] == 0 ? 1 : 0;
+        i_ = 0;
+    }
+    result_type operator()() {
+        const size_t js = i_ + (r - s) >= r ? i_ + (r - s) - r : i_ + (r - s);   // X(i-s); x_[i_] is X(i-r)
+        const UIntType xs = x_[js], xr = x_[i_];
+        UIntType y;
+        if (xs >= xr + carry_ && !(carry_ != 0 && xr == mask())) {
+            y = xs - xr - carry_;
+            carry_ = 0;
+        } else {
+            y = (xs + (mask() - xr) + 1 - carry_) & mask();
+            carry_ = 1;
+        }
+        x_[i_] = y;
+        i_ = i_ + 1 == r ? 0 : i_ + 1;
+        return y;
+    }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+
+    bool __cxx1_eq(const subtract_with_carry_engine &y) const { const subtract_with_carry_engine &x = *this;
+        if (x.carry_ != y.carry_) return false;
+        for (size_t k = 0; k < r; k++)
+            if (x.x_[(x.i_ + k) % r] != y.x_[(y.i_ + k) % r]) return false;
+        return true;
+    }
+    ostream &__cxx1_out(ostream &os) const { const subtract_with_carry_engine &e = *this;
+        __cxx1_rand_io io(os);
+        for (size_t k = 0; k < r; k++) os << static_cast<unsigned long long>(e.x_[(e.i_ + k) % r]) << ' ';
+        return os << static_cast<unsigned long long>(e.carry_);
+    }
+    istream &__cxx1_in(istream &is) { subtract_with_carry_engine &e = *this;
+        __cxx1_rand_io io(is);
+        UIntType v[r];
+        unsigned long long x = 0;
+        for (size_t k = 0; k < r; k++) {
+            if (!(is >> x)) return is;
+            v[k] = static_cast<UIntType>(x);
+        }
+        if (!(is >> x)) return is;
+        for (size_t k = 0; k < r; k++) e.x_[k] = v[k];
+        e.carry_ = static_cast<UIntType>(x);
+        e.i_ = 0;
+        return is;
+    }
+};
+template <class U, size_t w, size_t s, size_t r> constexpr U subtract_with_carry_engine<U, w, s, r>::default_seed;
+
+// [rand.adapt.disc]
+template <class Engine, size_t p, size_t r> class discard_block_engine : public __cxx1_rand_base {
+    static_assert(0 < r && r <= p, "discard_block_engine's parameters - [rand.adapt.disc]/3");
+    Engine e_;
+    size_t n_;
+
+public:
+    typedef typename Engine::result_type result_type;
+    static constexpr size_t block_size = p;
+    static constexpr size_t used_block = r;
+    static constexpr result_type min() { return Engine::min(); }
+    static constexpr result_type max() { return Engine::max(); }
+
+    discard_block_engine() : e_(), n_(0) {}
+    explicit discard_block_engine(const Engine &e) : e_(e), n_(0) {}
+    explicit discard_block_engine(Engine &&e) : e_(std::move(e)), n_(0) {}
+    explicit discard_block_engine(result_type s) : e_(s), n_(0) {}
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value &&
+                                                     !is_same<Sseq, Engine>::value>::type>
+    explicit discard_block_engine(Sseq &q) : e_(q), n_(0) {}
+    void seed() { e_.seed(); n_ = 0; }
+    void seed(result_type s) { e_.seed(s); n_ = 0; }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) { e_.seed(q); n_ = 0; }
+    result_type operator()() {
+        if (n_ >= r) { e_.discard(p - r); n_ = 0; }
+        ++n_;
+        return e_();
+    }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+    const Engine &base() const noexcept { return e_; }
+
+    bool __cxx1_eq(const discard_block_engine &y) const { const discard_block_engine &x = *this; return x.n_ == y.n_ && x.e_ == y.e_; }
+    ostream &__cxx1_out(ostream &os) const { const discard_block_engine &x = *this;
+        __cxx1_rand_io io(os);
+        return os << x.e_ << ' ' << static_cast<unsigned long long>(x.n_);
+    }
+    istream &__cxx1_in(istream &is) { discard_block_engine &x = *this;
+        __cxx1_rand_io io(is);
+        unsigned long long k = 0;
+        if (is >> x.e_ >> k) x.n_ = static_cast<size_t>(k);
+        return is;
+    }
+};
+
+// [rand.adapt.ibits]
+template <class Engine, size_t w, class UIntType> class independent_bits_engine : public __cxx1_rand_base {
+    static_assert(0 < w && w <= static_cast<size_t>(numeric_limits<UIntType>::digits), "independent_bits_engine's w - [rand.adapt.ibits]/3");
+    Engine e_;
+
+    static constexpr UIntType mask() { return w == static_cast<size_t>(numeric_limits<UIntType>::digits) ? ~UIntType(0) : (UIntType(1) << w) - 1; }
+
+public:
+    typedef UIntType result_type;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return mask(); }
+
+    independent_bits_engine() : e_() {}
+    explicit independent_bits_engine(const Engine &e) : e_(e) {}
+    explicit independent_bits_engine(Engine &&e) : e_(std::move(e)) {}
+    explicit independent_bits_engine(result_type s) : e_(static_cast<typename Engine::result_type>(s)) {}
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value &&
+                                                     !is_same<Sseq, Engine>::value>::type>
+    explicit independent_bits_engine(Sseq &q) : e_(q) {}
+    void seed() { e_.seed(); }
+    void seed(result_type s) { e_.seed(static_cast<typename Engine::result_type>(s)); }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) { e_.seed(q); }
+
+    // [rand.adapt.ibits]/2-4, the standard's own algorithm; an engine whose range is all 64 bits needs no rejection.
+    result_type operator()() {
+        typedef unsigned long long W;
+        const W span = static_cast<W>(Engine::max()) - static_cast<W>(Engine::min());
+        if (span == ~W(0)) return static_cast<result_type>(static_cast<W>(e_()) - static_cast<W>(Engine::min())) & mask();
+        const W R = span + 1;
+        size_t m = 0;
+        while (m < 63 && (W(1) << (m + 1)) <= R) m++;
+        size_t n = w / m + (w % m != 0 ? 1 : 0);
+        size_t w0 = w / n;
+        W y0 = (R >> w0) << w0;
+        if (R - y0 > y0 / n) {
+            n++;
+            w0 = w / n;
+            y0 = (R >> w0) << w0;
+        }
+        const size_t n0 = n - w % n;
+        const W y1 = w0 + 1 >= 64 ? 0 : (R >> (w0 + 1)) << (w0 + 1);
+        W sum = 0;
+        for (size_t k = 0; k < n; k++) {
+            const size_t bits = k < n0 ? w0 : w0 + 1;
+            const W limit = k < n0 ? y0 : y1;
+            W u;
+            do u = static_cast<W>(e_()) - static_cast<W>(Engine::min());
+            while (u >= limit);
+            sum = (bits >= 64 ? 0 : sum << bits) + (bits >= 64 ? u : (u & ((W(1) << bits) - 1)));
+        }
+        return static_cast<result_type>(sum) & mask();
+    }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+    const Engine &base() const noexcept { return e_; }
+
+    bool __cxx1_eq(const independent_bits_engine &y) const { const independent_bits_engine &x = *this; return x.e_ == y.e_; }
+    ostream &__cxx1_out(ostream &os) const { const independent_bits_engine &x = *this; return os << x.e_; }
+    istream &__cxx1_in(istream &is) { independent_bits_engine &x = *this; return is >> x.e_; }
+};
+
+// [rand.adapt.shuf]
+template <class Engine, size_t k> class shuffle_order_engine : public __cxx1_rand_base {
+    static_assert(0 < k, "shuffle_order_engine's k - [rand.adapt.shuf]/3");
+    Engine e_;
+    typename Engine::result_type v_[k];
+    typename Engine::result_type y_;
+
+    void init() {
+        for (size_t i = 0; i < k; i++) v_[i] = e_();
+        y_ = e_();
+    }
+
+public:
+    typedef typename Engine::result_type result_type;
+    static constexpr size_t table_size = k;
+    static constexpr result_type min() { return Engine::min(); }
+    static constexpr result_type max() { return Engine::max(); }
+
+    shuffle_order_engine() : e_() { init(); }
+    explicit shuffle_order_engine(const Engine &e) : e_(e) { init(); }
+    explicit shuffle_order_engine(Engine &&e) : e_(std::move(e)) { init(); }
+    explicit shuffle_order_engine(result_type s) : e_(s) { init(); }
+    template <class Sseq, class = typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value &&
+                                                     !is_same<Sseq, Engine>::value>::type>
+    explicit shuffle_order_engine(Sseq &q) : e_(q) { init(); }
+    void seed() { e_.seed(); init(); }
+    void seed(result_type s) { e_.seed(s); init(); }
+    template <class Sseq> typename enable_if<__cxx1_is_seed_seq<Sseq, result_type>::value>::type seed(Sseq &q) { e_.seed(q); init(); }
+
+    // [rand.adapt.shuf]/3: j = floor(k (Y - min) / (R + 1)), worked in integers where they hold it.
+    result_type operator()() {
+        typedef unsigned long long W;
+        const W range = static_cast<W>(Engine::max()) - static_cast<W>(Engine::min());
+        const W off = static_cast<W>(y_) - static_cast<W>(Engine::min());
+        size_t j;
+        if (range < 0xFFFFFFFFull && k <= 0xFFFFFFFFull) j = static_cast<size_t>((static_cast<W>(k) * off) / (range + 1));
+        else j = static_cast<size_t>(static_cast<long double>(k) * off / (static_cast<long double>(range) + 1.0L));
+        if (j >= k) j = k - 1;
+        y_ = v_[j];
+        v_[j] = e_();
+        return y_;
+    }
+    void discard(unsigned long long z) { for (; z != 0; --z) (*this)(); }
+    const Engine &base() const noexcept { return e_; }
+
+    bool __cxx1_eq(const shuffle_order_engine &y) const { const shuffle_order_engine &x = *this;
+        if (x.y_ != y.y_ || !(x.e_ == y.e_)) return false;
+        for (size_t i = 0; i < k; i++) if (x.v_[i] != y.v_[i]) return false;
+        return true;
+    }
+    ostream &__cxx1_out(ostream &os) const { const shuffle_order_engine &x = *this;
+        __cxx1_rand_io io(os);
+        os << x.e_;
+        for (size_t i = 0; i < k; i++) os << ' ' << static_cast<unsigned long long>(x.v_[i]);
+        return os << ' ' << static_cast<unsigned long long>(x.y_);
+    }
+    istream &__cxx1_in(istream &is) { shuffle_order_engine &x = *this;
+        __cxx1_rand_io io(is);
+        unsigned long long v = 0;
+        if (!(is >> x.e_)) return is;
+        for (size_t i = 0; i < k; i++) { if (!(is >> v)) return is; x.v_[i] = static_cast<result_type>(v); }
+        if (is >> v) x.y_ = static_cast<result_type>(v);
+        return is;
+    }
+};
+
+// [rand.predef]
+typedef linear_congruential_engine<uint_fast32_t, 16807, 0, 2147483647> minstd_rand0;
+typedef linear_congruential_engine<uint_fast32_t, 48271, 0, 2147483647> minstd_rand;
+typedef mersenne_twister_engine<uint_fast32_t, 32, 624, 397, 31, 0x9908b0dfu, 11, 0xffffffffu, 7, 0x9d2c5680u, 15,
+                                0xefc60000u, 18, 1812433253u> mt19937;
+typedef mersenne_twister_engine<uint_fast64_t, 64, 312, 156, 31, 0xb5026f5aa96619e9ULL, 29, 0x5555555555555555ULL, 17,
+                                0x71d67fffeda60000ULL, 37, 0xfff7eee000000000ULL, 43, 6364136223846793005ULL> mt19937_64;
+typedef subtract_with_carry_engine<uint_fast32_t, 24, 10, 24> ranlux24_base;
+typedef subtract_with_carry_engine<uint_fast64_t, 48, 5, 12> ranlux48_base;
+typedef discard_block_engine<ranlux24_base, 223, 23> ranlux24;
+typedef discard_block_engine<ranlux48_base, 389, 11> ranlux48;
+typedef shuffle_order_engine<minstd_rand0, 256> knuth_b;
+typedef mt19937 default_random_engine;
+
+// [rand.device]
+class random_device {
+    FILE *f_;
+    mt19937 fallback_;
+
+public:
+    typedef unsigned int result_type;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return 0xFFFFFFFFu; }
+
+    explicit random_device(const string &token = "default") : f_(0), fallback_(static_cast<unsigned>(std::time(0))) {
+        (void)token;
+#if !defined(_WIN32) && (defined(__linux__) || defined(__APPLE__))
+        f_ = std::fopen("/dev/urandom", "rb");
+#endif
+    }
+    ~random_device() { if (f_ != 0) std::fclose(f_); }
+    random_device(const random_device &) = delete;
+    void operator=(const random_device &) = delete;
+
+    result_type operator()() {
+#if defined(_WIN32)
+        unsigned int v = 0;
+        if (__cxx1_os::rand_s(&v) == 0) return v;
+#endif
+        if (f_ != 0) {
+            unsigned char b[4];
+            if (std::fread(b, 1, 4, f_) == 4)
+                return static_cast<result_type>(b[0]) | static_cast<result_type>(b[1]) << 8 |
+                       static_cast<result_type>(b[2]) << 16 | static_cast<result_type>(b[3]) << 24;
+        }
+        return static_cast<result_type>(fallback_());
+    }
+    double entropy() const noexcept {
+#if defined(_WIN32)
+        return 32.0;
+#else
+        return f_ != 0 ? 32.0 : 0.0;
+#endif
+    }
+};
+
+// [rand.util.canonical]
+template <class RealType, size_t bits, class URNG> RealType generate_canonical(URNG &g) {
+    const size_t digits = static_cast<size_t>(numeric_limits<RealType>::digits);
+    const size_t b = digits < bits ? digits : bits;
+    const long double R = static_cast<long double>(g.max()) - static_cast<long double>(g.min()) + 1.0L;
+    const size_t log2r = static_cast<size_t>(std::log(R) / std::log(2.0L));
+    size_t k = (b + log2r - 1) / (log2r == 0 ? 1 : log2r);
+    if (k == 0) k = 1;
+    RealType sum = 0, mult = 1;
+    for (; k != 0; --k) {
+        sum += static_cast<RealType>(g() - g.min()) * mult;
+        mult *= static_cast<RealType>(R);
+    }
+    RealType r = sum / mult;
+    if (r >= RealType(1)) r = std::nextafter(RealType(1), RealType(0));
+    return r;
+}
+
+template <class R, class G> R __cxx1_canonical(G &g) { return generate_canonical<R, numeric_limits<R>::digits>(g); }
+
+// [rand.dist.uni.int]
+template <class IntType = int> class uniform_int_distribution : public __cxx1_rand_base {
+public:
+    typedef IntType result_type;
+    class param_type : public __cxx1_rand_base {
+        IntType a_, b_;
+    public:
+        typedef uniform_int_distribution distribution_type;
+        explicit param_type(IntType a = 0, IntType b = numeric_limits<IntType>::max()) : a_(a), b_(b) {}
+        result_type a() const { return a_; }
+        result_type b() const { return b_; }
+        bool __cxx1_eq(const param_type &y) const { const param_type &x = *this; return x.a_ == y.a_ && x.b_ == y.b_; }
+    };
+
+    explicit uniform_int_distribution(IntType a = 0, IntType b = numeric_limits<IntType>::max()) : p_(a, b) {}
+    explicit uniform_int_distribution(const param_type &p) : p_(p) {}
+    void reset() {}
+    template <class G> result_type operator()(G &g) { return (*this)(g, p_); }
+    // Rejection over the engine's range, combining draws where it is narrower than the one asked for.
+    template <class G> result_type operator()(G &g, const param_type &p) {
+        typedef unsigned long long W;
+        const W want = static_cast<W>(p.b()) - static_cast<W>(p.a());
+        const W have = static_cast<W>(g.max()) - static_cast<W>(g.min());
+        W ret;
+        if (have == want) {
+            ret = static_cast<W>(g()) - static_cast<W>(g.min());
+        } else if (have > want) {
+            const W buckets = want + 1;
+            const W scale = have == ~W(0) ? (~W(0) / buckets) + ((~W(0) % buckets) + 1 == buckets ? 1 : 0) : (have + 1) / buckets;
+            const W past = buckets * scale;
+            do ret = static_cast<W>(g()) - static_cast<W>(g.min());
+            while (past != 0 && ret >= past);   // 0: buckets * scale is 2^64, and every draw is in
+            ret /= scale;
+        } else {
+            const W unit = have + 1;
+            W high;
+            do {
+                const param_type up(0, static_cast<IntType>(want / unit));
+                high = unit * static_cast<W>((*this)(g, up));
+                ret = high + (static_cast<W>(g()) - static_cast<W>(g.min()));
+            } while (ret > want || ret < high);
+        }
+        return static_cast<result_type>(static_cast<W>(p.a()) + ret);
+    }
+    result_type a() const { return p_.a(); }
+    result_type b() const { return p_.b(); }
+    param_type param() const { return p_; }
+    void param(const param_type &p) { p_ = p; }
+    result_type min() const { return p_.a(); }
+    result_type max() const { return p_.b(); }
+    bool __cxx1_eq(const uniform_int_distribution &y) const { const uniform_int_distribution &x = *this; return x.p_ == y.p_; }
+    ostream &__cxx1_out(ostream &os) const { const uniform_int_distribution &d = *this;
+        __cxx1_rand_io io(os);
+        return os << static_cast<long long>(d.a()) << ' ' << static_cast<long long>(d.b());
+    }
+    istream &__cxx1_in(istream &is) { uniform_int_distribution &d = *this;
+        __cxx1_rand_io io(is);
+        long long a = 0, b = 0;
+        if (is >> a >> b) d.p_ = param_type(static_cast<IntType>(a), static_cast<IntType>(b));
+        return is;
+    }
+
+private:
+    param_type p_;
+};
+
+// The distributions over reals with one or two parameters share their shape; each differs in what it draws.
+#define _CXX1_RAND_PARAMS2(Dist, R, A, a, defA, B, b, defB)                                                     \
+public:                                                                                                         \
+    typedef R result_type;                                                                                      \
+    class param_type : public __cxx1_rand_base {                                                                                          \
+        A a##_;                                                                                                 \
+        B b##_;                                                                                                 \
+    public:                                                                                                     \
+        typedef Dist distribution_type;                                                                         \
+        explicit param_type(A a0 = defA, B b0 = defB) : a##_(a0), b##_(b0) {}                                    \
+        A a() const { return a##_; }                                                                            \
+        B b() const { return b##_; }                                                                            \
+        bool __cxx1_eq(const param_type &y) const { const param_type &x = *this; return x.a##_ == y.a##_ && x.b##_ == y.b##_; } \
+    \
+    };                                                                                                          \
+    explicit Dist(A a0 = defA, B b0 = defB) : p_(a0, b0) {}                                                     \
+    explicit Dist(const param_type &p) : p_(p) {}                                                               \
+    template <class G> result_type operator()(G &g) { return (*this)(g, p_); }                                \
+    A a() const { return p_.a(); }                                                                              \
+    B b() const { return p_.b(); }                                                                              \
+    param_type param() const { return p_; }                                                                     \
+    void param(const param_type &p) { p_ = p; reset(); }                                                       \
+    bool __cxx1_eq(const Dist &y) const { const Dist &x = *this; return x.p_ == y.p_; }                               \
+    \
+    ostream &__cxx1_out(ostream &os) const { const Dist &d = *this;                                                    \
+        __cxx1_rand_io io(os);                                                                                  \
+        return os << d.a() << ' ' << d.b();                                                                     \
+    }                                                                                                           \
+    istream &__cxx1_in(istream &is) { Dist &d = *this;                                                          \
+        __cxx1_rand_io io(is);                                                                                  \
+        A x = A();                                                                                              \
+        B y = B();                                                                                              \
+        if (is >> x >> y) d.param(param_type(x, y));                                                            \
+        return is;                                                                                              \
+    }                                                                                                           \
+                                                                                                                \
+private:                                                                                                        \
+    param_type p_;                                                                                              \
+                                                                                                                \
+public:
+
+#define _CXX1_RAND_PARAMS1(Dist, R, A, a, defA)                                                                 \
+public:                                                                                                         \
+    typedef R result_type;                                                                                      \
+    class param_type : public __cxx1_rand_base {                                                                                          \
+        A a##_;                                                                                                 \
+    public:                                                                                                     \
+        typedef Dist distribution_type;                                                                         \
+        explicit param_type(A a0 = defA) : a##_(a0) {}                                                          \
+        A a() const { return a##_; }                                                                            \
+        bool __cxx1_eq(const param_type &y) const { const param_type &x = *this; return x.a##_ == y.a##_; }           \
+    \
+    };                                                                                                          \
+    explicit Dist(A a0 = defA) : p_(a0) {}                                                                      \
+    explicit Dist(const param_type &p) : p_(p) {}                                                               \
+    template <class G> result_type operator()(G &g) { return (*this)(g, p_); }                                \
+    A a() const { return p_.a(); }                                                                              \
+    param_type param() const { return p_; }                                                                     \
+    void param(const param_type &p) { p_ = p; reset(); }                                                       \
+    bool __cxx1_eq(const Dist &y) const { const Dist &x = *this; return x.p_ == y.p_; }                               \
+    \
+    ostream &__cxx1_out(ostream &os) const { const Dist &d = *this;                                                    \
+        __cxx1_rand_io io(os);                                                                                  \
+        return os << d.a();                                                                                     \
+    }                                                                                                           \
+    istream &__cxx1_in(istream &is) { Dist &d = *this;                                                          \
+        __cxx1_rand_io io(is);                                                                                  \
+        A x = A();                                                                                              \
+        if (is >> x) d.param(param_type(x));                                                                    \
+        return is;                                                                                              \
+    }                                                                                                           \
+                                                                                                                \
+private:                                                                                                        \
+    param_type p_;                                                                                              \
+                                                                                                                \
+public:
+
+// [rand.dist.uni.real]
+template <class RealType = double> class uniform_real_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS2(uniform_real_distribution, RealType, RealType, a, RealType(0), RealType, b, RealType(1))
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &p) {
+        return p.a() + (p.b() - p.a()) * __cxx1_canonical<RealType>(g);
+    }
+    result_type min() const { return a(); }
+    result_type max() const { return b(); }
+};
+
+// [rand.dist.bern.bernoulli]
+class bernoulli_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS1(bernoulli_distribution, bool, double, p, 0.5)
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) { return __cxx1_canonical<double>(g) < q.p(); }
+    result_type min() const { return false; }
+    result_type max() const { return true; }
+};
+
+// [rand.dist.bern.geo]: the count of failures before the first success, by inversion.
+template <class IntType = int> class geometric_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS1(geometric_distribution, IntType, double, p, 0.5)
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        if (q.p() >= 1.0) return 0;
+        const double u = 1.0 - __cxx1_canonical<double>(g);   // (0, 1]
+        return static_cast<IntType>(std::floor(std::log(u) / std::log(1.0 - q.p())));
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<IntType>::max(); }
+};
+
+// [rand.dist.norm.normal]: Marsaglia's polar method, the second value of each pair kept for the next call.
+template <class RealType = double> class normal_distribution : public __cxx1_rand_base {
+    bool saved_ = false;
+    RealType next_ = 0;
+    _CXX1_RAND_PARAMS2(normal_distribution, RealType, RealType, mean, RealType(0), RealType, stddev, RealType(1))
+    void reset() { saved_ = false; }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        RealType z;
+        if (saved_) {
+            saved_ = false;
+            z = next_;
+        } else {
+            RealType x, y, r2;
+            do {
+                x = RealType(2) * __cxx1_canonical<RealType>(g) - RealType(1);
+                y = RealType(2) * __cxx1_canonical<RealType>(g) - RealType(1);
+                r2 = x * x + y * y;
+            } while (r2 > RealType(1) || r2 == RealType(0));
+            const RealType m = static_cast<RealType>(std::sqrt(-2.0 * std::log(static_cast<double>(r2)) / r2));
+            next_ = x * m;
+            saved_ = true;
+            z = y * m;
+        }
+        return z * q.stddev() + q.mean();
+    }
+    result_type min() const { return -numeric_limits<RealType>::infinity(); }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.pois.gamma]: Marsaglia and Tsang, shape below 1 boosted by U^(1/alpha).
+template <class RealType = double> class gamma_distribution : public __cxx1_rand_base {
+    normal_distribution<RealType> n_;
+    _CXX1_RAND_PARAMS2(gamma_distribution, RealType, RealType, alpha, RealType(1), RealType, beta, RealType(1))
+    void reset() { n_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        const double alpha = q.alpha();
+        const double boost = alpha < 1.0 ? std::pow(1.0 - __cxx1_canonical<double>(g), 1.0 / alpha) : 1.0;
+        const double d = (alpha < 1.0 ? alpha + 1.0 : alpha) - 1.0 / 3.0, c = 1.0 / std::sqrt(9.0 * d);
+        for (;;) {
+            double x, v;
+            do {
+                x = static_cast<double>(n_(g));
+                v = 1.0 + c * x;
+            } while (v <= 0.0);
+            v = v * v * v;
+            const double u = __cxx1_canonical<double>(g);
+            if (u < 1.0 - 0.0331 * x * x * x * x || (u > 0.0 && std::log(u) < 0.5 * x * x + d * (1.0 - v + std::log(v))))
+                return static_cast<RealType>(d * v * boost * q.beta());
+        }
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.pois.poisson]
+template <class IntType = int> class poisson_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS1(poisson_distribution, IntType, double, mean, 1.0)
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        const double mean = q.mean();
+        if (mean < 12.0) {
+            const double limit = std::exp(-mean);
+            IntType k = 0;
+            double prod = __cxx1_canonical<double>(g);
+            while (prod > limit) {
+                ++k;
+                prod *= __cxx1_canonical<double>(g);
+            }
+            return k;
+        }
+        // PTRS, Hormann 1993.
+        const double slam = std::sqrt(mean), loglam = std::log(mean);
+        const double b = 0.931 + 2.53 * slam, a = -0.059 + 0.02483 * b;
+        const double invalpha = 1.1239 + 1.1328 / (b - 3.4), vr = 0.9277 - 3.6224 / (b - 2.0);
+        for (;;) {
+            const double u = __cxx1_canonical<double>(g) - 0.5, v = __cxx1_canonical<double>(g);
+            const double us = 0.5 - std::fabs(u);
+            const double k = std::floor((2.0 * a / us + b) * u + mean + 0.43);
+            if (us >= 0.07 && v <= vr) return static_cast<IntType>(k);
+            if (k < 0.0 || (us < 0.013 && v > us)) continue;
+            if (v > 0.0 && std::log(v) + std::log(invalpha) - std::log(a / (us * us) + b) <= -mean + k * loglam - std::lgamma(k + 1.0))
+                return static_cast<IntType>(k);
+        }
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<IntType>::max(); }
+};
+
+// [rand.dist.bern.bin]: counting successes by geometric jumps, from the rarer side.
+template <class IntType = int> class binomial_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS2(binomial_distribution, IntType, IntType, t, IntType(1), double, p, 0.5)
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        const IntType t = q.t();
+        const double p = q.p() <= 0.5 ? q.p() : 1.0 - q.p();
+        IntType hits = 0;
+        if (p > 0.0) {
+            if (p >= 1.0) hits = t;
+            else {
+                const double lq = std::log(1.0 - p);
+                double at = 0.0;
+                for (;;) {
+                    at += std::floor(std::log(1.0 - __cxx1_canonical<double>(g)) / lq) + 1.0;
+                    if (at > static_cast<double>(t)) break;
+                    ++hits;
+                }
+            }
+        }
+        return q.p() <= 0.5 ? hits : static_cast<IntType>(t - hits);
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return t(); }
+};
+
+// [rand.dist.bern.negbin]: a Poisson whose mean is gamma-distributed.
+template <class IntType = int> class negative_binomial_distribution : public __cxx1_rand_base {
+    gamma_distribution<double> gm_;
+    _CXX1_RAND_PARAMS2(negative_binomial_distribution, IntType, IntType, k, IntType(1), double, p, 0.5)
+    void reset() { gm_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        if (q.p() >= 1.0) return 0;
+        const double lambda = gm_(g, typename gamma_distribution<double>::param_type(static_cast<double>(q.k()), (1.0 - q.p()) / q.p()));
+        poisson_distribution<IntType> pois;
+        return pois(g, typename poisson_distribution<IntType>::param_type(lambda));
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<IntType>::max(); }
+};
+
+// [rand.dist.pois.exp]
+template <class RealType = double> class exponential_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS1(exponential_distribution, RealType, RealType, lambda, RealType(1))
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        return static_cast<RealType>(-std::log(1.0 - static_cast<double>(__cxx1_canonical<RealType>(g))) / q.lambda());
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.pois.weibull]
+template <class RealType = double> class weibull_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS2(weibull_distribution, RealType, RealType, a, RealType(1), RealType, b, RealType(1))
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        return static_cast<RealType>(q.b() * std::pow(-std::log(1.0 - static_cast<double>(__cxx1_canonical<RealType>(g))), 1.0 / q.a()));
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.pois.extreme]
+template <class RealType = double> class extreme_value_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS2(extreme_value_distribution, RealType, RealType, a, RealType(0), RealType, b, RealType(1))
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        double u;
+        do u = static_cast<double>(__cxx1_canonical<RealType>(g));
+        while (u == 0.0);
+        return static_cast<RealType>(q.a() - q.b() * std::log(-std::log(u)));
+    }
+    result_type min() const { return -numeric_limits<RealType>::infinity(); }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.norm.lognormal]
+template <class RealType = double> class lognormal_distribution : public __cxx1_rand_base {
+    normal_distribution<RealType> n_;
+    _CXX1_RAND_PARAMS2(lognormal_distribution, RealType, RealType, m, RealType(0), RealType, s, RealType(1))
+    void reset() { n_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        return static_cast<RealType>(std::exp(static_cast<double>(n_(g, typename normal_distribution<RealType>::param_type(q.m(), q.s())))));
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.norm.chisq]
+template <class RealType = double> class chi_squared_distribution : public __cxx1_rand_base {
+    gamma_distribution<RealType> gm_;
+    _CXX1_RAND_PARAMS1(chi_squared_distribution, RealType, RealType, n, RealType(1))
+    void reset() { gm_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        return RealType(2) * gm_(g, typename gamma_distribution<RealType>::param_type(q.n() / RealType(2), RealType(1)));
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.norm.cauchy]
+template <class RealType = double> class cauchy_distribution : public __cxx1_rand_base {
+    _CXX1_RAND_PARAMS2(cauchy_distribution, RealType, RealType, a, RealType(0), RealType, b, RealType(1))
+    void reset() {}
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        double u;
+        do u = static_cast<double>(__cxx1_canonical<RealType>(g));
+        while (u == 0.5 || u == 0.0);
+        return static_cast<RealType>(q.a() + q.b() * std::tan(3.14159265358979323846 * (u - 0.5)));
+    }
+    result_type min() const { return -numeric_limits<RealType>::infinity(); }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.norm.f]
+template <class RealType = double> class fisher_f_distribution : public __cxx1_rand_base {
+    gamma_distribution<RealType> gm_, gn_;
+    _CXX1_RAND_PARAMS2(fisher_f_distribution, RealType, RealType, m, RealType(1), RealType, n, RealType(1))
+    void reset() { gm_.reset(); gn_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        typedef typename gamma_distribution<RealType>::param_type gp;
+        const RealType x = gm_(g, gp(q.m() / RealType(2), RealType(1))), y = gn_(g, gp(q.n() / RealType(2), RealType(1)));
+        return (x * q.n()) / (y * q.m());
+    }
+    result_type min() const { return 0; }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+// [rand.dist.norm.t]
+template <class RealType = double> class student_t_distribution : public __cxx1_rand_base {
+    normal_distribution<RealType> nd_;
+    gamma_distribution<RealType> gm_;
+    _CXX1_RAND_PARAMS1(student_t_distribution, RealType, RealType, n, RealType(1))
+    void reset() { nd_.reset(); gm_.reset(); }
+    template <class G> result_type operator()(G &g, const param_type &q) {
+        const RealType z = nd_(g);
+        const RealType chi = RealType(2) * gm_(g, typename gamma_distribution<RealType>::param_type(q.n() / RealType(2), RealType(1)));
+        return static_cast<RealType>(z / std::sqrt(static_cast<double>(chi / q.n())));
+    }
+    result_type min() const { return -numeric_limits<RealType>::infinity(); }
+    result_type max() const { return numeric_limits<RealType>::infinity(); }
+};
+
+#undef _CXX1_RAND_PARAMS1
+#undef _CXX1_RAND_PARAMS2
+
+// [rand.dist.samp.discrete]
+template <class IntType = int> class discrete_distribution : public __cxx1_rand_base {
+public:
+    typedef IntType result_type;
+    class param_type : public __cxx1_rand_base {
+        vector<double> p_, cum_;
+        void normalise() {
+            if (p_.empty()) p_.push_back(1.0);
+            double sum = 0;
+            for (size_t i = 0; i < p_.size(); i++) sum += p_[i];
+            cum_.assign(p_.size(), 0.0);
+            double run = 0;
+            for (size_t i = 0; i < p_.size(); i++) {
+                p_[i] /= sum;
+                run += p_[i];
+                cum_[i] = run;
+            }
+            cum_.back() = 1.0;
+        }
+    public:
+        typedef discrete_distribution distribution_type;
+        param_type() { normalise(); }
+        template <class InputIt> param_type(InputIt first, InputIt last) {
+            for (; first != last; ++first) p_.push_back(static_cast<double>(*first));
+            normalise();
+        }
+        param_type(initializer_list<double> wl) : p_(wl.begin(), wl.end()) { normalise(); }
+        template <class UnaryOperation> param_type(size_t nw, double xmin, double xmax, UnaryOperation fw) {
+            if (nw == 0) nw = 1;
+            const double delta = (xmax - xmin) / static_cast<double>(nw);
+            for (size_t k = 0; k < nw; k++) p_.push_back(fw(xmin + static_cast<double>(k) * delta + delta / 2));
+            normalise();
+        }
+        vector<double> probabilities() const { return p_; }
+        const vector<double> &__cxx1_cumulative() const { return cum_; }
+        bool __cxx1_eq(const param_type &y) const { const param_type &x = *this; return x.p_ == y.p_; }
+    };
+
+    discrete_distribution() {}
+    template <class InputIt> discrete_distribution(InputIt first, InputIt last) : p_(first, last) {}
+    discrete_distribution(initializer_list<double> wl) : p_(wl) {}
+    template <class UnaryOperation> discrete_distribution(size_t nw, double xmin, double xmax, UnaryOperation fw) : p_(nw, xmin, xmax, fw) {}
+    explicit discrete_distribution(const param_type &p) : p_(p) {}
+    void reset() {}
+    template <class G> result_type operator()(G &g) { return (*this)(g, p_); }
+    template <class G> result_type operator()(G &g, const param_type &p) {
+        const double u = __cxx1_canonical<double>(g);
+        const vector<double> &cum = p.__cxx1_cumulative();
+        size_t lo = 0, hi = cum.size() - 1;
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (u < cum[mid]) hi = mid;
+            else lo = mid + 1;
+        }
+        return static_cast<IntType>(lo);
+    }
+    vector<double> probabilities() const { return p_.probabilities(); }
+    param_type param() const { return p_; }
+    void param(const param_type &p) { p_ = p; }
+    result_type min() const { return 0; }
+    result_type max() const { return static_cast<IntType>(p_.probabilities().size() - 1); }
+    bool __cxx1_eq(const discrete_distribution &y) const { const discrete_distribution &x = *this; return x.p_ == y.p_; }
+    ostream &__cxx1_out(ostream &os) const { const discrete_distribution &d = *this;
+        __cxx1_rand_io io(os);
+        const vector<double> p = d.probabilities();
+        os << static_cast<unsigned long long>(p.size());
+        for (size_t i = 0; i < p.size(); i++) os << ' ' << p[i];
+        return os;
+    }
+    istream &__cxx1_in(istream &is) { discrete_distribution &d = *this;
+        __cxx1_rand_io io(is);
+        unsigned long long n = 0;
+        if (!(is >> n)) return is;
+        vector<double> p(static_cast<size_t>(n));
+        for (size_t i = 0; i < p.size(); i++) if (!(is >> p[i])) return is;
+        d.p_ = param_type(p.begin(), p.end());
+        return is;
+    }
+
+private:
+    param_type p_;
+};
+
+// [rand.dist.samp.pconst] and [rand.dist.samp.plinear]: an interval chosen by its share of the area, then a
+// point in it - uniformly for constant density, by inverting the trapezoid's distribution for linear.
+template <class RealType, bool Linear> class __cxx1_piecewise_param : public __cxx1_rand_base {
+    vector<RealType> b_, d_;
+    vector<double> cum_;
+
+    void finish() {
+        if (b_.size() < 2) {
+            b_.assign(1, RealType(0));
+            b_.push_back(RealType(1));
+            d_.assign(Linear ? 2 : 1, RealType(1));
+        }
+        const size_t n = b_.size() - 1;
+        vector<double> area(n);
+        double total = 0;
+        // [rand.dist.samp.pconst]/1: a constant distribution's weights are its intervals' probabilities, the
+        // density each over its width; [rand.dist.samp.plinear]/1: a linear one's are densities at the bounds.
+        for (size_t i = 0; i < n; i++) {
+            const double w = static_cast<double>(b_[i + 1] - b_[i]);
+            area[i] = Linear ? w * (static_cast<double>(d_[i]) + static_cast<double>(d_[i + 1])) / 2 : static_cast<double>(d_[i]);
+            total += area[i];
+        }
+        for (size_t i = 0; i < d_.size(); i++)
+            d_[i] = static_cast<RealType>(static_cast<double>(d_[i]) /
+                                          (Linear ? total : total * static_cast<double>(b_[i + 1] - b_[i])));
+        cum_.assign(n, 0.0);
+        double run = 0;
+        for (size_t i = 0; i < n; i++) { run += area[i] / total; cum_[i] = run; }
+        cum_.back() = 1.0;
+    }
+
+public:
+    __cxx1_piecewise_param() { finish(); }
+    template <class InputItB, class InputItW> __cxx1_piecewise_param(InputItB fb, InputItB lb, InputItW fw) {
+        for (; fb != lb; ++fb) b_.push_back(static_cast<RealType>(*fb));
+        if (b_.size() >= 2)
+            for (size_t i = 0; i < b_.size() - (Linear ? 0 : 1); i++, ++fw) d_.push_back(static_cast<RealType>(*fw));
+        finish();
+    }
+    template <class UnaryOperation> __cxx1_piecewise_param(initializer_list<RealType> bl, UnaryOperation fw) {
+        b_.assign(bl.begin(), bl.end());
+        if (b_.size() >= 2) {
+            for (size_t i = 0; i + 1 < b_.size(); i++)
+                d_.push_back(static_cast<RealType>(Linear ? fw(b_[i]) : fw((b_[i] + b_[i + 1]) / 2)));
+            if (Linear) d_.push_back(static_cast<RealType>(fw(b_.back())));
+        }
+        finish();
+    }
+    template <class UnaryOperation> __cxx1_piecewise_param(size_t nw, RealType xmin, RealType xmax, UnaryOperation fw) {
+        if (nw == 0) nw = 1;
+        const RealType delta = (xmax - xmin) / static_cast<RealType>(nw);
+        for (size_t k = 0; k <= nw; k++) b_.push_back(xmin + static_cast<RealType>(k) * delta);
+        for (size_t k = 0; k < nw; k++) d_.push_back(static_cast<RealType>(Linear ? fw(b_[k]) : fw(b_[k] + delta / 2)));
+        if (Linear) d_.push_back(static_cast<RealType>(fw(b_[nw])));
+        finish();
+    }
+    vector<RealType> intervals() const { return b_; }
+    vector<RealType> densities() const { return d_; }
+    bool operator==(const __cxx1_piecewise_param &o) const { return b_ == o.b_ && d_ == o.d_; }
+
+    template <class G> RealType draw(G &g) const {
+        const double u = __cxx1_canonical<double>(g);
+        size_t lo = 0, hi = cum_.size() - 1;
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (u < cum_[mid]) hi = mid;
+            else lo = mid + 1;
+        }
+        const double x0 = static_cast<double>(b_[lo]), x1 = static_cast<double>(b_[lo + 1]);
+        const double v = __cxx1_canonical<double>(g);
+        if (!Linear) return static_cast<RealType>(x0 + (x1 - x0) * v);
+        const double p0 = static_cast<double>(d_[lo]), p1 = static_cast<double>(d_[lo + 1]), w = x1 - x0;
+        if (std::fabs(p1 - p0) < 1e-12 * (p0 + p1)) return static_cast<RealType>(x0 + w * v);
+        // The share s of the interval's area solves p0 s + (p1 - p0) s^2 / 2 = v (p0 + p1) / 2.
+        const double s = (-p0 + std::sqrt(p0 * p0 + v * (p1 * p1 - p0 * p0))) / (p1 - p0);
+        return static_cast<RealType>(x0 + w * s);
+    }
+};
+
+#define _CXX1_PIECEWISE(Dist, Linear)                                                                           \
+template <class RealType = double> class Dist {                                                                 \
+public:                                                                                                         \
+    typedef RealType result_type;                                                                               \
+    class param_type : public __cxx1_piecewise_param<RealType, Linear> {                                        \
+        typedef __cxx1_piecewise_param<RealType, Linear> base;                                                  \
+    public:                                                                                                     \
+        typedef Dist distribution_type;                                                                         \
+        param_type() {}                                                                                         \
+        template <class InputItB, class InputItW> param_type(InputItB fb, InputItB lb, InputItW fw) : base(fb, lb, fw) {} \
+        template <class UnaryOperation> param_type(initializer_list<RealType> bl, UnaryOperation fw) : base(bl, fw) {} \
+        template <class UnaryOperation> param_type(size_t nw, RealType xmin, RealType xmax, UnaryOperation fw)  \
+            : base(nw, xmin, xmax, fw) {}                                                                       \
+        bool __cxx1_eq(const param_type &y) const { const param_type &x = *this; return static_cast<const base &>(x) == static_cast<const base &>(y); }     \
+    \
+    };                                                                                                          \
+    Dist() {}                                                                                                   \
+    template <class InputItB, class InputItW> Dist(InputItB fb, InputItB lb, InputItW fw) : p_(fb, lb, fw) {}   \
+    template <class UnaryOperation> Dist(initializer_list<RealType> bl, UnaryOperation fw) : p_(bl, fw) {}      \
+    template <class UnaryOperation> Dist(size_t nw, RealType xmin, RealType xmax, UnaryOperation fw)            \
+        : p_(nw, xmin, xmax, fw) {}                                                                             \
+    explicit Dist(const param_type &p) : p_(p) {}                                                               \
+    void reset() {}                                                                                             \
+    template <class G> result_type operator()(G &g) { return p_.draw(g); }                                      \
+    template <class G> result_type operator()(G &g, const param_type &p) { return p.draw(g); }                  \
+    vector<RealType> intervals() const { return p_.intervals(); }                                               \
+    vector<RealType> densities() const { return p_.densities(); }                                               \
+    param_type param() const { return p_; }                                                                     \
+    void param(const param_type &p) { p_ = p; }                                                                 \
+    result_type min() const { return p_.intervals().front(); }                                                  \
+    result_type max() const { return p_.intervals().back(); }                                                   \
+    bool __cxx1_eq(const Dist &y) const { const Dist &x = *this; return x.p_ == y.p_; }                               \
+    \
+    ostream &__cxx1_out(ostream &os) const { const Dist &d = *this;                                                    \
+        __cxx1_rand_io io(os);                                                                                  \
+        const vector<RealType> b = d.intervals(), w = d.densities();                                            \
+        os << static_cast<unsigned long long>(b.size() - 1);                                                    \
+        for (size_t i = 0; i < b.size(); i++) os << ' ' << b[i];                                                \
+        for (size_t i = 0; i < w.size(); i++) os << ' ' << w[i];                                                \
+        return os;                                                                                              \
+    }                                                                                                           \
+    istream &__cxx1_in(istream &is) { Dist &d = *this;                                                          \
+        __cxx1_rand_io io(is);                                                                                  \
+        unsigned long long n = 0;                                                                               \
+        if (!(is >> n)) return is;                                                                              \
+        vector<RealType> b(static_cast<size_t>(n) + 1), w(static_cast<size_t>(n) + (Linear ? 1 : 0));          \
+        for (size_t i = 0; i < b.size(); i++) if (!(is >> b[i])) return is;                                     \
+        for (size_t i = 0; i < w.size(); i++) if (!(is >> w[i])) return is;                                     \
+        d.p_ = param_type(b.begin(), b.end(), w.begin());                                                       \
+        return is;                                                                                              \
+    }                                                                                                           \
+                                                                                                                \
+private:                                                                                                        \
+    param_type p_;                                                                                              \
+};
+_CXX1_PIECEWISE(piecewise_constant_distribution, false)
+_CXX1_PIECEWISE(piecewise_linear_distribution, true)
+#undef _CXX1_PIECEWISE
+
+}  // namespace std
+
+#endif

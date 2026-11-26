@@ -1,0 +1,100 @@
+// <__invoke> - INVOKE of [func.require]/1 and reference_wrapper of [refwrap], shared by <functional>
+// and <tuple>: make_tuple unwraps a reference_wrapper, and every callable <functional> keeps is called
+// through INVOKE - a function object or pointer as it is, a pointer to member on an object, a reference
+// to one or a pointer to one.
+#ifndef _CXX1_INVOKE
+#define _CXX1_INVOKE
+
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+// The object a pointer to a member of C is applied to: t itself where it is a C or derived from one,
+// what t points at otherwise - a raw pointer or a smart one. The pointee's type is the second overload's own
+// return type, so that for an object with no `*` the substitution fails there and drops it, [temp.deduct]/8.
+template <class C, class T>
+inline typename enable_if<is_base_of<C, typename decay<T>::type>::value, T &&>::type __cxx1_object(T &&t) {
+    return std::forward<T>(t);
+}
+template <class C, class T>
+inline typename enable_if<!is_base_of<C, typename decay<T>::type>::value, decltype(*std::__cxx1_declval<T>())>::type
+__cxx1_object(T &&t) {
+    return *std::forward<T>(t);
+}
+
+// A data member read through the object: const where the object is, as `t.*pm` has it.
+template <class R, class T> struct __cxx1_member_ref {
+    typedef typename conditional<is_const<typename remove_reference<T>::type>::value, const R &, R &>::type type;
+};
+
+// One call for each kind of callable F, its decayed type.
+template <class F> struct __cxx1_invoker {
+    template <class G, class... A>
+    static auto call(G &&f, A &&... a) -> decltype(std::forward<G>(f)(std::forward<A>(a)...)) {
+        return std::forward<G>(f)(std::forward<A>(a)...);
+    }
+};
+template <class R, class C, class... P> struct __cxx1_invoker<R (C::*)(P...)> {
+    template <class T, class... A> static R call(R (C::*pm)(P...), T &&t, A &&... a) {
+        return (std::__cxx1_object<C>(std::forward<T>(t)).*pm)(std::forward<A>(a)...);
+    }
+};
+template <class R, class C, class... P> struct __cxx1_invoker<R (C::*)(P...) const> {
+    template <class T, class... A> static R call(R (C::*pm)(P...) const, T &&t, A &&... a) {
+        return (std::__cxx1_object<C>(std::forward<T>(t)).*pm)(std::forward<A>(a)...);
+    }
+};
+template <class R, class C> struct __cxx1_invoker<R C::*> {
+    template <class T> static typename __cxx1_member_ref<R, T>::type call(R C::*pm, T &&t) {
+        return std::__cxx1_object<C>(std::forward<T>(t)).*pm;
+    }
+};
+
+template <class F, class... A> struct __cxx1_invoke_result {
+    typedef decltype(__cxx1_invoker<typename decay<F>::type>::call(std::__cxx1_declval<F>(),
+                                                                    std::__cxx1_declval<A>()...)) type;
+};
+// Whether F can be called with A at all: INVOKE's expression, valid or not.
+template <class F, class... A> struct __cxx1_callable {
+    template <class G, class = decltype(__cxx1_invoker<typename decay<G>::type>::call(std::__cxx1_declval<G>(),
+                                                                                       std::__cxx1_declval<A>()...))>
+    static char test(int);
+    template <class G> static long test(...);
+    static const bool value = sizeof(test<F>(0)) == 1;
+};
+
+template <class F, class... A>
+inline typename __cxx1_invoke_result<F, A...>::type __cxx1_invoke(F &&f, A &&... a) {
+    return __cxx1_invoker<typename decay<F>::type>::call(std::forward<F>(f), std::forward<A>(a)...);
+}
+
+template <class T> class reference_wrapper {
+    T *p_;
+public:
+    typedef T type;
+    reference_wrapper(T &t) noexcept : p_(&t) {}
+    reference_wrapper(T &&) = delete;
+    reference_wrapper(const reference_wrapper &o) noexcept : p_(o.p_) {}
+    reference_wrapper &operator=(const reference_wrapper &o) noexcept { p_ = o.p_; return *this; }
+    operator T &() const noexcept { return *p_; }
+    T &get() const noexcept { return *p_; }
+    template <class... A> typename __cxx1_invoke_result<T &, A...>::type operator()(A &&... a) const {
+        return std::__cxx1_invoke(*p_, std::forward<A>(a)...);
+    }
+};
+
+template <class T> inline reference_wrapper<T> ref(T &t) noexcept { return reference_wrapper<T>(t); }
+template <class T> inline reference_wrapper<T> ref(reference_wrapper<T> t) noexcept { return ref(t.get()); }
+template <class T> void ref(const T &&) = delete;
+template <class T> inline reference_wrapper<const T> cref(const T &t) noexcept { return reference_wrapper<const T>(t); }
+template <class T> inline reference_wrapper<const T> cref(reference_wrapper<T> t) noexcept { return cref(t.get()); }
+template <class T> void cref(const T &&) = delete;
+
+// make_tuple's and bind's element type: a reference_wrapper<T> becomes T &, anything else itself.
+template <class T> struct __cxx1_unwrap { typedef T type; };
+template <class T> struct __cxx1_unwrap<reference_wrapper<T> > { typedef T &type; };
+
+}  // namespace std
+
+#endif

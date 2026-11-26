@@ -1,0 +1,6 @@
+lam ~Q2 ~Q1 ~B 
+lam ~Q3 ~Q3 ~Q2 ~Q1 ~B 
+lam ~Q3 ~Q3 ~Q3 ~Q2 ~Q1 ~B 
+lam ~Q3 ~Q3 ~Q3 ~Q2 ~Q1 ~B 
+lam ~Q3 ~Q3 ~Q3 handler tail ~Q2 ~Q1 ~B 
+~T ~Q5 ~B 

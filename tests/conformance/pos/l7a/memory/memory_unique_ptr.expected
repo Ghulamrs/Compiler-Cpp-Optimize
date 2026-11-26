@@ -1,0 +1,20 @@
+1 1 1
+7 1
+free_int 7
+Counted deletes 8
+calls 1
+Counted deletes 9
+11
+~Noisy 12
+~Noisy 11
+~Noisy 10
+after reset 1
+1 1
+2 1
+2 1
+1 1
+~Derived 1
+~Base 1
+~Derived 2
+~Base 2
+1 0 0

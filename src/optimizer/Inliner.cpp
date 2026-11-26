@@ -15,6 +15,7 @@ public:
     bool labels = false;                            // a goto's label or a case's: the parser names them once per function
     std::vector<std::pair<const Call *, int>> calls; // each call, and its loop depth
     bool loops = false;                             // a while, do or for anywhere in it
+    bool stackBlocks = false;                       // an `_alloca`: its blocks live until the function returns
 
     void visit(const Num &) override { ++nodes; }
     void visit(const Var &) override { ++nodes; }
@@ -25,6 +26,7 @@ public:
     void visit(const FuncletLeave &) override { ++nodes; labels = true; }
     void visit(const Call &n) override {
         ++nodes;
+        if (n.isAlloca()) { stackBlocks = true; for (const ExprPtr &a : n.args()) a->accept(*this); return; }
         calls.push_back(std::make_pair(&n, depth_));
         if (n.callee() != nullptr) n.callee()->accept(*this);
         for (const ExprPtr &a : n.args()) a->accept(*this);
@@ -119,7 +121,8 @@ std::vector<Inliner::Site> Inliner::sitesOf(const Program &program) {
         fn.body().accept(m);
         Measure &measure = measures_[&fn];
         measure.size = m.nodes;
-        measure.why = fn.hasLandingPads() ? "inline-callee-landing-pad" : fn.isVariadic() ? "inline-callee-variadic"
+        measure.why = fn.hasLandingPads() ? "inline-callee-landing-pad" : fn.msUnwindHelp() != 0 ? "inline-callee-eh-frame"
+                    : fn.isVariadic() ? "inline-callee-variadic" : m.stackBlocks ? "inline-callee-alloca"
                     : fn.regSaveSlot() != 0 ? "inline-callee-register-save-area" : m.cleanups ? "inline-callee-cleanup"
                     : m.labels ? "inline-callee-label-or-switch" : "";
         measure.eligible = *measure.why == '\0';

@@ -1,0 +1,418 @@
+// <list> - [list]: a doubly linked list. The nodes hang off a sentinel held in the list itself, circular, so
+// end() is the sentinel and every insertion and erasure is a relinking that leaves other iterators valid.
+//
+// The allocator is kept and handed back, as <vector>'s is, and the nodes come from it rebound to the node: a node is not
+// a T, and rebinding the allocator to it is what [container.requirements] would have it do.
+#ifndef _CXX1_LIST
+#define _CXX1_LIST
+
+#include <cstddef>
+#include <initializer_list>
+#include <new>
+#include <utility>
+#include <type_traits>
+#include <__allocator>
+#include <__iterator_base>
+
+namespace std {
+
+struct __cxx1_list_link {
+    __cxx1_list_link *prev;
+    __cxx1_list_link *next;
+};
+template <class T> struct __cxx1_list_node : __cxx1_list_link {
+    T value;
+};
+
+template <class T> class __cxx1_list_const_iterator;
+
+template <class T> class __cxx1_list_iterator {
+public:
+    typedef bidirectional_iterator_tag iterator_category;
+    typedef T value_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef T *pointer;
+    typedef T &reference;
+
+    __cxx1_list_iterator() : at(0) {}
+    explicit __cxx1_list_iterator(__cxx1_list_link *l) : at(l) {}
+    T &operator*() const { return static_cast<__cxx1_list_node<T> *>(at)->value; }
+    T *operator->() const { return &static_cast<__cxx1_list_node<T> *>(at)->value; }
+    __cxx1_list_iterator &operator++() { at = at->next; return *this; }
+    __cxx1_list_iterator operator++(int) { __cxx1_list_iterator t = *this; at = at->next; return t; }
+    __cxx1_list_iterator &operator--() { at = at->prev; return *this; }
+    __cxx1_list_iterator operator--(int) { __cxx1_list_iterator t = *this; at = at->prev; return t; }
+    bool operator==(const __cxx1_list_iterator &o) const { return at == o.at; }
+    bool operator!=(const __cxx1_list_iterator &o) const { return at != o.at; }
+
+    __cxx1_list_link *at;
+};
+
+template <class T> class __cxx1_list_const_iterator {
+public:
+    typedef bidirectional_iterator_tag iterator_category;
+    typedef T value_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef const T *pointer;
+    typedef const T &reference;
+
+    __cxx1_list_const_iterator() : at(0) {}
+    explicit __cxx1_list_const_iterator(const __cxx1_list_link *l) : at(const_cast<__cxx1_list_link *>(l)) {}
+    __cxx1_list_const_iterator(const __cxx1_list_iterator<T> &i) : at(i.at) {}
+    const T &operator*() const { return static_cast<__cxx1_list_node<T> *>(at)->value; }
+    const T *operator->() const { return &static_cast<__cxx1_list_node<T> *>(at)->value; }
+    __cxx1_list_const_iterator &operator++() { at = at->next; return *this; }
+    __cxx1_list_const_iterator operator++(int) { __cxx1_list_const_iterator t = *this; at = at->next; return t; }
+    __cxx1_list_const_iterator &operator--() { at = at->prev; return *this; }
+    __cxx1_list_const_iterator operator--(int) { __cxx1_list_const_iterator t = *this; at = at->prev; return t; }
+    bool operator==(const __cxx1_list_const_iterator &o) const { return at == o.at; }
+    bool operator!=(const __cxx1_list_const_iterator &o) const { return at != o.at; }
+
+    __cxx1_list_link *at;
+};
+template <class T>
+inline bool operator==(const __cxx1_list_iterator<T> &a, const __cxx1_list_const_iterator<T> &b) { return a.at == b.at; }
+template <class T>
+inline bool operator!=(const __cxx1_list_iterator<T> &a, const __cxx1_list_const_iterator<T> &b) { return a.at != b.at; }
+
+template <class T, class Alloc = allocator<T> > class list {
+    typedef __cxx1_list_node<T> node;
+
+public:
+    typedef T value_type;
+    typedef Alloc allocator_type;
+    typedef T &reference;
+    typedef const T &const_reference;
+    typedef T *pointer;
+    typedef const T *const_pointer;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef __cxx1_list_iterator<T> iterator;
+    typedef __cxx1_list_const_iterator<T> const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+    list() : size_(0) { empty0(); }
+    explicit list(const Alloc &a) : size_(0), alloc_(a) { empty0(); }
+    explicit list(size_type n) : size_(0) {
+        empty0();
+        for (size_type i = 0; i < n; i++) emplace_back();
+    }
+    list(size_type n, const T &v, const Alloc &a = Alloc()) : size_(0), alloc_(a) {
+        empty0();
+        insert(end(), n, v);
+    }
+    // [sequence.reqmts]/14: two integers are a count and a value, not a range.
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    list(It first, It last, const Alloc &a = Alloc()) : size_(0), alloc_(a) {
+        empty0();
+        for (; first != last; ++first) push_back(*first);
+    }
+    list(const list &o) : size_(0), alloc_(o.alloc_) {
+        empty0();
+        for (const_iterator i = o.begin(); i != o.end(); ++i) push_back(*i);
+    }
+    list(list &&o) : size_(0), alloc_(o.alloc_) {
+        empty0();
+        take(o);
+    }
+    list(const list &o, const Alloc &a) : size_(0), alloc_(a) {
+        empty0();
+        for (const_iterator i = o.begin(); i != o.end(); ++i) push_back(*i);
+    }
+    list(list &&o, const Alloc &a) : size_(0), alloc_(a) {
+        empty0();
+        take(o);
+    }
+    list(initializer_list<T> il, const Alloc &a = Alloc()) : size_(0), alloc_(a) {
+        empty0();
+        for (const T *p = il.begin(); p != il.end(); ++p) push_back(*p);
+    }
+    ~list() { clear(); }
+
+    list &operator=(const list &o) {
+        if (this != &o) assign(o.begin(), o.end());
+        return *this;
+    }
+    list &operator=(list &&o) {
+        if (this != &o) {
+            clear();
+            take(o);
+        }
+        return *this;
+    }
+    list &operator=(initializer_list<T> il) {
+        assign(il.begin(), il.end());
+        return *this;
+    }
+    // Element by element where both have one, then what is left added or erased.
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    void assign(It first, It last) {
+        iterator i = begin();
+        for (; i != end() && first != last; ++i, ++first) *i = *first;
+        if (first == last) erase(i, end());
+        else
+            for (; first != last; ++first) push_back(*first);
+    }
+    void assign(size_type n, const T &v) {
+        iterator i = begin();
+        for (; i != end() && n > 0; ++i, --n) *i = v;
+        if (n == 0) erase(i, end());
+        else insert(end(), n, v);
+    }
+    void assign(initializer_list<T> il) { assign(il.begin(), il.end()); }
+    allocator_type get_allocator() const noexcept { return alloc_; }
+
+    iterator begin() noexcept { return iterator(head_.next); }
+    const_iterator begin() const noexcept { return const_iterator(head_.next); }
+    iterator end() noexcept { return iterator(&head_); }
+    const_iterator end() const noexcept { return const_iterator(&head_); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    const_reverse_iterator crbegin() const noexcept { return rbegin(); }
+    const_reverse_iterator crend() const noexcept { return rend(); }
+
+    bool empty() const noexcept { return size_ == 0; }
+    size_type size() const noexcept { return size_; }
+    size_type max_size() const noexcept { return (size_type)-1 / sizeof(node); }
+    void resize(size_type n) {
+        while (size_ > n) pop_back();
+        while (size_ < n) emplace_back();
+    }
+    void resize(size_type n, const T &v) {
+        while (size_ > n) pop_back();
+        if (size_ < n) insert(end(), n - size_, v);
+    }
+
+    T &front() { return *begin(); }
+    const T &front() const { return *begin(); }
+    T &back() { return static_cast<node *>(head_.prev)->value; }
+    const T &back() const { return static_cast<node *>(head_.prev)->value; }
+
+    template <class... A> void emplace_front(A &&... a) { link(head_.next, make(std::forward<A>(a)...)); }
+    template <class... A> void emplace_back(A &&... a) { link(&head_, make(std::forward<A>(a)...)); }
+    template <class... A> iterator emplace(const_iterator pos, A &&... a) {
+        return iterator(link(pos.at, make(std::forward<A>(a)...)));
+    }
+    void push_front(const T &v) { link(head_.next, make(v)); }
+    void push_front(T &&v) { link(head_.next, make(std::move(v))); }
+    void push_back(const T &v) { link(&head_, make(v)); }
+    void push_back(T &&v) { link(&head_, make(std::move(v))); }
+    void pop_front() { erase(begin()); }
+    void pop_back() { erase(iterator(head_.prev)); }
+
+    iterator insert(const_iterator pos, const T &v) { return iterator(link(pos.at, make(v))); }
+    iterator insert(const_iterator pos, T &&v) { return iterator(link(pos.at, make(std::move(v)))); }
+    // [list.modifiers]: the first inserted, or pos when nothing is.
+    iterator insert(const_iterator pos, size_type n, const T &v) {
+        iterator first(pos.at);
+        for (bool any = false; n > 0; --n) {
+            iterator made(link(pos.at, make(v)));
+            if (!any) { first = made; any = true; }
+        }
+        return first;
+    }
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    iterator insert(const_iterator pos, It first, It last) {
+        iterator out(pos.at);
+        for (bool any = false; first != last; ++first) {
+            iterator made(link(pos.at, make(*first)));
+            if (!any) { out = made; any = true; }
+        }
+        return out;
+    }
+    iterator insert(const_iterator pos, initializer_list<T> il) { return insert(pos, il.begin(), il.end()); }
+
+    iterator erase(const_iterator pos) {
+        __cxx1_list_link *l = pos.at, *after = l->next;
+        unlink(l);
+        destroy(static_cast<node *>(l));
+        return iterator(after);
+    }
+    iterator erase(const_iterator first, const_iterator last) {
+        while (first != last) first = erase(first);
+        return iterator(last.at);
+    }
+    void swap(list &o) {
+        list t(std::move(o));
+        o.take(*this);
+        take(t);
+    }
+    void clear() noexcept {
+        __cxx1_list_link *l = head_.next;
+        while (l != &head_) {
+            __cxx1_list_link *n = l->next;
+            destroy(static_cast<node *>(l));
+            l = n;
+        }
+        empty0();
+        size_ = 0;
+    }
+
+    // [list.ops]: nodes move between lists without being copied.
+    void splice(const_iterator pos, list &o) { splice(pos, o, o.begin(), o.end()); }
+    void splice(const_iterator pos, list &&o) { splice(pos, o, o.begin(), o.end()); }
+    void splice(const_iterator pos, list &o, const_iterator i) {
+        const_iterator j = i;
+        ++j;
+        if (pos.at == i.at || pos.at == j.at) return;
+        splice(pos, o, i, j);
+    }
+    void splice(const_iterator pos, list &&o, const_iterator i) { splice(pos, o, i); }
+    void splice(const_iterator pos, list &o, const_iterator first, const_iterator last) {
+        if (first == last) return;
+        size_type n = 0;
+        if (&o != this)
+            for (const_iterator k = first; k != last; ++k) n++;
+        __cxx1_list_link *f = first.at, *l = last.at->prev;
+        f->prev->next = last.at;
+        last.at->prev = f->prev;
+        __cxx1_list_link *p = pos.at;
+        f->prev = p->prev;
+        l->next = p;
+        p->prev->next = f;
+        p->prev = l;
+        o.size_ -= n;
+        size_ += n;
+    }
+    void splice(const_iterator pos, list &&o, const_iterator first, const_iterator last) { splice(pos, o, first, last); }
+
+    void remove(const T &v) {
+        // The value may be an element: it is compared against until the end, and erased last if it is one.
+        iterator self = end();
+        for (iterator i = begin(); i != end();) {
+            if (*i == v) {
+                if (&*i == &v) { self = i; ++i; continue; }
+                i = erase(i);
+            } else {
+                ++i;
+            }
+        }
+        if (self != end()) erase(self);
+    }
+    template <class P> void remove_if(P pred) {
+        for (iterator i = begin(); i != end();) {
+            if (pred(*i)) i = erase(i);
+            else ++i;
+        }
+    }
+    void unique() {
+        if (size_ < 2) return;
+        iterator i = begin(), j = i;
+        for (++j; j != end();) {
+            if (*i == *j) j = erase(j);
+            else i = j++;
+        }
+    }
+    template <class P> void unique(P pred) {
+        if (size_ < 2) return;
+        iterator i = begin(), j = i;
+        for (++j; j != end();) {
+            if (pred(*i, *j)) j = erase(j);
+            else i = j++;
+        }
+    }
+    void merge(list &o) { mergeBy(o, __cxx1_list_less()); }
+    void merge(list &&o) { mergeBy(o, __cxx1_list_less()); }
+    template <class C> void merge(list &o, C comp) { mergeBy(o, comp); }
+    template <class C> void merge(list &&o, C comp) { mergeBy(o, comp); }
+    // Stable: a merge sort on the links, equal elements keeping their order.
+    void sort() { sortBy(__cxx1_list_less()); }
+    template <class C> void sort(C comp) { sortBy(comp); }
+    void reverse() noexcept {
+        __cxx1_list_link *l = &head_;
+        do {
+            __cxx1_list_link *t = l->next;
+            l->next = l->prev;
+            l->prev = t;
+            l = t;
+        } while (l != &head_);
+    }
+
+private:
+    struct __cxx1_list_less {
+        bool operator()(const T &a, const T &b) const { return a < b; }
+    };
+    template <class C> void mergeBy(list &o, C comp) {
+        if (&o == this) return;
+        iterator i = begin();
+        while (!o.empty()) {
+            iterator j = o.begin();
+            while (i != end() && !comp(*j, *i)) ++i;
+            splice(i, o, j);
+        }
+    }
+    template <class C> void sortBy(C comp) {
+        if (size_ < 2) return;
+        list left(alloc_), right(alloc_);
+        const_iterator mid = begin();
+        for (size_type k = size_ / 2; k > 0; --k) ++mid;
+        left.splice(left.end(), *this, begin(), mid);
+        right.splice(right.end(), *this, begin(), end());
+        left.sortBy(comp);
+        right.sortBy(comp);
+        left.mergeBy(right, comp);
+        splice(end(), left);
+    }
+    void empty0() { head_.prev = head_.next = &head_; }
+    // o's nodes, hung off this sentinel; o left empty.
+    void take(list &o) {
+        if (o.size_ == 0) { empty0(); size_ = 0; return; }
+        head_.next = o.head_.next;
+        head_.prev = o.head_.prev;
+        head_.next->prev = &head_;
+        head_.prev->next = &head_;
+        size_ = o.size_;
+        o.empty0();
+        o.size_ = 0;
+    }
+    template <class... A> node *make(A &&... a) { return __cxx1_nodes<node, Alloc>::make(alloc_, std::forward<A>(a)...); }
+    void destroy(node *n) { __cxx1_nodes<node, Alloc>::destroy(alloc_, n); }
+    // n before `before`; n returned.
+    __cxx1_list_link *link(__cxx1_list_link *before, node *n) {
+        n->next = before;
+        n->prev = before->prev;
+        before->prev->next = n;
+        before->prev = n;
+        size_++;
+        return n;
+    }
+    void unlink(__cxx1_list_link *l) {
+        l->prev->next = l->next;
+        l->next->prev = l->prev;
+        size_--;
+    }
+
+    __cxx1_list_link head_;
+    size_type size_;
+    Alloc alloc_;
+};
+
+template <class T, class A> inline bool operator==(const list<T, A> &x, const list<T, A> &y) {
+    if (x.size() != y.size()) return false;
+    typename list<T, A>::const_iterator i = x.begin(), j = y.begin();
+    for (; i != x.end(); ++i, ++j)
+        if (!(*i == *j)) return false;
+    return true;
+}
+template <class T, class A> inline bool operator<(const list<T, A> &x, const list<T, A> &y) {
+    typename list<T, A>::const_iterator i = x.begin(), j = y.begin();
+    for (; i != x.end() && j != y.end(); ++i, ++j) {
+        if (*i < *j) return true;
+        if (*j < *i) return false;
+    }
+    return i == x.end() && j != y.end();
+}
+template <class T, class A> inline bool operator!=(const list<T, A> &x, const list<T, A> &y) { return !(x == y); }
+template <class T, class A> inline bool operator>(const list<T, A> &x, const list<T, A> &y) { return y < x; }
+template <class T, class A> inline bool operator>=(const list<T, A> &x, const list<T, A> &y) { return !(x < y); }
+template <class T, class A> inline bool operator<=(const list<T, A> &x, const list<T, A> &y) { return !(y < x); }
+template <class T, class A> inline void swap(list<T, A> &x, list<T, A> &y) { x.swap(y); }
+
+}  // namespace std
+
+#endif

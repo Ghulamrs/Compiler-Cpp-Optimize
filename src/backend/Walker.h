@@ -9,6 +9,14 @@
 
 class Source;
 
+// Whether a body reads or writes an lvalue of volatile type anywhere: such a function is written past
+// the optimizer by every backend, and never walked in place in a caller's.
+bool touchesVolatile(const Node &n);
+// Whether a body calls `_alloca` (Call::isAlloca): its stack pointer moves while it runs, and it is never walked
+// in place. And whether it catches anything: a catch resumes with the stack pointer at the frame's floor.
+bool callsAlloca(const Node &n);
+bool catchesHere(const Node &n);
+
 class Walker : public CodeGen {
 public:
     // **What differs between the two Itanium tables, and it is only spelling.**
@@ -63,6 +71,8 @@ protected:
     virtual void defineLabel(const std::string &l) = 0;
     // Where a Microsoft frame's exception state changes; see Spelling::stateLabel.
     virtual void defineStateLabel(const std::string &l) { defineLabel(l); }
+    // A lexical block's label under -g (Spelling::blockLabel).
+    virtual void defineBlockLabel(const std::string &l) { defineLabel(l); }
     virtual void jump(const std::string &l) = 0;
     virtual void branchIfZero(const std::string &l) = 0;
     virtual void branchIfNotZero(const std::string &l) = 0;
@@ -96,10 +106,7 @@ protected:
         bool cleanup = false;   // a trailing action record with filter 0
         bool terminate = false; // a throw out of here ends the program: a pad's own code
         bool handsOver = false; // a pad in this region, or its own, goes on to another by a jump
-        // Where this segment begins, counted in the order labels are defined -
-        // which is address order, since the walk emits as it goes. Only usable
-        // as a sort key because the segments below are disjoint.
-        int at = 0;
+        int at = 0;  // where it begins, in label (address) order: a sort key
     };
 
     // **A region open right now, and the segments of it already closed.**
@@ -160,14 +167,28 @@ protected:
     // Write -2 into the runtime's scratch word.
     virtual void storeUnwindHelp(int slot) { (void)slot; }
 
-    // FH3's scratch word set to -2 before the body's first call; see Walker.cpp.
-    void storeUnwindHelpAtEntry(const Stmt &body);
+    // FH3's scratch word set to -2 before the first call (see Walker.cpp)
+    void storeUnwindHelpAtEntry(const Stmt &body, int frame = 0);
 
     // A cleanup funclet is opened the same way and closed differently.
     virtual void endCleanupFunclet() {}
 
     // Open a handler funclet and answer its symbol; close it naming the address in the parent to continue at, which a funclet returns in rax. Between the two the body is walked as if inline, the funclet setting rbp from the parent.
-    virtual std::string beginFunclet() { return std::string(); }
+    // `pos` is where the handler is written (the `catch`), the line its entry is named by under -g; `number` counts the function's funclets from 1 (DwarfBlock::funclet); `cleanup` tells a destructor funclet from a catch (1.29).
+    virtual std::string beginFunclet(std::size_t pos, int number, bool cleanup) { (void)pos; (void)number; (void)cleanup; return std::string(); }
+    // The one door to beginFunclet: numbers the funclet and marks the blocks opened inside it as its.
+    // A funclet opened inside another - a handler's own `try` or cleanup - hands it back when it leaves.
+    std::string openFunclet(std::size_t pos, bool cleanup) {
+        outerFunclets_.push_back(funcletNo_);
+        funcletNo_ = ++funcletCount_;
+        return beginFunclet(pos, funcletNo_, cleanup);
+    }
+    void leaveFunclet() {
+        funcletsLifted_.push_back(funcletNo_);
+        funcletNo_ = outerFunclets_.back();
+        outerFunclets_.pop_back();
+    }
+    bool inFuncletBody() const { return funcletNo_ != 0; }
     // Leave the handler funclet early, the runtime continuing at `label`.
     virtual void funcletLeave(const std::string &label) { (void)label; }
     virtual void endFunclet(const std::string &resume) { (void)resume; }
@@ -190,15 +211,20 @@ protected:
         int tryLow = 0, tryHigh = 0, catchHigh = 0;
         std::vector<MsHandlerRow> handlers;
     };
-    struct MsIpRow { std::string label; int state; };
+    // `funclet` is the one whose code the label is in (0 the function's own); `entry` marks a funclet's
+    // first row, whose label is its symbol.
+    struct MsIpRow { std::string label; int state; int funclet = 0; bool entry = false; };
     const std::vector<MsState> &msStates() const { return msStates_; }
     const std::vector<MsTryBlock> &msTryBlocks() const { return msTryBlocks_; }
-    const std::vector<MsIpRow> &msIpRows() const { return msIpRows_; }
-    const std::vector<MsIpRow> &msFuncletRows() const { return msFuncletRows_; }
+    // **The rows in address order**: the body's as walked, then each funclet's in the order it was
+    // lifted out - an inner one before the handler it is written in.
+    std::vector<MsIpRow> msIpTable() const;
     int msUnwindHelpSlot() const { return msUnwindHelpSlot_; }
     void clearMsTries() {
         msStates_.clear(); msTryBlocks_.clear(); msIpRows_.clear();
         msFuncletRows_.clear(); msCurState_ = -1; msUnwindHelpSlot_ = 0;
+        funcletCount_ = funcletNo_ = 0;
+        outerFunclets_.clear(); funcletsLifted_.clear();
     }
 
     void resetBlocks(const std::vector<int> &parents);
@@ -225,6 +251,9 @@ private:
     std::vector<MsIpRow> msIpRows_, msFuncletRows_;
     int msCurState_ = -1;
     int msUnwindHelpSlot_ = 0;
+    // The funclets this function has opened, and the one being walked (0 outside any) - see openFunclet.
+    int funcletCount_ = 0, funcletNo_ = 0;
+    std::vector<int> outerFunclets_, funcletsLifted_;
     const Source *lines_ = nullptr;
     std::string compDir_;
     std::vector<DwarfBlock> blocks_;

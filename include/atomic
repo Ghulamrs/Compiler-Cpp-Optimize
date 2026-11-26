@@ -1,0 +1,435 @@
+// <atomic> - [atomics]: atomic types, atomic_flag, the free functions and the fences.
+//
+// On x86-64 and arm64 an atomic scalar of 1, 2, 4 or 8 bytes - bool, the integers, an enumeration, a pointer,
+// float and double - is lock-free since 1.75: its operations are the processor's own, `lock cmpxchg`, `lock xadd`
+// and `xchg` or an exclusive load-and-store pair, in sixteen functions the backend writes into each file that
+// calls them (Spelling.h's atomicHelper), as it writes atomic_flag's exchange. is_lock_free() says true for
+// those and the ATOMIC_*_LOCK_FREE macros 2. Every order asked for is given as memory_order_seq_cst, which is
+// the strongest. Any other type - a class, a pointer to member, long double where it is 16 bytes - and every
+// type on the C6747 takes the program's one lock (<__threads>): each operation is then indivisible and
+// sequentially consistent too, and is_lock_free() says false ([atomics.lockfree] allows either).
+#ifndef _CXX1_ATOMIC
+#define _CXX1_ATOMIC
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
+#include <__threads>
+
+#if defined(__x86_64__) || defined(__aarch64__)
+#define _CXX1_ATOMIC_WORDS 1
+#define _CXX1_ATOMIC_LOCK_FREE 2
+#else
+#define _CXX1_ATOMIC_WORDS 0
+#define _CXX1_ATOMIC_LOCK_FREE 0
+#endif
+
+namespace std {
+
+// [atomics.order]
+typedef enum memory_order {
+    memory_order_relaxed, memory_order_consume, memory_order_acquire,
+    memory_order_release, memory_order_acq_rel, memory_order_seq_cst
+} memory_order;
+template <class T> T kill_dependency(T y) noexcept { return y; }
+
+#define ATOMIC_BOOL_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_CHAR_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_CHAR16_T_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_CHAR32_T_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_WCHAR_T_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_SHORT_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_INT_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_LONG_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_LLONG_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_POINTER_LOCK_FREE _CXX1_ATOMIC_LOCK_FREE
+#define ATOMIC_VAR_INIT(value) { value }
+#define ATOMIC_FLAG_INIT { false }
+
+#if _CXX1_ATOMIC_WORDS
+// The backend's sixteen: the object's value; the old value for a new one; the old value and the sum stored; and
+// `desired` stored where the object held `*expected`, else `*expected` given what it holds.
+extern "C" {
+unsigned char __cxx1_atomic_load_1(const volatile void *) noexcept;
+unsigned short __cxx1_atomic_load_2(const volatile void *) noexcept;
+unsigned int __cxx1_atomic_load_4(const volatile void *) noexcept;
+unsigned long long __cxx1_atomic_load_8(const volatile void *) noexcept;
+unsigned char __cxx1_atomic_xchg_1(volatile void *, unsigned char) noexcept;
+unsigned short __cxx1_atomic_xchg_2(volatile void *, unsigned short) noexcept;
+unsigned int __cxx1_atomic_xchg_4(volatile void *, unsigned int) noexcept;
+unsigned long long __cxx1_atomic_xchg_8(volatile void *, unsigned long long) noexcept;
+unsigned char __cxx1_atomic_add_1(volatile void *, unsigned char) noexcept;
+unsigned short __cxx1_atomic_add_2(volatile void *, unsigned short) noexcept;
+unsigned int __cxx1_atomic_add_4(volatile void *, unsigned int) noexcept;
+unsigned long long __cxx1_atomic_add_8(volatile void *, unsigned long long) noexcept;
+bool __cxx1_atomic_cas_1(volatile void *, unsigned char *, unsigned char) noexcept;
+bool __cxx1_atomic_cas_2(volatile void *, unsigned short *, unsigned short) noexcept;
+bool __cxx1_atomic_cas_4(volatile void *, unsigned int *, unsigned int) noexcept;
+bool __cxx1_atomic_cas_8(volatile void *, unsigned long long *, unsigned long long) noexcept;
+}
+
+// The four of one size, by the size. A template with a parameter nothing uses, so that a file is given only
+// the functions its own atomics call: a member of a class template is read where it is first used.
+template <std::size_t Bytes, class Lazy = void> struct __cxx1_atomic_word;
+#define _CXX1_ATOMIC_WORD(bytes, unsigned_type)                                                                    \
+    template <class Lazy> struct __cxx1_atomic_word<bytes, Lazy> {                                                 \
+        typedef unsigned_type type;                                                                                \
+        static type load(const volatile void *p) noexcept { return __cxx1_atomic_load_##bytes(p); }               \
+        static type xchg(volatile void *p, type v) noexcept { return __cxx1_atomic_xchg_##bytes(p, v); }          \
+        static type add(volatile void *p, type v) noexcept { return __cxx1_atomic_add_##bytes(p, v); }            \
+        static bool cas(volatile void *p, type *e, type d) noexcept { return __cxx1_atomic_cas_##bytes(p, e, d); } \
+    };
+_CXX1_ATOMIC_WORD(1, unsigned char)
+_CXX1_ATOMIC_WORD(2, unsigned short)
+_CXX1_ATOMIC_WORD(4, unsigned int)
+_CXX1_ATOMIC_WORD(8, unsigned long long)
+#undef _CXX1_ATOMIC_WORD
+#endif
+
+// [atomics.fences]: the lock orders what is done under it, and a locked instruction what is not.
+inline void atomic_thread_fence(memory_order) noexcept {
+    __cxx1_os::global_guard g;
+#if _CXX1_ATOMIC_WORDS
+    unsigned char here = 0;
+    __cxx1_atomic_xchg_1(&here, 1);
+#endif
+}
+inline void atomic_signal_fence(memory_order) noexcept {}
+
+// How a type's operations are done: 0 under the lock; 1 as a word of its size that a cast makes of it (an integer,
+// bool, an enumeration, a pointer); 2 as a word that holds its bytes (float, double).
+template <class T> struct __cxx1_atomic_kind
+    : integral_constant<int, !_CXX1_ATOMIC_WORDS || (sizeof(T) != 1 && sizeof(T) != 2 && sizeof(T) != 4 && sizeof(T) != 8) ? 0
+                             : is_integral<T>::value || is_enum<T>::value || is_pointer<T>::value ? 1
+                             : is_floating_point<T>::value ? 2 : 0> {};
+
+// Under the lock. compare_exchange compares the object representations, [atomics.types.operations.req]/21.
+template <class T, int Kind = __cxx1_atomic_kind<T>::value> struct __cxx1_atomic_do {
+    static bool lock_free() noexcept { return false; }
+    static T load(const volatile T *p) noexcept { __cxx1_os::global_guard g; return const_cast<const T &>(*p); }
+    static void store(volatile T *p, T v) noexcept { __cxx1_os::global_guard g; const_cast<T &>(*p) = v; }
+    static T exchange(volatile T *p, T v) noexcept {
+        __cxx1_os::global_guard g;
+        T &now = const_cast<T &>(*p);
+        T was = now;
+        now = v;
+        return was;
+    }
+    static bool cas(volatile T *p, T &expected, T desired) noexcept {
+        __cxx1_os::global_guard g;
+        T &now = const_cast<T &>(*p);
+        if (std::memcmp(&now, &expected, sizeof(T)) == 0) { now = desired; return true; }
+        expected = now;
+        return false;
+    }
+#define _CXX1_ATOMIC_RMW(name, op)                                                                        \
+    static T name(volatile T *p, T arg) noexcept {                                                       \
+        __cxx1_os::global_guard g;                                                                       \
+        T &now = const_cast<T &>(*p);                                                                    \
+        const T was = now;                                                                               \
+        now = static_cast<T>(was op arg);                                                                \
+        return was;                                                                                      \
+    }
+    _CXX1_ATOMIC_RMW(fetch_add, +)
+    _CXX1_ATOMIC_RMW(fetch_sub, -)
+    _CXX1_ATOMIC_RMW(fetch_and, &)
+    _CXX1_ATOMIC_RMW(fetch_or, |)
+    _CXX1_ATOMIC_RMW(fetch_xor, ^)
+#undef _CXX1_ATOMIC_RMW
+    // a pointer moved by so many bytes
+    static T add_bytes(volatile T *p, ptrdiff_t bytes) noexcept {
+        __cxx1_os::global_guard g;
+        T &now = const_cast<T &>(*p);
+        T was = now;
+        now = (T)((char *)was + bytes);
+        return was;
+    }
+};
+
+#if _CXX1_ATOMIC_WORDS
+// As a word the casts make. An and, or and xor is the compare-and-exchange retried: no one instruction answers
+// the old value for them.
+template <class T> struct __cxx1_atomic_do<T, 1> {
+    typedef __cxx1_atomic_word<sizeof(T)> ops;
+    typedef typename ops::type word;
+    static bool lock_free() noexcept { return true; }
+    static T load(const volatile T *p) noexcept { return (T)ops::load(p); }
+    static void store(volatile T *p, T v) noexcept { ops::xchg(p, (word)v); }
+    static T exchange(volatile T *p, T v) noexcept { return (T)ops::xchg(p, (word)v); }
+    static bool cas(volatile T *p, T &expected, T desired) noexcept {
+        word e = (word)expected;
+        if (ops::cas(p, &e, (word)desired)) return true;
+        expected = (T)e;
+        return false;
+    }
+    static T fetch_add(volatile T *p, T arg) noexcept { return (T)ops::add(p, (word)arg); }
+    static T fetch_sub(volatile T *p, T arg) noexcept { return (T)ops::add(p, (word)(0 - (word)arg)); }
+#define _CXX1_ATOMIC_RMW(name, op)                                                                        \
+    static T name(volatile T *p, T arg) noexcept {                                                       \
+        word was = ops::load(p);                                                                         \
+        while (!ops::cas(p, &was, (word)(was op (word)arg))) {}                                          \
+        return (T)was;                                                                                   \
+    }
+    _CXX1_ATOMIC_RMW(fetch_and, &)
+    _CXX1_ATOMIC_RMW(fetch_or, |)
+    _CXX1_ATOMIC_RMW(fetch_xor, ^)
+#undef _CXX1_ATOMIC_RMW
+    static T add_bytes(volatile T *p, ptrdiff_t bytes) noexcept { return (T)ops::add(p, (word)bytes); }
+};
+
+// As a word that holds the bytes.
+template <class T> struct __cxx1_atomic_do<T, 2> {
+    typedef __cxx1_atomic_word<sizeof(T)> ops;
+    typedef typename ops::type word;
+    static word bytes_of(T v) noexcept { word w; std::memcpy(&w, &v, sizeof(T)); return w; }
+    static T value_of(word w) noexcept { T v; std::memcpy(&v, &w, sizeof(T)); return v; }
+    static bool lock_free() noexcept { return true; }
+    static T load(const volatile T *p) noexcept { return value_of(ops::load(p)); }
+    static void store(volatile T *p, T v) noexcept { ops::xchg(p, bytes_of(v)); }
+    static T exchange(volatile T *p, T v) noexcept { return value_of(ops::xchg(p, bytes_of(v))); }
+    static bool cas(volatile T *p, T &expected, T desired) noexcept {
+        word e = bytes_of(expected);
+        if (ops::cas(p, &e, bytes_of(desired))) return true;
+        expected = value_of(e);
+        return false;
+    }
+};
+#endif
+
+// [atomics.types.generic]: the value, and each operation as __cxx1_atomic_do does it for the type.
+template <class T> struct __cxx1_atomic_base {
+    typedef __cxx1_atomic_do<T> how;
+    T v_;
+
+    __cxx1_atomic_base() noexcept = default;
+    constexpr __cxx1_atomic_base(T v) noexcept : v_(v) {}
+    __cxx1_atomic_base(const __cxx1_atomic_base &) = delete;
+    __cxx1_atomic_base &operator=(const __cxx1_atomic_base &) = delete;
+    __cxx1_atomic_base &operator=(const __cxx1_atomic_base &) volatile = delete;
+
+    bool is_lock_free() const volatile noexcept { return how::lock_free(); }
+    bool is_lock_free() const noexcept { return how::lock_free(); }
+    void store(T v, memory_order = memory_order_seq_cst) volatile noexcept { how::store(&v_, v); }
+    void store(T v, memory_order = memory_order_seq_cst) noexcept { how::store(&v_, v); }
+    T load(memory_order = memory_order_seq_cst) const volatile noexcept { return how::load(&v_); }
+    T load(memory_order = memory_order_seq_cst) const noexcept { return how::load(&v_); }
+    operator T() const volatile noexcept { return load(); }
+    operator T() const noexcept { return load(); }
+    T exchange(T v, memory_order = memory_order_seq_cst) volatile noexcept { return how::exchange(&v_, v); }
+    T exchange(T v, memory_order = memory_order_seq_cst) noexcept { return how::exchange(&v_, v); }
+    bool compare_exchange_strong(T &expected, T desired, memory_order = memory_order_seq_cst) volatile noexcept {
+        return how::cas(&v_, expected, desired);
+    }
+    bool compare_exchange_strong(T &expected, T desired, memory_order = memory_order_seq_cst) noexcept {
+        return how::cas(&v_, expected, desired);
+    }
+    bool compare_exchange_strong(T &e, T d, memory_order, memory_order) volatile noexcept { return compare_exchange_strong(e, d); }
+    bool compare_exchange_strong(T &e, T d, memory_order, memory_order) noexcept { return compare_exchange_strong(e, d); }
+    bool compare_exchange_weak(T &e, T d, memory_order = memory_order_seq_cst) volatile noexcept { return compare_exchange_strong(e, d); }
+    bool compare_exchange_weak(T &e, T d, memory_order = memory_order_seq_cst) noexcept { return compare_exchange_strong(e, d); }
+    bool compare_exchange_weak(T &e, T d, memory_order, memory_order) volatile noexcept { return compare_exchange_strong(e, d); }
+    bool compare_exchange_weak(T &e, T d, memory_order, memory_order) noexcept { return compare_exchange_strong(e, d); }
+};
+
+// [atomics.types.int]: the arithmetic and bitwise read-modify-writes.
+template <class T> struct __cxx1_atomic_integral : __cxx1_atomic_base<T> {
+    typedef __cxx1_atomic_base<T> base;
+    typedef __cxx1_atomic_do<T> how;
+    __cxx1_atomic_integral() noexcept = default;
+    constexpr __cxx1_atomic_integral(T v) noexcept : base(v) {}
+
+#define _CXX1_ATOMIC_RMW(name)                                                                            \
+    T name(T arg, memory_order = memory_order_seq_cst) volatile noexcept { return how::name(&this->v_, arg); } \
+    T name(T arg, memory_order = memory_order_seq_cst) noexcept { return how::name(&this->v_, arg); }
+    _CXX1_ATOMIC_RMW(fetch_add)
+    _CXX1_ATOMIC_RMW(fetch_sub)
+    _CXX1_ATOMIC_RMW(fetch_and)
+    _CXX1_ATOMIC_RMW(fetch_or)
+    _CXX1_ATOMIC_RMW(fetch_xor)
+#undef _CXX1_ATOMIC_RMW
+
+    T operator++(int) volatile noexcept { return fetch_add(1); }
+    T operator++(int) noexcept { return fetch_add(1); }
+    T operator--(int) volatile noexcept { return fetch_sub(1); }
+    T operator--(int) noexcept { return fetch_sub(1); }
+    T operator++() volatile noexcept { return static_cast<T>(fetch_add(1) + 1); }
+    T operator++() noexcept { return static_cast<T>(fetch_add(1) + 1); }
+    T operator--() volatile noexcept { return static_cast<T>(fetch_sub(1) - 1); }
+    T operator--() noexcept { return static_cast<T>(fetch_sub(1) - 1); }
+    T operator+=(T a) volatile noexcept { return static_cast<T>(fetch_add(a) + a); }
+    T operator+=(T a) noexcept { return static_cast<T>(fetch_add(a) + a); }
+    T operator-=(T a) volatile noexcept { return static_cast<T>(fetch_sub(a) - a); }
+    T operator-=(T a) noexcept { return static_cast<T>(fetch_sub(a) - a); }
+    T operator&=(T a) volatile noexcept { return static_cast<T>(fetch_and(a) & a); }
+    T operator&=(T a) noexcept { return static_cast<T>(fetch_and(a) & a); }
+    T operator|=(T a) volatile noexcept { return static_cast<T>(fetch_or(a) | a); }
+    T operator|=(T a) noexcept { return static_cast<T>(fetch_or(a) | a); }
+    T operator^=(T a) volatile noexcept { return static_cast<T>(fetch_xor(a) ^ a); }
+    T operator^=(T a) noexcept { return static_cast<T>(fetch_xor(a) ^ a); }
+};
+
+template <class T, bool = is_integral<T>::value && !is_same<T, bool>::value> struct __cxx1_atomic_pick {
+    typedef __cxx1_atomic_base<T> type;
+};
+template <class T> struct __cxx1_atomic_pick<T, true> { typedef __cxx1_atomic_integral<T> type; };
+
+template <class T> struct atomic : __cxx1_atomic_pick<T>::type {
+    typedef typename __cxx1_atomic_pick<T>::type base;
+    atomic() noexcept = default;
+    constexpr atomic(T v) noexcept : base(v) {}
+    atomic(const atomic &) = delete;
+    atomic &operator=(const atomic &) = delete;
+    atomic &operator=(const atomic &) volatile = delete;
+    T operator=(T v) volatile noexcept { this->store(v); return v; }
+    T operator=(T v) noexcept { this->store(v); return v; }
+};
+
+// [atomics.types.pointer]
+template <class T> struct atomic<T *> : __cxx1_atomic_base<T *> {
+    typedef __cxx1_atomic_base<T *> base;
+    typedef __cxx1_atomic_do<T *> how;
+    atomic() noexcept = default;
+    constexpr atomic(T *v) noexcept : base(v) {}
+    atomic(const atomic &) = delete;
+    atomic &operator=(const atomic &) = delete;
+    atomic &operator=(const atomic &) volatile = delete;
+    T *operator=(T *v) volatile noexcept { this->store(v); return v; }
+    T *operator=(T *v) noexcept { this->store(v); return v; }
+    T *fetch_add(ptrdiff_t d, memory_order = memory_order_seq_cst) volatile noexcept {
+        return how::add_bytes(&this->v_, d * static_cast<ptrdiff_t>(sizeof(T)));
+    }
+    T *fetch_add(ptrdiff_t d, memory_order = memory_order_seq_cst) noexcept {
+        return how::add_bytes(&this->v_, d * static_cast<ptrdiff_t>(sizeof(T)));
+    }
+    T *fetch_sub(ptrdiff_t d, memory_order m = memory_order_seq_cst) volatile noexcept { return fetch_add(-d, m); }
+    T *fetch_sub(ptrdiff_t d, memory_order m = memory_order_seq_cst) noexcept { return fetch_add(-d, m); }
+    T *operator++(int) volatile noexcept { return fetch_add(1); }
+    T *operator++(int) noexcept { return fetch_add(1); }
+    T *operator--(int) volatile noexcept { return fetch_sub(1); }
+    T *operator--(int) noexcept { return fetch_sub(1); }
+    T *operator++() volatile noexcept { return fetch_add(1) + 1; }
+    T *operator++() noexcept { return fetch_add(1) + 1; }
+    T *operator--() volatile noexcept { return fetch_sub(1) - 1; }
+    T *operator--() noexcept { return fetch_sub(1) - 1; }
+    T *operator+=(ptrdiff_t d) volatile noexcept { return fetch_add(d) + d; }
+    T *operator+=(ptrdiff_t d) noexcept { return fetch_add(d) + d; }
+    T *operator-=(ptrdiff_t d) volatile noexcept { return fetch_sub(d) - d; }
+    T *operator-=(ptrdiff_t d) noexcept { return fetch_sub(d) - d; }
+};
+
+// [atomics.types.generic]/7: the named types.
+typedef atomic<bool> atomic_bool;
+typedef atomic<char> atomic_char;
+typedef atomic<signed char> atomic_schar;
+typedef atomic<unsigned char> atomic_uchar;
+typedef atomic<short> atomic_short;
+typedef atomic<unsigned short> atomic_ushort;
+typedef atomic<int> atomic_int;
+typedef atomic<unsigned int> atomic_uint;
+typedef atomic<long> atomic_long;
+typedef atomic<unsigned long> atomic_ulong;
+typedef atomic<long long> atomic_llong;
+typedef atomic<unsigned long long> atomic_ullong;
+typedef atomic<char16_t> atomic_char16_t;
+typedef atomic<char32_t> atomic_char32_t;
+typedef atomic<wchar_t> atomic_wchar_t;
+typedef atomic<int_least8_t> atomic_int_least8_t;
+typedef atomic<uint_least8_t> atomic_uint_least8_t;
+typedef atomic<int_least16_t> atomic_int_least16_t;
+typedef atomic<uint_least16_t> atomic_uint_least16_t;
+typedef atomic<int_least32_t> atomic_int_least32_t;
+typedef atomic<uint_least32_t> atomic_uint_least32_t;
+typedef atomic<int_least64_t> atomic_int_least64_t;
+typedef atomic<uint_least64_t> atomic_uint_least64_t;
+typedef atomic<int_fast8_t> atomic_int_fast8_t;
+typedef atomic<uint_fast8_t> atomic_uint_fast8_t;
+typedef atomic<int_fast16_t> atomic_int_fast16_t;
+typedef atomic<uint_fast16_t> atomic_uint_fast16_t;
+typedef atomic<int_fast32_t> atomic_int_fast32_t;
+typedef atomic<uint_fast32_t> atomic_uint_fast32_t;
+typedef atomic<int_fast64_t> atomic_int_fast64_t;
+typedef atomic<uint_fast64_t> atomic_uint_fast64_t;
+typedef atomic<intptr_t> atomic_intptr_t;
+typedef atomic<uintptr_t> atomic_uintptr_t;
+typedef atomic<size_t> atomic_size_t;
+typedef atomic<ptrdiff_t> atomic_ptrdiff_t;
+typedef atomic<intmax_t> atomic_intmax_t;
+typedef atomic<uintmax_t> atomic_uintmax_t;
+
+// [atomics.types.operations]: the free functions, each the member of the same name.
+template <class T> bool atomic_is_lock_free(const volatile atomic<T> *a) noexcept { return a->is_lock_free(); }
+template <class T> bool atomic_is_lock_free(const atomic<T> *a) noexcept { return a->is_lock_free(); }
+template <class T> void atomic_init(volatile atomic<T> *a, T v) noexcept { a->store(v, memory_order_relaxed); }
+template <class T> void atomic_init(atomic<T> *a, T v) noexcept { a->store(v, memory_order_relaxed); }
+template <class T> void atomic_store(volatile atomic<T> *a, T v) noexcept { a->store(v); }
+template <class T> void atomic_store(atomic<T> *a, T v) noexcept { a->store(v); }
+template <class T> void atomic_store_explicit(volatile atomic<T> *a, T v, memory_order m) noexcept { a->store(v, m); }
+template <class T> void atomic_store_explicit(atomic<T> *a, T v, memory_order m) noexcept { a->store(v, m); }
+template <class T> T atomic_load(const volatile atomic<T> *a) noexcept { return a->load(); }
+template <class T> T atomic_load(const atomic<T> *a) noexcept { return a->load(); }
+template <class T> T atomic_load_explicit(const volatile atomic<T> *a, memory_order m) noexcept { return a->load(m); }
+template <class T> T atomic_load_explicit(const atomic<T> *a, memory_order m) noexcept { return a->load(m); }
+template <class T> T atomic_exchange(volatile atomic<T> *a, T v) noexcept { return a->exchange(v); }
+template <class T> T atomic_exchange(atomic<T> *a, T v) noexcept { return a->exchange(v); }
+template <class T> T atomic_exchange_explicit(volatile atomic<T> *a, T v, memory_order m) noexcept { return a->exchange(v, m); }
+template <class T> T atomic_exchange_explicit(atomic<T> *a, T v, memory_order m) noexcept { return a->exchange(v, m); }
+template <class T> bool atomic_compare_exchange_weak(volatile atomic<T> *a, T *e, T d) noexcept { return a->compare_exchange_weak(*e, d); }
+template <class T> bool atomic_compare_exchange_weak(atomic<T> *a, T *e, T d) noexcept { return a->compare_exchange_weak(*e, d); }
+template <class T> bool atomic_compare_exchange_strong(volatile atomic<T> *a, T *e, T d) noexcept { return a->compare_exchange_strong(*e, d); }
+template <class T> bool atomic_compare_exchange_strong(atomic<T> *a, T *e, T d) noexcept { return a->compare_exchange_strong(*e, d); }
+template <class T> bool atomic_compare_exchange_weak_explicit(volatile atomic<T> *a, T *e, T d, memory_order s, memory_order f) noexcept {
+    return a->compare_exchange_weak(*e, d, s, f);
+}
+template <class T> bool atomic_compare_exchange_weak_explicit(atomic<T> *a, T *e, T d, memory_order s, memory_order f) noexcept {
+    return a->compare_exchange_weak(*e, d, s, f);
+}
+template <class T> bool atomic_compare_exchange_strong_explicit(volatile atomic<T> *a, T *e, T d, memory_order s, memory_order f) noexcept {
+    return a->compare_exchange_strong(*e, d, s, f);
+}
+template <class T> bool atomic_compare_exchange_strong_explicit(atomic<T> *a, T *e, T d, memory_order s, memory_order f) noexcept {
+    return a->compare_exchange_strong(*e, d, s, f);
+}
+#define _CXX1_ATOMIC_FETCH(name)                                                                             \
+    template <class A, class D> auto atomic_##name(volatile A *a, D d) noexcept -> decltype(a->name(d)) { return a->name(d); } \
+    template <class A, class D> auto atomic_##name(A *a, D d) noexcept -> decltype(a->name(d)) { return a->name(d); }          \
+    template <class A, class D> auto atomic_##name##_explicit(volatile A *a, D d, memory_order m) noexcept -> decltype(a->name(d, m)) { \
+        return a->name(d, m);                                                                                \
+    }                                                                                                        \
+    template <class A, class D> auto atomic_##name##_explicit(A *a, D d, memory_order m) noexcept -> decltype(a->name(d, m)) { \
+        return a->name(d, m);                                                                                \
+    }
+_CXX1_ATOMIC_FETCH(fetch_add)
+_CXX1_ATOMIC_FETCH(fetch_sub)
+_CXX1_ATOMIC_FETCH(fetch_and)
+_CXX1_ATOMIC_FETCH(fetch_or)
+_CXX1_ATOMIC_FETCH(fetch_xor)
+#undef _CXX1_ATOMIC_FETCH
+
+// [atomics.flag]
+extern "C" bool __cxx1_flag_exchange(volatile bool *, bool) noexcept;
+typedef struct atomic_flag {
+    bool f_;
+
+    atomic_flag() noexcept = default;
+    atomic_flag(const atomic_flag &) = delete;
+    atomic_flag &operator=(const atomic_flag &) = delete;
+    atomic_flag &operator=(const atomic_flag &) volatile = delete;
+    bool test_and_set(memory_order = memory_order_seq_cst) volatile noexcept { return __cxx1_flag_exchange(&f_, true); }
+    bool test_and_set(memory_order = memory_order_seq_cst) noexcept { return __cxx1_flag_exchange(&f_, true); }
+    void clear(memory_order = memory_order_seq_cst) volatile noexcept { __cxx1_flag_exchange(&f_, false); }
+    void clear(memory_order = memory_order_seq_cst) noexcept { __cxx1_flag_exchange(&f_, false); }
+} atomic_flag;
+
+inline bool atomic_flag_test_and_set(volatile atomic_flag *f) noexcept { return f->test_and_set(); }
+inline bool atomic_flag_test_and_set(atomic_flag *f) noexcept { return f->test_and_set(); }
+inline bool atomic_flag_test_and_set_explicit(volatile atomic_flag *f, memory_order m) noexcept { return f->test_and_set(m); }
+inline bool atomic_flag_test_and_set_explicit(atomic_flag *f, memory_order m) noexcept { return f->test_and_set(m); }
+inline void atomic_flag_clear(volatile atomic_flag *f) noexcept { f->clear(); }
+inline void atomic_flag_clear(atomic_flag *f) noexcept { f->clear(); }
+inline void atomic_flag_clear_explicit(volatile atomic_flag *f, memory_order m) noexcept { f->clear(m); }
+inline void atomic_flag_clear_explicit(atomic_flag *f, memory_order m) noexcept { f->clear(m); }
+
+}  // namespace std
+
+#endif

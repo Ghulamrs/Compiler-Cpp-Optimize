@@ -52,8 +52,14 @@ public:
     virtual bool emits() const = 0;
 
     virtual bool emitsLineTable(Syntax syntax) const { (void) syntax; return false; }
+    // Whether a function that touches a volatile lvalue is written past the optimizer one by one, so a
+    // file that writes `volatile` keeps its -O; where not, the driver compiles that file without.
+    virtual bool optimizesAroundVolatile() const { return false; }
 
     virtual const char *const *identityMacros() const = 0;
+    // [intro.compliance]/7: a freestanding implementation is one with no operating system to run on; it
+    // provides [compliance]'s headers and __STDC_HOSTED__ is 0.
+    virtual bool hosted() const { return true; }
 };
 
 std::vector<std::pair<std::string, std::string> > predefinedMacros(const Backend &b);

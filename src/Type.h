@@ -61,6 +61,7 @@ struct DepExpr {
         FunctionParam,      // the `index`th function parameter, `fp_`
         SizeofType,         // `st <type>`
         SizeofExpr,         // `sz <expression>`
+        SizeofPack,         // `sZ <template-param>`, the pack's parameter `index` (1.82)
         Operator,           // `code` and one, two or three operands
         Member,             // `dt <kid> <name>`
         Arrow,              // `pt <kid> <name>`
@@ -69,7 +70,12 @@ struct DepExpr {
         QualifiedParamName, // `sr <type> <name>`
         Cast,               // `cv <type> <kid>`, one operand
         CastList,           // `cv <type> _ <kids> E`, none or several
-        StaticCast          // `sc <type> <kid>`
+        StaticCast,         // `sc <type> <kid>`
+        ExternalName,       // the one function a qualified name resolves to, `L <its symbol> E`; `name` the symbol
+        QualifiedName,      // `sr <scope>... E <name> [I <targs> E]`: an overloaded or template function named qualified
+        TypeTrait,          // `u <name> <targs> E`: a type-trait built-in of the parameters, `name` its spelling
+        PackExpansion,      // `sp <kid>`: `f(std::forward<A>(a)...)`'s argument, one expression per member
+        ScopedMember        // `sr <levels> E <name>`: `std::is_integral<T>::value`, `type` the dependent member
     };
     Op op = Literal;
     std::string code;
@@ -78,6 +84,8 @@ struct DepExpr {
     bool floating = false;
     int index = -1;
     std::string name;
+    std::vector<std::string> scope;
+    std::vector<const Type *> targs;
     std::vector<const DepExpr *> kids;
     std::string key;    // the identity: equivalent expressions have one key and one node
     std::string text;   // what a diagnostic shows
@@ -89,6 +97,10 @@ struct DepExpr {
 struct TemplateArg {
     const Type *type = nullptr;
     bool isType = true;
+    // A function template's non-type parameter declared with a type that depends on another parameter -
+    // `T v` after `class T`: that declared type, standing for itself, which Itanium writes as `Tn<type>`
+    // before the value. Null otherwise, and on every argument of a class template.
+    const Type *declaredAs = nullptr;
     long long value = 0;
     // **A non-type argument that is a reference to a template parameter**, the
     // `N` in the pattern `V<N>`.
@@ -112,6 +124,20 @@ struct TemplateArg {
     // **A template template argument**, `Holder<Box, int>`'s Box: `type` is the stand-in TypeTable::templateNameType makes,
     // or a Kind::TemplateParam where a pattern names an enclosing template template parameter.
     bool isTemplate = false;
+    // **An address or member pointer as a non-type argument**: `form` is how
+    // the ABIs wrap `entity` - 'p' pointer, 'c' gaining const, 'r' reference,
+    // 'a' array, 'm' member at `offset`, 'n' null; 0 otherwise.
+    char form = 0;
+    std::string address;
+    std::string entity;
+    const Type *element = nullptr;
+    int offset = 0;
+    // What Itanium mangles in place of `entity`, so the scopes and parameter types in it are substitution
+    // candidates as clang counts them: the name it was found under (`ns::nv`, `S::f`), a member's class,
+    // and a function's type. Unset where `entity` is not a `_Z` name of its own.
+    std::string name;
+    const Type *scope = nullptr;
+    const Type *function = nullptr;
 };
 
 int homogeneousFloatCount(const Type *t, Kind *elem);
@@ -129,11 +155,11 @@ struct Member {
     std::string name;
     const Type *type;
     int offset;
-    int width;
-    int bitOffset;
-    Access access;
+    int width = 0;
+    int bitOffset = 0;
+    Access access = Access::Public;
     // **[dcl.stc]/9: a `mutable` member is writable through a const object.**
-    bool isMutable;
+    bool isMutable = false;
     // Set for a member living in a virtual base.
     const Type *inVirtualBase = nullptr;
     // **Which class declared it**, null for one the class wrote itself.
@@ -142,13 +168,6 @@ struct Member {
     bool ambiguous = false;
     // **[class.union]/5: the anonymous union this member came out of**, null for an ordinary one; the run sharing it is one slot.
     const Type *anonUnion = nullptr;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Member(std::string name = std::string(), const Type *type = nullptr, int offset = 0,
-           int width = 0, int bitOffset = 0, Access access = Access::Public,
-           bool isMutable = false)
-        : name(std::move(name)), type(type), offset(offset), width(width),
-          bitOffset(bitOffset), access(access), isMutable(isMutable) {}
 
     bool isBitField() const { return width != 0; }
     bool continuesUnion(const Member *prev) const {
@@ -170,6 +189,14 @@ public:
     bool isConst() const {
         return const_ || (kind_ == Kind::Array && pointee_->isConst());
     }
+    // And volatile the same way ([basic.type.qualifier]): `volatile int *` is not `int *`, and a read
+    // through one is an access the program asked for.
+    bool isVolatile() const {
+        return volatile_ || (kind_ == Kind::Array && pointee_->isVolatile());
+    }
+    // Whether this is a cv-qualified copy of unqualified() - the question every "is const" test that
+    // compared a type with its unqualified() was asking about the qualifier as a whole.
+    bool isQualified() const { return unqual_ != nullptr; }
     const Type *unqualified() const { return unqual_ != nullptr ? unqual_ : this; }
 
     const Type *pointee() const { return pointee_; }
@@ -182,6 +209,9 @@ public:
         return kind_ == Kind::Array && length_ <= -2 ? static_cast<int>(-2 - length_) : -1;
     }
 
+    // **An array whose bound is an expression over a pattern's parameters**, `char (*)[sizeof(T) == 4]` read as a
+    // pattern: length_ is an unknown bound's -1, and the expression rides beside it.
+    const DepExpr *dependentBound() const { return kind_ == Kind::Array ? expr_ : nullptr; }
     // The expression a `Kind::DependentExpr` is `decltype` of, and whether it is spelled `Dt`.
     const DepExpr *dependentExpr() const { return kind_ == Kind::DependentExpr ? expr_ : nullptr; }
     bool dependentIdExpression() const { return kind_ == Kind::DependentExpr && length_ == 1; }
@@ -243,6 +273,18 @@ public:
 
     std::string describe() const;
 
+    // **The tag as a debugger shows it** (1.29), cl's `std::basic_string<char>`, `geo::Box<int>::Lid`: the
+    // namespace a specialization keeps beside its name (templateNamespace) put back in front, and the
+    // `struct ` a key spells a class argument with taken out - displaySpelling, which does that to any key.
+    std::string displayTag() const;
+    static std::string displaySpelling(const std::string &key);
+    // Said outright where the tag cannot tell: an enum written inside a class, which has no enclosing() to walk.
+    void setDisplayTag(std::string t) { displayTag_ = std::move(t); }
+    // **The class an enum is written inside** (1.29): the Microsoft name is scoped through it, as a nested class's is -
+    // `Box<int>::Kind` is `W4Kind@?$Box@H@geo@@` - where the tag would put `Box<int>` into the symbol.
+    const Type *enumScope() const { return cls().enumScope_; }
+    void setEnumScope(const Type *c) { enumScope_ = c; }
+
     // **Every question about what a class *is* is asked of the unqualified type**, and this is the only place that says so.
     const Type &cls() const { return unqual_ != nullptr ? *unqual_ : *this; }
 
@@ -256,6 +298,18 @@ public:
         c.local_ = local;
         if (in != nullptr && c.enclosing_ == nullptr) c.enclosing_ = in;
         if (inNamespace) c.inNamespace_ = true;
+    }
+
+    // **An unnamed class no typedef names for linkage**, as a template argument names it: cl's
+    // `<unnamed-type-x>` after its first declarator - `scope` its class's or namespace's key, `::` ended -
+    // and clang's `$_N` by `index`. Such a specialization has no linkage outside this unit.
+    const std::string &unnamedName() const { return cls().unnamed_; }
+    int unnamedIndex() const { return cls().unnamedIndex_; }
+    void nameUnnamed(const std::string &scopedName, int index) const {
+        Type &c = const_cast<Type &>(cls());
+        if (!c.tag_.empty() || !c.unnamed_.empty()) return;
+        c.unnamed_ = scopedName;
+        c.unnamedIndex_ = index;
     }
 
     // `class X` and `struct X` build the same kind of type and differ only in the
@@ -313,6 +367,9 @@ public:
     // which converts to nothing implicitly; and whether its body has been read (an opaque one has not).
     bool isScopedEnumeration() const { return isEnumeration() && cls().scoped_; }
     void setScoped() { scoped_ = true; }
+    // `enum E : short`, not scoped: [conv.prom]/4 promotes it to its underlying type as well as to int.
+    bool hasFixedUnderlying() const { return isEnumeration() && cls().fixedUnderlying_; }
+    void setFixedUnderlying() { fixedUnderlying_ = true; }
     bool enumDefined() const { return cls().enumDefined_; }
     void setEnumDefined() { enumDefined_ = true; }
 
@@ -370,17 +427,11 @@ public:
         int offset;
         Access access;
         // **One subobject however many paths reach it**, laid down by the
-        bool isVirtual;
+        bool isVirtual = false;
         // **Written in this class's base-clause**, not reached through one.
-        bool direct;
+        bool direct = true;
         // Its place in that base-clause, -1 for one reached through another.
-        int written;
-
-        // C++11 has no aggregate with a member initialiser, so the braces call this.
-        BaseSpec(const Type *type = nullptr, int offset = 0, Access access = Access::Public,
-                 bool isVirtual = false, bool direct = true, int written = -1)
-            : type(type), offset(offset), access(access), isVirtual(isVirtual),
-              direct(direct), written(written) {}
+        int written = -1;
     };
     const std::vector<BaseSpec> &bases() const {
         return cls().bases_;
@@ -400,10 +451,11 @@ public:
                     out.push_back(&b[i]);
         return out;
     }
+    // A class records every virtual base behind it as its own, so no walk goes down its bases.
     bool hasVirtualBase() const {
         const std::vector<BaseSpec> &b = bases();
         for (std::size_t i = 0; i < b.size(); i++)
-            if (b[i].isVirtual || b[i].type->hasVirtualBase()) return true;
+            if (b[i].isVirtual) return true;
         return false;
     }
     // **A vptr is not the same question as `polymorphic`.**
@@ -442,11 +494,13 @@ public:
                                // minus that class's own vbptr offset
         const Type *base;      // the direct base holding it, null where this
                                // class introduced the pointer itself
+        const Type *via;       // the base of this class it was reached through, which
+                               // names the table where `base` alone names two
     };
     const std::vector<VbPtr> &vbptrs() const { return cls().vbptrs_; }
-    void addVbptr(int offset, const Type *owner, const Type *base) {
+    void addVbptr(int offset, const Type *owner, const Type *base, const Type *via = nullptr) {
         if (vbptrs_.empty()) { vbptrOffset_ = offset; vbptrOwner_ = owner; }
-        vbptrs_.push_back(VbPtr{ offset, owner, base });
+        vbptrs_.push_back(VbPtr{ offset, owner, base, via != nullptr ? via : base });
     }
 
     // **The Itanium ABI's primary base**: the first non-virtual base written
@@ -531,6 +585,13 @@ public:
     const char *refQualifierSpelling() const {
         return refQual_ == RefQual::LValue ? " &" : refQual_ == RefQual::RValue ? " &&" : "";
     }
+    // **The cv-qualifier-seq of a member function's type**, [dcl.fct]/6: `int (S::*)(int) const` is not
+    // `int (S::*)(int)`. kThisConst and kThisVolatile, or 0.
+    enum { kThisConst = 1, kThisVolatile = 2 };
+    unsigned cvThis() const { return thisCv_; }
+    const char *cvThisSpelling() const {
+        return thisCv_ == 3 ? " const volatile" : thisCv_ == 2 ? " volatile" : thisCv_ == 1 ? " const" : "";
+    }
 
 private:
     friend class TypeTable;
@@ -541,6 +602,7 @@ private:
     // one, this copy having been taken before the struct was complete.
     const Type *unqual_ = nullptr;
     bool const_ = false;
+    bool volatile_ = false;
     const DepExpr *expr_ = nullptr;
 
     const Type *pointee_ = nullptr;
@@ -549,11 +611,16 @@ private:
     std::vector<const Type *> params_;
     bool variadic_ = false;
     RefQual refQual_ = RefQual::None;
+    unsigned thisCv_ = 0;
 
     std::string tag_;
     std::string local_;
     std::string localOwner_;
+    std::string unnamed_;
+    int unnamedIndex_ = -1;
     bool inNamespace_ = false;
+    std::string displayTag_;
+    const Type *enumScope_ = nullptr;
     // Set on a class that is a template specialization. `local_` is
     // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`
     // and Microsoft `?$Box@H$02@`, both built from these two.
@@ -586,6 +653,7 @@ private:
     std::vector<StaticMember> statics_;
     std::vector<std::pair<std::string, long long> > enumerators_;
     bool scoped_ = false;
+    bool fixedUnderlying_ = false;
     bool enumDefined_ = false;
     int size_ = 0;
     int align_ = 1;
@@ -599,16 +667,25 @@ public:
 
     const Type *withConst(const Type *t);
     const Type *withoutConst(const Type *t);
+    const Type *withVolatile(const Type *t);
+    const Type *withoutVolatile(const Type *t);
+    // t with exactly this cv, whatever it had; and t with `of`'s cv added to its own.
+    const Type *qualified(const Type *t, bool isConst, bool isVolatile);
+    const Type *withCvOf(const Type *t, const Type *of);
     const Type *pointerTo(const Type *t);
     const Type *memberPointerTo(const Type *cls, const Type *member);
+    // A pointer to member function made while its class was still being defined took the widest shape the
+    // class could turn out to need; once the class is complete, each is given cl's shape for its model.
+    void settleMemberFunctionPointers(const Type *cls, const Target &t);
     const Type *memberFunctionPointerTo(const Type *cls, const Type *fn,
                                         const Target &t);
     const Type *referenceTo(const Type *t);
     const Type *rvalueReferenceTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);
+    const Type *dependentArrayOf(const Type *t, const DepExpr *bound);
     const Type *functionType(const Type *returns,
                              std::vector<const Type *> params, bool variadic,
-                             RefQual ref = RefQual::None);
+                             RefQual ref = RefQual::None, unsigned cvThis = 0);
     // The Nth parameter of the template being mangled.
     const Type *templateParam(int index);
     // `auto`, before deduction has replaced it.
@@ -672,6 +749,10 @@ public:
     virtual bool resumeTakesException() const { return true; }
     // **Whether `__cxa_get_exception_ptr` exists** - TI's runtime copies from what `__cxa_begin_catch` returns.
     virtual bool hasGetExceptionPtr() const { return true; }
+    // **Whether `__cxa_bad_typeid` exists**, so that `typeid(*p)` tests p. Every target's runtime has it: the C6747
+    // said no until 1.74, when it could be asked - RTS6x has the routine since 1.3, and TI's rts6740 has it too
+    // (CCS 7.4's cl6x 8.2.2 calls it, and the program catches std::bad_typeid).
+    virtual bool hasBadTypeid() const { return true; }
     // **What `__cxa_begin_catch` returns for a thrown pointer**: the pointer's value on the hosts, the exception object's address on TI's runtime.
     virtual bool beginCatchReturnsObject() const { return false; }
     // **Who checks `throw(T...)`**: a filter in the frame's own pads on the hosts, the descriptor TI's personality reads.

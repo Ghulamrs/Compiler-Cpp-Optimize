@@ -1,0 +1,6 @@
+move | 1 hello 5
+massign | hello 1
+| made
+move move | made 1
+move massign massign | g f
+cassign | h

@@ -12,16 +12,12 @@
 namespace std {
 
 // **[string.conversions] the sto* family**: strto*, with invalid_argument when nothing was read and
-// out_of_range when the value does not fit. x86_64-windows cannot throw a class yet, so there the
-// message is printed and the program aborts - the rule <array>'s at() follows.
+// out_of_range when the value does not fit; what() names the function. (Until 1.76 x86_64-windows printed
+// the message and aborted, left from the time it could not throw a class: `try { std::stoi("abc"); } catch
+// (const std::invalid_argument &)` ended the program.)
 inline void __sto_fail(const char *fn, bool range) {
-#ifdef _WIN32
-    std::fprintf(stderr, "std::%s: %s\n", fn, range ? "out of range" : "no conversion");
-    std::abort();
-#else
     if (range) throw out_of_range(fn);
     throw invalid_argument(fn);
-#endif
 }
 
 // Every integer form reads through strtoll or strtoull and every floating one through strtold,

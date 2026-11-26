@@ -1,21 +1,241 @@
-// <algorithm> - the few that are reached for.
+// <algorithm> - [algorithms], C++11's whole header.
 //
-// **Everything here is a template over iterators, and an iterator in this
-// library is a pointer.** `vector<T>::iterator` is `T *` and a map's is a
-// `pair<K, V> *`, so these work on arrays and on this library's containers
-// alike, which is the property that makes them worth having as templates rather
-// than as members.
+// **Everything here is a template over iterators**, and what an algorithm asks of one is what
+// [algorithms] says it asks: the ones that move through a range a step at a time take any
+// iterator of the category the standard names, and the ones that need to jump - the sorts, the
+// heaps, nth_element - take a random-access one. vector, array and string iterate by pointer and
+// map and set by a bidirectional iterator of their own, so every container here meets each
+// algorithm its category allows. distance and advance are <__iterator_base>'s, by category.
 //
-// What is not here: `find_if`, and the rest of the header. They are
-// absent because nothing calls them, and adding them untested would be adding
-// the appearance of a library rather than a library.
+// Each comparison form is the one that does the work; the form without a comparison hands it
+// `<` or `==` as __cxx1_less or __cxx1_equal_to. A swap of two elements is `swap(*a, *b)` found from
+// here, so a program's own swap for its type is the one used.
 #ifndef _CXX1_ALGORITHM
 #define _CXX1_ALGORITHM
 
 #include <cstddef>
-#include <utility>   // std::move, for the swaps below (1.27)
+#include <cstdlib>
+#include <initializer_list>
+#include <utility>   // pair, move and swap
+#include <__iterator_base>
 
 namespace std {
+
+struct __cxx1_less {
+    template <class A, class B> bool operator()(const A &a, const B &b) const { return a < b; }
+};
+struct __cxx1_equal_to {
+    template <class A, class B> bool operator()(const A &a, const B &b) const { return a == b; }
+};
+
+// [alg.nonmodifying]
+
+template <class In, class Pred>
+bool all_of(In first, In last, Pred pred) {
+    for (; first != last; ++first)
+        if (!pred(*first)) return false;
+    return true;
+}
+
+template <class In, class Pred>
+bool any_of(In first, In last, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) return true;
+    return false;
+}
+
+template <class In, class Pred>
+bool none_of(In first, In last, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) return false;
+    return true;
+}
+
+template <class In, class Function>
+Function for_each(In first, In last, Function f) {
+    for (; first != last; ++first) f(*first);
+    return f;
+}
+
+template <class In, class T>
+In find(In from, In to, const T &want) {
+    while (from != to && !(*from == want)) ++from;
+    return from;
+}
+
+template <class In, class Pred>
+In find_if(In first, In last, Pred pred) {
+    while (first != last && !pred(*first)) ++first;
+    return first;
+}
+
+template <class In, class Pred>
+In find_if_not(In first, In last, Pred pred) {
+    while (first != last && pred(*first)) ++first;
+    return first;
+}
+
+template <class For1, class For2, class Same>
+For1 search(For1 first1, For1 last1, For2 first2, For2 last2, Same same) {
+    for (;; ++first1) {
+        For1 i1 = first1;
+        For2 i2 = first2;
+        for (;; ++i1, ++i2) {
+            if (i2 == last2) return first1;
+            if (i1 == last1) return last1;
+            if (!same(*i1, *i2)) break;
+        }
+    }
+}
+
+template <class For1, class For2>
+For1 search(For1 first1, For1 last1, For2 first2, For2 last2) {
+    return std::search(first1, last1, first2, last2, __cxx1_equal_to());
+}
+
+template <class For, class Size, class T, class Same>
+For search_n(For first, For last, Size count, const T &value, Same same) {
+    if (count <= 0) return first;
+    for (; first != last; ++first) {
+        if (!same(*first, value)) continue;
+        For start = first;
+        Size run = 1;
+        for (;;) {
+            if (run == count) return start;
+            if (++first == last) return last;
+            if (!same(*first, value)) break;
+            ++run;
+        }
+    }
+    return last;
+}
+
+template <class For, class Size, class T>
+For search_n(For first, For last, Size count, const T &value) {
+    return std::search_n(first, last, count, value, __cxx1_equal_to());
+}
+
+template <class For1, class For2, class Same>
+For1 find_end(For1 first1, For1 last1, For2 first2, For2 last2, Same same) {
+    if (first2 == last2) return last1;
+    For1 result = last1;
+    for (;;) {
+        For1 found = std::search(first1, last1, first2, last2, same);
+        if (found == last1) return result;
+        result = found;
+        first1 = found;
+        ++first1;
+    }
+}
+
+template <class For1, class For2>
+For1 find_end(For1 first1, For1 last1, For2 first2, For2 last2) {
+    return std::find_end(first1, last1, first2, last2, __cxx1_equal_to());
+}
+
+template <class In, class For, class Same>
+In find_first_of(In first1, In last1, For first2, For last2, Same same) {
+    for (; first1 != last1; ++first1)
+        for (For i = first2; i != last2; ++i)
+            if (same(*first1, *i)) return first1;
+    return last1;
+}
+
+template <class In, class For>
+In find_first_of(In first1, In last1, For first2, For last2) {
+    return std::find_first_of(first1, last1, first2, last2, __cxx1_equal_to());
+}
+
+template <class For, class Same>
+For adjacent_find(For first, For last, Same same) {
+    if (first == last) return last;
+    For next = first;
+    while (++next != last) {
+        if (same(*first, *next)) return first;
+        first = next;
+    }
+    return last;
+}
+
+template <class For>
+For adjacent_find(For first, For last) {
+    return std::adjacent_find(first, last, __cxx1_equal_to());
+}
+
+template <class In, class T>
+typename iterator_traits<In>::difference_type count(In from, In to, const T &want) {
+    typename iterator_traits<In>::difference_type seen = 0;
+    for (; from != to; ++from)
+        if (*from == want) seen++;
+    return seen;
+}
+
+template <class In, class Pred>
+typename iterator_traits<In>::difference_type count_if(In first, In last, Pred pred) {
+    typename iterator_traits<In>::difference_type seen = 0;
+    for (; first != last; ++first)
+        if (pred(*first)) seen++;
+    return seen;
+}
+
+template <class In1, class In2, class Same>
+pair<In1, In2> mismatch(In1 first1, In1 last1, In2 first2, Same same) {
+    while (first1 != last1 && same(*first1, *first2)) { ++first1; ++first2; }
+    return pair<In1, In2>(first1, first2);
+}
+
+template <class In1, class In2>
+pair<In1, In2> mismatch(In1 first1, In1 last1, In2 first2) {
+    return std::mismatch(first1, last1, first2, __cxx1_equal_to());
+}
+
+// **equal - [alg.equal]** (1.30, 2026-10-23): whether every element of [from, to) equals the element at
+// the same distance from `with`, whose range is the caller's to make long enough; compared with `==`, or by
+// the caller's predicate. cppparse's member lookup (B12) compares base paths with it.
+template <class In1, class In2>
+bool equal(In1 from, In1 to, In2 with) {
+    for (; from != to; ++from, ++with)
+        if (!(*from == *with)) return false;
+    return true;
+}
+
+template <class In1, class In2, class Same>
+bool equal(In1 from, In1 to, In2 with, Same same) {
+    for (; from != to; ++from, ++with)
+        if (!same(*from, *with)) return false;
+    return true;
+}
+
+// [alg.is_permutation]: past the common start, each value counted in both ranges, the first time
+// it is met.
+template <class For1, class For2, class Same>
+bool is_permutation(For1 first1, For1 last1, For2 first2, Same same) {
+    for (; first1 != last1; ++first1, ++first2)
+        if (!same(*first1, *first2)) break;
+    if (first1 == last1) return true;
+    For2 last2 = first2;
+    std::__cxx1_advance(last2, std::__cxx1_distance(first1, last1));
+    for (For1 i = first1; i != last1; ++i) {
+        For1 seen = first1;
+        while (seen != i && !same(*seen, *i)) ++seen;
+        if (seen != i) continue;
+        long in2 = 0, in1 = 0;
+        for (For2 j = first2; j != last2; ++j)
+            if (same(*i, *j)) in2++;
+        if (in2 == 0) return false;
+        for (For1 j = i; j != last1; ++j)
+            if (same(*i, *j)) in1++;
+        if (in1 != in2) return false;
+    }
+    return true;
+}
+
+template <class For1, class For2>
+bool is_permutation(For1 first1, For1 last1, For2 first2) {
+    return std::is_permutation(first1, last1, first2, __cxx1_equal_to());
+}
+
+// [alg.modifying.operations]
 
 template <class In, class Out>
 Out copy(In from, In to, Out into) {
@@ -27,39 +247,397 @@ Out copy(In from, In to, Out into) {
     return into;
 }
 
-// **Written with an `if` and not a conditional**, and the reason is a compiler
-// limit worth recording rather than working around silently: `return b < a ? b
-// : a;` over two `const T &` is an lvalue and should be returnable as a
-// reference, and this compiler reads the conditional as a temporary and refuses
-// it. The two forms say the same thing; this one compiles.
-template <class T>
-const T &min(const T &a, const T &b) {
-    if (b < a) return b;
-    return a;
+// The source is not stepped past the n-th element, so an input stream gives up only n.
+template <class In, class Size, class Out>
+Out copy_n(In first, Size n, Out result) {
+    if (n > 0) {
+        for (;;) {
+            *result = *first;
+            ++result;
+            if (--n == 0) break;
+            ++first;
+        }
+    }
+    return result;
 }
 
-template <class T>
-const T &max(const T &a, const T &b) {
-    if (a < b) return b;
-    return a;
+template <class In, class Out, class Pred>
+Out copy_if(In first, In last, Out result, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) { *result = *first; ++result; }
+    return result;
 }
 
-template <class In, class T>
-In find(In from, In to, const T &want) {
-    while (from != to && !(*from == want)) ++from;
-    return from;
+template <class Bi1, class Bi2>
+Bi2 copy_backward(Bi1 first, Bi1 last, Bi2 result) {
+    while (first != last) *--result = *--last;
+    return result;
 }
 
-template <class In, class T>
-std::size_t count(In from, In to, const T &want) {
-    std::size_t seen = 0;
+template <class In, class Out>
+Out move(In first, In last, Out result) {
+    for (; first != last; ++first, ++result) *result = std::move(*first);
+    return result;
+}
+
+template <class Bi1, class Bi2>
+Bi2 move_backward(Bi1 first, Bi1 last, Bi2 result) {
+    while (first != last) *--result = std::move(*--last);
+    return result;
+}
+
+template <class For1, class For2>
+void iter_swap(For1 a, For2 b) {
+    swap(*a, *b);
+}
+
+template <class For1, class For2>
+For2 swap_ranges(For1 first1, For1 last1, For2 first2) {
+    for (; first1 != last1; ++first1, ++first2) std::iter_swap(first1, first2);
+    return first2;
+}
+
+template <class In, class Out, class Op>
+Out transform(In first, In last, Out result, Op op) {
+    for (; first != last; ++first, ++result) *result = op(*first);
+    return result;
+}
+
+template <class In1, class In2, class Out, class Op>
+Out transform(In1 first1, In1 last1, In2 first2, Out result, Op op) {
+    for (; first1 != last1; ++first1, ++first2, ++result) *result = op(*first1, *first2);
+    return result;
+}
+
+template <class For, class T>
+void replace(For first, For last, const T &old_value, const T &new_value) {
+    for (; first != last; ++first)
+        if (*first == old_value) *first = new_value;
+}
+
+template <class For, class Pred, class T>
+void replace_if(For first, For last, Pred pred, const T &new_value) {
+    for (; first != last; ++first)
+        if (pred(*first)) *first = new_value;
+}
+
+template <class In, class Out, class T>
+Out replace_copy(In first, In last, Out result, const T &old_value, const T &new_value) {
+    for (; first != last; ++first, ++result) {
+        if (*first == old_value) *result = new_value;
+        else *result = *first;
+    }
+    return result;
+}
+
+template <class In, class Out, class Pred, class T>
+Out replace_copy_if(In first, In last, Out result, Pred pred, const T &new_value) {
+    for (; first != last; ++first, ++result) {
+        if (pred(*first)) *result = new_value;
+        else *result = *first;
+    }
+    return result;
+}
+
+template <class For, class T>
+void fill(For first, For last, const T &value) {
+    for (; first != last; ++first) *first = value;
+}
+
+template <class Out, class Size, class T>
+Out fill_n(Out first, Size n, const T &value) {
+    for (; n > 0; --n, ++first) *first = value;
+    return first;
+}
+
+template <class For, class Generator>
+void generate(For first, For last, Generator gen) {
+    for (; first != last; ++first) *first = gen();
+}
+
+template <class Out, class Size, class Generator>
+Out generate_n(Out first, Size n, Generator gen) {
+    for (; n > 0; --n, ++first) *first = gen();
+    return first;
+}
+
+// **remove - [alg.remove]** (1.10, 2026-10-20): every element not equal to `value`
+// moved down over the ones that are, in order, and the new end returned - the
+// container is not shortened, which is the erase that follows it in the idiom.
+// Nothing before the first removed element is assigned, to itself or otherwise.
+template <class It, class T>
+It remove(It from, It to, const T &value) {
+    from = std::find(from, to, value);
+    if (from == to) return from;
+    It out = from;
+    while (++from != to)
+        if (!(*from == value)) { *out = std::move(*from); ++out; }
+    return out;
+}
+
+template <class For, class Pred>
+For remove_if(For first, For last, Pred pred) {
+    first = std::find_if(first, last, pred);
+    if (first == last) return first;
+    For out = first;
+    while (++first != last)
+        if (!pred(*first)) { *out = std::move(*first); ++out; }
+    return out;
+}
+
+template <class In, class Out, class T>
+Out remove_copy(In first, In last, Out result, const T &value) {
+    for (; first != last; ++first)
+        if (!(*first == value)) { *result = *first; ++result; }
+    return result;
+}
+
+template <class In, class Out, class Pred>
+Out remove_copy_if(In first, In last, Out result, Pred pred) {
+    for (; first != last; ++first)
+        if (!pred(*first)) { *result = *first; ++result; }
+    return result;
+}
+
+template <class For, class Same>
+For unique(For first, For last, Same same) {
+    first = std::adjacent_find(first, last, same);
+    if (first == last) return last;
+    For kept = first;
+    ++first;
+    while (++first != last)
+        if (!same(*kept, *first)) *++kept = std::move(*first);
+    return ++kept;
+}
+
+template <class For>
+For unique(For first, For last) {
+    return std::unique(first, last, __cxx1_equal_to());
+}
+
+// The last value written is held, so an input range is read once and the output never read.
+template <class In, class Out, class Same>
+Out unique_copy(In first, In last, Out result, Same same) {
+    if (first == last) return result;
+    auto kept = *first;
+    *result = kept;
+    ++result;
+    while (++first != last)
+        if (!same(kept, *first)) {
+            kept = *first;
+            *result = kept;
+            ++result;
+        }
+    return result;
+}
+
+template <class In, class Out>
+Out unique_copy(In first, In last, Out result) {
+    return std::unique_copy(first, last, result, __cxx1_equal_to());
+}
+
+// **reverse - [alg.reverse].** Swaps from both ends until they meet; the
+// element type is deduced from a pointer to one.
+template <class It, class T>
+void reverseSwap(It a, It b, T *) {
+    T held(std::move(*a));   // by moves (1.27)
+    *a = std::move(*b);
+    *b = std::move(held);
+}
+
+template <class It>
+void reverse(It from, It to) {
     while (from != to) {
-        if (*from == want) seen++;
+        --to;
+        if (from == to) break;
+        reverseSwap(from, to, &*from);
         ++from;
     }
-    return seen;
 }
 
+template <class Bi, class Out>
+Out reverse_copy(Bi first, Bi last, Out result) {
+    while (first != last) {
+        --last;
+        *result = *last;
+        ++result;
+    }
+    return result;
+}
+
+// [alg.rotate], for a forward iterator: the front block swapped along until the rest is in place.
+// Returns where the first element went.
+template <class For>
+For rotate(For first, For middle, For last) {
+    if (first == middle) return last;
+    if (middle == last) return first;
+    For next = middle;
+    do {
+        std::iter_swap(first, next);
+        ++first;
+        ++next;
+        if (first == middle) middle = next;
+    } while (next != last);
+    For result = first;
+    next = middle;
+    while (next != last) {
+        std::iter_swap(first, next);
+        ++first;
+        ++next;
+        if (first == middle) middle = next;
+        else if (next == last) next = middle;
+    }
+    return result;
+}
+
+template <class For, class Out>
+Out rotate_copy(For first, For middle, For last, Out result) {
+    return std::copy(first, middle, std::copy(middle, last, result));
+}
+
+// [alg.random.shuffle]: Fisher-Yates, each element swapped with one at random at or before it.
+template <class RandomIt, class RandomNumberGenerator>
+void random_shuffle(RandomIt first, RandomIt last, RandomNumberGenerator &&gen) {
+    if (last - first < 2) return;
+    for (RandomIt i = first + 1; i != last; ++i) {
+        RandomIt j = first + gen((i - first) + 1);
+        if (j != i) std::iter_swap(i, j);
+    }
+}
+
+// std::rand's RAND_MAX may be 32767, so two draws make one where a range is wider.
+struct __cxx1_rand_below {
+    long long operator()(long long n) const {
+        long long r = std::rand();
+        if (n > (long long)RAND_MAX + 1) r = r * ((long long)RAND_MAX + 1) + std::rand();
+        return r % n;
+    }
+};
+
+template <class RandomIt>
+void random_shuffle(RandomIt first, RandomIt last) {
+    std::random_shuffle(first, last, __cxx1_rand_below());
+}
+
+// A value uniform in [0, n) from a uniform random bit generator: draws joined in base (range + 1)
+// until they span n values, and a draw above the largest multiple of n thrown back.
+template <class URNG>
+unsigned long long __cxx1_urng_below(URNG &g, unsigned long long n) {
+    const unsigned long long range = (unsigned long long)(g.max() - g.min());
+    for (;;) {
+        unsigned long long value = 0, top = 0;
+        do {
+            value = value * (range + 1) + (unsigned long long)(g() - g.min());
+            top = top * (range + 1) + range;
+        } while (top < n - 1);
+        const unsigned long long spare = top == ~0ull ? (~0ull % n + 1) % n : (top + 1) % n;
+        if (value <= top - spare) return value % n;
+    }
+}
+
+template <class RandomIt, class URNG>
+void shuffle(RandomIt first, RandomIt last, URNG &&g) {
+    if (last - first < 2) return;
+    for (RandomIt i = last - 1; i != first; --i) {
+        RandomIt j = first + (long long)std::__cxx1_urng_below(g, (unsigned long long)(i - first) + 1);
+        if (j != i) std::iter_swap(i, j);
+    }
+}
+
+// [alg.partitions]
+
+template <class In, class Pred>
+bool is_partitioned(In first, In last, Pred pred) {
+    first = std::find_if_not(first, last, pred);
+    for (; first != last; ++first)
+        if (pred(*first)) return false;
+    return true;
+}
+
+template <class For, class Pred>
+For __cxx1_partition(For first, For last, Pred &pred, forward_iterator_tag) {
+    first = std::find_if_not(first, last, pred);
+    if (first == last) return first;
+    for (For i = first; ++i != last; )
+        if (pred(*i)) { std::iter_swap(i, first); ++first; }
+    return first;
+}
+
+// From both ends at once: a misplaced pair is swapped, so each element moves at most once.
+template <class Bi, class Pred>
+Bi __cxx1_partition(Bi first, Bi last, Pred &pred, bidirectional_iterator_tag) {
+    for (;;) {
+        for (;;) {
+            if (first == last) return first;
+            if (!pred(*first)) break;
+            ++first;
+        }
+        do {
+            if (first == --last) return first;
+        } while (!pred(*last));
+        std::iter_swap(first, last);
+        ++first;
+    }
+}
+
+template <class RandomIt, class Pred>
+RandomIt __cxx1_partition(RandomIt first, RandomIt last, Pred &pred, random_access_iterator_tag) {
+    return std::__cxx1_partition(first, last, pred, bidirectional_iterator_tag());
+}
+
+template <class For, class Pred>
+For partition(For first, For last, Pred pred) {
+    return std::__cxx1_partition(first, last, pred, typename iterator_traits<For>::iterator_category());
+}
+
+// Without a buffer: each half partitioned, then the false part of the first rotated past the true
+// part of the second - n log n swaps, and the order on each side kept.
+template <class Bi, class Pred, class D>
+Bi __cxx1_stable_partition(Bi first, Bi last, Pred &pred, D length) {
+    if (length == 0) return first;
+    if (length == 1) {
+        if (pred(*first)) return last;
+        return first;
+    }
+    Bi middle = first;
+    std::__cxx1_advance(middle, length / 2);
+    Bi left = std::__cxx1_stable_partition(first, middle, pred, length / 2);
+    Bi right = std::__cxx1_stable_partition(middle, last, pred, length - length / 2);
+    return std::rotate(left, middle, right);
+}
+
+template <class Bi, class Pred>
+Bi stable_partition(Bi first, Bi last, Pred pred) {
+    return std::__cxx1_stable_partition(first, last, pred, std::__cxx1_distance(first, last));
+}
+
+template <class In, class Out1, class Out2, class Pred>
+pair<Out1, Out2> partition_copy(In first, In last, Out1 out_true, Out2 out_false, Pred pred) {
+    for (; first != last; ++first) {
+        if (pred(*first)) { *out_true = *first; ++out_true; }
+        else { *out_false = *first; ++out_false; }
+    }
+    return pair<Out1, Out2>(out_true, out_false);
+}
+
+template <class For, class Pred>
+For partition_point(For first, For last, Pred pred) {
+    auto length = std::__cxx1_distance(first, last);
+    while (length > 0) {
+        auto half = length / 2;
+        For middle = first;
+        std::__cxx1_advance(middle, half);
+        if (pred(*middle)) {
+            first = ++middle;
+            length -= half + 1;
+        } else {
+            length = half;
+        }
+    }
+    return first;
+}
+
+// [alg.sorting]
 
 // **sort - [alg.sort], an introsort** (L02, 2026-10-13): quicksort on a median-of-three pivot
 // down to runs of 16, heapsort for a range that has recursed 2 log2(n) deep without getting
@@ -98,32 +676,54 @@ void __sort_heap(It from, It to, Less less) {
 
 // The median of the first, middle and last goes to the front and is the pivot (Hoare's scheme
 // with the pivot at the low end, so both parts are non-empty and the recursion always shrinks).
+// Returns where the second part starts.
+template <class It, class Less>
+It __sort_split(It from, It to, Less &less) {
+    It mid = from + (long)(to - from) / 2;
+    It last = to - 1;
+    if (less(*mid, *from)) std::__sort_swap(mid, from);
+    if (less(*last, *mid)) {
+        std::__sort_swap(last, mid);
+        if (less(*mid, *from)) std::__sort_swap(mid, from);
+    }
+    std::__sort_swap(from, mid);
+    // The pivot is compared where it lies and followed when a swap moves it: [sort]/2 asks that an element can be
+    // moved, not copied (until 1.76 a copy of it was kept, and a vector of a move-only type did not sort).
+    It pivot = from;
+    It i = from - 1;
+    It j = to;
+    for (;;) {
+        do { ++i; } while (less(*i, *pivot));
+        do { --j; } while (less(*pivot, *j));
+        if (i >= j) break;
+        std::__sort_swap(i, j);
+        if (pivot == i) pivot = j;
+        else if (pivot == j) pivot = i;
+    }
+    return j + 1;
+}
+
 template <class It, class Less>
 void __sort_intro(It from, It to, long depth, Less less) {
     while ((long)(to - from) > 16) {
         if (depth == 0) { std::__sort_heap(from, to, less); return; }
         depth--;
-        It mid = from + (long)(to - from) / 2;
-        It last = to - 1;
-        if (less(*mid, *from)) std::__sort_swap(mid, from);
-        if (less(*last, *mid)) {
-            std::__sort_swap(last, mid);
-            if (less(*mid, *from)) std::__sort_swap(mid, from);
-        }
-        std::__sort_swap(from, mid);
-        auto pivot = *from;
-        It i = from - 1;
-        It j = to;
-        for (;;) {
-            do { ++i; } while (less(*i, pivot));
-            do { --j; } while (less(pivot, *j));
-            if (i >= j) break;
-            std::__sort_swap(i, j);
-        }
-        It cut = j + 1;
+        It cut = std::__sort_split(from, to, less);
         if (cut - from < to - cut) { std::__sort_intro(from, cut, depth, less); from = cut; }
         else { std::__sort_intro(cut, to, depth, less); to = cut; }
     }
+}
+
+template <class It, class Less>
+void __sort_insertion(It from, It to, Less &less) {
+    if (from == to) return;
+    for (It i = from + 1; i != to; ++i)
+        for (It j = i; j != from; ) {
+            It prev = j - 1;
+            if (!less(*j, *prev)) break;
+            std::__sort_swap(prev, j);
+            j = prev;
+        }
 }
 
 template <class It, class Less>
@@ -133,13 +733,7 @@ void sort(It from, It to, Less less) {
     long depth = 0;
     for (long k = n; k > 1; k >>= 1) depth += 2;
     std::__sort_intro(from, to, depth, less);
-    for (It i = from + 1; i != to; ++i)
-        for (It j = i; j != from; ) {
-            It prev = j - 1;
-            if (!less(*j, *prev)) break;
-            std::__sort_swap(prev, j);
-            j = prev;
-        }
+    std::__sort_insertion(from, to, less);
 }
 
 // The two-argument form is the same with `<`; T comes from the element, deduced through `&*from`.
@@ -222,24 +816,458 @@ void stable_sort(It from, It to) {
     if (from != to) std::__stable_sort_by_less(from, to, &*from);
 }
 
-// **reverse - [alg.reverse].** Swaps from both ends until they meet; the
-// element type is deduced from a pointer to one, this header having no
-// iterator_traits.
-template <class It, class T>
-void reverseSwap(It a, It b, T *) {
-    T held(std::move(*a));   // by moves (1.27)
-    *a = std::move(*b);
-    *b = std::move(held);
+// [alg.heap.operations]: the heap is a max-heap by the comparison, element i's children at 2i+1
+// and 2i+2. An element finds its place by a hole: sinking, the hole follows the larger child (the
+// right one on a tie) to the bottom and the value climbs back from there, as cl's library and
+// libstdc++ both do it - so a heap built here is laid out as theirs are.
+template <class RandomIt, class D, class T, class Compare>
+void __cxx1_heap_up(RandomIt first, D hole, D top, T &value, Compare &comp) {
+    D parent = (hole - 1) / 2;
+    while (top < hole && comp(first[parent], value)) {
+        first[hole] = std::move(first[parent]);
+        hole = parent;
+        parent = (hole - 1) / 2;
+    }
+    first[hole] = std::move(value);
 }
 
-template <class It>
-void reverse(It from, It to) {
-    while (from != to) {
-        --to;
-        if (from == to) break;
-        reverseSwap(from, to, &*from);
-        ++from;
+template <class RandomIt, class D, class T, class Compare>
+void __cxx1_heap_down(RandomIt first, D hole, D length, T &value, Compare &comp) {
+    const D top = hole;
+    const D last_parent = (length - 1) / 2;
+    D child = hole;
+    while (child < last_parent) {
+        child = 2 * child + 2;
+        if (comp(first[child], first[child - 1])) --child;
+        first[hole] = std::move(first[child]);
+        hole = child;
     }
+    if (child == last_parent && length % 2 == 0) {
+        first[hole] = std::move(first[length - 1]);
+        hole = length - 1;
+    }
+    std::__cxx1_heap_up(first, hole, top, value, comp);
+}
+
+template <class RandomIt, class D, class T, class Compare>
+void __cxx1_heap_replace_top(RandomIt first, D length, T &value, Compare &comp) {
+    std::__cxx1_heap_down(first, D(0), length, value, comp);
+}
+
+template <class RandomIt, class D, class Compare>
+void __cxx1_push_heap(RandomIt first, D length, Compare &comp) {
+    if (length < 2) return;
+    auto value = std::move(first[length - 1]);
+    std::__cxx1_heap_up(first, length - 1, D(0), value, comp);
+}
+
+template <class RandomIt, class D, class Compare>
+void __cxx1_pop_heap(RandomIt first, D length, Compare &comp) {
+    if (length < 2) return;
+    auto value = std::move(first[length - 1]);
+    first[length - 1] = std::move(*first);
+    std::__cxx1_heap_down(first, D(0), length - 1, value, comp);
+}
+
+template <class RandomIt, class D, class Compare>
+void __cxx1_make_heap(RandomIt first, D length, Compare &comp) {
+    for (D hole = length / 2; hole > 0; ) {
+        --hole;
+        auto value = std::move(first[hole]);
+        std::__cxx1_heap_down(first, hole, length, value, comp);
+    }
+}
+
+template <class RandomIt, class D, class Compare>
+D __cxx1_heap_until(RandomIt first, D length, Compare &comp) {
+    for (D child = 1; child < length; ++child)
+        if (comp(first[(child - 1) / 2], first[child])) return child;
+    return length;
+}
+
+template <class RandomIt, class Compare>
+void push_heap(RandomIt first, RandomIt last, Compare comp) {
+    std::__cxx1_push_heap(first, last - first, comp);
+}
+
+template <class RandomIt>
+void push_heap(RandomIt first, RandomIt last) {
+    std::push_heap(first, last, __cxx1_less());
+}
+
+template <class RandomIt, class Compare>
+void pop_heap(RandomIt first, RandomIt last, Compare comp) {
+    std::__cxx1_pop_heap(first, last - first, comp);
+}
+
+template <class RandomIt>
+void pop_heap(RandomIt first, RandomIt last) {
+    std::pop_heap(first, last, __cxx1_less());
+}
+
+template <class RandomIt, class Compare>
+void make_heap(RandomIt first, RandomIt last, Compare comp) {
+    std::__cxx1_make_heap(first, last - first, comp);
+}
+
+template <class RandomIt>
+void make_heap(RandomIt first, RandomIt last) {
+    std::make_heap(first, last, __cxx1_less());
+}
+
+template <class RandomIt, class Compare>
+void sort_heap(RandomIt first, RandomIt last, Compare comp) {
+    for (; last - first > 1; --last) std::__cxx1_pop_heap(first, last - first, comp);
+}
+
+template <class RandomIt>
+void sort_heap(RandomIt first, RandomIt last) {
+    std::sort_heap(first, last, __cxx1_less());
+}
+
+template <class RandomIt, class Compare>
+RandomIt is_heap_until(RandomIt first, RandomIt last, Compare comp) {
+    return first + std::__cxx1_heap_until(first, last - first, comp);
+}
+
+template <class RandomIt>
+RandomIt is_heap_until(RandomIt first, RandomIt last) {
+    return std::is_heap_until(first, last, __cxx1_less());
+}
+
+template <class RandomIt, class Compare>
+bool is_heap(RandomIt first, RandomIt last, Compare comp) {
+    return std::is_heap_until(first, last, comp) == last;
+}
+
+template <class RandomIt>
+bool is_heap(RandomIt first, RandomIt last) {
+    return std::is_heap(first, last, __cxx1_less());
+}
+
+// [partial.sort]: a heap of the first part keeps the smallest seen; each smaller element of the
+// rest takes the top's place, and the heap is sorted at the end.
+template <class RandomIt, class Compare>
+void partial_sort(RandomIt first, RandomIt middle, RandomIt last, Compare comp) {
+    std::make_heap(first, middle, comp);
+    for (RandomIt i = middle; i < last; ++i)
+        if (comp(*i, *first)) {
+            auto value = std::move(*i);
+            *i = std::move(*first);
+            std::__cxx1_heap_replace_top(first, middle - first, value, comp);
+        }
+    std::sort_heap(first, middle, comp);
+}
+
+template <class RandomIt>
+void partial_sort(RandomIt first, RandomIt middle, RandomIt last) {
+    std::partial_sort(first, middle, last, __cxx1_less());
+}
+
+template <class In, class RandomIt, class Compare>
+RandomIt partial_sort_copy(In first, In last, RandomIt result_first, RandomIt result_last, Compare comp) {
+    RandomIt filled = result_first;
+    for (; first != last && filled != result_last; ++first, ++filled) *filled = *first;
+    std::make_heap(result_first, filled, comp);
+    for (; first != last; ++first)
+        if (comp(*first, *result_first)) {
+            auto value = *first;
+            std::__cxx1_heap_replace_top(result_first, filled - result_first, value, comp);
+        }
+    std::sort_heap(result_first, filled, comp);
+    return filled;
+}
+
+template <class In, class RandomIt>
+RandomIt partial_sort_copy(In first, In last, RandomIt result_first, RandomIt result_last) {
+    return std::partial_sort_copy(first, last, result_first, result_last, __cxx1_less());
+}
+
+template <class For, class Compare>
+For is_sorted_until(For first, For last, Compare comp) {
+    if (first == last) return last;
+    For next = first;
+    while (++next != last) {
+        if (comp(*next, *first)) return next;
+        first = next;
+    }
+    return last;
+}
+
+template <class For>
+For is_sorted_until(For first, For last) {
+    return std::is_sorted_until(first, last, __cxx1_less());
+}
+
+template <class For, class Compare>
+bool is_sorted(For first, For last, Compare comp) {
+    return std::is_sorted_until(first, last, comp) == last;
+}
+
+template <class For>
+bool is_sorted(For first, For last) {
+    return std::is_sorted(first, last, __cxx1_less());
+}
+
+// [alg.nth.element]: sort's split, keeping only the part that holds nth, until a short run is
+// left to insertion-sort; a range that has split 2 log2(n) times without getting there is sorted.
+template <class RandomIt, class Compare>
+void nth_element(RandomIt first, RandomIt nth, RandomIt last, Compare comp) {
+    if (nth == last) return;
+    long depth = 0;
+    for (long k = (long)(last - first); k > 1; k >>= 1) depth += 2;
+    while (last - first > 3) {
+        if (depth-- == 0) { std::sort(first, last, comp); return; }
+        RandomIt cut = std::__sort_split(first, last, comp);
+        if (nth < cut) last = cut;
+        else first = cut;
+    }
+    std::__sort_insertion(first, last, comp);
+}
+
+template <class RandomIt>
+void nth_element(RandomIt first, RandomIt nth, RandomIt last) {
+    std::nth_element(first, nth, last, __cxx1_less());
+}
+
+// [alg.binary.search]
+
+template <class For, class T, class Compare>
+For lower_bound(For first, For last, const T &value, Compare comp) {
+    auto length = std::__cxx1_distance(first, last);
+    while (length > 0) {
+        auto half = length / 2;
+        For middle = first;
+        std::__cxx1_advance(middle, half);
+        if (comp(*middle, value)) {
+            first = ++middle;
+            length -= half + 1;
+        } else {
+            length = half;
+        }
+    }
+    return first;
+}
+
+template <class For, class T>
+For lower_bound(For first, For last, const T &value) {
+    return std::lower_bound(first, last, value, __cxx1_less());
+}
+
+template <class For, class T, class Compare>
+For upper_bound(For first, For last, const T &value, Compare comp) {
+    auto length = std::__cxx1_distance(first, last);
+    while (length > 0) {
+        auto half = length / 2;
+        For middle = first;
+        std::__cxx1_advance(middle, half);
+        if (!comp(value, *middle)) {
+            first = ++middle;
+            length -= half + 1;
+        } else {
+            length = half;
+        }
+    }
+    return first;
+}
+
+template <class For, class T>
+For upper_bound(For first, For last, const T &value) {
+    return std::upper_bound(first, last, value, __cxx1_less());
+}
+
+template <class For, class T, class Compare>
+pair<For, For> equal_range(For first, For last, const T &value, Compare comp) {
+    return pair<For, For>(std::lower_bound(first, last, value, comp), std::upper_bound(first, last, value, comp));
+}
+
+template <class For, class T>
+pair<For, For> equal_range(For first, For last, const T &value) {
+    return std::equal_range(first, last, value, __cxx1_less());
+}
+
+template <class For, class T, class Compare>
+bool binary_search(For first, For last, const T &value, Compare comp) {
+    first = std::lower_bound(first, last, value, comp);
+    return first != last && !comp(value, *first);
+}
+
+template <class For, class T>
+bool binary_search(For first, For last, const T &value) {
+    return std::binary_search(first, last, value, __cxx1_less());
+}
+
+// [alg.merge]: an element of the second range goes first only when it orders before.
+
+template <class In1, class In2, class Out, class Compare>
+Out merge(In1 first1, In1 last1, In2 first2, In2 last2, Out result, Compare comp) {
+    for (; first1 != last1 && first2 != last2; ++result) {
+        if (comp(*first2, *first1)) { *result = *first2; ++first2; }
+        else { *result = *first1; ++first1; }
+    }
+    return std::copy(first2, last2, std::copy(first1, last1, result));
+}
+
+template <class In1, class In2, class Out>
+Out merge(In1 first1, In1 last1, In2 first2, In2 last2, Out result) {
+    return std::merge(first1, last1, first2, last2, result, __cxx1_less());
+}
+
+// Without a buffer: the longer run's middle element, its place in the other run found by binary
+// search, the block between rotated, and each side merged again.
+template <class Bi, class D, class Compare>
+void __cxx1_merge_in_place(Bi first, Bi middle, Bi last, D length1, D length2, Compare &comp) {
+    if (length1 == 0 || length2 == 0) return;
+    if (length1 + length2 == 2) {
+        if (comp(*middle, *first)) std::iter_swap(first, middle);
+        return;
+    }
+    Bi cut1 = first, cut2 = middle;
+    D take1 = 0, take2 = 0;
+    if (length1 > length2) {
+        take1 = length1 / 2;
+        std::__cxx1_advance(cut1, take1);
+        cut2 = std::lower_bound(middle, last, *cut1, comp);
+        take2 = std::__cxx1_distance(middle, cut2);
+    } else {
+        take2 = length2 / 2;
+        std::__cxx1_advance(cut2, take2);
+        cut1 = std::upper_bound(first, middle, *cut2, comp);
+        take1 = std::__cxx1_distance(first, cut1);
+    }
+    Bi joined = std::rotate(cut1, middle, cut2);
+    std::__cxx1_merge_in_place(first, cut1, joined, take1, take2, comp);
+    std::__cxx1_merge_in_place(joined, cut2, last, length1 - take1, length2 - take2, comp);
+}
+
+template <class Bi, class Compare>
+void inplace_merge(Bi first, Bi middle, Bi last, Compare comp) {
+    std::__cxx1_merge_in_place(first, middle, last, std::__cxx1_distance(first, middle),
+                               std::__cxx1_distance(middle, last), comp);
+}
+
+template <class Bi>
+void inplace_merge(Bi first, Bi middle, Bi last) {
+    std::inplace_merge(first, middle, last, __cxx1_less());
+}
+
+// [alg.set.operations], over two sorted ranges.
+
+template <class In1, class In2, class Compare>
+bool includes(In1 first1, In1 last1, In2 first2, In2 last2, Compare comp) {
+    for (; first2 != last2; ++first1) {
+        if (first1 == last1 || comp(*first2, *first1)) return false;
+        if (!comp(*first1, *first2)) ++first2;
+    }
+    return true;
+}
+
+template <class In1, class In2>
+bool includes(In1 first1, In1 last1, In2 first2, In2 last2) {
+    return std::includes(first1, last1, first2, last2, __cxx1_less());
+}
+
+template <class In1, class In2, class Out, class Compare>
+Out set_union(In1 first1, In1 last1, In2 first2, In2 last2, Out result, Compare comp) {
+    for (; first1 != last1 && first2 != last2; ++result) {
+        if (comp(*first1, *first2)) { *result = *first1; ++first1; }
+        else if (comp(*first2, *first1)) { *result = *first2; ++first2; }
+        else { *result = *first1; ++first1; ++first2; }
+    }
+    return std::copy(first2, last2, std::copy(first1, last1, result));
+}
+
+template <class In1, class In2, class Out>
+Out set_union(In1 first1, In1 last1, In2 first2, In2 last2, Out result) {
+    return std::set_union(first1, last1, first2, last2, result, __cxx1_less());
+}
+
+template <class In1, class In2, class Out, class Compare>
+Out set_intersection(In1 first1, In1 last1, In2 first2, In2 last2, Out result, Compare comp) {
+    while (first1 != last1 && first2 != last2) {
+        if (comp(*first1, *first2)) ++first1;
+        else if (comp(*first2, *first1)) ++first2;
+        else { *result = *first1; ++result; ++first1; ++first2; }
+    }
+    return result;
+}
+
+template <class In1, class In2, class Out>
+Out set_intersection(In1 first1, In1 last1, In2 first2, In2 last2, Out result) {
+    return std::set_intersection(first1, last1, first2, last2, result, __cxx1_less());
+}
+
+template <class In1, class In2, class Out, class Compare>
+Out set_difference(In1 first1, In1 last1, In2 first2, In2 last2, Out result, Compare comp) {
+    while (first1 != last1 && first2 != last2) {
+        if (comp(*first1, *first2)) { *result = *first1; ++result; ++first1; }
+        else if (comp(*first2, *first1)) ++first2;
+        else { ++first1; ++first2; }
+    }
+    return std::copy(first1, last1, result);
+}
+
+template <class In1, class In2, class Out>
+Out set_difference(In1 first1, In1 last1, In2 first2, In2 last2, Out result) {
+    return std::set_difference(first1, last1, first2, last2, result, __cxx1_less());
+}
+
+template <class In1, class In2, class Out, class Compare>
+Out set_symmetric_difference(In1 first1, In1 last1, In2 first2, In2 last2, Out result, Compare comp) {
+    while (first1 != last1 && first2 != last2) {
+        if (comp(*first1, *first2)) { *result = *first1; ++result; ++first1; }
+        else if (comp(*first2, *first1)) { *result = *first2; ++result; ++first2; }
+        else { ++first1; ++first2; }
+    }
+    return std::copy(first2, last2, std::copy(first1, last1, result));
+}
+
+template <class In1, class In2, class Out>
+Out set_symmetric_difference(In1 first1, In1 last1, In2 first2, In2 last2, Out result) {
+    return std::set_symmetric_difference(first1, last1, first2, last2, result, __cxx1_less());
+}
+
+// [alg.min.max]
+
+// **Written with an `if` and not a conditional**, and the reason is a compiler
+// limit worth recording rather than working around silently: `return b < a ? b
+// : a;` over two `const T &` is an lvalue and should be returnable as a
+// reference, and this compiler reads the conditional as a temporary and refuses
+// it. The two forms say the same thing; this one compiles.
+template <class T>
+const T &min(const T &a, const T &b) {
+    if (b < a) return b;
+    return a;
+}
+
+template <class T, class Compare>
+const T &min(const T &a, const T &b, Compare comp) {
+    if (comp(b, a)) return b;
+    return a;
+}
+
+template <class T>
+const T &max(const T &a, const T &b) {
+    if (a < b) return b;
+    return a;
+}
+
+template <class T, class Compare>
+const T &max(const T &a, const T &b, Compare comp) {
+    if (comp(a, b)) return b;
+    return a;
+}
+
+template <class T>
+pair<const T &, const T &> minmax(const T &a, const T &b) {
+    if (b < a) return pair<const T &, const T &>(b, a);
+    return pair<const T &, const T &>(a, b);
+}
+
+template <class T, class Compare>
+pair<const T &, const T &> minmax(const T &a, const T &b, Compare comp) {
+    if (comp(b, a)) return pair<const T &, const T &>(b, a);
+    return pair<const T &, const T &>(a, b);
 }
 
 // **max_element and min_element - [alg.min.max].** The first iterator whose
@@ -283,19 +1311,134 @@ It min_element(It from, It to, Less less) {
     return best;
 }
 
-// **remove - [alg.remove]** (1.10, 2026-10-20): every element not equal to `value`
-// moved down over the ones that are, in order, and the new end returned - the
-// container is not shortened, which is the erase that follows it in the idiom.
-template <class It, class T>
-It remove(It from, It to, const T &value) {
-    It out = from;
-    for (; from != to; ++from)
-        if (!(*from == value)) { *out = *from; ++out; }
-    return out;
+// The first smallest and the last largest, two elements at a time: the smaller of the pair is
+// tried against the smallest and the larger against the largest, 3(n-1)/2 comparisons.
+template <class For, class Compare>
+pair<For, For> minmax_element(For first, For last, Compare comp) {
+    For low = first, high = first;
+    if (first == last || ++first == last) return pair<For, For>(low, high);
+    if (comp(*first, *low)) low = first;
+    else high = first;
+    while (++first != last) {
+        For one = first;
+        if (++first == last) {
+            if (comp(*one, *low)) low = one;
+            else if (!comp(*one, *high)) high = one;
+            break;
+        }
+        if (comp(*first, *one)) {
+            if (comp(*first, *low)) low = first;
+            if (!comp(*one, *high)) high = one;
+        } else {
+            if (comp(*one, *low)) low = one;
+            if (!comp(*first, *high)) high = first;
+        }
+    }
+    return pair<For, For>(low, high);
 }
 
-// reverse, max_element, min_element and remove are std's too: until 1.10 the namespace and the
-// include guard closed above reverse, so these were global and defined again at each #include.
+template <class For>
+pair<For, For> minmax_element(For first, For last) {
+    return std::minmax_element(first, last, __cxx1_less());
+}
+
+template <class T, class Compare>
+T min(initializer_list<T> values, Compare comp) {
+    return *std::min_element(values.begin(), values.end(), comp);
+}
+
+template <class T>
+T min(initializer_list<T> values) {
+    return *std::min_element(values.begin(), values.end());
+}
+
+template <class T, class Compare>
+T max(initializer_list<T> values, Compare comp) {
+    return *std::max_element(values.begin(), values.end(), comp);
+}
+
+template <class T>
+T max(initializer_list<T> values) {
+    return *std::max_element(values.begin(), values.end());
+}
+
+template <class T, class Compare>
+pair<T, T> minmax(initializer_list<T> values, Compare comp) {
+    pair<const T *, const T *> both = std::minmax_element(values.begin(), values.end(), comp);
+    return pair<T, T>(*both.first, *both.second);
+}
+
+template <class T>
+pair<T, T> minmax(initializer_list<T> values) {
+    return std::minmax(values, __cxx1_less());
+}
+
+template <class In1, class In2, class Compare>
+bool lexicographical_compare(In1 first1, In1 last1, In2 first2, In2 last2, Compare comp) {
+    for (; first2 != last2; ++first1, ++first2) {
+        if (first1 == last1 || comp(*first1, *first2)) return true;
+        if (comp(*first2, *first1)) return false;
+    }
+    return false;
+}
+
+template <class In1, class In2>
+bool lexicographical_compare(In1 first1, In1 last1, In2 first2, In2 last2) {
+    return std::lexicographical_compare(first1, last1, first2, last2, __cxx1_less());
+}
+
+// [alg.permutation.generators]: from the end, the first element less than the one after it is
+// swapped with the last element greater than it, and everything after it reversed.
+template <class Bi, class Compare>
+bool next_permutation(Bi first, Bi last, Compare comp) {
+    Bi i = last;
+    if (first == last || first == --i) return false;
+    for (;;) {
+        Bi after = i;
+        if (comp(*--i, *after)) {
+            Bi j = last;
+            while (!comp(*i, *--j)) {}
+            std::iter_swap(i, j);
+            std::reverse(after, last);
+            return true;
+        }
+        if (i == first) {
+            std::reverse(first, last);
+            return false;
+        }
+    }
+}
+
+template <class Bi>
+bool next_permutation(Bi first, Bi last) {
+    return std::next_permutation(first, last, __cxx1_less());
+}
+
+template <class Bi, class Compare>
+bool prev_permutation(Bi first, Bi last, Compare comp) {
+    Bi i = last;
+    if (first == last || first == --i) return false;
+    for (;;) {
+        Bi after = i;
+        if (comp(*after, *--i)) {
+            Bi j = last;
+            while (!comp(*--j, *i)) {}
+            std::iter_swap(i, j);
+            std::reverse(after, last);
+            return true;
+        }
+        if (i == first) {
+            std::reverse(first, last);
+            return false;
+        }
+    }
+}
+
+template <class Bi>
+bool prev_permutation(Bi first, Bi last) {
+    return std::prev_permutation(first, last, __cxx1_less());
+}
+
 }  // namespace std
 
 #endif

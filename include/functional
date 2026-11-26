@@ -1,24 +1,29 @@
-// <functional> - the function objects of [function.objects]: the comparisons, the arithmetic
-// and the logical ones, each a struct with a const operator() and nothing else.
-//
-// **What is not here, and why it is not a small thing.** `std::function` is a partial
-// specialization on a function type, `function<R(Args...)>`, that erases the type of whatever it
-// holds behind a call through a pointer; `std::bind` and the placeholders need the same machinery
-// and `std::ref` wants `reference_wrapper`'s conversion. None of them is written: a program that
-// names one meets "has no member" here, and docs/EXCLUSIONS.md lists them. The C++11 forms that
-// carry `result_type`, `first_argument_type` and `second_argument_type` are given them.
+// <functional> - [function.objects]: the comparisons, the arithmetic, the logical and bitwise function
+// objects; the C++98 adaptors (unary_function, the negators, bind1st, ptr_fun, mem_fun); reference_wrapper
+// and mem_fn; std::function, which erases what it holds behind one virtual call; bind and its
+// placeholders; and the hashes of the scalar types and pointers, FNV-1a over the bytes as cl's are.
 #ifndef _CXX1_FUNCTIONAL
 #define _CXX1_FUNCTIONAL
 
+#include <cstddef>
+#include <exception>
+#include <new>
+#include <typeinfo>
+#include <type_traits>
+#include <utility>
+#include <tuple>
+#include <__invoke>
+
 namespace std {
 
-template <class T> struct __cxx1_never { enum { value = 0 }; };
-
-// `std::function` names itself absent where it is used, rather than as an undeclared name.
-template <class Signature> class function {
-    static_assert(__cxx1_never<Signature>::value, "std::function is not supported yet - it is a "
-                  "partial specialization on a function type with type erasure; call the callable "
-                  "directly, or give the function a template parameter for it");
+template <class Arg, class Result> struct unary_function {
+    typedef Arg argument_type;
+    typedef Result result_type;
+};
+template <class Arg1, class Arg2, class Result> struct binary_function {
+    typedef Arg1 first_argument_type;
+    typedef Arg2 second_argument_type;
+    typedef Result result_type;
 };
 
 template <class T> struct less {
@@ -83,6 +88,386 @@ template <class T> struct logical_not {
     typedef T argument_type; typedef bool result_type;
     bool operator()(const T &a) const { return !a; }
 };
+
+template <class T> struct bit_and {
+    typedef T first_argument_type; typedef T second_argument_type; typedef T result_type;
+    T operator()(const T &a, const T &b) const { return a & b; }
+};
+template <class T> struct bit_or {
+    typedef T first_argument_type; typedef T second_argument_type; typedef T result_type;
+    T operator()(const T &a, const T &b) const { return a | b; }
+};
+template <class T> struct bit_xor {
+    typedef T first_argument_type; typedef T second_argument_type; typedef T result_type;
+    T operator()(const T &a, const T &b) const { return a ^ b; }
+};
+
+// [negators]
+template <class P> class unary_negate {
+    P p_;
+public:
+    typedef typename P::argument_type argument_type;
+    typedef bool result_type;
+    explicit unary_negate(const P &p) : p_(p) {}
+    bool operator()(const typename P::argument_type &x) const { return !p_(x); }
+};
+template <class P> class binary_negate {
+    P p_;
+public:
+    typedef typename P::first_argument_type first_argument_type;
+    typedef typename P::second_argument_type second_argument_type;
+    typedef bool result_type;
+    explicit binary_negate(const P &p) : p_(p) {}
+    bool operator()(const typename P::first_argument_type &x, const typename P::second_argument_type &y) const {
+        return !p_(x, y);
+    }
+};
+template <class P> inline unary_negate<P> not1(const P &p) { return unary_negate<P>(p); }
+template <class P> inline binary_negate<P> not2(const P &p) { return binary_negate<P>(p); }
+
+// [depr.lib.binders]
+template <class Op> class binder1st {
+protected:
+    Op op;
+    typename Op::first_argument_type value;
+public:
+    typedef typename Op::second_argument_type argument_type;
+    typedef typename Op::result_type result_type;
+    binder1st(const Op &x, const typename Op::first_argument_type &y) : op(x), value(y) {}
+    typename Op::result_type operator()(const typename Op::second_argument_type &x) const { return op(value, x); }
+};
+template <class Op> class binder2nd {
+protected:
+    Op op;
+    typename Op::second_argument_type value;
+public:
+    typedef typename Op::first_argument_type argument_type;
+    typedef typename Op::result_type result_type;
+    binder2nd(const Op &x, const typename Op::second_argument_type &y) : op(x), value(y) {}
+    typename Op::result_type operator()(const typename Op::first_argument_type &x) const { return op(x, value); }
+};
+template <class Op, class T> inline binder1st<Op> bind1st(const Op &op, const T &x) {
+    return binder1st<Op>(op, typename Op::first_argument_type(x));
+}
+template <class Op, class T> inline binder2nd<Op> bind2nd(const Op &op, const T &x) {
+    return binder2nd<Op>(op, typename Op::second_argument_type(x));
+}
+
+// [depr.function.pointer.adaptors] and [depr.member.pointer.adaptors]
+template <class Arg, class Result> class pointer_to_unary_function : public unary_function<Arg, Result> {
+    Result (*f_)(Arg);
+public:
+    explicit pointer_to_unary_function(Result (*f)(Arg)) : f_(f) {}
+    Result operator()(Arg x) const { return f_(x); }
+};
+template <class Arg1, class Arg2, class Result>
+class pointer_to_binary_function : public binary_function<Arg1, Arg2, Result> {
+    Result (*f_)(Arg1, Arg2);
+public:
+    explicit pointer_to_binary_function(Result (*f)(Arg1, Arg2)) : f_(f) {}
+    Result operator()(Arg1 x, Arg2 y) const { return f_(x, y); }
+};
+template <class Arg, class Result> inline pointer_to_unary_function<Arg, Result> ptr_fun(Result (*f)(Arg)) {
+    return pointer_to_unary_function<Arg, Result>(f);
+}
+template <class Arg1, class Arg2, class Result>
+inline pointer_to_binary_function<Arg1, Arg2, Result> ptr_fun(Result (*f)(Arg1, Arg2)) {
+    return pointer_to_binary_function<Arg1, Arg2, Result>(f);
+}
+template <class S, class T> class mem_fun_t : public unary_function<T *, S> {
+    S (T::*p_)();
+public:
+    explicit mem_fun_t(S (T::*p)()) : p_(p) {}
+    S operator()(T *t) const { return (t->*p_)(); }
+};
+template <class S, class T> class const_mem_fun_t : public unary_function<const T *, S> {
+    S (T::*p_)() const;
+public:
+    explicit const_mem_fun_t(S (T::*p)() const) : p_(p) {}
+    S operator()(const T *t) const { return (t->*p_)(); }
+};
+template <class S, class T> class mem_fun_ref_t : public unary_function<T, S> {
+    S (T::*p_)();
+public:
+    explicit mem_fun_ref_t(S (T::*p)()) : p_(p) {}
+    S operator()(T &t) const { return (t.*p_)(); }
+};
+template <class S, class T> class const_mem_fun_ref_t : public unary_function<T, S> {
+    S (T::*p_)() const;
+public:
+    explicit const_mem_fun_ref_t(S (T::*p)() const) : p_(p) {}
+    S operator()(const T &t) const { return (t.*p_)(); }
+};
+template <class S, class T> inline mem_fun_t<S, T> mem_fun(S (T::*p)()) { return mem_fun_t<S, T>(p); }
+template <class S, class T> inline const_mem_fun_t<S, T> mem_fun(S (T::*p)() const) { return const_mem_fun_t<S, T>(p); }
+template <class S, class T> inline mem_fun_ref_t<S, T> mem_fun_ref(S (T::*p)()) { return mem_fun_ref_t<S, T>(p); }
+template <class S, class T> inline const_mem_fun_ref_t<S, T> mem_fun_ref(S (T::*p)() const) {
+    return const_mem_fun_ref_t<S, T>(p);
+}
+
+// [func.memfn]: a pointer to member as a function object, called through INVOKE.
+template <class M> class __cxx1_mem_fn {
+    M pm_;
+public:
+    explicit __cxx1_mem_fn(M pm) : pm_(pm) {}
+    template <class... A> typename __cxx1_invoke_result<const M &, A...>::type operator()(A &&... a) const {
+        return std::__cxx1_invoke(pm_, std::forward<A>(a)...);
+    }
+};
+template <class R, class T> inline __cxx1_mem_fn<R T::*> mem_fn(R T::*pm) { return __cxx1_mem_fn<R T::*>(pm); }
+template <class R, class T, class... P> inline __cxx1_mem_fn<R (T::*)(P...)> mem_fn(R (T::*pm)(P...)) {
+    return __cxx1_mem_fn<R (T::*)(P...)>(pm);
+}
+template <class R, class T, class... P> inline __cxx1_mem_fn<R (T::*)(P...) const> mem_fn(R (T::*pm)(P...) const) {
+    return __cxx1_mem_fn<R (T::*)(P...) const>(pm);
+}
+
+// [func.wrap]
+class bad_function_call : public exception {
+public:
+    bad_function_call() noexcept {}
+    const char *what() const noexcept { return "bad function call"; }
+};
+
+// [func.wrap.func.con]/8: a null pointer to function or to member makes an empty function.
+template <class F> inline bool __cxx1_is_null(const F &) { return false; }
+template <class T> inline bool __cxx1_is_null(T *p) { return p == nullptr; }
+template <class R, class C> inline bool __cxx1_is_null(R C::*p) { return p == nullptr; }
+
+template <class Signature> class function;
+template <class R, class... Args> class function<R(Args...)> {
+    struct __base {
+        virtual ~__base() {}
+        virtual R __call(Args &&... a) = 0;
+        virtual __base *__clone() const = 0;
+        virtual const type_info &__type() const = 0;
+        virtual void *__target() = 0;
+    };
+    template <class F> struct __holder : __base {
+        F f;
+        explicit __holder(const F &g) : f(g) {}
+        R __call(Args &&... a) { return static_cast<R>(std::__cxx1_invoke(f, std::forward<Args>(a)...)); }
+        __base *__clone() const { return new __holder(f); }
+        const type_info &__type() const { return typeid(F); }
+        void *__target() { return &f; }
+    };
+    __base *p_;
+
+public:
+    typedef R result_type;
+
+    function() noexcept : p_(nullptr) {}
+    function(nullptr_t) noexcept : p_(nullptr) {}
+    function(const function &o) : p_(o.p_ != nullptr ? o.p_->__clone() : nullptr) {}
+    function(function &&o) noexcept : p_(o.p_) { o.p_ = nullptr; }
+    // Not for a null pointer constant, which the constructor above takes ([func.wrap.func.con]/1; until 1.75 the
+    // template was made for std::nullptr_t beside it and its holder refused: `function<void()> f(nullptr);`).
+    template <class F, class = typename enable_if<!is_same<F, nullptr_t>::value>::type>
+    function(F f) : p_(std::__cxx1_is_null(f) ? nullptr : new __holder<F>(f)) {}
+    ~function() { delete p_; }
+
+    function &operator=(const function &o) {
+        function(o).swap(*this);
+        return *this;
+    }
+    function &operator=(function &&o) {
+        function(std::move(o)).swap(*this);
+        return *this;
+    }
+    function &operator=(nullptr_t) {
+        delete p_;
+        p_ = nullptr;
+        return *this;
+    }
+    template <class F, class = typename enable_if<!is_same<F, nullptr_t>::value>::type> function &operator=(F f) {
+        function(f).swap(*this);
+        return *this;
+    }
+    template <class F> function &operator=(reference_wrapper<F> f) noexcept {
+        function(f).swap(*this);
+        return *this;
+    }
+
+    void swap(function &o) noexcept {
+        __base *t = p_;
+        p_ = o.p_;
+        o.p_ = t;
+    }
+    explicit operator bool() const noexcept { return p_ != nullptr; }
+
+    R operator()(Args... a) const {
+        if (p_ == nullptr) throw bad_function_call();
+        return p_->__call(std::forward<Args>(a)...);
+    }
+
+    const type_info &target_type() const noexcept { return p_ != nullptr ? p_->__type() : typeid(void); }
+    template <class T> T *target() noexcept {
+        return p_ != nullptr && p_->__type() == typeid(T) ? static_cast<T *>(p_->__target()) : nullptr;
+    }
+    template <class T> const T *target() const noexcept {
+        return p_ != nullptr && p_->__type() == typeid(T) ? static_cast<const T *>(p_->__target()) : nullptr;
+    }
+};
+
+template <class R, class... A> inline bool operator==(const function<R(A...)> &f, nullptr_t) noexcept { return !f; }
+template <class R, class... A> inline bool operator==(nullptr_t, const function<R(A...)> &f) noexcept { return !f; }
+template <class R, class... A> inline bool operator!=(const function<R(A...)> &f, nullptr_t) noexcept {
+    return static_cast<bool>(f);
+}
+template <class R, class... A> inline bool operator!=(nullptr_t, const function<R(A...)> &f) noexcept {
+    return static_cast<bool>(f);
+}
+template <class R, class... A> inline void swap(function<R(A...)> &x, function<R(A...)> &y) { x.swap(y); }
+
+// [func.bind]
+template <int N> struct __cxx1_placeholder {};
+namespace placeholders {
+const __cxx1_placeholder<1> _1 = __cxx1_placeholder<1>();
+const __cxx1_placeholder<2> _2 = __cxx1_placeholder<2>();
+const __cxx1_placeholder<3> _3 = __cxx1_placeholder<3>();
+const __cxx1_placeholder<4> _4 = __cxx1_placeholder<4>();
+const __cxx1_placeholder<5> _5 = __cxx1_placeholder<5>();
+const __cxx1_placeholder<6> _6 = __cxx1_placeholder<6>();
+const __cxx1_placeholder<7> _7 = __cxx1_placeholder<7>();
+const __cxx1_placeholder<8> _8 = __cxx1_placeholder<8>();
+const __cxx1_placeholder<9> _9 = __cxx1_placeholder<9>();
+const __cxx1_placeholder<10> _10 = __cxx1_placeholder<10>();
+}  // namespace placeholders
+
+template <class T> struct is_placeholder : integral_constant<int, 0> {};
+template <int N> struct is_placeholder<__cxx1_placeholder<N> > : integral_constant<int, N> {};
+template <class T> struct is_placeholder<const T> : integral_constant<int, is_placeholder<T>::value> {};
+template <class T> struct is_bind_expression : false_type {};
+template <class T> struct is_bind_expression<const T> : integral_constant<bool, is_bind_expression<T>::value> {};
+
+// [func.bind.bind]/10: each bound argument as the call sees it - a reference_wrapper's referent, the
+// call's own argument for a placeholder, a nested bind expression's result, the stored value otherwise.
+template <class B, class U, int P = is_placeholder<B>::value, bool E = is_bind_expression<B>::value>
+struct __cxx1_bound;
+template <class B, class U> struct __cxx1_bound<B, U, 0, false> {
+    typedef B &type;
+    static B &get(B &b, U &) { return b; }
+};
+template <class T, class U> struct __cxx1_bound<reference_wrapper<T>, U, 0, false> {
+    typedef T &type;
+    static T &get(reference_wrapper<T> &b, U &) { return b.get(); }
+};
+template <class B, class U, int P> struct __cxx1_bound<B, U, P, false> {
+    typedef typename tuple_element<P - 1, U>::type type;
+    static type get(B &, U &u) { return std::forward<type>(std::get<P - 1>(u)); }
+};
+template <class B, class U> struct __cxx1_bound<B, U, 0, true> {
+    typedef typename B::template __cxx1_result<U>::type type;
+    static type get(B &b, U &u) { return b.__cxx1_call(u); }
+};
+
+template <class F, class BT, class U, class I> struct __cxx1_bind_result;
+template <class F, class... B, class U, std::size_t... I>
+struct __cxx1_bind_result<F, tuple<B...>, U, __cxx1_indices<I...> > {
+    typedef typename __cxx1_invoke_result<F &, typename __cxx1_bound<B, U>::type...>::type type;
+};
+
+struct __cxx1_bind_tag {};
+template <class F, class... B> class __cxx1_binder {
+    typedef typename __cxx1_make_indices<sizeof...(B)>::type __cxx1_idx;
+    F f_;
+    tuple<B...> b_;
+    template <class U, std::size_t... I>
+    typename __cxx1_bind_result<F, tuple<B...>, U, __cxx1_indices<I...> >::type __cxx1_apply(U &u, __cxx1_indices<I...>) {
+        return std::__cxx1_invoke(f_, __cxx1_bound<B, U>::get(std::get<I>(b_), u)...);
+    }
+
+public:
+    template <class U> struct __cxx1_result {
+        typedef typename __cxx1_bind_result<F, tuple<B...>, U, __cxx1_idx>::type type;
+    };
+    // Behind a tag, so that copying or moving a binder never deduces this - a forwarding G would outrank
+    // the copy constructor for a non-const one.
+    template <class G, class... A>
+    __cxx1_binder(__cxx1_bind_tag, G &&g, A &&... a) : f_(std::forward<G>(g)), b_(std::forward<A>(a)...) {}
+    template <class U> typename __cxx1_result<U>::type __cxx1_call(U &u) { return __cxx1_apply(u, __cxx1_idx()); }
+    template <class... A> typename __cxx1_result<tuple<A &&...> >::type operator()(A &&... a) {
+        tuple<A &&...> u(std::forward<A>(a)...);
+        return __cxx1_apply(u, __cxx1_idx());
+    }
+    template <class... A> typename __cxx1_result<tuple<A &&...> >::type operator()(A &&... a) const {
+        tuple<A &&...> u(std::forward<A>(a)...);
+        return const_cast<__cxx1_binder *>(this)->__cxx1_apply(u, __cxx1_idx());
+    }
+};
+// bind<R>: the same call, its result converted to R.
+template <class R, class F, class... B> class __cxx1_binder_r : public __cxx1_binder<F, B...> {
+public:
+    typedef R result_type;
+    template <class G, class... A>
+    __cxx1_binder_r(__cxx1_bind_tag t, G &&g, A &&... a)
+        : __cxx1_binder<F, B...>(t, std::forward<G>(g), std::forward<A>(a)...) {}
+    template <class... A> R operator()(A &&... a) {
+        return static_cast<R>(static_cast<__cxx1_binder<F, B...> &>(*this)(std::forward<A>(a)...));
+    }
+    template <class... A> R operator()(A &&... a) const {
+        return static_cast<R>(static_cast<const __cxx1_binder<F, B...> &>(*this)(std::forward<A>(a)...));
+    }
+};
+template <class F, class... B> struct is_bind_expression<__cxx1_binder<F, B...> > : true_type {};
+template <class R, class F, class... B> struct is_bind_expression<__cxx1_binder_r<R, F, B...> > : true_type {};
+
+template <class F, class... B>
+inline __cxx1_binder<typename decay<F>::type, typename decay<B>::type...> bind(F &&f, B &&... b) {
+    return __cxx1_binder<typename decay<F>::type, typename decay<B>::type...>(__cxx1_bind_tag(), std::forward<F>(f),
+                                                                              std::forward<B>(b)...);
+}
+template <class R, class F, class... B>
+inline __cxx1_binder_r<R, typename decay<F>::type, typename decay<B>::type...> bind(F &&f, B &&... b) {
+    return __cxx1_binder_r<R, typename decay<F>::type, typename decay<B>::type...>(__cxx1_bind_tag(), std::forward<F>(f),
+                                                                                  std::forward<B>(b)...);
+}
+
+// [unord.hash]: FNV-1a over the object's bytes, the 64-bit form where size_t is 64 bits.
+inline std::size_t __cxx1_fnv(const void *p, std::size_t n) {
+    const unsigned char *b = static_cast<const unsigned char *>(p);
+#if defined(__TMS320C6X__)
+    std::size_t h = 2166136261u;
+    for (std::size_t i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+#else
+    unsigned long long h = 14695981039346656037ULL;
+    for (std::size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+#endif
+    return (std::size_t)h;
+}
+template <class T> struct hash;
+template <class T> struct __cxx1_scalar_hash {
+    typedef T argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(T v) const noexcept { return std::__cxx1_fnv(&v, sizeof v); }
+};
+template <class T> struct __cxx1_float_hash {
+    typedef T argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(T v) const noexcept {
+        if (v == 0) v = 0;   // +0 and -0 compare equal, so they hash alike
+        return std::__cxx1_fnv(&v, sizeof v);
+    }
+};
+template <> struct hash<bool> : __cxx1_scalar_hash<bool> {};
+template <> struct hash<char> : __cxx1_scalar_hash<char> {};
+template <> struct hash<signed char> : __cxx1_scalar_hash<signed char> {};
+template <> struct hash<unsigned char> : __cxx1_scalar_hash<unsigned char> {};
+template <> struct hash<char16_t> : __cxx1_scalar_hash<char16_t> {};
+template <> struct hash<char32_t> : __cxx1_scalar_hash<char32_t> {};
+template <> struct hash<wchar_t> : __cxx1_scalar_hash<wchar_t> {};
+template <> struct hash<short> : __cxx1_scalar_hash<short> {};
+template <> struct hash<unsigned short> : __cxx1_scalar_hash<unsigned short> {};
+template <> struct hash<int> : __cxx1_scalar_hash<int> {};
+template <> struct hash<unsigned int> : __cxx1_scalar_hash<unsigned int> {};
+template <> struct hash<long> : __cxx1_scalar_hash<long> {};
+template <> struct hash<unsigned long> : __cxx1_scalar_hash<unsigned long> {};
+template <> struct hash<long long> : __cxx1_scalar_hash<long long> {};
+template <> struct hash<unsigned long long> : __cxx1_scalar_hash<unsigned long long> {};
+template <> struct hash<float> : __cxx1_float_hash<float> {};
+template <> struct hash<double> : __cxx1_float_hash<double> {};
+template <> struct hash<long double> : __cxx1_float_hash<long double> {};
+template <class T> struct hash<T *> : __cxx1_scalar_hash<T *> {};
 
 }  // namespace std
 

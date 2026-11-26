@@ -1,96 +1,832 @@
-// <memory> - the owning pointers of [unique.ptr] and [util.smartptr.shared].
+// <memory> - [memory]: the allocator and its traits, the uninitialized algorithms, and the owning
+// pointers of [unique.ptr] and [util.smartptr.shared].
 //
-// **unique_ptr<T>** owns one object and gives it back with `delete`; it moves and does not copy. **shared_ptr<T>** counts its owners in a
-// block of its own and deletes the object with the last of them. Its count is a plain integer:
-// there are no threads here (<thread> and <atomic> are absent), so it is not atomic.
+// **unique_ptr<T, D>** owns one object, or an array for `unique_ptr<T[], D>`, and hands it to its
+// deleter; an empty deleter takes no room. **shared_ptr<T>** counts its owners in a control block
+// that also holds the deleter, and a weak_ptr counts in it as well, so the block outlives the
+// object while anything watches it. The counts are plain integers: there are no threads here
+// (<thread> and <atomic> are absent), so they are not atomic, and the atomic_ functions over a
+// shared_ptr are the plain operations.
 //
-// **What is not here.** `unique_ptr<T[]>` - a partial specialization on an array of unknown
-// bound, which this compiler cannot match yet (`is_array<T[]>` meets the same) - a custom deleter, `weak_ptr`, `enable_shared_from_this`, the aliasing
-// and converting constructors, `allocator`, and `make_shared` - whose standard form,
-// `make_shared<T>(args...)`, gives one template argument and deduces the rest, which this
-// compiler does not do yet (docs/EXCLUSIONS.md). Write `shared_ptr<T>(new T(args...))`.
+// **What does not work yet, and why.** make_shared, allocate_shared, the three pointer casts and
+// get_deleter are written but cannot be called: each names its first template argument and
+// deduces the rest, which this compiler does not do yet; nor can allocator_traits' construct and
+// destroy, static member templates of a class template. allocator_traits and pointer_traits have
+// no rebind (a member alias template of a class template), and a converting assignment is a
+// conversion and then a move (a member operator= template is not taken yet). The places where a
+// constructor departs from [util.smartptr] for the same reasons say so where they are.
 #ifndef _CXX1_MEMORY
 #define _CXX1_MEMORY
 
 #include <cstddef>
+#include <exception>
+#include <new>
+#include <typeinfo>
 #include <utility>
+#include <__allocator>
+#include <__iterator_base>
 
 namespace std {
 
-template <class T> class unique_ptr {
-public:
-    typedef T element_type;
-    typedef T *pointer;
+// What the headers ask of a type that <type_traits> cannot answer yet: whether it is a class,
+// and whether it is an empty one (which costs a deleter no room as a base).
+template <class T> char __cxx1_class_test(int T::*) { return 0; }
+template <class T> long __cxx1_class_test(...) { return 0; }
+template <class T> struct __cxx1_is_class { static const bool value = sizeof(std::__cxx1_class_test<T>(0)) == 1; };
 
-    unique_ptr() : p_(0) {}
-    unique_ptr(std::nullptr_t) : p_(0) {}
-    explicit unique_ptr(T *p) : p_(p) {}
-    unique_ptr(unique_ptr &&o) : p_(o.p_) { o.p_ = 0; }
+template <class T, bool = __cxx1_is_class<T>::value> struct __cxx1_is_empty { static const bool value = false; };
+template <class T> struct __cxx1_is_empty<T, true> {
+    struct __probe : T { int __x; };
+    static const bool value = sizeof(__probe) == sizeof(int);
+};
+
+template <class T> struct __cxx1_lref { typedef T &type; };
+template <> struct __cxx1_lref<void> { typedef void type; };
+template <> struct __cxx1_lref<const void> { typedef void type; };
+
+// [specialized.addressof]
+template <class T>
+T *addressof(T &r) noexcept {
+    return reinterpret_cast<T *>(&const_cast<char &>(reinterpret_cast<const volatile char &>(r)));
+}
+
+template <class T, class A>
+void __cxx1_construct_at(T *p, A &&a) {
+    ::new (static_cast<void *>(p)) T(std::forward<A>(a));
+}
+
+template <class T, class... Args>
+void __cxx1_construct_args(T *p, Args &&... args) {
+    ::new (static_cast<void *>(p)) T(std::forward<Args>(args)...);
+}
+
+template <class T>
+void __cxx1_destroy_at(T *p) {
+    p->~T();
+}
+
+// [pointer.traits]
+template <class P, class U> char __cxx1_ptr_rebind_test(typename P::template rebind<U> *) { return 0; }
+template <class P, class U> long __cxx1_ptr_rebind_test(...) { return 0; }
+template <class P, class U, bool = sizeof(std::__cxx1_ptr_rebind_test<P, U>(0)) == 1> struct __cxx1_ptr_rebind {};
+template <class P, class U> struct __cxx1_ptr_rebind<P, U, true> { typedef typename P::template rebind<U> type; };
+template <template <class, class...> class P, class T, class... Args, class U>
+struct __cxx1_ptr_rebind<P<T, Args...>, U, false> { typedef P<U, Args...> type; };
+
+template <class Ptr> struct pointer_traits {
+    typedef Ptr pointer;
+    typedef typename Ptr::element_type element_type;
+    typedef std::ptrdiff_t difference_type;
+    template <class U> using rebind = typename __cxx1_ptr_rebind<Ptr, U>::type;
+    static pointer pointer_to(element_type &r) { return Ptr::pointer_to(r); }
+};
+
+template <class T> struct __cxx1_pointer_to_arg { typedef T &type; };
+template <> struct __cxx1_pointer_to_arg<void> { typedef char &type; };
+template <> struct __cxx1_pointer_to_arg<const void> { typedef const char &type; };
+
+template <class T> struct pointer_traits<T *> {
+    typedef T *pointer;
+    typedef T element_type;
+    typedef std::ptrdiff_t difference_type;
+    template <class U> using rebind = U *;
+    static T *pointer_to(typename __cxx1_pointer_to_arg<T>::type r) noexcept { return std::addressof(r); }
+};
+
+
+// [specialized.algorithms]: what was built is destroyed again if a constructor throws.
+template <class In, class For>
+For uninitialized_copy(In first, In last, For result) {
+    For built = result;
+    try {
+        for (; first != last; ++first, ++built) std::__cxx1_construct_at(std::addressof(*built), *first);
+    } catch (...) {
+        for (; result != built; ++result) std::__cxx1_destroy_at(std::addressof(*result));
+        throw;
+    }
+    return built;
+}
+
+template <class In, class Size, class For>
+For uninitialized_copy_n(In first, Size n, For result) {
+    For built = result;
+    try {
+        for (; n > 0; ++first, ++built, --n) std::__cxx1_construct_at(std::addressof(*built), *first);
+    } catch (...) {
+        for (; result != built; ++result) std::__cxx1_destroy_at(std::addressof(*result));
+        throw;
+    }
+    return built;
+}
+
+template <class For, class T>
+void uninitialized_fill(For first, For last, const T &value) {
+    For built = first;
+    try {
+        for (; built != last; ++built) std::__cxx1_construct_at(std::addressof(*built), value);
+    } catch (...) {
+        for (; first != built; ++first) std::__cxx1_destroy_at(std::addressof(*first));
+        throw;
+    }
+}
+
+template <class For, class Size, class T>
+void uninitialized_fill_n(For first, Size n, const T &value) {
+    For built = first;
+    try {
+        for (; n > 0; ++built, --n) std::__cxx1_construct_at(std::addressof(*built), value);
+    } catch (...) {
+        for (; first != built; ++first) std::__cxx1_destroy_at(std::addressof(*first));
+        throw;
+    }
+}
+
+// [storage.iterator]
+template <class Out, class T>
+class raw_storage_iterator {
+public:
+    typedef output_iterator_tag iterator_category;
+    typedef void value_type;
+    typedef void difference_type;
+    typedef void pointer;
+    typedef void reference;
+
+    explicit raw_storage_iterator(Out x) : x_(x) {}
+    raw_storage_iterator &operator*() { return *this; }
+    raw_storage_iterator &operator=(const T &element) {
+        ::new (static_cast<void *>(std::addressof(*x_))) T(element);
+        return *this;
+    }
+    raw_storage_iterator &operator++() { ++x_; return *this; }
+    raw_storage_iterator operator++(int) { raw_storage_iterator was = *this; ++x_; return was; }
+
+private:
+    Out x_;
+};
+
+// [temporary.buffer]: as much of n as can be had, halving until an allocation succeeds.
+template <class T>
+pair<T *, std::ptrdiff_t> get_temporary_buffer(std::ptrdiff_t n) noexcept {
+    const std::ptrdiff_t most = (std::ptrdiff_t)((std::size_t)-1 / 2 / sizeof(T));
+    if (n > most) n = most;
+    for (; n > 0; n /= 2) {
+        T *p = static_cast<T *>(operator new((std::size_t)n * sizeof(T), std::nothrow));
+        if (p != 0) return pair<T *, std::ptrdiff_t>(p, n);
+    }
+    return pair<T *, std::ptrdiff_t>((T *)0, 0);
+}
+
+template <class T>
+void return_temporary_buffer(T *p) {
+    operator delete(p);
+}
+
+// [util.dynamic.safety]: collection is not done here, so every pointer is safe and there is
+// nothing to declare.
+enum class pointer_safety { relaxed, preferred, strict };
+inline void declare_reachable(void *) {}
+template <class T> T *undeclare_reachable(T *p) { return p; }
+inline void declare_no_pointers(char *, std::size_t) {}
+inline void undeclare_no_pointers(char *, std::size_t) {}
+inline pointer_safety get_pointer_safety() noexcept { return pointer_safety::relaxed; }
+
+// [ptr.align]
+inline void *align(std::size_t alignment, std::size_t size, void *&ptr, std::size_t &space) {
+    const std::size_t at = (std::size_t)ptr;
+    const std::size_t skip = (alignment - at % alignment) % alignment;
+    if (space < size || space - size < skip) return 0;
+    ptr = (void *)(at + skip);
+    space -= skip;
+    return ptr;
+}
+
+// [unique.ptr.dltr]
+template <class T> struct default_delete {
+    constexpr default_delete() noexcept {}
+    template <class U> default_delete(const default_delete<U> &) noexcept {}
+    void operator()(T *p) const {
+        static_assert(sizeof(T) > 0, "default_delete cannot delete an incomplete type");
+        delete p;
+    }
+};
+
+template <class T> struct default_delete<T[]> {
+    constexpr default_delete() noexcept {}
+    void operator()(T *p) const {
+        static_assert(sizeof(T) > 0, "default_delete cannot delete an incomplete type");
+        delete[] p;
+    }
+};
+
+// A pointer and its deleter, the deleter as a base when it is an empty class.
+template <class P, class D, bool = __cxx1_is_empty<D>::value>
+class __cxx1_ptr_and_deleter {
+public:
+    __cxx1_ptr_and_deleter() : p_(), d_() {}
+    explicit __cxx1_ptr_and_deleter(P p) : p_(p), d_() {}
+    template <class E> __cxx1_ptr_and_deleter(P p, E &&d) : p_(p), d_(std::forward<E>(d)) {}
+    P &ptr() { return p_; }
+    const P &ptr() const { return p_; }
+    D &deleter() { return d_; }
+    const D &deleter() const { return d_; }
+    template <class E> void assignDeleter(E &&d) { d_ = std::forward<E>(d); }
+    void swapDeleter(__cxx1_ptr_and_deleter &o) { std::__cxx1_swap_adl(d_, o.d_); }
+
+private:
+    P p_;
+    D d_;
+};
+
+template <class P, class D>
+class __cxx1_ptr_and_deleter<P, D, true> : private D {
+public:
+    __cxx1_ptr_and_deleter() : D(), p_() {}
+    explicit __cxx1_ptr_and_deleter(P p) : D(), p_(p) {}
+    template <class E> __cxx1_ptr_and_deleter(P p, E &&d) : D(std::forward<E>(d)), p_(p) {}
+    P &ptr() { return p_; }
+    const P &ptr() const { return p_; }
+    D &deleter() { return *this; }
+    const D &deleter() const { return *this; }
+    // An empty deleter holds nothing to assign or swap - and this compiler, assigning an empty
+    // base, copies its one byte over p_, which shares its address.
+    template <class E> void assignDeleter(E &&) {}
+    void swapDeleter(__cxx1_ptr_and_deleter &) {}
+
+private:
+    P p_;
+};
+
+// [unique.ptr.single]
+template <class T, class D = default_delete<T> >
+class unique_ptr {
+public:
+    typedef T *pointer;
+    typedef T element_type;
+    typedef D deleter_type;
+
+    unique_ptr() noexcept : s_() {}
+    unique_ptr(std::nullptr_t) noexcept : s_() {}
+    explicit unique_ptr(pointer p) noexcept : s_(p) {}
+    unique_ptr(pointer p, const typename remove_reference<D>::type &d) noexcept : s_(p, d) {}
+    unique_ptr(pointer p, typename remove_reference<D>::type &&d) noexcept : s_(p, std::move(d)) {}
+    unique_ptr(unique_ptr &&u) noexcept : s_(u.release(), std::forward<D>(u.get_deleter())) {}
+    // Unconstrained, as this compiler cannot constrain it yet, and instantiated by it for
+    // conversions nothing chose - so the pointer goes by a cast that compiles for any U, and is
+    // the implicit conversion for every U* that has one. It takes the source by value, which a
+    // move gives it: instantiated for U = T as `unique_ptr<U, E> &&` it was taken for a second
+    // move constructor.
+    template <class U, class E>
+    unique_ptr(unique_ptr<U, E> u) noexcept : s_((T *)u.release(), std::forward<E>(u.get_deleter())) {}
     unique_ptr(const unique_ptr &) = delete;
     unique_ptr &operator=(const unique_ptr &) = delete;
-    ~unique_ptr() { delete p_; }
+    ~unique_ptr() { if (s_.ptr() != pointer()) s_.deleter()(s_.ptr()); }
 
-    unique_ptr &operator=(unique_ptr &&o) {
-        if (this != &o) { T *old = p_; p_ = o.p_; o.p_ = 0; delete old; }
+    unique_ptr &operator=(unique_ptr &&u) noexcept {
+        reset(u.release());
+        s_.assignDeleter(std::forward<D>(u.get_deleter()));
         return *this;
     }
-    unique_ptr &operator=(std::nullptr_t) { reset(); return *this; }
+    unique_ptr &operator=(std::nullptr_t) noexcept { reset(); return *this; }
 
-    T *get() const { return p_; }
-    T &operator*() const { return *p_; }
-    T *operator->() const { return p_; }
-    explicit operator bool() const { return p_ != 0; }
-    T *release() { T *was = p_; p_ = 0; return was; }
-    void reset(T *p = 0) { T *old = p_; p_ = p; delete old; }
-    void swap(unique_ptr &o) { T *t = p_; p_ = o.p_; o.p_ = t; }
+    typename __cxx1_lref<T>::type operator*() const { return *s_.ptr(); }
+    pointer operator->() const noexcept { return s_.ptr(); }
+    pointer get() const noexcept { return s_.ptr(); }
+    deleter_type &get_deleter() noexcept { return s_.deleter(); }
+    const deleter_type &get_deleter() const noexcept { return s_.deleter(); }
+    explicit operator bool() const noexcept { return s_.ptr() != pointer(); }
+
+    pointer release() noexcept {
+        pointer was = s_.ptr();
+        s_.ptr() = pointer();
+        return was;
+    }
+    void reset(pointer p = pointer()) noexcept {
+        pointer old = s_.ptr();
+        s_.ptr() = p;
+        if (old != pointer()) s_.deleter()(old);
+    }
+    void swap(unique_ptr &u) noexcept {
+        std::__cxx1_swap_adl(s_.ptr(), u.s_.ptr());
+        s_.swapDeleter(u.s_);
+    }
 
 private:
-    T *p_;
+    __cxx1_ptr_and_deleter<T *, D> s_;
 };
 
-template <class T> class shared_ptr {
+// [unique.ptr.runtime]: an array, released with delete[] and indexed rather than dereferenced.
+template <class T, class D>
+class unique_ptr<T[], D> {
+public:
+    typedef T *pointer;
+    typedef T element_type;
+    typedef D deleter_type;
+
+    unique_ptr() noexcept : s_() {}
+    unique_ptr(std::nullptr_t) noexcept : s_() {}
+    explicit unique_ptr(pointer p) noexcept : s_(p) {}
+    unique_ptr(pointer p, const typename remove_reference<D>::type &d) noexcept : s_(p, d) {}
+    unique_ptr(pointer p, typename remove_reference<D>::type &&d) noexcept : s_(p, std::move(d)) {}
+    unique_ptr(unique_ptr &&u) noexcept : s_(u.release(), std::forward<D>(u.get_deleter())) {}
+    unique_ptr(const unique_ptr &) = delete;
+    unique_ptr &operator=(const unique_ptr &) = delete;
+    ~unique_ptr() { if (s_.ptr() != pointer()) s_.deleter()(s_.ptr()); }
+
+    unique_ptr &operator=(unique_ptr &&u) noexcept {
+        reset(u.release());
+        s_.assignDeleter(std::forward<D>(u.get_deleter()));
+        return *this;
+    }
+    unique_ptr &operator=(std::nullptr_t) noexcept { reset(); return *this; }
+
+    T &operator[](std::size_t i) const { return s_.ptr()[i]; }
+    pointer get() const noexcept { return s_.ptr(); }
+    deleter_type &get_deleter() noexcept { return s_.deleter(); }
+    const deleter_type &get_deleter() const noexcept { return s_.deleter(); }
+    explicit operator bool() const noexcept { return s_.ptr() != pointer(); }
+
+    pointer release() noexcept {
+        pointer was = s_.ptr();
+        s_.ptr() = pointer();
+        return was;
+    }
+    void reset(pointer p = pointer()) noexcept {
+        pointer old = s_.ptr();
+        s_.ptr() = p;
+        if (old != pointer()) s_.deleter()(old);
+    }
+    void reset(std::nullptr_t) noexcept { reset(pointer()); }
+    void swap(unique_ptr &u) noexcept {
+        std::__cxx1_swap_adl(s_.ptr(), u.s_.ptr());
+        s_.swapDeleter(u.s_);
+    }
+
+private:
+    __cxx1_ptr_and_deleter<T *, D> s_;
+};
+
+template <class T, class D> void swap(unique_ptr<T, D> &a, unique_ptr<T, D> &b) noexcept { a.swap(b); }
+
+template <class T1, class D1, class T2, class D2>
+bool operator==(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return a.get() == b.get(); }
+template <class T1, class D1, class T2, class D2>
+bool operator!=(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return a.get() != b.get(); }
+template <class T1, class D1, class T2, class D2>
+bool operator<(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return a.get() < b.get(); }
+template <class T1, class D1, class T2, class D2>
+bool operator<=(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return !(b < a); }
+template <class T1, class D1, class T2, class D2>
+bool operator>(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return b < a; }
+template <class T1, class D1, class T2, class D2>
+bool operator>=(const unique_ptr<T1, D1> &a, const unique_ptr<T2, D2> &b) { return !(a < b); }
+template <class T, class D> bool operator==(const unique_ptr<T, D> &a, std::nullptr_t) noexcept { return !a; }
+template <class T, class D> bool operator==(std::nullptr_t, const unique_ptr<T, D> &a) noexcept { return !a; }
+template <class T, class D> bool operator!=(const unique_ptr<T, D> &a, std::nullptr_t) noexcept { return (bool)a; }
+template <class T, class D> bool operator!=(std::nullptr_t, const unique_ptr<T, D> &a) noexcept { return (bool)a; }
+
+// [util.smartptr.weakptr]
+class bad_weak_ptr : public exception {
+public:
+    bad_weak_ptr() noexcept {}
+    virtual const char *what() const noexcept { return "bad_weak_ptr"; }
+};
+
+// The control block: the owners counted in uses_, and in weaks_ every weak_ptr plus one for the
+// owners together, so the block goes when the last of either does.
+class __cxx1_shared_count {
+public:
+    __cxx1_shared_count() : uses_(1), weaks_(1) {}
+    virtual ~__cxx1_shared_count() {}
+    virtual void dispose() noexcept = 0;
+    virtual void *deleter(const type_info &) noexcept { return 0; }
+    void addUse() noexcept { ++uses_; }
+    bool addUseIfAlive() noexcept {
+        if (uses_ == 0) return false;
+        ++uses_;
+        return true;
+    }
+    void releaseUse() noexcept {
+        if (--uses_ == 0) {
+            dispose();
+            releaseWeak();
+        }
+    }
+    void addWeak() noexcept { ++weaks_; }
+    void releaseWeak() noexcept { if (--weaks_ == 0) delete this; }
+    long uses() const noexcept { return uses_; }
+
+private:
+    long uses_;
+    long weaks_;
+};
+
+template <class P, class D>
+class __cxx1_shared_block : public __cxx1_shared_count {
+public:
+    __cxx1_shared_block(P p, D d) : p_(p), d_(d) {}
+    virtual void dispose() noexcept { d_(p_); }
+    virtual void *deleter(const type_info &t) noexcept {
+        if (t == typeid(D)) return &d_;
+        return 0;
+    }
+
+private:
+    P p_;
+    D d_;
+};
+
+// The block for p and d, or d(p) and the bad_alloc passed on when there is no room for one.
+template <class P, class D>
+__cxx1_shared_count *__cxx1_new_block(P p, D d) {
+    return new (std::nothrow) __cxx1_shared_block<P, D>(p, d);
+}
+
+template <class P, class D>
+__cxx1_shared_count *__cxx1_shared_block_for(P p, D d) {
+    __cxx1_shared_count *c = std::__cxx1_new_block(p, d);
+    if (c == 0) {
+        d(p);
+        throw bad_alloc();
+    }
+    return c;
+}
+
+// What a shared_ptr given only a pointer deletes it with: a type of its own, so get_deleter finds no
+// deleter there, as in cl's library and libstdc++.
+template <class T> struct __cxx1_plain_delete {
+    void operator()(T *p) const { delete p; }
+};
+
+template <class T> class shared_ptr;
+template <class T> class weak_ptr;
+template <class T> class enable_shared_from_this;
+template <class X> class auto_ptr;
+
+struct __cxx1_from_block {};
+
+// enable_shared_from_this's base, the same for every T: a weak hold on the block of the object's
+// first owner. A shared_ptr finds it by conversion - finding enable_shared_from_this<X> would deduce
+// X from the object, and this compiler takes a failed deduction there for an error.
+class __cxx1_shared_hook {
+protected:
+    __cxx1_shared_hook() noexcept : __c_(0) {}
+    __cxx1_shared_hook(const __cxx1_shared_hook &) noexcept : __c_(0) {}
+    __cxx1_shared_hook &operator=(const __cxx1_shared_hook &) noexcept { return *this; }
+    ~__cxx1_shared_hook() { if (__c_ != 0) __c_->releaseWeak(); }
+
+public:
+    mutable __cxx1_shared_count *__c_;
+};
+
+template <class Y>
+void __cxx1_enable_shared_hook(Y *p, __cxx1_shared_count *c, integral_constant<bool, true>) {
+    const volatile __cxx1_shared_hook *h = p;
+    if (h->__c_ != 0 && h->__c_->uses() != 0) return;
+    if (h->__c_ != 0) h->__c_->releaseWeak();
+    h->__c_ = c;
+    c->addWeak();
+}
+template <class Y>
+void __cxx1_enable_shared_hook(Y *, __cxx1_shared_count *, integral_constant<bool, false>) {}
+
+template <class Y>
+void __cxx1_enable_shared_from(Y *p, __cxx1_shared_count *c) {
+    std::__cxx1_enable_shared_hook(
+        p, c, integral_constant<bool, __cxx1_converts<Y *, const volatile __cxx1_shared_hook *>::value>());
+}
+
+// [util.smartptr.shared]
+template <class T>
+class shared_ptr {
 public:
     typedef T element_type;
 
-    shared_ptr() : p_(0), n_(0) {}
-    shared_ptr(std::nullptr_t) : p_(0), n_(0) {}
-    explicit shared_ptr(T *p) : p_(p), n_(p ? new long(1) : 0) {}
-    shared_ptr(const shared_ptr &o) : p_(o.p_), n_(o.n_) { if (n_) ++*n_; }
-    shared_ptr(shared_ptr &&o) : p_(o.p_), n_(o.n_) { o.p_ = 0; o.n_ = 0; }
-    ~shared_ptr() { drop(); }
+    shared_ptr() noexcept : p_(0), c_(0) {}
+    shared_ptr(std::nullptr_t) noexcept : p_(0), c_(0) {}
+    // [util.smartptr.shared.const]/4's `template <class Y> explicit shared_ptr(Y *)` as T * - an
+    // explicit constructor template is not taken yet - so a Y is deleted as the T it was given as.
+    explicit shared_ptr(T *p) : p_(p), c_(0) {
+        c_ = std::__cxx1_shared_block_for(p, __cxx1_plain_delete<T>());
+        std::__cxx1_enable_shared_from(p, c_);
+    }
+    template <class Y, class D> shared_ptr(Y *p, D d) : p_(p), c_(0) {
+        c_ = std::__cxx1_shared_block_for(p, d);
+        std::__cxx1_enable_shared_from(p, c_);
+    }
+    template <class Y, class D, class A> shared_ptr(Y *p, D d, A) : p_(p), c_(0) {
+        c_ = std::__cxx1_shared_block_for(p, d);
+        std::__cxx1_enable_shared_from(p, c_);
+    }
+    // (nullptr_t, D) and (nullptr_t, D, A) are not here: this compiler instantiated the first's body
+    // for an aliasing construction below, with the object pointer as D, and failed in it.
+    // [util.smartptr.shared.const]/13: the aliasing constructor - r's ownership, p's object.
+    template <class Y> shared_ptr(const shared_ptr<Y> &r, T *p) noexcept : p_(p), c_(r.__cxx1_block()) {
+        if (c_ != 0) c_->addUse();
+    }
+    shared_ptr(const shared_ptr &r) noexcept : p_(r.p_), c_(r.c_) { if (c_ != 0) c_->addUse(); }
+    // The converting constructor converts by a cast and takes its source by value, as unique_ptr's
+    // does and for the same reasons; a copy or a move of the argument gives it its owner.
+    template <class Y> shared_ptr(shared_ptr<Y> r) noexcept : p_((T *)r.get()), c_(r.__cxx1_block()) {
+        r.__cxx1_forget();
+    }
+    shared_ptr(shared_ptr &&r) noexcept : p_(r.p_), c_(r.c_) { r.p_ = 0; r.c_ = 0; }
+    explicit shared_ptr(const weak_ptr<T> &r) : p_(0), c_(0) {
+        if (r.__cxx1_block() == 0 || !r.__cxx1_block()->addUseIfAlive()) throw bad_weak_ptr();
+        p_ = r.__cxx1_get();
+        c_ = r.__cxx1_block();
+    }
+    template <class Y> shared_ptr(auto_ptr<Y> &&r) : p_((T *)r.get()), c_(0) {
+        c_ = std::__cxx1_shared_block_for(r.get(), __cxx1_plain_delete<Y>());
+        std::__cxx1_enable_shared_from(r.get(), c_);
+        r.release();
+    }
+    template <class Y, class D> shared_ptr(unique_ptr<Y, D> &&r) : p_((T *)r.get()), c_(0) {
+        if (p_ != 0) {
+            c_ = std::__cxx1_shared_block_for(r.get(), r.get_deleter());
+            std::__cxx1_enable_shared_from(r.get(), c_);
+            r.release();
+        }
+    }
+    // A weak_ptr's lock, and enable_shared_from_this: a new owner of a block that may be empty.
+    shared_ptr(T *p, __cxx1_shared_count *c, __cxx1_from_block, __cxx1_from_block) noexcept : p_(0), c_(0) {
+        if (c != 0 && c->addUseIfAlive()) { p_ = p; c_ = c; }
+    }
+    ~shared_ptr() { if (c_ != 0) c_->releaseUse(); }
 
-    shared_ptr &operator=(const shared_ptr &o) {
-        if (n_ != o.n_) { if (o.n_) ++*o.n_; drop(); p_ = o.p_; n_ = o.n_; }
+    shared_ptr &operator=(const shared_ptr &r) noexcept {
+        shared_ptr(r).swap(*this);
         return *this;
     }
-    shared_ptr &operator=(shared_ptr &&o) {
-        if (this != &o) { drop(); p_ = o.p_; n_ = o.n_; o.p_ = 0; o.n_ = 0; }
+    shared_ptr &operator=(shared_ptr &&r) noexcept {
+        shared_ptr(std::move(r)).swap(*this);
         return *this;
     }
 
-    T *get() const { return p_; }
-    T &operator*() const { return *p_; }
-    T *operator->() const { return p_; }
-    explicit operator bool() const { return p_ != 0; }
-    long use_count() const { return n_ ? *n_ : 0; }
-    bool unique() const { return use_count() == 1; }
-    void reset() { drop(); p_ = 0; n_ = 0; }
-    void reset(T *p) { drop(); p_ = p; n_ = p ? new long(1) : 0; }
-    void swap(shared_ptr &o) {
-        T *t = p_; p_ = o.p_; o.p_ = t;
-        long *m = n_; n_ = o.n_; o.n_ = m;
+    void swap(shared_ptr &r) noexcept {
+        T *p = p_; p_ = r.p_; r.p_ = p;
+        __cxx1_shared_count *c = c_; c_ = r.c_; r.c_ = c;
     }
+    void reset() noexcept { shared_ptr().swap(*this); }
+    template <class Y> void reset(Y *p) { shared_ptr(p).swap(*this); }
+    template <class Y, class D> void reset(Y *p, D d) { shared_ptr(p, d).swap(*this); }
+    template <class Y, class D, class A> void reset(Y *p, D d, A a) { shared_ptr(p, d, a).swap(*this); }
+
+    T *get() const noexcept { return p_; }
+    typename __cxx1_lref<T>::type operator*() const noexcept { return *p_; }
+    T *operator->() const noexcept { return p_; }
+    long use_count() const noexcept { return c_ != 0 ? c_->uses() : 0; }
+    bool unique() const noexcept { return use_count() == 1; }
+    explicit operator bool() const noexcept { return p_ != 0; }
+    template <class U> bool owner_before(const shared_ptr<U> &b) const { return c_ < b.__cxx1_block(); }
+    template <class U> bool owner_before(const weak_ptr<U> &b) const { return c_ < b.__cxx1_block(); }
+
+    __cxx1_shared_count *__cxx1_block() const noexcept { return c_; }
+    void __cxx1_forget() noexcept { p_ = 0; c_ = 0; }
 
 private:
-    void drop() {
-        if (n_ && --*n_ == 0) { delete p_; delete n_; }
-    }
     T *p_;
-    long *n_;
+    __cxx1_shared_count *c_;
 };
 
-template <class T> bool operator==(const shared_ptr<T> &a, const shared_ptr<T> &b) { return a.get() == b.get(); }
-template <class T> bool operator!=(const shared_ptr<T> &a, const shared_ptr<T> &b) { return a.get() != b.get(); }
+// [util.smartptr.weak]
+template <class T>
+class weak_ptr {
+public:
+    typedef T element_type;
+
+    weak_ptr() noexcept : p_(0), c_(0) {}
+    template <class Y> weak_ptr(const shared_ptr<Y> &r) noexcept : p_((T *)r.get()), c_(r.__cxx1_block()) {
+        if (c_ != 0) c_->addWeak();
+    }
+    weak_ptr(const weak_ptr &r) noexcept : p_(r.p_), c_(r.c_) { if (c_ != 0) c_->addWeak(); }
+    template <class Y> weak_ptr(weak_ptr<Y> r) noexcept : p_((T *)r.lock().get()), c_(r.__cxx1_block()) {
+        if (c_ != 0) c_->addWeak();
+    }
+    ~weak_ptr() { if (c_ != 0) c_->releaseWeak(); }
+
+    weak_ptr &operator=(const weak_ptr &r) noexcept {
+        weak_ptr(r).swap(*this);
+        return *this;
+    }
+
+    void swap(weak_ptr &r) noexcept {
+        T *p = p_; p_ = r.p_; r.p_ = p;
+        __cxx1_shared_count *c = c_; c_ = r.c_; r.c_ = c;
+    }
+    void reset() noexcept { weak_ptr().swap(*this); }
+    long use_count() const noexcept { return c_ != 0 ? c_->uses() : 0; }
+    bool expired() const noexcept { return use_count() == 0; }
+    shared_ptr<T> lock() const noexcept { return shared_ptr<T>(p_, c_, __cxx1_from_block(), __cxx1_from_block()); }
+    template <class U> bool owner_before(const shared_ptr<U> &b) const { return c_ < b.__cxx1_block(); }
+    template <class U> bool owner_before(const weak_ptr<U> &b) const { return c_ < b.__cxx1_block(); }
+
+    __cxx1_shared_count *__cxx1_block() const noexcept { return c_; }
+    T *__cxx1_get() const noexcept { return p_; }
+
+private:
+    T *p_;
+    __cxx1_shared_count *c_;
+};
+
+// [util.smartptr.enab]
+template <class T>
+class enable_shared_from_this : public __cxx1_shared_hook {
+protected:
+    enable_shared_from_this() noexcept {}
+    enable_shared_from_this(const enable_shared_from_this &) noexcept : __cxx1_shared_hook() {}
+    enable_shared_from_this &operator=(const enable_shared_from_this &) noexcept { return *this; }
+    ~enable_shared_from_this() {}
+
+public:
+    // With no owner, bad_weak_ptr, as cl's library throws it.
+    shared_ptr<T> shared_from_this() {
+        shared_ptr<T> owner(static_cast<T *>(this), __c_, __cxx1_from_block(), __cxx1_from_block());
+        if (!owner) throw bad_weak_ptr();
+        return owner;
+    }
+    shared_ptr<const T> shared_from_this() const {
+        shared_ptr<const T> owner(static_cast<const T *>(this), __c_, __cxx1_from_block(), __cxx1_from_block());
+        if (!owner) throw bad_weak_ptr();
+        return owner;
+    }
+};
+
+template <class T> void swap(shared_ptr<T> &a, shared_ptr<T> &b) noexcept { a.swap(b); }
+template <class T> void swap(weak_ptr<T> &a, weak_ptr<T> &b) noexcept { a.swap(b); }
+
+template <class T, class U>
+bool operator==(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return a.get() == b.get(); }
+template <class T, class U>
+bool operator!=(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return a.get() != b.get(); }
+template <class T, class U>
+bool operator<(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return a.get() < b.get(); }
+template <class T, class U>
+bool operator>(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return b < a; }
+template <class T, class U>
+bool operator<=(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return !(b < a); }
+template <class T, class U>
+bool operator>=(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return !(a < b); }
+template <class T> bool operator==(const shared_ptr<T> &a, std::nullptr_t) noexcept { return !a; }
+template <class T> bool operator==(std::nullptr_t, const shared_ptr<T> &a) noexcept { return !a; }
+template <class T> bool operator!=(const shared_ptr<T> &a, std::nullptr_t) noexcept { return (bool)a; }
+template <class T> bool operator!=(std::nullptr_t, const shared_ptr<T> &a) noexcept { return (bool)a; }
+
+// [util.smartptr.shared.create], [util.smartptr.shared.cast], [util.smartptr.getdeleter]: written
+// as the standard has them; a call names T and deduces the rest, which waits on the compiler.
+template <class T, class... Args>
+shared_ptr<T> make_shared(Args &&... args) {
+    return shared_ptr<T>(new T(std::forward<Args>(args)...));
+}
+
+template <class T, class A, class... Args>
+shared_ptr<T> allocate_shared(const A &, Args &&... args) {
+    return shared_ptr<T>(new T(std::forward<Args>(args)...));
+}
+
+template <class T, class U>
+shared_ptr<T> static_pointer_cast(const shared_ptr<U> &r) noexcept {
+    return shared_ptr<T>(r, static_cast<T *>(r.get()));
+}
+
+template <class T, class U>
+shared_ptr<T> dynamic_pointer_cast(const shared_ptr<U> &r) noexcept {
+    T *p = dynamic_cast<T *>(r.get());
+    if (p == 0) return shared_ptr<T>();
+    return shared_ptr<T>(r, p);
+}
+
+template <class T, class U>
+shared_ptr<T> const_pointer_cast(const shared_ptr<U> &r) noexcept {
+    return shared_ptr<T>(r, const_cast<T *>(r.get()));
+}
+
+template <class D, class T>
+D *get_deleter(const shared_ptr<T> &p) noexcept {
+    if (p.__cxx1_block() == 0) return 0;
+    return static_cast<D *>(p.__cxx1_block()->deleter(typeid(D)));
+}
+
+// [util.smartptr.ownerless]
+template <class T> struct owner_less;
+
+template <class T> struct owner_less<shared_ptr<T> > {
+    typedef bool result_type;
+    typedef shared_ptr<T> first_argument_type;
+    typedef shared_ptr<T> second_argument_type;
+    bool operator()(const shared_ptr<T> &a, const shared_ptr<T> &b) const { return a.owner_before(b); }
+    bool operator()(const shared_ptr<T> &a, const weak_ptr<T> &b) const { return a.owner_before(b); }
+    bool operator()(const weak_ptr<T> &a, const shared_ptr<T> &b) const { return a.owner_before(b); }
+};
+
+template <class T> struct owner_less<weak_ptr<T> > {
+    typedef bool result_type;
+    typedef weak_ptr<T> first_argument_type;
+    typedef weak_ptr<T> second_argument_type;
+    bool operator()(const weak_ptr<T> &a, const weak_ptr<T> &b) const { return a.owner_before(b); }
+    bool operator()(const shared_ptr<T> &a, const weak_ptr<T> &b) const { return a.owner_before(b); }
+    bool operator()(const weak_ptr<T> &a, const shared_ptr<T> &b) const { return a.owner_before(b); }
+};
+
+// [util.smartptr.shared.atomic], with no threads to be atomic against.
+template <class T> bool atomic_is_lock_free(const shared_ptr<T> *) { return false; }
+template <class T> shared_ptr<T> atomic_load(const shared_ptr<T> *p) { return *p; }
+template <class T> void atomic_store(shared_ptr<T> *p, shared_ptr<T> r) { p->swap(r); }
+template <class T> shared_ptr<T> atomic_exchange(shared_ptr<T> *p, shared_ptr<T> r) {
+    p->swap(r);
+    return r;
+}
+template <class T>
+bool atomic_compare_exchange_strong(shared_ptr<T> *p, shared_ptr<T> *v, shared_ptr<T> w) {
+    if (p->get() == v->get() && !p->owner_before(*v) && !v->owner_before(*p)) {
+        p->swap(w);
+        return true;
+    }
+    *v = *p;
+    return false;
+}
+template <class T>
+bool atomic_compare_exchange_weak(shared_ptr<T> *p, shared_ptr<T> *v, shared_ptr<T> w) {
+    return std::atomic_compare_exchange_strong(p, v, w);
+}
+
+// [auto.ptr], deprecated in C++11 and still in it.
+template <class Y> struct auto_ptr_ref {
+    explicit auto_ptr_ref(Y *p) : p_(p) {}
+    Y *p_;
+};
+
+template <class X>
+class auto_ptr {
+public:
+    typedef X element_type;
+
+    explicit auto_ptr(X *p = 0) throw() : p_(p) {}
+    auto_ptr(auto_ptr &a) throw() : p_(a.release()) {}
+    auto_ptr(auto_ptr_ref<X> r) throw() : p_(r.p_) {}
+    ~auto_ptr() throw() { delete p_; }
+
+    auto_ptr &operator=(auto_ptr &a) throw() {
+        reset(a.release());
+        return *this;
+    }
+    auto_ptr &operator=(auto_ptr_ref<X> r) throw() {
+        reset(r.p_);
+        return *this;
+    }
+
+    X &operator*() const throw() { return *p_; }
+    X *operator->() const throw() { return p_; }
+    X *get() const throw() { return p_; }
+    X *release() throw() {
+        X *was = p_;
+        p_ = 0;
+        return was;
+    }
+    void reset(X *p = 0) throw() {
+        if (p != p_) delete p_;
+        p_ = p;
+    }
+
+    // [auto.ptr]'s templates from and to an auto_ptr<Y> are not here: this compiler instantiates the
+    // conversions before Y is known, and the constructor for Y = X as a second copy constructor. The
+    // conversion to auto_ptr_ref<X> is what returning an auto_ptr by value needs.
+    operator auto_ptr_ref<X>() throw() { return auto_ptr_ref<X>(release()); }
+
+private:
+    X *p_;
+};
+
+// [util.smartptr.hash]: a smart pointer hashes as the pointer it holds (1.75: neither was here). The bytes of the
+// pointer by <functional>s rule for a pointer - FNV-1a, the 64-bit form where size_t is 64 bits - written out
+// here so that <memory> alone will do and the two answers are one.
+template <class T> struct hash;
+inline std::size_t __cxx1_pointer_fnv(const void *p, std::size_t n) noexcept {
+    const unsigned char *b = static_cast<const unsigned char *>(p);
+#if defined(__TMS320C6X__)
+    std::size_t h = 2166136261u;
+    for (std::size_t i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+#else
+    unsigned long long h = 14695981039346656037ULL;
+    for (std::size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+#endif
+    return (std::size_t)h;
+}
+template <class T, class D> struct hash<unique_ptr<T, D> > {
+    typedef unique_ptr<T, D> argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const unique_ptr<T, D> &p) const noexcept {
+        typename unique_ptr<T, D>::pointer held = p.get();
+        return std::__cxx1_pointer_fnv(&held, sizeof held);
+    }
+};
+template <class T> struct hash<shared_ptr<T> > {
+    typedef shared_ptr<T> argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const shared_ptr<T> &p) const noexcept {
+        T *held = p.get();
+        return std::__cxx1_pointer_fnv(&held, sizeof held);
+    }
+};
 
 }  // namespace std
 

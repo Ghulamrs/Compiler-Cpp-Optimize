@@ -55,23 +55,16 @@ struct Op {
     Kind kind;
 
     Str text;
-    long long disp;
-    bool hasDisp;
+    long long disp = 0;
+    bool hasDisp = false;
 
-    unsigned long long uimm;
-    bool immNeg;
-    bool immNumeric;
+    unsigned long long uimm = 0;
+    bool immNeg = false;
+    bool immNumeric = false;
 
     // Mem only: `d(base,index,scale)`; scale 0 is no index.
     Str index;
-    int scale;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Op(Kind kind = Reg, Str text = Str(), long long disp = 0, bool hasDisp = false,
-       unsigned long long uimm = 0, bool immNeg = false, bool immNumeric = false,
-       Str index = Str(), int scale = 0)
-        : kind(kind), text(text), disp(disp), hasDisp(hasDisp), uimm(uimm), immNeg(immNeg),
-          immNumeric(immNumeric), index(index), scale(scale) {}
+    int scale = 0;
 };
 
 inline Op reg(Str r)  { return { Op::Reg, r, 0, false, 0, false, false, {}, 0 }; }
@@ -130,6 +123,9 @@ public:
     virtual void defLabel(const std::string &l) = 0;
     // **A label where a Microsoft frame's exception state changes.** The runtime reads the state at a return address, so a call must not end exactly on one; the spellings that serve that runtime pad it (cl's npad 1).
     virtual void stateLabel(const std::string &l) { defLabel(l); }
+    // **A lexical block's begin or end under -g**, which debug records name and nothing jumps to; the optimizer holds it
+    // as an event, so that it changes no code.
+    virtual void blockLabel(const std::string &l) { defLabel(l); }
 
     virtual void functionBegin(const std::string &name, bool exported,
                                bool mergeable = false) = 0;
@@ -143,8 +139,50 @@ public:
 
     virtual void fileEntry(int, const std::string &) {}
     virtual void location(int, int, int) {}
+    // **-g inside a handler funclet**: its code is in another section, so its
+    // lines are a table of their own between these two; `locationDirective` is
+    // one location of function `fn`, for a funclet's entry.
+    virtual void funcletLinesBegin() {}
+    virtual void funcletLinesEnd() {}
+    virtual std::string locationDirective(int fn, int file, int line, int column) const {
+        (void)fn; (void)file; (void)line; (void)column; return std::string();
+    }
+
+    // **atomic_flag's exchange** - [atomics.flag]/2 wants it lock-free, and a language with no interlocked operation
+    // of its own has it from here: a function private to the file, `bool __cxx1_flag_exchange(volatile bool *, bool)`,
+    // which to the optimizer is a call like any other.
+    virtual void flagExchange() {}
+    // **<atomic>'s interlocked operations** ([atomics.lockfree]; 1.75): `__cxx1_atomic_<op>_<bytes>`, op one of load,
+    // xchg, add and cas, bytes 1, 2, 4 or 8, each a function private to the file as flagExchange's is -
+    //   uN   load(const volatile void *)            the object's value
+    //   uN   xchg(volatile void *, uN)              the old value; a store is one whose answer is dropped
+    //   uN   add (volatile void *, uN)              the old value
+    //   bool cas (volatile void *, uN *e, uN d)     d stored where the object held *e, else *e takes what it holds
+    // - written with the processor's locked instructions (x86-64) or exclusive pairs (arm64), so that an atomic
+    // scalar is lock-free there. The header asks for none on a target whose spelling writes none.
+    virtual void atomicHelper(const std::string &name) { (void)name; }
+    struct AtomicHelper {
+        enum Op { None, Load, Xchg, Add, Cas } op;
+        int k;      // 0, 1, 2, 3 for 1, 2, 4, 8 bytes
+    };
+    static AtomicHelper atomicHelperOf(const std::string &name) {
+        AtomicHelper h = { AtomicHelper::None, 0 };
+        static const char prefix[] = "__cxx1_atomic_";
+        const std::size_t n = sizeof prefix - 1;
+        if (name.compare(0, n, prefix) != 0 || name.size() < n + 5 || name[name.size() - 2] != '_') return h;
+        const char size = name[name.size() - 1];
+        if (size == '1') h.k = 0; else if (size == '2') h.k = 1; else if (size == '4') h.k = 2; else if (size == '8') h.k = 3;
+        else return h;
+        const std::string op = name.substr(n, name.size() - n - 2);
+        h.op = op == "load" ? AtomicHelper::Load : op == "xchg" ? AtomicHelper::Xchg : op == "add" ? AtomicHelper::Add
+             : op == "cas" ? AtomicHelper::Cas : AtomicHelper::None;
+        return h;
+    }
 
     virtual void predefine(const std::vector<std::string> &) {}
+    // Every chunk of the file's text, written and in order, before the preamble: what only the whole
+    // file decides is spelled here (1.30: MASM's `div` instruction where `div` is a name).
+    virtual void finishText(std::vector<std::string> &) {}
     virtual void preamble(std::ostream &) {}
     virtual void postamble(std::ostream &) {}
 
@@ -152,6 +190,8 @@ public:
     // **A definition the linker must fold rather than reject** - an inline
     // function, which may appear in several translation units.
     virtual void weakDefinition(const std::string &name) { (void)name; }
+    // Whether weakDefinition binds the symbol global by itself (ELF's `.weak`), so no globl goes before it.
+    virtual bool weakBindsGlobal() const { return false; }
     virtual void textSection() = 0;
     virtual void rodataSection() = 0;
     // A constant holding addresses, which the loader writes before making it read-only; gcc's .data.rel.ro on ELF.
@@ -165,6 +205,10 @@ public:
     // **Where __tls_init is registered on COFF** - .CRT$XDU, which the CRT runs in every new thread - and the
     // directive that pulls `__dyn_tls_init` into the link; nothing on ELF, where the `_ZTH` aliases reach it.
     virtual void tlsInitialiserEntry(const std::string &fn) { (void)fn; }
+    // Whether `[base + SECTIONREL x]` can be spelled; the project's masm writes SECTIONREL in a DD only, so a
+    // thread_local's offset is read from a word holding it instead, `$tlsoff$x`, which this records (Phase 6).
+    virtual bool tlsOperandsSpelled() const { return true; }
+    virtual void tlsOffsetWord(const std::string &symbol) { (void)symbol; }
     virtual void objectType(const std::string &name) = 0;
     virtual void objectSize(const std::string &name, int size) = 0;
     virtual void align(int n) = 0;
@@ -185,6 +229,12 @@ public:
     // Identity everywhere but COFF, where a temporary cannot carry a
     // relocation - see CoffSpelling::sym.
     virtual std::string labelText(const std::string &l) const { return l; }
+    // A label the spelling itself writes round a function's code - `$LNprolog$`, `$LNend$` - as a
+    // table names it: the prefix and the symbol as one label here, the prefix before the symbol as
+    // the spelling writes that in MASM (1.30, 2026-10-23: `_GLOBAL__sub_I_f.cpp` is `$_GLOBAL__...`).
+    virtual std::string codeLabelText(const std::string &prefix, const std::string &symbol) {
+        return labelText(prefix + symbol);
+    }
     virtual void dataBytes(const std::string &bytes) = 0;
 };
 
@@ -212,6 +262,7 @@ public:
     void calleeSaves(const std::vector<SavedReg> &saves) override { saves_ = saves; }
     void globl(const std::string &name) override;
     void weakDefinition(const std::string &name) override;
+    bool weakBindsGlobal() const override { return true; }
     void textSection() override;
     void rodataSection() override;
     void relroSection() override;
@@ -228,6 +279,8 @@ public:
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &s, long long off) override;
     void initialiserEntry(const std::string &fn, bool dsoHandle) override;
+    void flagExchange() override;
+    void atomicHelper(const std::string &name) override;
 
 protected:
     // How a symbol is written. Identity for GNU-as on ELF and Mach-O.
@@ -252,6 +305,7 @@ public:
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable) override;
     void weakDefinition(const std::string &name) override;
+    bool weakBindsGlobal() const override { return false; }
     void rodataSection() override;
     void relroSection() override { rodataSection(); }
     bool hasRelro() const override { return false; }
@@ -266,10 +320,15 @@ public:
     void functionEnd(const std::string &name) override;
     void noteHasEh(bool yes) override { hasEh_ = yes; }
     void initialiserEntry(const std::string &fn, bool dsoHandle) override;
+    void flagExchange() override;
+    void atomicHelper(const std::string &name) override;
     void tlsInitialiserEntry(const std::string &fn) override;
     // CodeView's line entries in place of DWARF's - see CodeView.h.
     void fileEntry(int n, const std::string &name) override;
     void location(int file, int line, int column) override;
+    void funcletLinesBegin() override;
+    void funcletLinesEnd() override;
+    std::string locationDirective(int fn, int file, int line, int column) const override;
 
     std::string labelText(const std::string &l) const override { return sym(l); }
 
@@ -295,13 +354,21 @@ private:
     // The unwind codes, built in the prologue and written at the end.
     std::string unwindData_;
     int unwindCodes_ = 0;
-    // Whether a `.cv_file` was written (so -g), and how many functions have a `.cv_func_id`: the last is the one a `.cv_loc` names.
+    // Whether a `.cv_file` was written (so -g), how many `.cv_func_id`s have been given out (functions and
+    // funclets, in order), and the one a `.cv_loc` names now: the function's, or the funclet's inside one.
     bool codeView_ = false;
     int cvFunctions_ = 0;
+    int cvCurrent_ = -1;
     // The last `.cv_loc` and where it was written, so one that no instruction follows can be replaced.
     std::string lastLoc_;
     std::size_t lastLocAt_ = 0;
-    int lastLocFn_ = 0, lastLocFile_ = 0, lastLocLine_ = 0;
+    int lastLocFn_ = -1, lastLocFile_ = 0, lastLocLine_ = 0;
     // Every (file, line) the function being written has had a run of, so none gets a second.
     std::set<std::pair<int, int> > linesRun_;
+    // The function's line state, set aside while a funclet's lines are written (funcletLinesBegin).
+    struct LineState {
+        int current; std::string lastLoc; std::size_t lastLocAt; int lastLocFn, lastLocFile, lastLocLine;
+        std::set<std::pair<int, int> > linesRun;
+    };
+    std::vector<LineState> outerLines_;
 };

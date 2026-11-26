@@ -24,6 +24,10 @@
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- docs/Build_Policy.md: the Release link settings of the toolchain's programs. -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
   <!-- **The output follows the solution that builds it.** Its own, ide\cxx1.sln (or
        none), keeps build\<config>\; any other - RIDE.sln - puts cpp11.exe beside the rest of
        that solution's programs, which is where the editor looks. The objects stay here. -->
@@ -42,23 +46,30 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <DisableSpecificWarnings>4996;4267;4244;4456;4146</DisableSpecificWarnings>
       <AdditionalIncludeDirectories>$(ProjectDir)..\msvc\compat;$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\lib').Replace('\','/'))";CXX1_CXX_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\include').Replace('\','/'))";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\..\..\include\c').Replace('\','/'))";CXX1_WIN_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\..\..\include\win').Replace('\','/'))";CXX1_CXX_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\include').Replace('\','/'))";%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem></Link>
+    <!-- **A 256 MB stack reserve** (2026-10-21, review of 1.25, fix 5). The parser follows the
+         program's nesting with its own recursion, and a template instantiation re-enters the
+         whole of it: at the linker's default 1 MB, 80 nested parentheses, a 40-deep class
+         template recursion, 300 nested blocks or a 300-arm else-if chain overflowed it (exit
+         0xC00000FD). A reserve is address space, not memory - pages are committed as they are
+         touched - and the threads the driver starts take the same size, as Windows gives a
+         thread asking for size 0 the header's. Parser::Nesting bounds the depth below it, by name. -->
+    <Link><SubSystem>Console</SubSystem><StackReserveSize>268435456</StackReserveSize></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
-    <Link><GenerateDebugInformation>true</GenerateDebugInformation></Link>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <!-- **/WX is off in Debug, and on in Release.** MSVC warns about things
            at /Od that /O2 hides - C4701 and C4703, "potentially uninitialized",
@@ -93,6 +104,7 @@
     <ClCompile Include="..\src\parser\ParserStmt.cpp" />
     <ClCompile Include="..\src\parser\ParserTemplate.cpp" />
     <ClCompile Include="..\src\parser\ParserTopLevel.cpp" />
+    <ClCompile Include="..\src\parser\ParserTraits.cpp" />
     <ClCompile Include="..\src\parser\ParserType.cpp" />
     <ClCompile Include="..\src\parser\ParserVtable.cpp" />
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />
@@ -181,4 +193,32 @@
     <ClInclude Include="..\src\optimizer\Optimizer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- The headers an installation ships, beside cpp11.exe (docs\Runtime_Design.md 5.3): include\c++ holds its C++
+       headers, which is where cpp11 looks first, with the C ones they wrap in include\c and include\win - one set
+       with c90's (toolchain\include), which c90's project writes there. For one release the earlier layout too:
+       include\ holding both, with <sys/types.h> and <sys/stat.h> in include\sys. The list is made inside the target,
+       so Visual Studio shows no wildcard item; the check is off so that Visual Studio runs the copy even when
+       cpp11.exe is up to date. -->
+  <PropertyGroup>
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+  </PropertyGroup>
+  <Target Name="Cpp11Headers" AfterTargets="Build">
+    <ItemGroup>
+      <Cpp11Header Include="$(ProjectDir)..\include\*" />
+      <Cpp11CHeader Include="$(ProjectDir)..\..\..\include\c\*.h;$(ProjectDir)..\..\..\include\win\*.h" />
+      <Cpp11SysHeader Include="$(ProjectDir)..\..\..\include\c\sys\*.h" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Cpp11Header)" DestinationFolder="$(OutDir)include\c++" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(Cpp11Header);@(Cpp11CHeader)" DestinationFolder="$(OutDir)include" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(Cpp11SysHeader)" DestinationFolder="$(OutDir)include\sys" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="Cpp11HeadersClean" AfterTargets="Clean">
+    <ItemGroup>
+      <Cpp11Header Include="$(ProjectDir)..\include\*" />
+      <Cpp11CHeader Include="$(ProjectDir)..\..\..\include\c\*.h;$(ProjectDir)..\..\..\include\win\*.h" />
+      <Cpp11HeaderCopy Include="@(Cpp11Header->'$(OutDir)include\%(Filename)%(Extension)');@(Cpp11CHeader->'$(OutDir)include\%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Delete Files="@(Cpp11HeaderCopy)" />
+    <RemoveDir Directories="$(OutDir)include\c++;$(OutDir)include\sys" />
+  </Target>
 </Project>

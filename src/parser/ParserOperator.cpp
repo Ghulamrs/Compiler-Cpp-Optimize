@@ -83,7 +83,8 @@ ExprPtr Parser::castExpr() {
             r->setType(ref);
             return r;
         }
-        ExprPtr r = convert(std::move(v), to, true);   // a cast allows explicit
+        ExprPtr r = castToOwnClass(v, to, openPos);
+        if (r == nullptr) r = convert(std::move(v), to, true);   // a cast allows explicit
         if (!to->isReference()) r->setDeclCategory(Expr::Category::Prvalue);
         return r;
     }
@@ -96,7 +97,8 @@ ExprPtr Parser::castExpr() {
 ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
                                    std::size_t pos, long long vtableCode,
                                    const std::string &code) {
-    const Type *fn = types_.functionType(f.returns, f.params, f.variadic, f.refThis);
+    const Type *fn = types_.functionType(f.returns, f.params, f.variadic, f.refThis,
+                                         thisCvOf(f));
     const Type *mp = types_.memberFunctionPointerTo(cls, fn, target_);
     const int slot = allocateFrameSlot(mp);
     const Type *word = types_.pointerTo(types_.get(Kind::Void));
@@ -158,6 +160,8 @@ ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
     seq->setType(types_.pointerTo(mp));
     ExprPtr made(new Unary('*', std::move(seq)));
     made->setType(mp);
+    // A value, though it lives in a slot - [expr.unary.op]/3: `decltype(&S::f)` is the pointer, not a reference.
+    made->setDeclCategory(Expr::Category::Prvalue);
     (void)pos;
     return made;
 }
@@ -207,7 +211,7 @@ void Parser::refuseMemberPointerCategory(const Expr &mp, bool lvalue, std::size_
 }
 
 ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
-                                   bool constObject) {
+                                   bool constObject, bool volatileObject) {
     const Type *mpt = mp->type()->unqualified();
     // **[expr.mptr.oper]/3: the object is converted to the member pointer's
     // class first** - a `&B2::f` applied to a D whose B2 is not at 0 moves
@@ -224,6 +228,15 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
     // A pointer to a member *function*: read the code pointer out of it and
     // leave the object's address for the call to pick up.
     if (mpt->isMemberFunctionPointer()) {
+        // [over.match.funcs]/4 as a call through the pointer has it: a const object binds a const `this` only.
+        if (volatileObject && !(mpt->pointee()->cvThis() & Type::kThisVolatile))
+            src_.fail(pos, "'" + mpt->describe() + "' points at a non-volatile member function, and this "
+                           "object is volatile - only a pointer to a volatile member function can be called on it");
+        if (constObject && !(mpt->pointee()->cvThis() & Type::kThisConst))
+            src_.fail(pos, "'" + mpt->describe() + "' points at a non-const member function, and this "
+                           "object is const - only a pointer to a const member function, '" +
+                           mpt->pointee()->returns()->describe() + " (" + mpt->enclosing()->tag() + "::*)" +
+                           mpt->pointee()->parameterList() + " const', can be called on it");
         const Member *slot = mpt->findMember("$fn");
         const Type *fnPtr = types_.pointerTo(mpt->pointee());
         boundFn_ = mpt->pointee();
@@ -360,23 +373,38 @@ ExprPtr Parser::memberPointerExpr() {
                 src_.fail(pos, "the left of '.*' has to be an object of class "
                                "type, and this is '" + of->describe() + "'");
             const bool constObject = of->isConst();
+            const bool volatileObject = of->isVolatile();
             const bool lvalue = objectIsLvalue(*n);
             ExprPtr addr(new Unary('&', std::move(n)));
             addr->setType(types_.pointerTo(of->unqualified()));
             ExprPtr mp = memberPointerExpr();
             refuseMemberPointerCategory(*mp, lvalue, pos);
-            n = applyMemberPointer(std::move(addr), std::move(mp), pos, constObject);
+            const bool dataMember = mp->type() != nullptr && mp->type()->isMemberPointer();
+            n = applyMemberPointer(std::move(addr), std::move(mp), pos, constObject, volatileObject);
+            // [expr.mptr.oper]/6 (CWG 1213): `E1.*E2` of a data member has E1's value category - an xvalue
+            // for an object that is not an lvalue, so `decltype(S().*pm)` is `T &&`.
+            if (!lvalue && dataMember && n->type() != nullptr && !n->type()->isFunction()) n->setXvalue();
             continue;
         }
         if (consume("->*")) {
             const Type *of = n->type();
+            if (of->unqualified()->isStructOrUnion() || of->unqualified()->isEnumeration()) {
+                ExprPtr right = castExpr();
+                if (ExprPtr call = overloadedSpelled("->*", n, right, pos)) {
+                    n = std::move(call);
+                    continue;
+                }
+                src_.fail(pos, "'" + of->describe() + "' declares no 'operator->*' that takes '" +
+                               right->type()->describe() + "', and the built-in '->*' wants a pointer to a class");
+            }
             if (!of->isPointer() ||
                 !of->pointee()->unqualified()->isStructOrUnion())
                 src_.fail(pos, "the left of '->*' has to be a pointer to a "
                                "class, and this is '" + of->describe() + "'");
             const bool constPointee = of->pointee()->isConst();
+            const bool volatilePointee = of->pointee()->isVolatile();
             n = applyMemberPointer(decay(std::move(n)), memberPointerExpr(), pos,
-                                   constPointee);
+                                   constPointee, volatilePointee);
             continue;
         }
         return n;
@@ -414,6 +442,17 @@ ExprPtr Parser::shift() {
         else if (consume(">>")) op = BinOp::Shr;
         else return n;
 
+        if (n->type() != nullptr && n->type()->unqualified()->isStructOrUnion() &&
+            atBareFunctionArgument(false, true)) {
+            ExprPtr rhs;
+            {
+                OverloadTarget waits(*this, nullptr, true);
+                rhs = add();
+            }
+            const Type *left = n->type();
+            n = shiftOf(op, std::move(n), shiftedFunction(left, op, std::move(rhs)), pos);
+            continue;
+        }
         n = shiftOf(op, std::move(n), add(), pos);
     }
 }
@@ -477,7 +516,12 @@ ExprPtr Parser::logicalAnd() {
         std::size_t pos = peek().pos;
         at_++;
         const std::size_t before = pendingTemps_.size();
-        ExprPtr r = decay(bitOr());
+        ExprPtr r = bitOr();
+        if (ExprPtr call = overloadedSpelled("&&", n, r, pos)) {
+            n = std::move(call);
+            continue;
+        }
+        r = decay(std::move(r));
         n = decay(std::move(n));
         n = contextualScalar(std::move(n), pos, "'&&'");
         r = contextualScalar(std::move(r), pos, "'&&'");
@@ -496,7 +540,12 @@ ExprPtr Parser::logicalOr() {
         std::size_t pos = peek().pos;
         at_++;
         const std::size_t before = pendingTemps_.size();
-        ExprPtr r = decay(logicalAnd());
+        ExprPtr r = logicalAnd();
+        if (ExprPtr call = overloadedSpelled("||", n, r, pos)) {
+            n = std::move(call);
+            continue;
+        }
+        r = decay(std::move(r));
         n = decay(std::move(n));
         n = contextualScalar(std::move(n), pos, "'||'");
         r = contextualScalar(std::move(r), pos, "'||'");
@@ -607,7 +656,19 @@ void Parser::requireAssignable(const Expr &e, std::size_t pos, const char *what)
 }
 
 ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t pos) {
-    requireAssignable(*target, pos, "the left of a compound assignment");
+    // **A class's `@=` is a call on the object, which may be a prvalue** - [over.match.oper]/2:
+    // `bitset(*this) <<= n` is the temporary's operator<<=, reached through its address as `=` reaches one.
+    // Only the built-in operator wants an lvalue.
+    if (!target->type()->unqualified()->isStructOrUnion()) {
+        requireAssignable(*target, pos, "the left of a compound assignment");
+    } else if (!isGlvalue(*target) && !target->type()->isConst()) {
+        const Type *t = target->type();
+        ExprPtr addr(new Unary('&', std::move(target)));
+        addr->setType(types_.pointerTo(t));
+        target.reset(new Unary('*', std::move(addr)));
+        target->setType(t);
+        target->setDeclCategory(Expr::Category::Prvalue);
+    }
     const Type *to = target->type();
 
     // **`a += b` is not `a = a + b` when a is a class.** The rewrite below is
@@ -629,7 +690,7 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
             std::vector<ExprPtr> args;
             args.push_back(std::move(target));
             args.push_back(std::move(value));
-            const Signature &sig = resolveOverload(name, args, pos);
+            const Signature &sig = resolveChosenOperator(name, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns,
                                 sig.params, sig.variadic, pos, std::move(args),
                                 !sig.owner.empty());
@@ -710,7 +771,49 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     return node;
 }
 
+// **[expr.ass]/1 and [expr.pre.incr]/1: an assignment and a prefix `++` are lvalues that name their left
+// operand**, so `(a = b) = c`, `(a += 1) += 2`, `++ ++a` and `(++a)++` go on with that operand (1.80: each was
+// refused as "not something that can be assigned to"; a reference bound to one has named it again since
+// before). The assignment an lvalue of that kind was made by, or null.
+static const Assign *assignedBy(const Expr &e) {
+    if (e.declCategory() != Expr::Category::Lvalue) return nullptr;
+    if (const Assign *a = dynamic_cast<const Assign *>(&e)) return a;
+    // what afterAssigned leaves: the earlier assignments, then the last one
+    if (const Comma *c = dynamic_cast<const Comma *>(&e)) return dynamic_cast<const Assign *>(&c->right());
+    return nullptr;
+}
+
+// Where `n` is such an lvalue and its operand can be named twice - it has no effects of its own - `n` becomes
+// that operand named again, and what is returned is to be evaluated first. Null, and `n` as it was, otherwise.
+ExprPtr Parser::takeAssigned(ExprPtr &n) {
+    const Assign *as = assignedBy(*n);
+    if (as == nullptr) return nullptr;
+    if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(&as->target()))
+        if (m->isBitField()) return nullptr;
+    ExprPtr again = clonePure(as->target());
+    if (!again) return nullptr;
+    ExprPtr first = std::move(n);
+    n = std::move(again);
+    return first;
+}
+
+// `first`, then `r`: the value, type and category are r's.
+ExprPtr Parser::afterAssigned(ExprPtr first, ExprPtr r) {
+    if (!first) return r;
+    const Type *t = r->type();
+    const Expr::Category category = r->declCategory();
+    ExprPtr both(new Comma(std::move(first), std::move(r)));
+    both->setType(t);
+    both->setDeclCategory(category);
+    return both;
+}
+
 ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t pos) {
+    if (ExprPtr first = takeAssigned(target)) {
+        ExprPtr r = incDec(std::move(target), increment, prefix, pos);
+        if (prefix && dynamic_cast<const Assign *>(r.get())) r->setDeclCategory(Expr::Category::Lvalue);
+        return afterAssigned(std::move(first), std::move(r));
+    }
     // **The dummy `int` is how the standard tells the two apart**, and it is a
     // real parameter: [over.inc] gives the postfix form an extra int and passes 0
     // in it, so postfix is the ordinary two-operand resolution and prefix the one.
@@ -735,7 +838,7 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
             std::vector<ExprPtr> args;
             args.push_back(std::move(target));
             if (!prefix) args.push_back(std::move(dummy));
-            const Signature &sig = resolveOverload(name, args, pos);
+            const Signature &sig = resolveChosenOperator(name, args, pos);
             applyDefaults(sig, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns,
                                 sig.params, sig.variadic, pos, std::move(args),
@@ -771,10 +874,37 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
     if (!t->isScalar() || t->isNullPtr())
         src_.fail(pos, std::string(what) + " needs a number or a pointer, not '" +
                        t->describe() + "'");
+    // A bit-field has no address to step through: its old value is kept in a slot, the new one
+    // stored as `f.a = old + 1` stores it, and the slot is the result - [expr.post.incr]/1.
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(target.get()))
-        if (m->isBitField())
-            src_.fail(pos, "postfix '++' and '--' on a bit-field are not supported "
-                           "yet - the prefix form works, and so does 'f.a = f.a + 1'");
+        if (m->isBitField()) {
+            ExprPtr readBack = clonePure(*target);
+            if (readBack == nullptr)
+                src_.fail(pos, "'" + m->name() + "' is a bit-field, so it has no address to take - "
+                               "and the object it is reached through has an effect that cannot "
+                               "happen twice; give that object a name first");
+            const Type *held = t->unqualified();
+            const int slot = allocateFrameSlot(held);
+            const std::string old = ".pf" + std::to_string(refTemps_++);
+            ExprPtr keep(Var::local(old, slot));
+            keep->setType(held);
+            ExprPtr save(new Assign(std::move(keep), std::move(readBack)));
+            save->setType(held);
+            ExprPtr was(Var::local(old, slot));
+            was->setType(held);
+            ExprPtr one(new Num(1LL));
+            one->setType(types_.intType());
+            ExprPtr stepped = arithmetic(increment ? BinOp::Add : BinOp::Sub, std::move(was), std::move(one), pos);
+            ExprPtr store(new Assign(std::move(target), convert(std::move(stepped), t)));
+            store->setType(t);
+            ExprPtr result(Var::local(old, slot));
+            result->setType(held);
+            ExprPtr both(new Comma(std::move(save), std::move(store)));
+            both->setType(t);
+            ExprPtr all(new Comma(std::move(both), std::move(result)));
+            all->setType(held);
+            return all;
+        }
     if (t->isPointer() && !t->pointee()->isComplete())
         src_.fail(pos, std::string(what) + " is '" + t->describe() +
                        "', and there is no size to step by");
@@ -860,9 +990,25 @@ ExprPtr Parser::conditional() {
     const Type *tb = b->type();
     const Type *result = nullptr;
 
-    // **[expr.cond]/2: a throw-expression arm takes the other arm's type** - `b ? 7 : throw 1` is an int (1.27,
-    // 2026-10-21, review of 1.25, item 3: "expected an expression"). A class-typed other arm would need its
-    // temporary built by the arm, which this does not do yet.
+    // **What an arm built, only that arm destroys, whatever the `?:` gives** (1.81: only a class result guarded
+    // its arms' temporaries, and `c ? m : atoi(s.substr(k).c_str())` destroyed a string that was never built,
+    // and `c ? make().v : 2` the temporary twice where it was). A guard is set at the end of the arm, and the
+    // full-expression's end destroys under it.
+    auto guardArm = [&](ExprPtr arm, std::size_t from, std::size_t to) -> ExprPtr {
+        if (arm->type() == nullptr || !arm->type()->isVoid()) return markSkippableTemporaries(std::move(arm), from, to);
+        for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++) {
+            if (pendingTemps_[k].flag != 0 || destructorOf(pendingTemps_[k].type) == nullptr) continue;
+            pendingTemps_[k].flag = guardFlag();
+            ExprPtr mark(new Comma(std::move(arm), setGuard(pendingTemps_[k].flag, 1)));
+            mark->setType(types_.get(Kind::Void));
+            arm = std::move(mark);
+        }
+        return arm;
+    };
+
+    // **[expr.cond]/2: a throw-expression arm takes the other arm's type**
+    // (`b ? 7 : throw 1` is an int); a class-typed other arm would need its
+    // temporary built by the arm, not done yet.
     {
         const bool aThrows = ta->isVoid() && throwsAfterA > throwsBeforeA;
         const bool bThrows = tb->isVoid() && throwsSeen_ > throwsAfterA;
@@ -887,9 +1033,9 @@ ExprPtr Parser::conditional() {
         }
     }
 
-    // **[expr.cond]/3 with one class arm and one that is not**: the class converts through its conversion function
-    // to the other arm's type, which is the answer - `t ? f : 1.0` for an F with `operator double()` (1.27,
-    // 2026-10-21, review of 1.25, item 3: only the class-to-class question had been asked).
+    // **[expr.cond]/3, one class arm and one not**: the class converts by its
+    // conversion function to the other's type, the answer (`t ? f : 1.0`
+    // for an F with `operator double()`).
     if (ta->unqualified()->isStructOrUnion() != tb->unqualified()->isStructOrUnion()) {
         const bool classIsA = ta->unqualified()->isStructOrUnion();
         const Type *cls = classIsA ? ta : tb;
@@ -901,9 +1047,9 @@ ExprPtr Parser::conditional() {
         }
     }
 
-    // **[expr.cond]/3: two lvalues differing only in const** - `c ? x : cx` - the plain one converts to a
-    // reference to the const one, so the `?:` is an lvalue of the const type and `decltype` of it `const int &`
-    // (1.27, 2026-10-21, review of 1.25, item 3: it was read as an `int` prvalue).
+    // **[expr.cond]/3: two lvalues of one type but for const** (`c ? x : cx`):
+    // the plain one converts to a reference to the const one, so the result
+    // is a const lvalue and its decltype `const int &`.
     if (ta != tb && ta->unqualified() == tb->unqualified() && !ta->isStructOrUnion() &&
         ta->isConst() != tb->isConst() && isLvalue(*a) && isLvalue(*b)) {
         const Type *constOne = ta->isConst() ? ta : tb;
@@ -919,6 +1065,8 @@ ExprPtr Parser::conditional() {
         at->setType(ptr);
         ExprPtr bt(new Unary('&', std::move(b)));
         bt->setType(ptr);
+        at = guardArm(std::move(at), tempsBeforeA, tempsAfterA);
+        bt = guardArm(std::move(bt), tempsAfterA, tempsAfterB);
         ExprPtr which(new Conditional(std::move(cond), std::move(at),
                                       std::move(bt)));
         which->setType(ptr);
@@ -928,10 +1076,10 @@ ExprPtr Parser::conditional() {
     }
 
     if (ta->isArithmetic() && tb->isArithmetic()) {
-        // [expr.cond]/6: two arms of one enumeration give that enumeration, not its promotion.
-        const bool oneEnum = ta->unqualified() == tb->unqualified() &&
-                             ta->unqualified()->isEnumeration();
-        result = oneEnum ? ta->unqualified() : usualArithmetic(ta, tb);
+        // [expr.cond]/6: two arms of one type give that type - a char and a character literal a char, an
+        // enumeration that enumeration - and only two types the usual arithmetic conversions.
+        const bool oneType = ta->unqualified() == tb->unqualified();
+        result = oneType ? ta->unqualified() : usualArithmetic(ta, tb);
         a = convert(std::move(a), result);
         b = convert(std::move(b), result);
     } else if (ta->unqualified()->isStructOrUnion() ||
@@ -943,9 +1091,7 @@ ExprPtr Parser::conditional() {
         const Type *pb = tb->unqualified();
         const Type *want = nullptr;
         if (pa == pb) {
-            // One class, two qualifications: the result is a prvalue, so
-            // neither arm's constness reaches it.
-            want = pa;
+            want = pa;  // one class, two cv: a prvalue, no constness
         } else {
             const bool aToB = pb->isStructOrUnion() &&
                               convertingConstructor(pb, *a) != nullptr;
@@ -994,8 +1140,7 @@ ExprPtr Parser::conditional() {
     } else if (ta == tb) {
         result = ta;
     } else if (ta->unqualified() == tb->unqualified()) {
-        // [expr.cond]/6: a prvalue of a non-class type carries no cv - `const char
-        // *const` beside `const char *` is `const char *`.
+        // [expr.cond]/6: a non-class prvalue has no cv (`const char *`)
         result = ta->unqualified();
     } else if (ta->isPointer() && isNullConstant(*b)) {
         result = ta;
@@ -1013,16 +1158,43 @@ ExprPtr Parser::conditional() {
                        ta->describe() + "' and '" + tb->describe() + "'");
     }
 
+    a = guardArm(std::move(a), tempsBeforeA, tempsAfterA);
+    b = guardArm(std::move(b), tempsAfterA, tempsAfterB);
     ExprPtr n(new Conditional(std::move(cond), std::move(a), std::move(b)));
     n->setType(result);
     return n;
+}
+
+// `x = {v}` and `x = {}` for a scalar x: the one value, narrowing refused as in any list, or zero.
+ExprPtr Parser::scalarFromList(const Type *to, std::size_t pos) {
+    Init in = parseInitialiser();
+    if (in.items.empty()) {
+        ExprPtr zero(new Num(0LL));
+        zero->setType(types_.intType());
+        return convert(std::move(zero), to->unqualified());
+    }
+    if (in.items.size() != 1 || in.items[0].isList)
+        src_.fail(pos, "'" + to->describe() + "' is assigned one value, and this list has " +
+                       std::to_string(in.items.size()) + " - [expr.ass]/9");
+    checkNarrowing(to->unqualified(), *in.items[0].value, in.items[0].pos, "the left of '='");
+    return decay(std::move(in.items[0].value));
 }
 
 ExprPtr Parser::assign() {
     // [expr.ass]/1: a throw-expression is an assignment-expression (1.27).
     if (peek().is("throw")) return throwExpression();
     ExprPtr n = conditional();
+    static const char *const kAssigning[] = { "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=" };
+    for (const char *op : kAssigning)
+        if (peek().is(op)) {
+            if (ExprPtr first = takeAssigned(n)) return afterAssigned(std::move(first), assignFrom(std::move(n)));
+            break;
+        }
+    return assignFrom(std::move(n));
+}
 
+// The rest of an assignment-expression, its left operand read.
+ExprPtr Parser::assignFrom(ExprPtr n) {
     static const struct { const char *tok; BinOp op; } kCompound[] = {
         { "+=", BinOp::Add }, { "-=", BinOp::Sub }, { "*=", BinOp::Mul },
         { "/=", BinOp::Div }, { "%=", BinOp::Mod }, { "&=", BinOp::BitAnd },
@@ -1032,6 +1204,21 @@ ExprPtr Parser::assign() {
     for (const auto &c : kCompound) {
         if (peek().is(c.tok)) {
             std::size_t pos = peek().pos; at_++;
+            // **[expr.ass]/9: `s += {'c', 'd'}`** - a class's operator takes the list as a braced argument,
+            // and a scalar's `x += {v}` is `x += v` with the list's narrowing rule.
+            if (peek().is("{")) {
+                if (n->type()->unqualified()->isStructOrUnion()) {
+                    std::vector<ExprPtr> args;
+                    args.push_back(bracedPlaceholder(parseInitialiser()));
+                    const Type *objectType = n->type();
+                    return memberCallWith(std::move(n), objectType, std::string("operator") + c.tok, pos,
+                                          std::move(args));
+                }
+                ExprPtr one = scalarFromList(n->type(), pos);
+                ExprPtr r = compound(c.op, std::move(n), std::move(one), pos);
+                if (dynamic_cast<const Assign *>(r.get())) r->setDeclCategory(Expr::Category::Lvalue);
+                return r;
+            }
             ExprPtr r = compound(c.op, std::move(n), decay(assign()), pos);
             if (dynamic_cast<const Assign *>(r.get())) r->setDeclCategory(Expr::Category::Lvalue);
             return r;
@@ -1042,11 +1229,39 @@ ExprPtr Parser::assign() {
     std::size_t pos = peek().pos;
     at_++;
 
-    requireAssignable(*n, pos, "the left of '='");
+    // A class prvalue - `mk(x) = 5`, `std::tie(a, b) = t` - is assigned as any member function is called on it,
+    // [over.match.oper]/2: through its address, as memberCallWith takes one, and marked a prvalue as a slot is.
+    if (n->type()->unqualified()->isStructOrUnion() && !isGlvalue(*n) && !n->type()->isConst()) {
+        const Type *t = n->type();
+        ExprPtr addr(new Unary('&', std::move(n)));
+        addr->setType(types_.pointerTo(t));
+        n.reset(new Unary('*', std::move(addr)));
+        n->setType(t);
+        n->setDeclCategory(Expr::Category::Prvalue);
+    }
+    // [over.match.oper]/2: `=` on a class object is its operator=, which an xvalue calls as an lvalue does,
+    // and a const one when it is a const member - `std::ignore`'s; a const class is refused below otherwise.
+    if (!(n->type()->unqualified()->isStructOrUnion() && isGlvalue(*n)))
+        requireAssignable(*n, pos, "the left of '='");
 
     const Type *to = n->type();
     ExprPtr value;
-    { OverloadTarget hold(*this, to); value = decay(assign()); }
+    // **[expr.ass]/9: `v = {1, 2, 3}`** - `v.operator=({1, 2, 3})` for a class with an assignment of its own,
+    // a temporary made from the list for one without, and for a scalar the one value.
+    if (peek().is("{")) {
+        const Type *cls = to->unqualified();
+        if (cls->isStructOrUnion() && overloadsOf(assignmentKey(cls->tag())) != nullptr) {
+            std::vector<ExprPtr> args;
+            args.push_back(bracedPlaceholder(parseInitialiser()));
+            const Type *objectType = n->type();
+            return memberCallWith(std::move(n), objectType, "operator=", pos, std::move(args));
+        }
+        if (cls->isStructOrUnion()) value = listTemporary(cls, pos);
+        else value = scalarFromList(to, pos);
+    } else {
+        OverloadTarget hold(*this, to);
+        value = decay(assign());
+    }
 
     // **`t = 5` where the class declares an `operator=` that takes an int.**
     if (to->unqualified()->isStructOrUnion() && value->type() != nullptr &&
@@ -1060,6 +1275,7 @@ ExprPtr Parser::assign() {
                               std::move(args));
     }
 
+    if (to->unqualified()->isStructOrUnion() && to->isConst()) requireAssignable(*n, pos, "the left of '='");
     // The implicit copy assignment takes its operand through a converting constructor, [over.ics.user].
     if (to->unqualified()->isStructOrUnion() && value->type() != nullptr &&
         value->type()->unqualified() != to->unqualified() &&
@@ -1085,6 +1301,7 @@ ExprPtr Parser::assign() {
             }
         }
         markUsed(op);
+        if (!op->isNoexcept) mayThrow_++;
         const Type *selfPtr = types_.pointerTo(to->unqualified());
         ExprPtr addr(new Unary('&', std::move(n)));
         addr->setType(selfPtr);
@@ -1116,6 +1333,50 @@ ExprPtr Parser::assign() {
                            "deleted and '=' cannot copy one - assign the "
                            "members themselves, or give the class a copy "
                            "assignment operator");
+        // **[class.copy]/23 deletes it too for a reference member or a const one of a type that
+        // is not a class**, and for a member of a class whose own implicit one is deleted so - the
+        // bytes were copied and the const member overwritten (review of 1.30, A2).
+        struct Held {
+            static const Member *blocking(const Parser &p, const Type *cls, int depth) {
+                if (depth > 32) return nullptr;
+                for (const Member &m : cls->members()) {
+                    if (m.type == nullptr) continue;
+                    if (m.type->isReference()) return &m;
+                    const Type *e = m.type;
+                    while (e->isArray()) e = e->pointee();
+                    const Type *ec = e->unqualified();
+                    if (ec->isStructOrUnion()) {
+                        if (!ec->tag().empty() && p.overloadsOf(ec->tag() + "::operator=") == nullptr &&
+                            blocking(p, ec, depth + 1) != nullptr)
+                            return &m;
+                    } else if (e->isConst()) {
+                        return &m;
+                    }
+                }
+                return nullptr;
+            }
+        };
+        if (const Member *m = Held::blocking(*this, to->unqualified(), 0))
+            src_.fail(pos, "'" + to->unqualified()->describe() + "' has " +
+                           (m->type->isReference() ? "a reference member '" : "a const member '") +
+                           m->name + "', so its implicit copy assignment is deleted ([class.copy]/23) "
+                           "and '=' cannot assign one - assign the other members themselves, or "
+                           "give the class an assignment operator of its own");
+        // **An empty class's implicit assignment copies nothing** ([class.copy]/28 assigns its members, and
+        // it has none): its byte may be a member's, `struct H : Empty { long v; }` sharing v's address.
+        bool nothing = emptyClass(to);
+        for (const Type::BaseSpec &b : to->unqualified()->bases())
+            nothing = nothing && !b.isVirtual && emptyClass(b.type);
+        if (nothing) {
+            const Type *self = to->unqualified();
+            ExprPtr addr(new Unary('&', std::move(n)));
+            addr->setType(types_.pointerTo(self));
+            ExprPtr both(new Comma(std::move(value), std::move(addr)));
+            both->setType(types_.pointerTo(self));
+            ExprPtr result(new Unary('*', std::move(both)));
+            result->setType(self);
+            return result;
+        }
     }
     ExprPtr node(new Assign(std::move(n), convert(std::move(value), to)));
     node->setType(to);
@@ -1125,8 +1386,15 @@ ExprPtr Parser::assign() {
 
 ExprPtr Parser::expr() {
     ExprPtr n = assign();
-    while (consume(",")) {
-        ExprPtr right = decay(assign());
+    while (peek().is(",")) {
+        const std::size_t pos = peek().pos;
+        at_++;
+        ExprPtr right = assign();
+        if (ExprPtr call = overloadedSpelled(",", n, right, pos)) {
+            n = std::move(call);
+            continue;
+        }
+        right = decay(std::move(right));
         const Type *t = right->type();
         ExprPtr c(new Comma(std::move(n), std::move(right)));
         c->setType(t);

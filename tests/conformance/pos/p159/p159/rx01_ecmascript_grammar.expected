@@ -1,0 +1,24 @@
+a+? ~ aaa: [a] @0
+a{2,3} ~ aaaa: [aaa] @0
+a{2,}?b ~ aaaab: [aaaab] @0
+(a|ab)(c|bcd)(d*) ~ abcd: [abcd][a][bcd][] @0
+((a)|b)+ ~ ab: [ab][b]- @0
+(z)((a+)?(b+)?(c))* ~ zaacbbbcac: [zaacbbbcac][z][ac][a]-[c] @0
+\bfoo\b ~ a foo b: [foo] @2
+\Bo\B ~ foo: [o] @1
+q(?=u) ~ quit: [q] @0
+q(?!u)i ~ qi: [qi] @0
+(\d+)-\1 ~ 12-12 3-4: [12-12][12] @0
+[^aeiou\s]+ ~ aei xyz: [xyz] @4
+[\d.]+ ~ v1.25!: [1.25] @1
+[[:alpha:]][[:digit:]] ~ --x9--: [x9] @2
+\x41\u0042\t ~ AB	: [AB	] @0
+a.c ~ a
+c abc: [abc] @4
+(?:ab)+ ~ ababx: [abab] @0
+^\w+$ ~ word: [word] @0
+x* ~ aaa: [] @0
+[a-c-]+ ~ -ab-: [-ab-] @0
+\cJ ~ a
+b: [
+] @1

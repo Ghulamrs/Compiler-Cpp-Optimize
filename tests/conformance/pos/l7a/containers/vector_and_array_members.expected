@@ -1,0 +1,16 @@
+1 3 2 3
+insert(n): 1 9 9 2 3
+insert(il): 1 9 9 2 3 7 8
+insert({}): 5 6 1 9 9 2 3 7 8
+erase: 6 4 9 2 3 7 8
+rbegin: 8 7 3 2 9 4 6 | 8 7 3 2 9 4 6
+assign(il): 4 3
+operator=(il): 1 1 2
+1 1 1
+1
+1 0 1 1
+4
+x mid y
+array: 1 4 1 3 | 1 4
+4 1 1 1 0
+5

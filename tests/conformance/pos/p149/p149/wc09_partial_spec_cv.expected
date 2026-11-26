@@ -1,0 +1,3 @@
+const T|const T|const T*|T*
+T[N]|const T|T
+T|volatile T|T&

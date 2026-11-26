@@ -1,0 +1,23 @@
+// <cfenv> - [cfenv]: <fenv.h>'s types and functions under std::; the FE_ names are macros.
+#ifndef _CXX1_CFENV
+#define _CXX1_CFENV
+
+#include <fenv.h>
+
+namespace std {
+using ::fenv_t;
+using ::fexcept_t;
+using ::feclearexcept;
+using ::fegetexceptflag;
+using ::feraiseexcept;
+using ::fesetexceptflag;
+using ::fetestexcept;
+using ::fegetround;
+using ::fesetround;
+using ::fegetenv;
+using ::feholdexcept;
+using ::fesetenv;
+using ::feupdateenv;
+}  // namespace std
+
+#endif

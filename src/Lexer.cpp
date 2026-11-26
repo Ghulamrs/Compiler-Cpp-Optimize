@@ -306,6 +306,20 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
     return m < (1ULL << 53);
 }
 
+// [lex.ppnumber]: where the preprocessing number at i ends - digits, name characters, '.', and a
+// sign after an e or E. Phase 7 converts it to one token, so a literal has to be all of it.
+static std::size_t ppNumberEnd(const std::string &s, std::size_t i) {
+    for (i++; i < s.size(); ) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        long cp = 0;
+        if ((c == '+' || c == '-') && (s[i - 1] == 'e' || s[i - 1] == 'E')) i++;
+        else if (std::isalnum(c) || c == '_' || c == '.' || c >= 0x80) i++;
+        else if (std::size_t n = Lexer::universalAt(s, i, &cp)) i += n;
+        else break;
+    }
+    return i;
+}
+
 void Lexer::digitSeparator(const std::string &s, std::size_t at) const {
     if (at < s.size() && s[at] == '\'' && at + 1 < s.size() &&
         std::isalnum(static_cast<unsigned char>(s[at + 1])))
@@ -448,8 +462,13 @@ std::vector<Token> Lexer::tokenize() {
                     const int digits = s[i + 1] == 'u' ? 4 : 8;
                     i += 2;
                     appendUtf8(text, universalName(s, i, digits));
-                } else if (s[i] == '\\') { i++; text.push_back(static_cast<char>(unescape(s, i, start))); }
-                else text.push_back(s[i++]);
+                } else if (s[i] == '\\') {
+                    i++;
+                    // [lex.string]/10: in a wide, char16_t or char32_t literal an escape is one code unit of its
+                    // value - carried in the UTF-8 text the way a universal-character-name is; elsewhere one byte.
+                    if (wide) appendUtf8(text, unescape(s, i, start, true));
+                    else text.push_back(static_cast<char>(unescape(s, i, start)));
+                } else text.push_back(s[i++]);
             }
             if (i >= s.size()) src_.fail(start, "unterminated string");
             i++;
@@ -471,6 +490,12 @@ std::vector<Token> Lexer::tokenize() {
             t.kind = TokenKind::Num;
             t.pos = i;
             char *stop = nullptr;
+            const std::size_t ppEnd = ppNumberEnd(s, i);
+            auto whole = [&]() {
+                if (i < ppEnd)
+                    src_.fail(t.pos, "'" + s.substr(t.pos, ppEnd - t.pos) + "' is one preprocessing "
+                                     "number and not a literal - [lex.ppnumber], [lex.icon], [lex.fcon]");
+            };
 
             std::size_t j = i;
             // **Refused by name because the legal neighbour is one character
@@ -507,9 +532,7 @@ std::vector<Token> Lexer::tokenize() {
                 const std::string suffix = suffixAt(i);
                 if (suffix == "f" || suffix == "F") {
                     t.suffixF = true;
-                    // A `float` literal is rounded once too: through `double` it
-                    // is rounded twice, 53 bits and then 24. [lex.fcon] gives the
-                    // literal the value of its own type, so `strtof` is that.
+                    // A float literal is rounded once ([lex.fcon]): strtof
                     t.dvalue = std::strtof(s.c_str() + from, nullptr);
                 } else if (suffix == "l" || suffix == "L") {
                     t.suffixL = true;
@@ -517,6 +540,7 @@ std::vector<Token> Lexer::tokenize() {
                     t.udSuffix = suffix;
                     t.spelling = s.substr(from, digitsEnd - from);
                 }
+                whole();
                 out.push_back(std::move(t));
                 continue;
             }
@@ -552,6 +576,7 @@ std::vector<Token> Lexer::tokenize() {
             } else if (tooLarge) {
                 src_.fail(from, "this integer constant does not fit any type");
             }
+            whole();
             out.push_back(std::move(t));
             continue;
         }
@@ -663,6 +688,21 @@ std::vector<Token> Lexer::tokenize() {
     }
 
     if (!out.empty() && out.back().end == 0) out.back().end = i;
+    // [lex.string]/13, phase 6: adjacent string literals are one, of the encoding the prefixed ones
+    // share - a UTF-8 one beside a wide one is ill-formed, and any other two prefixes are refused.
+    char encoding = 0;
+    for (std::size_t k = 0; k < out.size(); k++) {
+        if (out[k].kind != TokenKind::Str) continue;
+        const char e = out[k].prefix != 0 ? out[k].prefix : out[k].wide ? 'L' : 0;
+        if (k == 0 || out[k - 1].kind != TokenKind::Str) { encoding = e; continue; }
+        if (e != 0 && encoding != 0 && e != encoding)
+            src_.fail(out[k].pos, (e == '8' && encoding == 'L') || (e == 'L' && encoding == '8')
+                                      ? "a UTF-8 string literal beside a wide one is ill-formed - "
+                                        "[lex.string]/13"
+                                      : "adjacent string literals with different encoding "
+                                        "prefixes - [lex.string]/13");
+        if (e != 0) encoding = e;
+    }
     Token end;
     end.kind = TokenKind::End;
     end.pos = s.size();

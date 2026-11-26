@@ -39,26 +39,26 @@ namespace std {
 class type_info {
 public:
 #ifdef _WIN32
-    const char *name() const { return __std_type_info_name(&_Data, &__type_info_root_node); }
+    const char *name() const noexcept { return __std_type_info_name(&_Data, &__type_info_root_node); }
     const char *raw_name() const { return _Data._DecoratedName; }
-    bool operator==(const type_info &other) const {
+    bool operator==(const type_info &other) const noexcept {
         return __std_type_info_compare(&_Data, &other._Data) == 0;
     }
-    bool operator!=(const type_info &other) const { return !(*this == other); }
-    bool before(const type_info &other) const {
+    bool operator!=(const type_info &other) const noexcept { return !(*this == other); }
+    bool before(const type_info &other) const noexcept {
         return __std_type_info_compare(&_Data, &other._Data) < 0;
     }
-    unsigned long long hash_code() const { return __std_type_info_hash(&_Data); }
+    unsigned long long hash_code() const noexcept { return __std_type_info_hash(&_Data); }
 #else
-    const char *name() const { return __name; }
-    bool operator==(const type_info &other) const {
+    const char *name() const noexcept { return __name; }
+    bool operator==(const type_info &other) const noexcept {
         return __name == other.__name || strcmp(__name, other.__name) == 0;
     }
-    bool operator!=(const type_info &other) const { return !(*this == other); }
-    bool before(const type_info &other) const {
+    bool operator!=(const type_info &other) const noexcept { return !(*this == other); }
+    bool before(const type_info &other) const noexcept {
         return strcmp(__name, other.__name) < 0;
     }
-    unsigned long hash_code() const {
+    unsigned long hash_code() const noexcept {
         unsigned long h = 5381;
         for (const char *p = __name; *p != 0; p++) h = h * 33 + (unsigned char)*p;
         return h;
@@ -82,19 +82,52 @@ namespace std { typedef ::type_info type_info; }
 }
 #endif
 
-// What a failed `dynamic_cast` to a reference throws, [expr.dynamic.cast]/9. On the
-// Itanium targets the class is the runtime's own - its destructor and what() are
-// declared here and defined there, as <new> declares bad_alloc.
-#if !defined(_WIN32) && !defined(__TMS320C6X__)
+// What a failed `dynamic_cast` to a reference throws, [expr.dynamic.cast]/9, and what
+// `typeid` of a null pointer's object throws, [expr.typeid]/2. On the Itanium targets
+// the classes are the runtime's own - their destructors and what() are declared here
+// and defined there, as <new> declares bad_alloc; on Windows they are vcruntime_typeinfo.h's,
+// inline over `exception` - the CRT's __RTDynamicCast throws bad_cast, matched by its descriptor's
+// name, `.?AVbad_cast@std@@` on both sides - and on the C6000 self-contained, as <new>'s are.
 #include <exception>
 namespace std {
+#if defined(_WIN32)
 class bad_cast : public exception {
 public:
-    bad_cast() {}
+    bad_cast() noexcept : exception("bad cast", 1) {}
+    virtual ~bad_cast() {}
+};
+class bad_typeid : public exception {
+public:
+    bad_typeid() noexcept : exception("bad typeid", 1) {}
+    virtual ~bad_typeid() {}
+};
+#elif defined(__TMS320C6X__)
+class bad_cast : public exception {
+public:
+    bad_cast() noexcept {}
+    virtual ~bad_cast() {}
+    virtual const char *what() const { return "std::bad_cast"; }
+};
+class bad_typeid : public exception {
+public:
+    bad_typeid() noexcept {}
+    virtual ~bad_typeid() {}
+    virtual const char *what() const { return "std::bad_typeid"; }
+};
+#else
+class bad_cast : public exception {
+public:
+    bad_cast() noexcept {}
     virtual ~bad_cast();
     virtual const char *what() const;
 };
-}
+class bad_typeid : public exception {
+public:
+    bad_typeid() noexcept {}
+    virtual ~bad_typeid();
+    virtual const char *what() const;
+};
 #endif
+}
 
 #endif

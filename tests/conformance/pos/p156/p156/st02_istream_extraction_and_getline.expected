@@ -1,0 +1,13 @@
+12 abc 3.5
+rest of line []
+line [second line]
+-7 31 15
+last [tail] eof 1
+after end fail 1
+bad 1 0
+recovered x 5
+<a><b><><c>
+noskipws [  ]
+word hi get tab peek t
+read 3 the
+ignored, eof 0

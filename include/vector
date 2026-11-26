@@ -1,4 +1,4 @@
-// <vector> - a growing array.
+// <vector> - a growing array, and [vector.bool]'s packed one.
 //
 // **The iterator is a pointer.** `vector<T>::iterator` is `T *` and nothing
 // more, which is the simplification that makes this header short: `++it`, `*it`,
@@ -14,20 +14,21 @@
 // `end()` are both null then, and comparing them still works.
 //
 // **The elements are owned, from construction to destruction** (L03, 2026-10-13). The buffer is
-// raw storage; an element is made in it by placement new - copy-constructed, or `T()` for
-// value-initialisation - and destroyed by name when `pop_back`, `clear`, `erase`, `resize` down,
-// the assignment, a regrowth or the destructor drops it. A shift inside the buffer is the
-// element's own assignment. `at()` is checked: std::out_of_range, on every target since 1.27
-// (2026-10-21, review of 1.25, item 4) - x86_64-windows throws a class since 1.10, and until then
-// this printed a message and aborted where cl's throws, which a program catching the exception
-// could see (L04 closed).
+// raw storage; an element is made in it - copy-constructed, or `T()` for value-initialisation -
+// and destroyed when `pop_back`, `clear`, `erase`, `resize` down, the assignment, a regrowth or
+// the destructor drops it. A shift inside the buffer is the element's own assignment. `at()` is
+// checked: std::out_of_range, on every target since 1.27 (2026-10-21, review of 1.25, item 4).
 //
-// **An element is moved where the standard moves it** (1.27, the same review): `push_back(T &&)`,
-// the regrowth and the shifts of insert and erase move, so a move-only type lives in a vector and
-// a program counting its copies counts what it counts under cl; the vector itself has a move
-// constructor and a move assignment, which take the buffer and leave the source empty. The one
-// simplification: a regrowth moves whether or not the move constructor is noexcept, where
-// [vector.modifiers] copies a type whose move may throw.
+// **An element is moved where the standard moves it** (1.27, the same review): `push_back(T &&)`
+// and the shifts of insert and erase move, and the vector itself has a move constructor and a
+// move assignment, which take the buffer and leave the source empty. A regrowth moves an element
+// whose move cannot throw, or that cannot be copied, and copies the rest - [vector.modifiers]/1's
+// strong guarantee, through move_if_noexcept.
+//
+// **The allocator is the vector's** (1.51, 2026-11-03): the buffer comes from its allocate, each
+// element is made and destroyed through allocator_traits' construct and destroy, a copy takes
+// select_on_container_copy_construction's allocator, and assignment and swap carry the allocator
+// across where its propagate_on_container_* says so - [container.requirements.general]/3 and /8.
 #ifndef _CXX1_VECTOR
 #define _CXX1_VECTOR
 
@@ -38,6 +39,8 @@
 #include <utility>
 #include <type_traits>
 #include <stdexcept>
+#include <__allocator>
+#include <__iterator_base>
 
 namespace std {
 
@@ -46,73 +49,113 @@ inline void __vector_range_fail(std::size_t i, std::size_t n) {
     throw out_of_range("vector::at");
 }
 
-template <class T>
+template <class T, class Alloc = allocator<T> >
 class vector {
+    typedef allocator_traits<Alloc> traits_;
+
 public:
+    typedef T value_type;
+    typedef Alloc allocator_type;
+    typedef T &reference;
+    typedef const T &const_reference;
+    typedef T *pointer;
+    typedef const T *const_pointer;
     typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
     typedef T *iterator;
     typedef const T *const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
-    vector() : items_(0), size_(0), cap_(0) {}
-    vector(const vector &o) : items_(0), size_(0), cap_(0) { copyFrom(o); }
+    vector() : items_(0), size_(0), cap_(0), alloc_() {}
+    explicit vector(const Alloc &a) : items_(0), size_(0), cap_(0), alloc_(a) {}
+    vector(const vector &o)
+        : items_(0), size_(0), cap_(0), alloc_(traits_::select_on_container_copy_construction(o.alloc_)) {
+        copyFrom(o);
+    }
+    vector(const vector &o, const Alloc &a) : items_(0), size_(0), cap_(0), alloc_(a) { copyFrom(o); }
     // The buffer changes hands; the source is empty afterwards, as [container.requirements] has it.
-    vector(vector &&o) : items_(o.items_), size_(o.size_), cap_(o.cap_) { o.items_ = 0; o.size_ = 0; o.cap_ = 0; }
-    vector(size_type n, const T &v) : items_(0), size_(0), cap_(0) {
+    vector(vector &&o) noexcept : items_(o.items_), size_(o.size_), cap_(o.cap_), alloc_(std::move(o.alloc_)) {
+        o.items_ = 0; o.size_ = 0; o.cap_ = 0;
+    }
+    // With an allocator that is not equal to the source's, the buffer cannot change hands and the
+    // elements move one by one.
+    vector(vector &&o, const Alloc &a) : items_(0), size_(0), cap_(0), alloc_(a) {
+        if (alloc_ == o.alloc_) {
+            items_ = o.items_; size_ = o.size_; cap_ = o.cap_;
+            o.items_ = 0; o.size_ = 0; o.cap_ = 0;
+        } else {
+            moveElementsFrom(o);
+        }
+    }
+    vector(size_type n, const T &v, const Alloc &a = Alloc()) : items_(0), size_(0), cap_(0), alloc_(a) {
         reserve(n);
-        for (size_type i = 0; i < n; i++) push_back(v);
+        while (size_ < n) { traits_::construct(alloc_, items_ + size_, v); size_++; }
     }
     // **`vector<T> v(n)` is n value-initialised elements** - zero for a scalar,
     // the default constructor for a class - and `explicit`, as the standard
     // makes it, so `vector<int> v = 5;` is refused rather than being read as a
     // vector of five.
-    explicit vector(size_type n) : items_(0), size_(0), cap_(0) {
+    explicit vector(size_type n) : items_(0), size_(0), cap_(0), alloc_() {
         reserve(n);
-        for (size_type i = 0; i < n; i++) { new (items_ + i) T(); size_++; }
+        while (size_ < n) { traits_::construct(alloc_, items_ + size_); size_++; }
     }
     // **`vector<T> v{a, b, c}`** - [sequence.reqmts]: the braced list arrives as
     // one std::initializer_list and its elements are copied in order. Reserved
     // first, so one allocation serves the whole list however long it is.
-    vector(std::initializer_list<T> list) : items_(0), size_(0), cap_(0) {
+    vector(std::initializer_list<T> list, const Alloc &a = Alloc()) : items_(0), size_(0), cap_(0), alloc_(a) {
         reserve(list.size());
-        for (typename std::initializer_list<T>::const_iterator it = list.begin();
-             it != list.end(); ++it)
-            push_back(*it);
+        for (const T *p = list.begin(); p != list.end(); ++p) push_back(*p);
     }
 
     // [sequence.reqmts]/14: two iterators copy their range. Two integers are not iterators, so
     // `vector<int> v(3, 5)` and `vector<T *> v(3, 0)` reach (n, v) above, as the standard has it.
     template <class It, class = typename std::enable_if<!std::is_integral<It>::value>::type>
-    vector(It first, It last) : items_(0), size_(0), cap_(0) {
+    vector(It first, It last, const Alloc &a = Alloc()) : items_(0), size_(0), cap_(0), alloc_(a) {
         for (; first != last; ++first) push_back(*first);
     }
 
-    ~vector() { clear(); std::free(items_); }
+    ~vector() { clear(); release(); }
 
     vector &operator=(const vector &o) {
         if (this != &o) {
             clear();
+            if (traits_::propagate_on_container_copy_assignment::value && !(alloc_ == o.alloc_)) release();
+            if (traits_::propagate_on_container_copy_assignment::value) alloc_ = o.alloc_;
             copyFrom(o);
         }
         return *this;
     }
+    // The buffer changes hands where the allocator goes with it or the two allocators are equal;
+    // otherwise this allocator has to hold every element, and they move one by one.
     vector &operator=(vector &&o) {
-        if (this != &o) {
-            clear();
-            std::free(items_);
+        if (this == &o) return *this;
+        clear();
+        if (traits_::propagate_on_container_move_assignment::value || alloc_ == o.alloc_) {
+            release();
+            if (traits_::propagate_on_container_move_assignment::value) alloc_ = std::move(o.alloc_);
             items_ = o.items_; size_ = o.size_; cap_ = o.cap_;
             o.items_ = 0; o.size_ = 0; o.cap_ = 0;
+        } else {
+            moveElementsFrom(o);
+            o.clear();
         }
         return *this;
     }
+    vector &operator=(std::initializer_list<T> list) {
+        assign(list);
+        return *this;
+    }
+    allocator_type get_allocator() const noexcept { return alloc_; }
 
     // `v` may be an element of this vector, so it is copied before a regrowth frees it.
     void push_back(const T &v) {
         if (size_ == cap_) {
             T keep(v);
             grow(cap_ == 0 ? 4 : cap_ * 2);
-            new (items_ + size_) T(std::move(keep));
+            traits_::construct(alloc_, items_ + size_, std::move(keep));
         } else {
-            new (items_ + size_) T(v);
+            traits_::construct(alloc_, items_ + size_, v);
         }
         size_++;
     }
@@ -121,9 +164,9 @@ public:
         if (size_ == cap_) {
             T keep(std::move(v));
             grow(cap_ == 0 ? 4 : cap_ * 2);
-            new (items_ + size_) T(std::move(keep));
+            traits_::construct(alloc_, items_ + size_, std::move(keep));
         } else {
-            new (items_ + size_) T(std::move(v));
+            traits_::construct(alloc_, items_ + size_, std::move(v));
         }
         size_++;
     }
@@ -131,22 +174,33 @@ public:
     template <class... A>
     void emplace_back(A &&... a) {
         if (size_ == cap_) grow(cap_ == 0 ? 4 : cap_ * 2);
-        new (items_ + size_) T(std::forward<A>(a)...);
+        traits_::construct(alloc_, items_ + size_, std::forward<A>(a)...);
         size_++;
     }
-    void pop_back() { if (size_ != 0) { size_--; items_[size_].~T(); } }
+    // The same at a position: made aside first, then moved in as insert moves.
+    template <class... A>
+    T *emplace(const T *at, A &&... a) {
+        const size_type where = (size_type)(at - items_);
+        T keep(std::forward<A>(a)...);
+        return insertMoved(where, keep);
+    }
+    void pop_back() { if (size_ != 0) { size_--; traits_::destroy(alloc_, items_ + size_); } }
 
-    size_type size() const { return size_; }
-    bool empty() const { return size_ == 0; }
-    void clear() { while (size_ != 0) { size_--; items_[size_].~T(); } }
+    size_type size() const noexcept { return size_; }
+    size_type max_size() const noexcept { return traits_::max_size(alloc_); }
+    size_type capacity() const noexcept { return cap_; }
+    bool empty() const noexcept { return size_ == 0; }
+    void clear() noexcept { while (size_ != 0) { size_--; traits_::destroy(alloc_, items_ + size_); } }
 
     // **`assign(n, v)` is clear-then-fill**, which is what the standard says it
     // is for the count-and-value form, and `swap` exchanges the two vectors'
     // insides rather than their elements - so an iterator into either follows
     // its own elements, and neither copies anything.
     void assign(size_type n, const T &v) {
+        T keep(v);
         clear();
-        for (size_type i = 0; i < n; i++) push_back(v);
+        reserve(n);
+        while (size_ < n) { traits_::construct(alloc_, items_ + size_, keep); size_++; }
     }
     // The range form, held from two integers as the range constructor is.
     template <class It, class = typename std::enable_if<!std::is_integral<It>::value>::type>
@@ -154,10 +208,16 @@ public:
         clear();
         for (; first != last; ++first) push_back(*first);
     }
+    void assign(std::initializer_list<T> list) {
+        clear();
+        reserve(list.size());
+        for (const T *p = list.begin(); p != list.end(); ++p) push_back(*p);
+    }
     void swap(vector &other) {
         T *d = items_; items_ = other.items_; other.items_ = d;
         size_type s = size_; size_ = other.size_; other.size_ = s;
         size_type c = cap_; cap_ = other.cap_; other.cap_ = c;
+        if (traits_::propagate_on_container_swap::value) std::__cxx1_swap_adl(alloc_, other.alloc_);
     }
 
     T &operator[](size_type i) { return items_[i]; }
@@ -169,103 +229,129 @@ public:
     const T &back() const { return items_[size_ - 1]; }
     T &front() { return items_[0]; }
     const T &front() const { return items_[0]; }
+    T *data() noexcept { return items_; }
+    const T *data() const noexcept { return items_; }
 
-    iterator begin() { return items_; }
-    iterator end() { return items_ + size_; }
-    const_iterator begin() const { return items_; }
-    const_iterator end() const { return items_ + size_; }
+    iterator begin() noexcept { return items_; }
+    iterator end() noexcept { return items_ + size_; }
+    const_iterator begin() const noexcept { return items_; }
+    const_iterator end() const noexcept { return items_ + size_; }
+    const_iterator cbegin() const noexcept { return items_; }
+    const_iterator cend() const noexcept { return items_ + size_; }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
 
-    void reserve(size_type n) { if (n > cap_) grow(n); }
+    // [vector.capacity]/2: a request beyond max_size() is length_error.
+    void reserve(size_type n) {
+        if (n > max_size()) throw length_error("vector::reserve");
+        if (n > cap_) grow(n);
+    }
+    // [vector.capacity]: the request is honoured - the buffer is regrown to the size.
+    void shrink_to_fit() {
+        if (cap_ == size_) return;
+        if (size_ == 0) { release(); return; }
+        grow(size_);
+    }
 
     void resize(size_type n, const T &v) {
         if (n > size_) {
             T keep(v);
             reserve(n);
-            while (size_ < n) { new (items_ + size_) T(keep); size_++; }
+            while (size_ < n) { traits_::construct(alloc_, items_ + size_, keep); size_++; }
         }
-        while (size_ > n) { size_--; items_[size_].~T(); }
+        while (size_ > n) { size_--; traits_::destroy(alloc_, items_ + size_); }
     }
     // Growing value-initialises the new elements, `T()`; shrinking destroys the tail.
     void resize(size_type n) {
         if (n > size_) {
             reserve(n);
-            while (size_ < n) { new (items_ + size_) T(); size_++; }
+            while (size_ < n) { traits_::construct(alloc_, items_ + size_); size_++; }
         }
-        while (size_ > n) { size_--; items_[size_].~T(); }
+        while (size_ > n) { size_--; traits_::destroy(alloc_, items_ + size_); }
     }
 
     // **`insert` and `erase` take a pointer into this vector**, which is what
     // the iterator is. `insert` answers a pointer to the element put in, and
     // that pointer is only good until the next insertion.
-    iterator insert(iterator at, const T &v) {
+    // C++11's positions are const_iterators, which an iterator converts to.
+    iterator insert(const_iterator at, const T &v) {
         const size_type where = (size_type)(at - items_);
         T keep(v);
         return insertMoved(where, keep);
     }
-    iterator insert(iterator at, T &&v) {
+    iterator insert(const_iterator at, T &&v) {
         const size_type where = (size_type)(at - items_);
         T keep(std::move(v));
         return insertMoved(where, keep);
     }
-    // **The range forms.** `v.insert(v.end(), o.begin(), o.end())` is how one
-    // vector is appended to another without a loop at the call site, and it is
-    // what a program reaches for often enough that leaving it out shows.
-    //
-    // `at` is taken as an offset before anything grows, because `reserve` moves
-    // the buffer and would leave the caller's pointer behind. `first` and
-    // `last` must not point into this vector - [sequence.reqmts] says so, and
-    // the reallocation here is exactly why.
-    iterator insert(iterator at, const_iterator first, const_iterator last) {
+    // **The range forms.** `at` is taken as an offset before anything grows, because `reserve`
+    // moves the buffer and would leave the caller's pointer behind. `first` and `last` must not
+    // point into this vector - [sequence.reqmts] says so, and the reallocation here is exactly why.
+    iterator insert(const_iterator at, size_type n, const T &v) {
+        const size_type where = (size_type)(at - items_);
+        vector keep(n, v);
+        return insert(items_ + where, (const T *)keep.items_, (const T *)(keep.items_ + keep.size_));
+    }
+    iterator insert(const_iterator at, std::initializer_list<T> list) {
+        return insert(at, list.begin(), list.end());
+    }
+    iterator insert(const_iterator at, const_iterator first, const_iterator last) {
         const size_type where = (size_type)(at - items_);
         size_type n = 0;
         for (const_iterator p = first; p != last; p++) n++;
         if (n == 0) return items_ + where;
-        reserve(size_ + n);
+        if (size_ + n > cap_) grow(size_ + n > cap_ * 2 ? size_ + n : cap_ * 2);
         // Backwards, so a move within one buffer cannot overwrite what it has not read yet; a slot
         // past the old end is raw and is constructed, one before it is assigned.
         for (size_type i = size_; i-- > where; ) {
-            if (i + n >= size_) new (items_ + i + n) T(std::move(items_[i]));
+            if (i + n >= size_) traits_::construct(alloc_, items_ + i + n, std::move(items_[i]));
             else items_[i + n] = std::move(items_[i]);
         }
         size_type k = 0;
         for (const_iterator p = first; p != last; p++, k++) {
-            if (where + k >= size_) new (items_ + where + k) T(*p);
+            if (where + k >= size_) traits_::construct(alloc_, items_ + where + k, *p);
             else items_[where + k] = *p;
         }
         size_ += n;
         return items_ + where;
     }
     // Any other range - a map's or a set's - is copied out first and inserted as the pointer range above
-    // (1.10, 2026-10-20: `v.insert(v.end(), s.begin(), s.end())` from a set had no insert to call). Two
-    // pointers of this vector's own type take the form above, a non-template being the better match.
-    // Spelled `T *` and `const T *`, which is what iterator and const_iterator are: a member template
-    // whose return type is the class's own typedef is "expected a type" to this compiler (1.24).
+    // (1.10, 2026-10-20). Two pointers of this vector's own type take the form above, a non-template
+    // being the better match.
     template <class It, class = typename std::enable_if<!std::is_integral<It>::value>::type>
-    T *insert(T *at, It first, It last) {
+    T *insert(const T *at, It first, It last) {
         const size_type where = (size_type)(at - items_);
-        vector<T> keep(first, last);
+        vector keep(first, last);
         return insert(items_ + where, (const T *)keep.items_, (const T *)(keep.items_ + keep.size_));
     }
 
-    iterator erase(iterator at) {
+    iterator erase(const_iterator at) {
         const size_type where = (size_type)(at - items_);
         for (size_type i = where; i + 1 < size_; i++) items_[i] = std::move(items_[i + 1]);
-        if (size_ != 0) { size_--; items_[size_].~T(); }
+        if (size_ != 0) { size_--; traits_::destroy(alloc_, items_ + size_); }
         return items_ + where;
     }
-    iterator erase(iterator first, iterator last) {
+    iterator erase(const_iterator first, const_iterator last) {
         const size_type where = (size_type)(first - items_);
         const size_type n = (size_type)(last - first);
         if (n == 0) return items_ + where;
         for (size_type i = where; i + n < size_; i++) items_[i] = std::move(items_[i + n]);
-        for (size_type k = 0; k < n; k++) { size_--; items_[size_].~T(); }
+        for (size_type k = 0; k < n; k++) { size_--; traits_::destroy(alloc_, items_ + size_); }
         return items_ + where;
     }
 
 private:
     void copyFrom(const vector &o) {
         reserve(o.size_);
-        for (size_type i = 0; i < o.size_; i++) push_back(o.items_[i]);
+        while (size_ < o.size_) { traits_::construct(alloc_, items_ + size_, o.items_[size_]); size_++; }
+    }
+    void moveElementsFrom(vector &o) {
+        reserve(o.size_);
+        while (size_ < o.size_) { traits_::construct(alloc_, items_ + size_, std::move(o.items_[size_])); size_++; }
     }
     // `keep` is this call's own copy or move of the element, made before a regrowth could free
     // what it was made from; the last element is moved into the raw slot past the end and the
@@ -273,47 +359,371 @@ private:
     iterator insertMoved(size_type where, T &keep) {
         if (size_ == cap_) grow(cap_ == 0 ? 4 : cap_ * 2);
         if (where == size_) {
-            new (items_ + size_) T(std::move(keep));
+            traits_::construct(alloc_, items_ + size_, std::move(keep));
         } else {
-            new (items_ + size_) T(std::move(items_[size_ - 1]));
+            traits_::construct(alloc_, items_ + size_, std::move(items_[size_ - 1]));
             for (size_type i = size_ - 1; i > where; i--) items_[i] = std::move(items_[i - 1]);
             items_[where] = std::move(keep);
         }
         size_++;
         return items_ + where;
     }
-    // A regrowth moves every element into the new storage and destroys the old ones.
+    // A regrowth builds every element in the new storage and only then destroys the old ones, so a
+    // copy that throws leaves the vector as it was.
     void grow(size_type want) {
-        T *fresh = (T *)std::malloc(want * sizeof(T));
-        for (size_type i = 0; i < size_; i++) new (fresh + i) T(std::move(items_[i]));
-        for (size_type i = 0; i < size_; i++) items_[i].~T();
-        std::free(items_);
+        T *fresh = traits_::allocate(alloc_, want);
+        size_type built = 0;
+        try {
+            for (; built < size_; built++) traits_::construct(alloc_, fresh + built, std::move_if_noexcept(items_[built]));
+        } catch (...) {
+            while (built != 0) traits_::destroy(alloc_, fresh + --built);
+            traits_::deallocate(alloc_, fresh, want);
+            throw;
+        }
+        for (size_type i = 0; i < size_; i++) traits_::destroy(alloc_, items_ + i);
+        release();
         items_ = fresh;
         cap_ = want;
+    }
+    void release() {
+        if (items_ != 0) traits_::deallocate(alloc_, items_, cap_);
+        items_ = 0;
+        cap_ = 0;
     }
 
     T *items_;
     size_type size_;
     size_type cap_;
+    Alloc alloc_;
 };
 
 // [container.requirements.general]: equal sizes and equal elements; ordered as their sequences are.
-template <class T>
-bool operator==(const vector<T> &a, const vector<T> &b) {
+template <class T, class A>
+bool operator==(const vector<T, A> &a, const vector<T, A> &b) {
     if (a.size() != b.size()) return false;
-    for (typename vector<T>::size_type i = 0; i < a.size(); i++) if (!(a[i] == b[i])) return false;
+    for (std::size_t i = 0; i < a.size(); i++) if (!(a[i] == b[i])) return false;
     return true;
 }
-template <class T>
-bool operator!=(const vector<T> &a, const vector<T> &b) { return !(a == b); }
-template <class T>
-bool operator<(const vector<T> &a, const vector<T> &b) {
-    for (typename vector<T>::size_type i = 0; i < a.size() && i < b.size(); i++) {
+template <class T, class A>
+bool operator!=(const vector<T, A> &a, const vector<T, A> &b) { return !(a == b); }
+template <class T, class A>
+bool operator<(const vector<T, A> &a, const vector<T, A> &b) {
+    for (std::size_t i = 0; i < a.size() && i < b.size(); i++) {
         if (a[i] < b[i]) return true;
         if (b[i] < a[i]) return false;
     }
     return a.size() < b.size();
 }
+template <class T, class A>
+bool operator>(const vector<T, A> &a, const vector<T, A> &b) { return b < a; }
+template <class T, class A>
+bool operator<=(const vector<T, A> &a, const vector<T, A> &b) { return !(b < a); }
+template <class T, class A>
+bool operator>=(const vector<T, A> &a, const vector<T, A> &b) { return !(a < b); }
+template <class T, class A>
+void swap(vector<T, A> &a, vector<T, A> &b) { a.swap(b); }
+
+// **[vector.bool]: one bit per element**, in words of the allocator's rebinding. A `reference` names a
+// bit by its word and mask; the iterators are a word pointer and a bit offset, random access.
+typedef std::size_t __cxx1_bit_word;
+const unsigned __cxx1_bit_word_bits = sizeof(__cxx1_bit_word) * 8;
+
+class __cxx1_bit_reference {
+    __cxx1_bit_word *w_;
+    __cxx1_bit_word m_;
+
+public:
+    __cxx1_bit_reference(__cxx1_bit_word *w, __cxx1_bit_word m) noexcept : w_(w), m_(m) {}
+    operator bool() const noexcept { return (*w_ & m_) != 0; }
+    __cxx1_bit_reference &operator=(bool x) noexcept {
+        if (x) *w_ |= m_;
+        else *w_ &= ~m_;
+        return *this;
+    }
+    __cxx1_bit_reference &operator=(const __cxx1_bit_reference &x) noexcept { return *this = (bool)x; }
+    bool operator~() const noexcept { return (*w_ & m_) == 0; }
+    void flip() noexcept { *w_ ^= m_; }
+};
+
+template <bool Const> class __cxx1_bit_iter {
+public:
+    typedef random_access_iterator_tag iterator_category;
+    typedef bool value_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef __cxx1_bit_reference *pointer;
+    typedef typename conditional<Const, bool, __cxx1_bit_reference>::type reference;
+
+    __cxx1_bit_iter() : w_(0), b_(0) {}
+    __cxx1_bit_iter(__cxx1_bit_word *w, unsigned b) : w_(w), b_(b) {}
+    // An iterator converts to a const_iterator, never back.
+    template <bool C, class = typename enable_if<Const && !C>::type>
+    __cxx1_bit_iter(const __cxx1_bit_iter<C> &o) : w_(o.w_), b_(o.b_) {}
+
+    reference operator*() const { return __cxx1_bit_reference(w_, (__cxx1_bit_word)1 << b_); }
+    reference operator[](difference_type n) const { return *(*this + n); }
+    __cxx1_bit_iter &operator++() { if (++b_ == __cxx1_bit_word_bits) { b_ = 0; ++w_; } return *this; }
+    __cxx1_bit_iter operator++(int) { __cxx1_bit_iter t(*this); ++*this; return t; }
+    __cxx1_bit_iter &operator--() { if (b_-- == 0) { b_ = __cxx1_bit_word_bits - 1; --w_; } return *this; }
+    __cxx1_bit_iter operator--(int) { __cxx1_bit_iter t(*this); --*this; return t; }
+    __cxx1_bit_iter &operator+=(difference_type n) {
+        difference_type at = (difference_type)b_ + n;
+        difference_type words = at >= 0 ? at / (difference_type)__cxx1_bit_word_bits
+                                        : -((-at + (difference_type)__cxx1_bit_word_bits - 1) / (difference_type)__cxx1_bit_word_bits);
+        w_ += words;
+        b_ = (unsigned)(at - words * (difference_type)__cxx1_bit_word_bits);
+        return *this;
+    }
+    __cxx1_bit_iter &operator-=(difference_type n) { return *this += -n; }
+    __cxx1_bit_iter operator+(difference_type n) const { __cxx1_bit_iter t(*this); return t += n; }
+    __cxx1_bit_iter operator-(difference_type n) const { __cxx1_bit_iter t(*this); return t += -n; }
+    friend __cxx1_bit_iter operator+(difference_type n, const __cxx1_bit_iter &i) { return i + n; }
+
+    __cxx1_bit_word *w_;
+    unsigned b_;
+};
+
+// Between any two of them, an iterator converting to a const_iterator: `c.end() - c.cbegin()`.
+inline std::ptrdiff_t operator-(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) {
+    return (a.w_ - b.w_) * (std::ptrdiff_t)__cxx1_bit_word_bits + (std::ptrdiff_t)a.b_ - (std::ptrdiff_t)b.b_;
+}
+inline bool operator==(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) { return a.w_ == b.w_ && a.b_ == b.b_; }
+inline bool operator!=(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) { return !(a == b); }
+inline bool operator<(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) {
+    return a.w_ < b.w_ || (a.w_ == b.w_ && a.b_ < b.b_);
+}
+inline bool operator>(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) { return b < a; }
+inline bool operator<=(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) { return !(b < a); }
+inline bool operator>=(const __cxx1_bit_iter<true> &a, const __cxx1_bit_iter<true> &b) { return !(a < b); }
+
+template <class Alloc>
+class vector<bool, Alloc> {
+    typedef typename __cxx1_alloc_rebind<Alloc, __cxx1_bit_word>::type words_alloc_;
+    typedef allocator_traits<words_alloc_> traits_;
+
+public:
+    typedef bool value_type;
+    typedef Alloc allocator_type;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef __cxx1_bit_reference reference;
+    typedef bool const_reference;
+    typedef __cxx1_bit_iter<false> iterator;
+    typedef __cxx1_bit_iter<true> const_iterator;
+    typedef __cxx1_bit_reference *pointer;
+    typedef const bool *const_pointer;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+    vector() : w_(0), size_(0), words_(0), alloc_() {}
+    explicit vector(const Alloc &a) : w_(0), size_(0), words_(0), alloc_(a) {}
+    explicit vector(size_type n, const bool &v = bool(), const Alloc &a = Alloc()) : w_(0), size_(0), words_(0), alloc_(a) {
+        assign(n, v);
+    }
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    vector(It first, It last, const Alloc &a = Alloc()) : w_(0), size_(0), words_(0), alloc_(a) {
+        for (; first != last; ++first) push_back(*first);
+    }
+    vector(const vector &o)
+        : w_(0), size_(0), words_(0), alloc_(traits_::select_on_container_copy_construction(o.alloc_)) {
+        copyFrom(o);
+    }
+    vector(const vector &o, const Alloc &a) : w_(0), size_(0), words_(0), alloc_(a) { copyFrom(o); }
+    vector(vector &&o) noexcept : w_(o.w_), size_(o.size_), words_(o.words_), alloc_(std::move(o.alloc_)) {
+        o.w_ = 0; o.size_ = 0; o.words_ = 0;
+    }
+    vector(vector &&o, const Alloc &a) : w_(0), size_(0), words_(0), alloc_(a) {
+        if (alloc_ == o.alloc_) {
+            w_ = o.w_; size_ = o.size_; words_ = o.words_;
+            o.w_ = 0; o.size_ = 0; o.words_ = 0;
+        } else {
+            copyFrom(o);
+        }
+    }
+    vector(initializer_list<bool> il, const Alloc &a = Alloc()) : w_(0), size_(0), words_(0), alloc_(a) {
+        for (const bool *p = il.begin(); p != il.end(); ++p) push_back(*p);
+    }
+    ~vector() { release(); }
+
+    vector &operator=(const vector &o) {
+        if (this != &o) {
+            if (traits_::propagate_on_container_copy_assignment::value && !(alloc_ == o.alloc_)) release();
+            if (traits_::propagate_on_container_copy_assignment::value) alloc_ = o.alloc_;
+            size_ = 0;
+            copyFrom(o);
+        }
+        return *this;
+    }
+    vector &operator=(vector &&o) {
+        if (this == &o) return *this;
+        if (traits_::propagate_on_container_move_assignment::value || alloc_ == o.alloc_) {
+            release();
+            if (traits_::propagate_on_container_move_assignment::value) alloc_ = std::move(o.alloc_);
+            w_ = o.w_; size_ = o.size_; words_ = o.words_;
+            o.w_ = 0; o.size_ = 0; o.words_ = 0;
+        } else {
+            size_ = 0;
+            copyFrom(o);
+        }
+        return *this;
+    }
+    vector &operator=(initializer_list<bool> il) { assign(il.begin(), il.end()); return *this; }
+
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    void assign(It first, It last) {
+        size_ = 0;
+        for (; first != last; ++first) push_back(*first);
+    }
+    void assign(size_type n, const bool &v) {
+        size_ = 0;
+        reserve(n);
+        for (size_type i = 0; i < words_; i++) w_[i] = v ? ~(__cxx1_bit_word)0 : 0;
+        size_ = n;
+    }
+    void assign(initializer_list<bool> il) { assign(il.begin(), il.end()); }
+    allocator_type get_allocator() const noexcept { return alloc_; }
+
+    iterator begin() noexcept { return iterator(w_, 0); }
+    const_iterator begin() const noexcept { return const_iterator(w_, 0); }
+    iterator end() noexcept { return begin() + (difference_type)size_; }
+    const_iterator end() const noexcept { return begin() + (difference_type)size_; }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    const_reverse_iterator crbegin() const noexcept { return rbegin(); }
+    const_reverse_iterator crend() const noexcept { return rend(); }
+
+    size_type size() const noexcept { return size_; }
+    size_type max_size() const noexcept { return traits_::max_size(alloc_); }
+    size_type capacity() const noexcept { return words_ * __cxx1_bit_word_bits; }
+    bool empty() const noexcept { return size_ == 0; }
+    void resize(size_type n, bool v = false) {
+        if (n > size_) insert(end(), n - size_, v);
+        else size_ = n;
+    }
+    void reserve(size_type n) {
+        if (n > max_size()) throw length_error("vector<bool>::reserve");
+        if (n > capacity()) grow(n);
+    }
+    void shrink_to_fit() {
+        if (size_ == 0) { release(); return; }
+        if ((size_ + __cxx1_bit_word_bits - 1) / __cxx1_bit_word_bits < words_) grow(size_, true);
+    }
+
+    reference operator[](size_type n) { return begin()[(difference_type)n]; }
+    const_reference operator[](size_type n) const { return begin()[(difference_type)n]; }
+    reference at(size_type n) { if (n >= size_) throw out_of_range("vector<bool>::at"); return (*this)[n]; }
+    const_reference at(size_type n) const { if (n >= size_) throw out_of_range("vector<bool>::at"); return (*this)[n]; }
+    reference front() { return (*this)[0]; }
+    const_reference front() const { return (*this)[0]; }
+    reference back() { return (*this)[size_ - 1]; }
+    const_reference back() const { return (*this)[size_ - 1]; }
+
+    void push_back(const bool &x) {
+        if (size_ == capacity()) grow(size_ == 0 ? __cxx1_bit_word_bits : 2 * size_);
+        ++size_;
+        back() = x;
+    }
+    void pop_back() { --size_; }
+    iterator insert(const_iterator at, const bool &x) { return insert(at, (size_type)1, x); }
+    iterator insert(const_iterator at, size_type n, const bool &x) {
+        const difference_type k = at - cbegin();
+        if (size_ + n > capacity()) grow(size_ + n > 2 * size_ ? size_ + n : 2 * size_);
+        size_ += n;
+        iterator to = end(), from = end() - (difference_type)n, stop = begin() + k;
+        while (from != stop) *--to = (bool)*--from;
+        for (size_type i = 0; i < n; i++) begin()[k + (difference_type)i] = x;
+        return begin() + k;
+    }
+    template <class It, class = typename enable_if<!is_integral<It>::value>::type>
+    iterator insert(const_iterator at, It first, It last) {
+        const difference_type k = at - cbegin();
+        vector held(first, last, alloc_);
+        insert(begin() + k, held.size(), false);
+        for (size_type i = 0; i < held.size(); i++) begin()[k + (difference_type)i] = (bool)held[i];
+        return begin() + k;
+    }
+    iterator insert(const_iterator at, initializer_list<bool> il) { return insert(at, il.begin(), il.end()); }
+    iterator erase(const_iterator at) { return erase(at, at + 1); }
+    iterator erase(const_iterator first, const_iterator last) {
+        const difference_type k = first - cbegin(), n = last - first;
+        for (iterator to = begin() + k, from = begin() + (k + n); from != end(); ++to, ++from) *to = (bool)*from;
+        size_ -= (size_type)n;
+        return begin() + k;
+    }
+    void swap(vector &o) {
+        __cxx1_bit_word *w = w_; w_ = o.w_; o.w_ = w;
+        size_type s = size_; size_ = o.size_; o.size_ = s;
+        size_type c = words_; words_ = o.words_; o.words_ = c;
+        if (traits_::propagate_on_container_swap::value) std::__cxx1_swap_adl(alloc_, o.alloc_);
+    }
+    static void swap(reference x, reference y) noexcept {
+        bool t = x;
+        x = (bool)y;
+        y = t;
+    }
+    void flip() noexcept { for (size_type i = 0; i < words_; i++) w_[i] = ~w_[i]; }
+    void clear() noexcept { size_ = 0; }
+
+    // hash<vector<bool>> reads the bits in use a word at a time.
+    std::size_t __cxx1_hash() const noexcept {
+        std::size_t h = 14695981039346656037ULL;
+        for (size_type i = 0; i < size_; i++) { h ^= (std::size_t)(bool)(*this)[i]; h *= 1099511628211ULL; }
+        return h;
+    }
+
+private:
+    void copyFrom(const vector &o) {
+        reserve(o.size_);
+        for (size_type i = 0; i < (o.size_ + __cxx1_bit_word_bits - 1) / __cxx1_bit_word_bits; i++) w_[i] = o.w_[i];
+        size_ = o.size_;
+    }
+    void grow(size_type bits, bool exact = false) {
+        size_type want = (bits + __cxx1_bit_word_bits - 1) / __cxx1_bit_word_bits;
+        if (!exact && want < 2 * words_) want = 2 * words_;
+        __cxx1_bit_word *fresh = traits_::allocate(alloc_, want);
+        size_type used = (size_ + __cxx1_bit_word_bits - 1) / __cxx1_bit_word_bits;
+        for (size_type i = 0; i < want; i++) fresh[i] = i < used && i < words_ ? w_[i] : 0;
+        release();
+        w_ = fresh;
+        words_ = want;
+    }
+    void release() {
+        if (w_ != 0) traits_::deallocate(alloc_, w_, words_);
+        w_ = 0;
+        words_ = 0;
+    }
+
+    __cxx1_bit_word *w_;
+    size_type size_;
+    size_type words_;
+    words_alloc_ alloc_;
+};
+
+template <class A> bool operator==(const vector<bool, A> &a, const vector<bool, A> &b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); i++) if ((bool)a[i] != (bool)b[i]) return false;
+    return true;
+}
+template <class A> bool operator!=(const vector<bool, A> &a, const vector<bool, A> &b) { return !(a == b); }
+template <class A> bool operator<(const vector<bool, A> &a, const vector<bool, A> &b) {
+    for (std::size_t i = 0; i < a.size() && i < b.size(); i++)
+        if ((bool)a[i] != (bool)b[i]) return !(bool)a[i];
+    return a.size() < b.size();
+}
+template <class A> bool operator>(const vector<bool, A> &a, const vector<bool, A> &b) { return b < a; }
+template <class A> bool operator<=(const vector<bool, A> &a, const vector<bool, A> &b) { return !(b < a); }
+template <class A> bool operator>=(const vector<bool, A> &a, const vector<bool, A> &b) { return !(a < b); }
+
+// [vector.bool]/7
+template <class T> struct hash;
+template <class A> struct hash<vector<bool, A> > {
+    typedef vector<bool, A> argument_type;
+    typedef std::size_t result_type;
+    std::size_t operator()(const vector<bool, A> &v) const noexcept { return v.__cxx1_hash(); }
+};
 
 }  // namespace std
 

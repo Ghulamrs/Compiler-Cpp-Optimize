@@ -12,8 +12,7 @@ class Locals {
 public:
     explicit Locals(opt::Function &fn) : fn_(fn) {}
 
-    // Every promotable local renamed to a new pseudo, its slot kept in Function::slots; how many were.
-    int promote();
+    int promote();  // promotable locals renamed to pseudos; how many
 
 private:
     opt::Function &fn_;

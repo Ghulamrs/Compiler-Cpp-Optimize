@@ -116,42 +116,76 @@ void writeObject(Records &r, const Local &l, int frameBias, int frameReg, CodeVi
     r.end();
 }
 
+// **A block belongs to the procedure whose code it is in**: the function's own, or the funclet it was
+// walked inside (DwarfBlock::funclet) - the others' ranges are in another section (1.29).
+bool inProcedure(const DwarfFunction &f, std::size_t b) { return f.blocks[b].funclet == f.funclet; }
+
 bool declaresAnything(const DwarfFunction &f, int scope) {
     if (f.locals != nullptr)
         for (const Local &l : *f.locals)
             if (l.scope == scope) return true;
     for (std::size_t b = 1; b < f.blocks.size(); b++)
-        if (f.blocks[b].parent == scope && declaresAnything(f, static_cast<int>(b))) return true;
+        if (f.blocks[b].parent == scope && inProcedure(f, b) && declaresAnything(f, static_cast<int>(b))) return true;
     return false;
 }
 
-// **Parameters first and in order**: cdb counts off the procedure's arguments from the top.
-void writeScope(Records &r, const DwarfFunction &f, int scope, CodeViewTypes &types, const Spell &spell) {
-    if (f.locals != nullptr) {
-        for (const Local &l : *f.locals)
-            if (l.scope == scope && l.isParam) writeObject(r, l, f.frameBias, f.frameBaseReg == 3 ? kCvAmd64Rbx : kCvAmd64Rbp, types, spell);
-        for (const Local &l : *f.locals)
-            if (l.scope == scope && !l.isParam) writeObject(r, l, f.frameBias, f.frameBaseReg == 3 ? kCvAmd64Rbx : kCvAmd64Rbp, types, spell);
+void writeObjects(Records &r, const DwarfFunction &f, int scope, CodeViewTypes &types, const Spell &spell) {
+    if (f.locals == nullptr) return;
+    // **Parameters first and in order**: cdb counts off the procedure's arguments from the top.
+    for (const Local &l : *f.locals)
+        if (l.scope == scope && l.isParam) writeObject(r, l, f.frameBias, f.frameBaseReg == 3 ? kCvAmd64Rbx : kCvAmd64Rbp, types, spell);
+    for (const Local &l : *f.locals)
+        if (l.scope == scope && !l.isParam) writeObject(r, l, f.frameBias, f.frameBaseReg == 3 ? kCvAmd64Rbx : kCvAmd64Rbp, types, spell);
+}
+
+void writeScope(Records &r, const DwarfFunction &f, int scope, CodeViewTypes &types, const Spell &spell);
+
+// One block with its objects and the blocks in it: an S_BLOCK32 over its range, or - a block that
+// left no code, so no range - its objects in the scope around it.
+void writeBlock(Records &r, const DwarfFunction &f, std::size_t b, CodeViewTypes &types, const Spell &spell) {
+    const DwarfBlock &block = f.blocks[b];
+    const int id = static_cast<int>(b);
+    if (block.begin.empty() || block.end.empty()) {
+        writeScope(r, f, id, types, spell);
+        return;
     }
     std::string &o = r.out();
+    r.begin(kSBlock32);
+    line(o, "  .long 0, 0");
+    line(o, "  .long " + spell(block.end) + "-" + spell(block.begin));
+    line(o, "  .secrel32 " + spell(block.begin));
+    line(o, "  .secidx " + spell(block.begin));
+    name(o, "");
+    r.end();
+    writeScope(r, f, id, types, spell);
+    r.begin(kSEnd);
+    r.end();
+}
+
+void writeScope(Records &r, const DwarfFunction &f, int scope, CodeViewTypes &types, const Spell &spell) {
+    writeObjects(r, f, scope, types, spell);
+    for (std::size_t b = 1; b < f.blocks.size(); b++)
+        if (f.blocks[b].parent == scope && inProcedure(f, b) && declaresAnything(f, static_cast<int>(b)))
+            writeBlock(r, f, b, types, spell);
+}
+
+// **A funclet's scope is its parent's frame**, as cl writes it: the parent's
+// parameters and locals (rbp is the parent's), the enclosing blocks' objects
+// without ranges, then the handler's own blocks, the caught object's too.
+void writeFuncletScope(Records &r, const DwarfFunction &f, CodeViewTypes &types, const Spell &spell) {
+    writeObjects(r, f, 0, types, spell);
+    std::vector<bool> around(f.blocks.size(), false);
+    for (std::size_t b = 1; b < f.blocks.size(); b++)
+        if (inProcedure(f, b))
+            for (int p = f.blocks[b].parent; p > 0; p = f.blocks[static_cast<std::size_t>(p)].parent)
+                if (!inProcedure(f, static_cast<std::size_t>(p))) around[static_cast<std::size_t>(p)] = true;
+    for (std::size_t p = 1; p < f.blocks.size(); p++)
+        if (around[p]) writeObjects(r, f, static_cast<int>(p), types, spell);
     for (std::size_t b = 1; b < f.blocks.size(); b++) {
-        const DwarfBlock &block = f.blocks[b];
-        const int id = static_cast<int>(b);
-        if (block.parent != scope || !declaresAnything(f, id)) continue;
-        if (block.begin.empty() || block.end.empty()) {
-            writeScope(r, f, id, types, spell);
-            continue;
-        }
-        r.begin(kSBlock32);
-        line(o, "  .long 0, 0");
-        line(o, "  .long " + spell(block.end) + "-" + spell(block.begin));
-        line(o, "  .secrel32 " + spell(block.begin));
-        line(o, "  .secidx " + spell(block.begin));
-        name(o, "");
-        r.end();
-        writeScope(r, f, id, types, spell);
-        r.begin(kSEnd);
-        r.end();
+        const int parent = f.blocks[b].parent;
+        if (inProcedure(f, b) && (parent <= 0 || !inProcedure(f, static_cast<std::size_t>(parent))) &&
+            declaresAnything(f, static_cast<int>(b)))
+            writeBlock(r, f, b, types, spell);
     }
 }
 
@@ -171,7 +205,8 @@ void writeFunction(Records &r, const DwarfFunction &f, int id, CodeViewTypes &ty
     line(o, "  .long " + f.codeEnd + "-" + f.symbol);
     line(o, "  .long " + f.prologEnd + "-" + f.symbol);
     line(o, "  .long " + f.codeEnd + "-" + f.symbol);
-    num(o, "  .long", procedureType(f, types));
+    // A funclet has no type of its own, as cl writes it (T_NOTYPE).
+    num(o, "  .long", f.funclet != 0 ? 0u : procedureType(f, types));
     line(o, "  .secrel32 " + f.symbol);
     line(o, "  .secidx " + f.symbol);
     num(o, "  .byte", 0);
@@ -185,7 +220,8 @@ void writeFunction(Records &r, const DwarfFunction &f, int id, CodeViewTypes &ty
     num(o, "  .long", kFrameFlags);
     r.end();
 
-    writeScope(r, f, 0, types, spell);
+    if (f.funclet != 0) writeFuncletScope(r, f, types, spell);
+    else writeScope(r, f, 0, types, spell);
 
     r.begin(kSEnd);
     r.end();
@@ -257,19 +293,19 @@ std::string codeViewName(const std::string &symbol, const std::string &name, con
     if (scopesOf(symbol, scopes)) {
         for (std::size_t i = scopes.size(); i-- > 0;) qualified += scopes[i] + "::";
     } else if (thisClass != nullptr && !thisClass->tag().empty()) {
-        qualified = thisClass->tag() + "::";
+        qualified = thisClass->displayTag() + "::";
     }
     return qualified + name;
 }
 
-std::string codeViewPath(const std::string &compDir, const std::string &name) {
+std::string codeViewPath(const std::string &compDir, const std::string &name, bool escaped) {
     const bool absolute = (name.size() > 1 && name[1] == ':') ||
                           (!name.empty() && (name[0] == '/' || name[0] == '\\'));
     std::string full = absolute || compDir.empty() ? name : compDir + "\\" + name;
     std::string out;
     for (char c : full) {
         if (c == '/') c = '\\';
-        if (c == '\\' || c == '"') out += '\\';
+        if (escaped && (c == '\\' || c == '"')) out += '\\';
         out += c;
     }
     return out;
@@ -288,13 +324,17 @@ void writeCodeView(std::string &out, const Target &target, CodeViewLanguage lang
     for (std::size_t i = 0; i < fns.size(); i++)
         if (!fns[i].mergeable) writeFunction(r, fns[i], static_cast<int>(i), types, spell);
 
-    // Each COMDAT function's records in a section that goes where its code goes.
+    // Each COMDAT function's records in a section that goes where its code goes - its funclets', which
+    // follow it in `fns`, in the same section, as cl writes them: a second section on the same COMDAT is
+    // one masm continues, and its signature word then sat among the records (measured, 1.29).
     std::string comdats;
     Records rc(comdats, ".Lcv.c.");
     for (std::size_t i = 0; i < fns.size(); i++) {
-        if (!fns[i].mergeable) continue;
+        if (!fns[i].mergeable || fns[i].funclet != 0) continue;
         openDebugS(comdats, fns[i].symbol);
         writeFunction(rc, fns[i], static_cast<int>(i), types, spell);
+        for (std::size_t j = i + 1; j < fns.size() && fns[j].funclet != 0; j++)
+            writeFunction(rc, fns[j], static_cast<int>(j), types, spell);
     }
     // After every function, so the S_UDT list holds every class they named.
     writeGlobals(r, globals, types, spell);

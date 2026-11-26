@@ -1,0 +1,4 @@
+#include <cstdio>
+template <class T> int f(T) { return 1; } int f(int) { return 2; } template <class T> int f(T *) { return 3; } template <class T> int f(const T *) { return 4; } template <class T, int N> int g(T (&)[N]) { return N; } template <class T> int g(T) { return -1; } template <class T> int h(T, T) { return 1; } template <class T, class U> int h(T, U) { return 2; }
+template <class... Ts> int v(Ts...) { return 1; } template <class T> int v(T) { return 2; } template <class T, class... Ts> int w(T, Ts...) { return (int)sizeof...(Ts) + 10; } template <class T> int w(T) { return 0; }
+int main() { int i = 1; const int ci = 2; char c = 'c'; int arr[3]; std::printf("%d %d %d %d %d %d %d %d %d %d %d %d\n", f(i), f(c), f(&i), f(&ci), f(1.5), g(arr), g(&i), h(1, 2), h(1, 2.0), v(1), v(1, 2), w(1, 2, 3)); std::printf("%d\n", w(1)); return 0; }

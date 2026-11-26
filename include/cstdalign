@@ -1,0 +1,7 @@
+// <cstdalign> - [depr.c.headers]/7 by way of C11: alignas is a keyword in C++, so only the macro that says so.
+#ifndef _CXX1_CSTDALIGN
+#define _CXX1_CSTDALIGN
+
+#define __alignas_is_defined 1
+
+#endif

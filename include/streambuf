@@ -1,0 +1,183 @@
+// <streambuf> - [stream.buffers]: basic_streambuf, the get and put areas every stream reads and writes
+// through, and the virtual functions a buffer overrides to fill and empty them.
+#ifndef _CXX1_STREAMBUF
+#define _CXX1_STREAMBUF
+
+#include <cstddef>
+#include <ios>
+#include <iosfwd>
+#include <string>
+#include <utility>
+
+namespace std {
+
+template <class C, class Tr> class basic_streambuf {
+public:
+    typedef C char_type;
+    typedef Tr traits_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+
+    virtual ~basic_streambuf() {}
+
+    // [streambuf.locales]
+    locale pubimbue(const locale &loc) {
+        locale was = loc_;
+        imbue(loc);
+        loc_ = loc;
+        return was;
+    }
+    locale getloc() const { return loc_; }
+
+    // [streambuf.buffer]
+    basic_streambuf *pubsetbuf(char_type *s, streamsize n) { return setbuf(s, n); }
+    pos_type pubseekoff(off_type off, ios_base::seekdir way, ios_base::openmode which = ios_base::in | ios_base::out) {
+        return seekoff(off, way, which);
+    }
+    pos_type pubseekpos(pos_type sp, ios_base::openmode which = ios_base::in | ios_base::out) { return seekpos(sp, which); }
+    int pubsync() { return sync(); }
+
+    // [streambuf.pub.get]
+    streamsize in_avail() {
+        if (gptr_ < egptr_) return egptr_ - gptr_;
+        return showmanyc();
+    }
+    int_type snextc() {
+        if (Tr::eq_int_type(sbumpc(), Tr::eof())) return Tr::eof();
+        return sgetc();
+    }
+    int_type sbumpc() {
+        if (gptr_ == egptr_) return uflow();
+        return Tr::to_int_type(*gptr_++);
+    }
+    int_type sgetc() {
+        if (gptr_ == egptr_) return underflow();
+        return Tr::to_int_type(*gptr_);
+    }
+    streamsize sgetn(char_type *s, streamsize n) { return xsgetn(s, n); }
+
+    // [streambuf.pub.pback]
+    int_type sputbackc(char_type c) {
+        if (eback_ == gptr_ || !Tr::eq(c, gptr_[-1])) return pbackfail(Tr::to_int_type(c));
+        return Tr::to_int_type(*--gptr_);
+    }
+    int_type sungetc() {
+        if (eback_ == gptr_) return pbackfail();
+        return Tr::to_int_type(*--gptr_);
+    }
+
+    // [streambuf.pub.put]
+    int_type sputc(char_type c) {
+        if (pptr_ == epptr_) return overflow(Tr::to_int_type(c));
+        Tr::assign(*pptr_++, c);
+        return Tr::to_int_type(c);
+    }
+    streamsize sputn(const char_type *s, streamsize n) { return xsputn(s, n); }
+
+protected:
+    basic_streambuf() : eback_(0), gptr_(0), egptr_(0), pbase_(0), pptr_(0), epptr_(0) {}
+    basic_streambuf(const basic_streambuf &rhs)
+        : eback_(rhs.eback_), gptr_(rhs.gptr_), egptr_(rhs.egptr_), pbase_(rhs.pbase_), pptr_(rhs.pptr_), epptr_(rhs.epptr_),
+          loc_(rhs.loc_) {}
+    basic_streambuf &operator=(const basic_streambuf &rhs) {
+        eback_ = rhs.eback_; gptr_ = rhs.gptr_; egptr_ = rhs.egptr_;
+        pbase_ = rhs.pbase_; pptr_ = rhs.pptr_; epptr_ = rhs.epptr_;
+        loc_ = rhs.loc_;
+        return *this;
+    }
+    void swap(basic_streambuf &rhs) {
+        const locale held = loc_;
+        loc_ = rhs.loc_;
+        rhs.loc_ = held;
+        std::swap(eback_, rhs.eback_); std::swap(gptr_, rhs.gptr_); std::swap(egptr_, rhs.egptr_);
+        std::swap(pbase_, rhs.pbase_); std::swap(pptr_, rhs.pptr_); std::swap(epptr_, rhs.epptr_);
+    }
+
+    // [streambuf.get.area]
+    char_type *eback() const { return eback_; }
+    char_type *gptr() const { return gptr_; }
+    char_type *egptr() const { return egptr_; }
+    void gbump(int n) { gptr_ += n; }
+    void setg(char_type *gbeg, char_type *gnext, char_type *gend) { eback_ = gbeg; gptr_ = gnext; egptr_ = gend; }
+
+    // [streambuf.put.area]
+    char_type *pbase() const { return pbase_; }
+    char_type *pptr() const { return pptr_; }
+    char_type *epptr() const { return epptr_; }
+    void pbump(int n) { pptr_ += n; }
+    void setp(char_type *pbeg, char_type *pend) { pbase_ = pptr_ = pbeg; epptr_ = pend; }
+
+    // [streambuf.virt.locales]
+    virtual void imbue(const locale &) {}
+
+    // [streambuf.virt.buffer]
+    virtual basic_streambuf *setbuf(char_type *, streamsize) { return this; }
+    virtual pos_type seekoff(off_type, ios_base::seekdir, ios_base::openmode = ios_base::in | ios_base::out) {
+        return pos_type(off_type(-1));
+    }
+    virtual pos_type seekpos(pos_type, ios_base::openmode = ios_base::in | ios_base::out) { return pos_type(off_type(-1)); }
+    virtual int sync() { return 0; }
+
+    // [streambuf.virt.get]
+    virtual streamsize showmanyc() { return 0; }
+    virtual streamsize xsgetn(char_type *s, streamsize n) {
+        streamsize done = 0;
+        while (done < n) {
+            if (gptr_ < egptr_) {
+                streamsize k = egptr_ - gptr_;
+                if (k > n - done) k = n - done;
+                Tr::copy(s + done, gptr_, static_cast<size_t>(k));
+                gptr_ += k;
+                done += k;
+            } else {
+                const int_type c = uflow();
+                if (Tr::eq_int_type(c, Tr::eof())) break;
+                s[done++] = Tr::to_char_type(c);
+            }
+        }
+        return done;
+    }
+    virtual int_type underflow() { return Tr::eof(); }
+    virtual int_type uflow() {
+        if (Tr::eq_int_type(underflow(), Tr::eof())) return Tr::eof();
+        return Tr::to_int_type(*gptr_++);
+    }
+
+    // [streambuf.virt.pback]
+    virtual int_type pbackfail(int_type = Tr::eof()) { return Tr::eof(); }
+
+    // [streambuf.virt.put]
+    virtual streamsize xsputn(const char_type *s, streamsize n) {
+        streamsize done = 0;
+        while (done < n) {
+            if (pptr_ < epptr_) {
+                streamsize k = epptr_ - pptr_;
+                if (k > n - done) k = n - done;
+                Tr::copy(pptr_, s + done, static_cast<size_t>(k));
+                pptr_ += k;
+                done += k;
+            } else if (Tr::eq_int_type(overflow(Tr::to_int_type(s[done])), Tr::eof())) {
+                break;
+            } else {
+                done++;
+            }
+        }
+        return done;
+    }
+    virtual int_type overflow(int_type = Tr::eof()) { return Tr::eof(); }
+
+private:
+    char_type *eback_, *gptr_, *egptr_;
+    char_type *pbase_, *pptr_, *epptr_;
+    locale loc_;
+};
+
+typedef basic_streambuf<char, char_traits<char> > streambuf;
+typedef basic_streambuf<wchar_t, char_traits<wchar_t> > wstreambuf;
+
+}  // namespace std
+
+#include <__sbuf_iterator>
+
+#endif

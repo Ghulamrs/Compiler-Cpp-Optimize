@@ -104,7 +104,7 @@ const Parser::VSlot *Parser::declaredSlot(const Type *cls, const VSlot &s) const
     for (std::size_t i = 0; i < it->second.size(); i++) {
         const VSlot &c = it->second[i];
         if (dtor ? c.name == s.name
-                 : overrides(c, s.name, s.params, s.constThis, s.refThis))
+                 : overrides(c, s.name, s.params, s.constThis, s.refThis, s.volatileThis))
             return &c;
     }
     return nullptr;
@@ -350,9 +350,15 @@ void Parser::layoutOneVtable(VtableGroup &g, const Type *x, int xAt,
             if (viaVbase) {
                 const std::string want = slots[i].name == "~$deleting"
                                        ? std::string("~") : slots[i].name;
+                // vcallEntries filed the slot under the class of x's primary chain that added it:
+                // basic_ios's destructor sits in ios_base's range of its table.
+                const Type *owner = x;
+                while (owner->primaryBase() != nullptr &&
+                       i < vtables_[owner->primaryBase()->tag()].size())
+                    owner = owner->primaryBase();
                 std::size_t idx = vcalls.size();
                 for (std::size_t k = 0; k < vcalls.size() && idx == vcalls.size(); k++)
-                    if (vcalls[k].cls == x && vcalls[k].name == want &&
+                    if (vcalls[k].cls == owner && vcalls[k].name == want &&
                         vcalls[k].constThis == slots[i].constThis &&
                         vcalls[k].refThis == slots[i].refThis &&
                         sameParameters(vcalls[k].params, slots[i].params))

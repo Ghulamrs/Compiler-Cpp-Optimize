@@ -67,7 +67,8 @@ bool isGlvalue(const Expr &e) {
 // `static_cast<T &&>` hands over, and that subtraction is what an rvalue reference
 // is for - it refuses an lvalue, so a move can empty what it is given.
 bool isLvalue(const Expr &e) {
-    return !e.isXvalue() && isGlvalue(e);
+    // A class temporary or `&S::f` dereferences a slot of the frame and is marked a prvalue for it.
+    return !e.isXvalue() && e.declCategory() != Expr::Category::Prvalue && isGlvalue(e);
 }
 
 // A class temporary is a dereference of its slot and carries the prvalue mark, so the mark is
@@ -80,6 +81,21 @@ bool objectIsLvalue(const Expr &e) {
 const Token &Parser::peekAt(std::size_t n) const {
     std::size_t i = at_ + n;
     return i < tokens_.size() ? tokens_[i] : tokens_.back();
+}
+
+// The index of the `)`, `]` or `}` that closes the group opening at tokens_[i]; the last token where none does.
+// The scans that look for the `>` of a template-argument-list step over a group whole with it:
+// `X<decltype(a < b), bool>` and `X<(n >> 1)>` close at their own `>`, whatever stands between the parentheses
+// (1.80: each scan counted the angles inside, and `f(std::is_same<decltype(1 < 2), bool>::value)` was refused).
+std::size_t Parser::groupCloseAt(std::size_t i) const {
+    int depth = 0;
+    for (; i < tokens_.size(); i++) {
+        const Token &t = tokens_[i];
+        if (t.kind == TokenKind::End) break;
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if ((t.is(")") || t.is("]") || t.is("}")) && --depth <= 0) return i;
+    }
+    return tokens_.size() - 1;
 }
 
 bool Parser::consume(const char *s) {
@@ -418,17 +434,19 @@ const Type *Parser::findGlobalTypedef(const std::string &name) const {
 }
 
 const Type *Parser::findTypedef(const std::string &name) const {
+    // A bound template parameter's scope is inside every class and namespace around it ([temp.local]/6), and
+    // no local name may redeclare it - so it comes before the function's own: `function<void()>`'s `R`, made
+    // inside a function with a typedef `R`, is still void.
+    if (boundTypeParams_.count(name) != 0) {
+        auto it = typedefIndex_.find(name);
+        if (it != typedefIndex_.end()) return typedefs_[it->second].type;
+    }
+
     // **A class local to this function is found first, and that is what makes it
     // shadow a global of the same name** - [basic.scope.local], and the reason the
     // local scope is a table of its own rather than an entry in the global one.
     auto local = localTypes_.find(name);
     if (local != localTypes_.end()) return local->second;
-
-    // A bound template parameter's scope is inside every class and namespace around it ([temp.local]/6).
-    if (boundTypeParams_.count(name) != 0) {
-        auto it = typedefIndex_.find(name);
-        if (it != typedefIndex_.end()) return typedefs_[it->second].type;
-    }
     // Unqualified, the classes this is inside come next, then the enclosing namespaces,
     // and only then a global: [basic.lookup.unqual]/1, the nearest declaration wins.
     if (name.find("::") == std::string::npos)
@@ -487,6 +505,12 @@ const Type *Parser::classScopeType(const std::string &name) const {
     // inlineOwner_ is the one thing that knows, so it is asked here.
     if (!inlineOwner_.empty()) {
         auto it = typedefIndex_.find(inlineOwner_);
+        if (it != typedefIndex_.end())
+            if (const Type *t = lookupInClass(typedefs_[it->second].type, name))
+                return t;
+    }
+    if (!signatureOwner_.empty()) {
+        auto it = typedefIndex_.find(signatureOwner_);
         if (it != typedefIndex_.end())
             if (const Type *t = lookupInClass(typedefs_[it->second].type, name))
                 return t;
@@ -601,24 +625,26 @@ bool Parser::atTypeName() const {
                                      "typename",
                                      // And this one *is* a type, written as a
                                      // question about an expression.
-                                     "decltype" };
+                                     "decltype", "__underlying_type" };
     for (const char *k : t)
         if (peek().is(k)) return true;
     // `::Lexer *p;` declares a p - the leading `::` says where to look and
     // nothing else, so the question is about the name after it.
-    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident)
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        const std::map<std::string, TemplateDecl>::const_iterator t = findTemplate("::" + peekAt(1).text);
+        if (peekAt(2).is("<") && t != templates_.end() && t->second.isClass && t->second.ns.empty()) return true;
         return findGlobalTypedef(peekAt(1).text) != nullptr;
+    }
     if (peek().kind != TokenKind::Ident) return false;
     if (localHidesType()) return false;
     // `Box<int> b;` declares a variable, so the name has to answer yes here -
     // but only with a `<` after it, since the bare name is not a type.
-    auto tmpl = templates_.find(peek().text);
+    auto tmpl = findTemplate(peek().text);
     if (tmpl != templates_.end() && tmpl->second.isClass && peekAt(1).is("<"))
         return true;
+    if (peekAt(1).is("<") && memberClassTemplate(peek().text) != nullptr) return true;
     if (findTypedef(peek().text) != nullptr) return true;
-    // `N::S` names a type as much as `Outer::Inner` does, and neither answers to
-    // its leading name alone. One of those is a namespace and the other a class;
-    // past that first token the walk is the same walk.
+    // `N::S` names a type as `Outer::Inner` does: the same walk past `N`
     return qualifiedTypeEnd() != 0;
 }
 
@@ -634,13 +660,16 @@ std::size_t Parser::qualifiedTypeEnd() const {
                             peekAt(k + 1).kind == TokenKind::Ident;
          k += 2) {
         q += "::" + peekAt(k + 1).text;
+        const Type *outer = cur;
         if (const Type *t = findTypedef(q)) { typeEnd = k + 2; cur = t; }
         // `std::string::size_type`: a member type of the class a typedef reached.
         else if (cur != nullptr && cur->isStructOrUnion() &&
                  (cur = lookupInClass(cur, peekAt(k + 1).text)) != nullptr)
             typeEnd = k + 2;
-        // **`std::vector<int> v;` - the name stops at a class template too.**
-        if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
+        // **`std::vector<int> v;` - the name stops at a class template too**, and at a member one, `S::In<int>`.
+        if (peekAt(k + 2).is("<") &&
+            (isClassTemplate(q) || memberClassTemplateOf(outer, peekAt(k + 1).text) != nullptr))
+            typeEnd = k + 2;
     }
     return typeEnd;
 }
@@ -665,6 +694,7 @@ std::size_t Parser::qualifiedTypeEndPastArgs() const {
     for (;; after++) {
         const Token &t = peekAt(after);
         if (t.kind == TokenKind::End) return 0;
+        if (depth > 0 && (t.is("(") || t.is("["))) { after = groupCloseAt(at_ + after) - at_; continue; }
         if (t.is("<")) depth++;
         else if (t.is(">")) { if (--depth == 0) return after + 1; }
         else if (t.is(">>")) { depth -= 2; if (depth <= 0) return after + 1; }
@@ -674,7 +704,7 @@ std::size_t Parser::qualifiedTypeEndPastArgs() const {
 // [stmt.ambig]/1: `T(x).f();` cannot be a declaration - no declarator goes on with `.` or `->`
 // after its `)` - so it is a temporary of T and a member call. True when that is what is here.
 // Where `T(...)` opening the statement closes: the index of its `)`, or 0 where it does not open so.
-std::size_t Parser::temporaryCallEnd() const {
+std::size_t Parser::temporaryCallEnd(std::size_t *open) const {
     if (peek().kind != TokenKind::Ident) return 0;
     std::size_t k = 0;
     if (peekAt(1).is("::")) k = qualifiedTypeEndPastArgs();
@@ -684,12 +714,14 @@ std::size_t Parser::temporaryCallEnd() const {
         for (k = 1;; k++) {
             const Token &t = peekAt(k);
             if (t.kind == TokenKind::End || t.is(";")) return 0;
+            if (depth > 0 && (t.is("(") || t.is("["))) { k = groupCloseAt(at_ + k) - at_; continue; }
             if (t.is("<")) depth++;
             else if (t.is(">")) { if (--depth == 0) { k++; break; } }
             else if (t.is(">>")) { depth -= 2; if (depth <= 0) { k++; break; } }
         }
     } else if (findTypedef(peek().text) != nullptr) k = 1;
     if (k == 0 || !peekAt(k).is("(")) return 0;
+    if (open != nullptr) *open = k;
     int depth = 0;
     for (;; k++) {
         const Token &t = peekAt(k);
@@ -697,6 +729,23 @@ std::size_t Parser::temporaryCallEnd() const {
         if (t.is("(") || t.is("[") || t.is("{")) depth++;
         else if (t.is(")") || t.is("]") || t.is("}")) { if (--depth == 0) return k; }
     }
+}
+
+// [stmt.ambig]/1 again: `T(4);` and `T(a + b);` hold nothing a declarator could be, so they are temporaries.
+bool Parser::atTemporaryOfArguments() const {
+    std::size_t open = 0;
+    const std::size_t close = temporaryCallEnd(&open);
+    if (close <= open + 1) return false;
+    int depth = 0;
+    for (std::size_t i = open + 1; i < close; i++) {
+        const Token &t = peekAt(i);
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if (t.is(")") || t.is("]") || t.is("}")) depth--;
+        else if (depth == 0 && t.kind != TokenKind::Ident && !t.is("*") && !t.is("&") && !t.is("&&") &&
+                 !t.is("::") && !t.is("<") && !t.is(">") && !t.is("...") && !t.is("const") && !t.is("volatile"))
+            return true;
+    }
+    return false;
 }
 
 bool Parser::atTemporaryMemberAccess() const {
@@ -713,7 +762,7 @@ bool Parser::atConditionDeclaration() const {
 }
 
 bool Parser::atDeclarationStart() const {
-    if (atTemporaryMemberAccess()) return false;
+    if (atTemporaryMemberAccess() || atTemporaryOfArguments()) return false;
     // **`Counter::total = 1;` is a statement, not a declaration**, though it opens
     // with a name that names a type: a declaration spelled `C::something` needs a
     // nested class, so a class name before '::' always begins an expression here.
@@ -734,6 +783,13 @@ bool Parser::atDeclarationStart() const {
             // could only be a function declaration with no name, which is not a thing.
             const std::size_t after = qualifiedTypeEndPastArgs();
             if (after == 0) return true;
+            // `std::vector<bool>::swap(r0, r1);` goes on past the template-id to a member, and is a
+            // declaration only where a declarator follows that member - as for `Tm<P>::st.a` below.
+            if (peekAt(after).is("::") && peekAt(after + 1).kind == TokenKind::Ident) {
+                const Token &next = peekAt(after + 2);
+                return next.kind == TokenKind::Ident || next.is("*") || next.is("&") || next.is("&&") ||
+                       next.is("::") || next.is("<");
+            }
             return !(peekAt(after).is("(") && peekAt(after + 1).is(")"));
         }
     }
@@ -748,6 +804,7 @@ bool Parser::atDeclarationStart() const {
         for (;; after++) {
             const Token &t = peekAt(after);
             if (t.kind == TokenKind::End) { after = 0; break; }
+            if (depth > 0 && (t.is("(") || t.is("["))) { after = groupCloseAt(at_ + after) - at_; continue; }
             if (t.is("<")) depth++;
             else if (t.is(">")) { if (--depth == 0) { after++; break; } }
             else if (t.is(">>")) { depth -= 2; if (depth <= 0) { after++; break; } }
@@ -769,6 +826,9 @@ bool Parser::atDeclarationStart() const {
     if (peek().kind == TokenKind::Ident && peekAt(1).is("(") &&
         peekAt(2).is(")") && findTypedef(peek().text) != nullptr)
         return false;
+    // And for a type a keyword names: `void();` declares nothing, so it is [expr.type.conv]'s prvalue.
+    if (simpleTypeKeyword() != nullptr && peekAt(1).is("(") && peekAt(2).is(")"))
+        return false;
 
     // `constexpr` beside the storage classes, and here rather than in atTypeName:
     // it is a decl-specifier that names no type, so a statement starting with it
@@ -784,8 +844,39 @@ bool Parser::atDeclarationStart() const {
 void Parser::skipBracedBlock() {
     // A function try block's handlers are its body too, [dcl.fct.def.general]/1.
     const bool functionTry = peek().is("try");
-    // A constructor's body may be preceded by its mem-initializer list, so
-    // what is skipped starts at the ':' and the '{' is found from there.
+    // A constructor's body may follow its mem-initializers: skip from the
+    // ':' to the '{' **past each entry's own, maybe braced, arguments**
+    // (`: i{v}, d{1.5} {}` held `{v}` as the body).
+    if (functionTry && peekAt(1).is(":")) at_++;
+    if (peek().is(":")) {
+        at_++;
+        auto skipGroup = [&]() {
+            int depth = 0;
+            do {
+                if (peek().kind == TokenKind::End)
+                    src_.fail(peek().pos, "this mem-initialiser is never closed");
+                if (peek().is("(") || peek().is("{") || peek().is("[")) depth++;
+                else if (peek().is(")") || peek().is("}") || peek().is("]")) depth--;
+                at_++;
+            } while (depth > 0);
+        };
+        for (;;) {
+            int angle = 0;
+            while (angle > 0 || (!peek().is("(") && !peek().is("{"))) {
+                if (peek().kind == TokenKind::End)
+                    src_.fail(peek().pos, "this member function has no body after all");
+                if (peek().is("<")) angle++;
+                else if (peek().is(">")) angle--;
+                else if (peek().is(">>")) angle -= 2;
+                else if (angle > 0 && (peek().is("(") || peek().is("["))) { skipGroup(); continue; }
+                if (angle < 0) angle = 0;
+                at_++;
+            }
+            skipGroup();
+            consume("...");
+            if (!consume(",")) break;
+        }
+    }
     while (!peek().is("{")) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this member function has no body after all");
@@ -829,13 +920,19 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.localSerial = localSerial_;
     s.thisOffset = thisOffset_;
     s.currentClass = currentClass_;
+    s.friendScope = friendScope_;
     s.returnType = returnType_;
+    s.sretSlot = sretSlot_;
+    s.nrvoSlot = nrvoSlot_;
+    s.nrvoName = nrvoName_;
     s.deducingReturn = deducingReturn_;
     s.unevaluated = unevaluated_;
     s.lambdaCount = lambdaCount_;
     s.atFunctionBody = atFunctionBody_;
     s.alive = alive_;
     s.pendingTemps = pendingTemps_;
+    s.statementTemps = statementTemps_;
+    s.guardSlots = guardSlots_;
     s.bodyCleanupFrom = bodyCleanupFrom_;
     s.functionHasPads = functionHasPads_;
     s.functionHasTry = functionHasTry_;
@@ -848,6 +945,8 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.pendingNoexcept = pendingNoexcept_;
     s.pendingSpec = pendingSpec_;
     s.inNoexceptFunction = inNoexceptFunction_;
+    s.dtorEndLabel = dtorEndLabel_;
+    s.dtorReturned = dtorReturned_;
     s.replayingInline = replayingInline_;
     s.currentFunctionInline = currentFunctionInline_;
     s.tssSeq = tssSeq_;
@@ -868,6 +967,13 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.handlerResumeLabel = handlerResumeLabel_;
     s.handlerResumePtr = handlerResumePtr_;
     s.handlerResumeSel = handlerResumeSel_;
+    s.tryChainLabel = tryChainLabel_;
+    s.tryChainPointerSlot = tryChainPointerSlot_;
+    s.tryChainSelectorSlot = tryChainSelectorSlot_;
+    s.tryChainAliveFrom = tryChainAliveFrom_;
+    s.handlerAliveFrom = handlerAliveFrom_;
+    s.tryBodySegments = tryBodySegments_;
+    s.tryBodySerial = tryBodySerial_;
     s.mayThrow = mayThrow_;
     s.conditionDecl = conditionDecl_;
     s.conditionName = conditionName_;
@@ -894,13 +1000,19 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     localSerial_ = s.localSerial;
     thisOffset_ = s.thisOffset;
     currentClass_ = s.currentClass;
+    friendScope_ = s.friendScope;
     returnType_ = s.returnType;
+    sretSlot_ = s.sretSlot;
+    nrvoSlot_ = s.nrvoSlot;
+    nrvoName_ = s.nrvoName;
     deducingReturn_ = s.deducingReturn;
     unevaluated_ = s.unevaluated;
     lambdaCount_ = s.lambdaCount;
     atFunctionBody_ = s.atFunctionBody;
     alive_ = s.alive;
     pendingTemps_ = s.pendingTemps;
+    statementTemps_ = s.statementTemps;
+    guardSlots_ = s.guardSlots;
     bodyCleanupFrom_ = s.bodyCleanupFrom;
     functionHasPads_ = s.functionHasPads;
     functionHasTry_ = s.functionHasTry;
@@ -913,6 +1025,8 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     pendingNoexcept_ = s.pendingNoexcept;
     pendingSpec_ = s.pendingSpec;
     inNoexceptFunction_ = s.inNoexceptFunction;
+    dtorEndLabel_ = s.dtorEndLabel;
+    dtorReturned_ = s.dtorReturned;
     replayingInline_ = s.replayingInline;
     currentFunctionInline_ = s.currentFunctionInline;
     tssSeq_ = s.tssSeq;
@@ -933,6 +1047,13 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     handlerResumeLabel_ = s.handlerResumeLabel;
     handlerResumePtr_ = s.handlerResumePtr;
     handlerResumeSel_ = s.handlerResumeSel;
+    tryChainLabel_ = s.tryChainLabel;
+    tryChainPointerSlot_ = s.tryChainPointerSlot;
+    tryChainSelectorSlot_ = s.tryChainSelectorSlot;
+    tryChainAliveFrom_ = s.tryChainAliveFrom;
+    handlerAliveFrom_ = s.handlerAliveFrom;
+    tryBodySegments_ = s.tryBodySegments;
+    tryBodySerial_ = s.tryBodySerial;
     mayThrow_ = s.mayThrow;
     conditionDecl_ = s.conditionDecl;
     conditionName_ = s.conditionName;
@@ -960,13 +1081,19 @@ void Parser::clearFunctionState() {
     localSerial_ = 0;
     thisOffset_ = 0;
     currentClass_ = nullptr;
+    friendScope_ = nullptr;
     returnType_ = nullptr;
+    sretSlot_ = 0;
+    nrvoSlot_ = 0;
+    nrvoName_.clear();
     deducingReturn_ = nullptr;
     lambdaCount_ = 0;
     unevaluated_ = 0;
     atFunctionBody_ = false;
     alive_.clear();
     pendingTemps_.clear();
+    statementTemps_.clear();
+    guardSlots_.clear();
     bodyCleanupFrom_ = 0;
     functionHasPads_ = false;
     functionHasTry_ = false;
@@ -979,6 +1106,7 @@ void Parser::clearFunctionState() {
     pendingNoexcept_ = false;
     pendingSpec_ = DynamicSpec();
     inNoexceptFunction_ = false;
+    dtorEndLabel_.clear();
     currentFunctionInline_ = false;
     tssSeq_ = 0;
     loopDepth_ = 0;
@@ -998,6 +1126,13 @@ void Parser::clearFunctionState() {
     handlerResumeLabel_.clear();
     handlerResumePtr_ = 0;
     handlerResumeSel_ = 0;
+    tryChainLabel_.clear();
+    tryChainPointerSlot_ = 0;
+    tryChainSelectorSlot_ = 0;
+    tryChainAliveFrom_ = 0;
+    handlerAliveFrom_ = 0;
+    tryBodySegments_.clear();
+    tryBodySerial_ = -1;
     mayThrow_ = 0;
     conditionDecl_ = false;
     conditionName_.clear();
@@ -1007,17 +1142,24 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
     // **One capture for the whole nested parse.**
     const FunctionState outer = captureFunctionState();
+    // The packs too: a body read here declaring a parameter `a` drops a function parameter pack `a` of
+    // the function it was asked for from - deque's emplace lost its `a` to allocator_traits::construct's.
+    const std::map<std::string, PackBinding> outerPacks = packs_;
     clearFunctionState();
-    // A local class's bodies replay inside its function, where it and its neighbours are local types (1.27).
+    // A local class's bodies are replayed inside the function that wrote it, where its name and
+    // its neighbours' are the function's local type names (1.27, 2026-10-21, review of 1.25, item 3).
     localTypes_ = outer.localTypes;
     // A body replayed here was written inside a class body, so every definition it produces is implicitly inline.
     replayingInline_ = true;
+    const bool wasFriend = friendDeclaration_;
+    const std::vector<std::string> wasNamespace = namespaceStack_;
 
     // **The outer function comes back on every way out**: a member template instantiated
     // inside a trial may throw from here, and the call that follows still reads its locals.
     try {
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
+        const ReadingAt reading(this, &memberAt_);
         // A friend's body is written inside the class and belongs outside it,
         // so it is replayed with no owner to supply a `Class::` it must not have.
         inlineOwner_ = mine[i].freeFunction ? std::string() : mine[i].tag;
@@ -1028,21 +1170,36 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         pendingDefaults_.clear();
         pendingNoexcept_ = false;
         pendingSpec_ = DynamicSpec();
+        // Each body is a function of its own: nothing the one before left pending is this one's to destroy, at
+        // offsets of this frame (1.81).
+        pendingTemps_.clear();
+        statementTemps_.clear();
+        guardSlots_.clear();
         const bool scoped = mine[i].freeFunction && !mine[i].tag.empty();
         const Type *scope = scoped ? findTypedef(mine[i].tag) : nullptr;
         if (scope != nullptr) classStack_.push_back(scope);
+        friendDeclaration_ = mine[i].freeFunction;
+        if (mine[i].freeFunction) namespaceStack_ = mine[i].friendNamespace;
+        friendScope_ = scope != nullptr && scope->isStructOrUnion() ? scope->unqualified() : nullptr;
         topLevel(*current_);
+        friendScope_ = nullptr;
+        namespaceStack_ = wasNamespace;
+        friendDeclaration_ = wasFriend;
         if (scope != nullptr) classStack_.pop_back();
         inlineOwner_.clear();
         inlineOwnerName_.clear();
     }
     } catch (...) {
+        friendDeclaration_ = wasFriend;
+        namespaceStack_ = wasNamespace;
         inlineOwner_.clear();
         inlineOwnerName_.clear();
         restoreFunctionState(outer);
+        packs_ = outerPacks;
         throw;
     }
     restoreFunctionState(outer);
+    packs_ = outerPacks;
 }
 
 // **One level of the program's nesting is one level of the parser's**, and the limit is said
@@ -1132,14 +1289,22 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos,
     for (std::size_t i = from; i < locals_.size(); i++)
         if (locals_[i].name == name)
             src_.fail(pos, "'" + name + "' is declared twice in this block");
+    // [basic.scope.block]/2: the outermost block of a function body is the parameters' scope too.
+    if (bodyScope_ != 0 && scopeStarts_.size() == bodyScope_ && !inParams_)
+        for (std::size_t i = 0; i < from; i++)
+            if (locals_[i].isParameter && locals_[i].name == name)
+                src_.fail(pos, "'" + name + "' redeclares a parameter in the outermost block of the "
+                               "function - [basic.scope.block]/2");
 
     int offset = 0;
     const Type *storedType = type->isReference() ? types_.pointerTo(type->referent()) : type;
     for (std::size_t i = freeSlots_.size(); i-- > 0 && offset == 0;)
         if (freeSlots_[i].stored == storedType && freeSlots_[i].align >= alignAtLeast) { offset = freeSlots_[i].offset; freeSlots_.erase(freeSlots_.begin() + static_cast<long>(i)); }
     if (offset == 0) offset = allocateFrameSlot(type, alignAtLeast);
+    if (type->kind() != Kind::PackExpansion) dropStalePack(name);
     locals_.push_back(Local{ name, offset, type, false, std::string() });
     locals_.back().isParameter = inParams_;
+    locals_.back().noexceptPointer = fnPointerSpec_ == 1;
     locals_.back().serial = ++localSerial_;
     // The debug record describes the storage, which for a reference is the
     // pointer it really is. DWARF has a tag for a reference and this does not
@@ -1150,6 +1315,11 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos,
                               currentBlock() });
     fnVars_.back().align = alignAtLeast > objectAlign(stored, target_) ? alignAtLeast : objectAlign(stored, target_);
     return offset;
+}
+
+void Parser::dropStalePack(const std::string &name) {
+    const auto pk = packs_.find(name);
+    if (pk != packs_.end() && pk->second.functionParameter) packs_.erase(pk);
 }
 
 void Parser::declareStaticLocal(const std::string &name, const Type *type,
@@ -1273,13 +1443,20 @@ ExprPtr Parser::defaultPromote(ExprPtr e) {
     return e;
 }
 
+// cl's other entry points: wmain, WinMain and wWinMain at file scope are C
+// names whatever their parameters, as `main` is, and one function each (cl's
+// C2731); a member or namespaced one stays C++. No other target has them.
+bool Parser::microsoftEntry(const std::string &key) const {
+    return target_.microsoftNames() && (key == "wmain" || key == "WinMain" || key == "wWinMain");
+}
+
 // The name the linker is given: `main` keeps its own, extern "C" keeps a name with external
 // linkage as written ([dcl.link]/4 - an internal one is a C++ name there too, `_ZL2sfi`), and
 // everything else is mangled in the target's ABI.
 std::string Parser::functionSymbol(const std::string &name, const Type *returns,
                                    const std::vector<const Type *> &params,
                                    bool variadic, bool internal, std::size_t pos) {
-    if ((cLinkage_ > 0 && !internal) || name == "main") return name;
+    if ((cLinkage_ > 0 && !internal) || name == "main" || (microsoftEntry(name) && !internal)) return name;
     const Type *fn = types_.functionType(returns, params, variadic);
     std::string out, why;
     bool ok = target_.microsoftNames()

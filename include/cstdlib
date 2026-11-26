@@ -37,6 +37,24 @@ using ::srand;
 using ::strtod;
 using ::strtol;
 using ::strtoul;
+using ::atexit;
+using ::at_quick_exit;
+using ::quick_exit;
+using ::_Exit;
+using ::atoll;
+using ::llabs;
+using ::div_t;
+using ::ldiv_t;
+using ::lldiv_t;
+using ::div;
+using ::ldiv;
+using ::lldiv;
+using ::mblen;
+using ::mbtowc;
+using ::wctomb;
+using ::mbstowcs;
+using ::wcstombs;
+using ::size_t;
 
 }  // namespace std
 

@@ -1,53 +1,328 @@
-// <ios> - the pieces both directions share: the size type and the open modes.
+// <ios> - [iostreams.base]: ios_base's formatting state and flags, basic_ios's stream state, buffer, tie and
+// fill, io_errc, and the manipulators that set the state.
 //
-// **`ios` is a bag of constants and nothing else.** The standard makes it a
-// base class carrying the stream's state, formatting flags and locale; there
-// are no flags and no locale here, and the state lives in `ostream` and
-// `istream` as a plain `int`. What a program actually reaches for from this
-// header is `std::ios::binary`, and that is what is here.
+// **Every stream reads and writes through its basic_streambuf** ([stream.buffers]), as the standard has it:
+// the standard streams through a buffer over the C library's FILE, a string stream through basic_stringbuf, and
+// a program's own buffer through itself. One template serves char and wchar_t; `widen` and `narrow` are the
+// stream's locale's ctype facet's, and its numbers are its num_put's and num_get's ([locale.categories]).
 //
-// The constants are `static const int` with their values written in the class,
-// which needs no definition anywhere and gets no symbol - the value is folded
-// in wherever it is read.
+// The constants are `static const int` with their values written in the class, cl's for iostate; each is one
+// bit, as [bitmask.types] asks.
 #ifndef _CXX1_IOS
 #define _CXX1_IOS
 
+#include <iosfwd>
+#include <stdexcept>
+#include <system_error>
+#include <__locale>
+
 namespace std {
 
-// The count `write` and `getline` take. The standard makes it signed and wide
-// enough for a file offset, which is `long` on every target here.
-typedef long streamsize;
+typedef long long streamsize;
 
-// **[ios.base]: the flags, as one integer.** A program saves `os.flags()`,
-// writes `std::fixed` and a precision, and puts the flags back - so what is
-// handed out has to carry everything a manipulator can change. The float
-// format sits in the low byte and the conversion base above it; `fixed`
-// and `scientific` are the values <ostream>'s manipulators store, and the
-// three base constants are the bases themselves, shifted.
+// [iostreams.base]: the one error a stream reports, in a category of its own.
+enum class io_errc { stream = 1 };
+template <> struct is_error_code_enum<io_errc> : true_type {};
+class __cxx1_iostream_category : public error_category {
+public:
+    virtual const char *name() const noexcept { return "iostream"; }
+    virtual string message(int ev) const { return string(ev == 1 ? "iostream stream error" : "unknown error"); }
+};
+inline const error_category &iostream_category() noexcept {
+    static const __cxx1_iostream_category c;
+    return c;
+}
+inline error_code make_error_code(io_errc e) noexcept { return error_code(static_cast<int>(e), iostream_category()); }
+inline error_condition make_error_condition(io_errc e) noexcept {
+    return error_condition(static_cast<int>(e), iostream_category());
+}
+
 class ios_base {
 public:
     typedef int fmtflags;
-    static const int fixed      = 1;
-    static const int scientific = 2;
-    static const int floatfield = 3;
-    static const int dec        = 10 << 8;
-    static const int hex        = 16 << 8;
-    static const int oct        = 8 << 8;
-    static const int basefield  = 0xff00;
+    static const fmtflags boolalpha   = 0x0001;
+    static const fmtflags dec         = 0x0002;
+    static const fmtflags fixed       = 0x0004;
+    static const fmtflags hex         = 0x0008;
+    static const fmtflags internal    = 0x0010;
+    static const fmtflags left        = 0x0020;
+    static const fmtflags oct         = 0x0040;
+    static const fmtflags right       = 0x0080;
+    static const fmtflags scientific  = 0x0100;
+    static const fmtflags showbase    = 0x0200;
+    static const fmtflags showpoint   = 0x0400;
+    static const fmtflags showpos     = 0x0800;
+    static const fmtflags skipws      = 0x1000;
+    static const fmtflags unitbuf     = 0x2000;
+    static const fmtflags uppercase   = 0x4000;
+    static const fmtflags adjustfield = left | right | internal;
+    static const fmtflags basefield   = dec | oct | hex;
+    static const fmtflags floatfield  = scientific | fixed;
+
+    typedef int iostate;
+    static const iostate goodbit = 0x0;
+    static const iostate eofbit  = 0x1;
+    static const iostate failbit = 0x2;
+    static const iostate badbit  = 0x4;
+    typedef int openmode;
+    static const openmode in     = 1;
+    static const openmode out    = 2;
+    static const openmode ate    = 4;
+    static const openmode app    = 8;
+    static const openmode trunc  = 16;
+    static const openmode binary = 32;
+    typedef int seekdir;
+    static const seekdir beg = 0;
+    static const seekdir cur = 1;
+    static const seekdir end = 2;
+
+    // [ios::failure]: a system_error whose code is io_errc::stream by default.
+    class failure : public system_error {
+    public:
+        explicit failure(const string &msg, const error_code &ec = io_errc::stream) : system_error(ec, msg) {}
+        explicit failure(const char *msg, const error_code &ec = io_errc::stream) : system_error(ec, msg) {}
+    };
+
+    // [ios::Init]: the first one in the program builds the standard streams, the last flushes them; <iostream>
+    // defines the two and puts one in each unit that includes it.
+    class Init {
+    public:
+        Init();
+        ~Init();
+    };
+
+    // [fmtflags.state]
+    fmtflags flags() const { return flags_; }
+    fmtflags flags(fmtflags f) { fmtflags was = flags_; flags_ = f; return was; }
+    fmtflags setf(fmtflags f) { fmtflags was = flags_; flags_ |= f; return was; }
+    fmtflags setf(fmtflags f, fmtflags mask) {
+        fmtflags was = flags_;
+        flags_ = (flags_ & ~mask) | (f & mask);
+        return was;
+    }
+    void unsetf(fmtflags mask) { flags_ &= ~mask; }
+    streamsize precision() const { return prec_; }
+    streamsize precision(streamsize n) { streamsize was = prec_; prec_ = n; return was; }
+    streamsize width() const { return width_; }
+    streamsize width(streamsize n) { streamsize was = width_; width_ = n; return was; }
+
+    // [ios.members.static]: the streams are the C library's own, so synchronised whatever is asked.
+    static bool sync_with_stdio(bool sync = true) {
+        static bool now = true;
+        bool was = now;
+        now = sync;
+        return was;
+    }
+    // [ios.base.storage]
+    static int xalloc() {
+        static int next = 0;
+        return next++;
+    }
+    long &iword(int i) {
+        if (i < 0 || i >= kWords) { static long junk; junk = 0; return junk; }
+        return iwords_[i];
+    }
+    void *&pword(int i) {
+        if (i < 0 || i >= kWords) { static void *junk; junk = 0; return junk; }
+        return pwords_[i];
+    }
+
+    // [ios.base.locales]
+    locale imbue(const locale &loc) {
+        locale was = loc_;
+        loc_ = loc;
+        __cxx1_event(imbue_event);
+        return was;
+    }
+    locale getloc() const { return loc_; }
+
+    // [ios.base.callback]
+    enum event { erase_event, imbue_event, copyfmt_event };
+    typedef void (*event_callback)(event, ios_base &, int);
+    void register_callback(event_callback fn, int index) {
+        if (callbacks_ < kWords) { calls_[callbacks_] = fn; indices_[callbacks_] = index; callbacks_++; }
+    }
+
+    virtual ~ios_base() {
+        for (int k = callbacks_; k-- > 0;) calls_[k](erase_event, *this, indices_[k]);
+    }
+    ios_base(const ios_base &) = delete;
+    ios_base &operator=(const ios_base &) = delete;
+
+protected:
+    ios_base() : flags_(skipws | dec), prec_(6), width_(0), callbacks_(0), iwords_(), pwords_() {}
+    void __cxx1_copyfmt(const ios_base &o) {
+        loc_ = o.loc_;
+        flags_ = o.flags_;
+        prec_ = o.prec_;
+        width_ = o.width_;
+        for (int k = 0; k < kWords; k++) { iwords_[k] = o.iwords_[k]; pwords_[k] = o.pwords_[k]; }
+    }
+    void __cxx1_event(event e) {
+        for (int k = callbacks_; k-- > 0;) calls_[k](e, *this, indices_[k]);
+    }
+    void __cxx1_swap(ios_base &o) {
+        const locale held = loc_;
+        loc_ = o.loc_;
+        o.loc_ = held;
+        std::swap(flags_, o.flags_);
+        std::swap(prec_, o.prec_);
+        std::swap(width_, o.width_);
+    }
+
+    fmtflags flags_;
+    streamsize prec_;
+    streamsize width_;
+    locale loc_;
+
+private:
+    static const int kWords = 16;
+    int callbacks_;
+    event_callback calls_[kWords];
+    int indices_[kWords];
+    long iwords_[kWords];
+    void *pwords_[kWords];
 };
 
-class ios : public ios_base {
+// [ios]
+template <class C, class Tr> class basic_ios : public ios_base {
 public:
-    // The open modes, as the standard names them. The values are this
-    // implementation's own - nothing outside may depend on them, and a program
-    // that writes `std::ios::binary` rather than `4` never sees one.
-    static const int in     = 1;
-    static const int out    = 2;
-    static const int ate    = 4;
-    static const int app    = 8;
-    static const int trunc  = 16;
-    static const int binary = 32;
+    typedef C char_type;
+    typedef typename Tr::int_type int_type;
+    typedef typename Tr::pos_type pos_type;
+    typedef typename Tr::off_type off_type;
+    typedef Tr traits_type;
+
+    explicit operator bool() const { return !fail(); }
+    bool operator!() const { return fail(); }
+    iostate rdstate() const { return state_; }
+    void clear(iostate s = goodbit) {
+        state_ = sb_ != 0 ? s : (s | badbit);
+        const iostate thrown = state_ & except_;
+        if (thrown != 0)
+            throw failure((thrown & badbit) != 0 ? "ios_base::badbit set"
+                          : (thrown & failbit) != 0 ? "ios_base::failbit set" : "ios_base::eofbit set");
+    }
+    void setstate(iostate s) { clear(state_ | s); }
+    bool good() const { return state_ == goodbit; }
+    bool eof() const { return (state_ & eofbit) != 0; }
+    bool fail() const { return (state_ & (failbit | badbit)) != 0; }
+    bool bad() const { return (state_ & badbit) != 0; }
+    iostate exceptions() const { return except_; }
+    void exceptions(iostate mask) { except_ = mask; clear(state_); }
+
+    explicit basic_ios(basic_streambuf<C, Tr> *sb) { init(sb); }
+    virtual ~basic_ios() {}
+
+    basic_ostream<C, Tr> *tie() const { return tie_; }
+    basic_ostream<C, Tr> *tie(basic_ostream<C, Tr> *s) { basic_ostream<C, Tr> *was = tie_; tie_ = s; return was; }
+    basic_streambuf<C, Tr> *rdbuf() const { return sb_; }
+    basic_streambuf<C, Tr> *rdbuf(basic_streambuf<C, Tr> *sb) {
+        basic_streambuf<C, Tr> *was = sb_;
+        sb_ = sb;
+        clear();
+        return was;
+    }
+    basic_ios &copyfmt(const basic_ios &from) {
+        if (this == &from) return *this;
+        __cxx1_event(erase_event);
+        __cxx1_copyfmt(from);
+        fill_ = from.fill_;
+        tie_ = from.tie_;
+        __cxx1_event(copyfmt_event);
+        exceptions(from.except_);
+        return *this;
+    }
+    char_type fill() const { return fill_; }
+    char_type fill(char_type c) { char_type was = fill_; fill_ = c; return was; }
+    char narrow(char_type c, char dfault) const { return ctype_().narrow(c, dfault); }
+    char_type widen(char c) const { return ctype_().widen(c); }
+    // [basic.ios.members]/8: the stream's locale and its buffer's.
+    locale imbue(const locale &loc) {
+        locale was = ios_base::imbue(loc);
+        if (sb_ != 0) sb_->pubimbue(loc);
+        return was;
+    }
+
+    basic_ios(const basic_ios &) = delete;
+    basic_ios &operator=(const basic_ios &) = delete;
+
+protected:
+    basic_ios() : sb_(0), tie_(0), state_(goodbit), except_(goodbit), fill_(char_type(' ')), ct_(0), ctKey_(0) {}
+    void init(basic_streambuf<C, Tr> *sb) {
+        sb_ = sb;
+        tie_ = 0;
+        state_ = sb != 0 ? goodbit : badbit;
+        except_ = goodbit;
+        flags_ = skipws | dec;
+        prec_ = 6;
+        width_ = 0;
+        loc_ = locale();
+        fill_ = widen(' ');
+    }
+    // [basic.ios.members]/17-20: the stream's state taken from another, its buffer left where it was.
+    void move(basic_ios &rhs) {
+        __cxx1_copyfmt(rhs);
+        state_ = rhs.state_;
+        except_ = rhs.except_;
+        fill_ = rhs.fill_;
+        tie_ = rhs.tie_;
+        rhs.tie_ = 0;
+        sb_ = 0;
+    }
+    void move(basic_ios &&rhs) { move(rhs); }
+    void swap(basic_ios &rhs) noexcept {
+        __cxx1_swap(rhs);
+        std::swap(state_, rhs.state_);
+        std::swap(except_, rhs.except_);
+        std::swap(fill_, rhs.fill_);
+        std::swap(tie_, rhs.tie_);
+    }
+    void set_rdbuf(basic_streambuf<C, Tr> *sb) { sb_ = sb; }
+
+private:
+    // The locale's ctype facet, looked up again only when the locale's table is another.
+    const ctype<C> &ctype_() const {
+        if (ctKey_ != loc_.__cxx1_key()) {
+            ct_ = &use_facet<ctype<C> >(loc_);
+            ctKey_ = loc_.__cxx1_key();
+        }
+        return *ct_;
+    }
+
+    basic_streambuf<C, Tr> *sb_;
+    basic_ostream<C, Tr> *tie_;
+    iostate state_;
+    iostate except_;
+    char_type fill_;
+    mutable const ctype<C> *ct_;
+    mutable const void *ctKey_;
 };
+
+inline ios_base &boolalpha(ios_base &s)   { s.setf(ios_base::boolalpha); return s; }
+inline ios_base &noboolalpha(ios_base &s) { s.unsetf(ios_base::boolalpha); return s; }
+inline ios_base &showbase(ios_base &s)    { s.setf(ios_base::showbase); return s; }
+inline ios_base &noshowbase(ios_base &s)  { s.unsetf(ios_base::showbase); return s; }
+inline ios_base &showpoint(ios_base &s)   { s.setf(ios_base::showpoint); return s; }
+inline ios_base &noshowpoint(ios_base &s) { s.unsetf(ios_base::showpoint); return s; }
+inline ios_base &showpos(ios_base &s)     { s.setf(ios_base::showpos); return s; }
+inline ios_base &noshowpos(ios_base &s)   { s.unsetf(ios_base::showpos); return s; }
+inline ios_base &skipws(ios_base &s)      { s.setf(ios_base::skipws); return s; }
+inline ios_base &noskipws(ios_base &s)    { s.unsetf(ios_base::skipws); return s; }
+inline ios_base &uppercase(ios_base &s)   { s.setf(ios_base::uppercase); return s; }
+inline ios_base &nouppercase(ios_base &s) { s.unsetf(ios_base::uppercase); return s; }
+inline ios_base &unitbuf(ios_base &s)     { s.setf(ios_base::unitbuf); return s; }
+inline ios_base &nounitbuf(ios_base &s)   { s.unsetf(ios_base::unitbuf); return s; }
+inline ios_base &internal(ios_base &s) { s.setf(ios_base::internal, ios_base::adjustfield); return s; }
+inline ios_base &left(ios_base &s)     { s.setf(ios_base::left, ios_base::adjustfield); return s; }
+inline ios_base &right(ios_base &s)    { s.setf(ios_base::right, ios_base::adjustfield); return s; }
+inline ios_base &dec(ios_base &s) { s.setf(ios_base::dec, ios_base::basefield); return s; }
+inline ios_base &hex(ios_base &s) { s.setf(ios_base::hex, ios_base::basefield); return s; }
+inline ios_base &oct(ios_base &s) { s.setf(ios_base::oct, ios_base::basefield); return s; }
+inline ios_base &fixed(ios_base &s)        { s.setf(ios_base::fixed, ios_base::floatfield); return s; }
+inline ios_base &scientific(ios_base &s)   { s.setf(ios_base::scientific, ios_base::floatfield); return s; }
+inline ios_base &hexfloat(ios_base &s)     { s.setf(ios_base::fixed | ios_base::scientific, ios_base::floatfield); return s; }
+inline ios_base &defaultfloat(ios_base &s) { s.unsetf(ios_base::floatfield); return s; }
 
 }  // namespace std
 

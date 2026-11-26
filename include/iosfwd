@@ -1,26 +1,74 @@
-// <iosfwd> - the stream and string names, declared and not defined.
+// <iosfwd> - [iosfwd.syn]: the stream and string templates declared, with their typedefs, so a header can
+// name a stream by reference without paying for the stream.
 //
-// [iosfwd.syn] declares the class templates and their typedefs so a header can
-// name a stream by reference without paying for the stream. The streams here
-// are classes rather than templates (see <ostream>), so what is declared is
-// those classes as they are, and `basic_string` with its two typedefs.
+// The narrow streams are explicit specializations of these templates for char, written over the C library's
+// FILE and a string as before; the wide ones are the templates themselves, over basic_streambuf<wchar_t>.
+// basic_string's default template arguments are given here, [string.classes]/1, and not repeated in <string>.
 #ifndef _CXX1_IOSFWD
 #define _CXX1_IOSFWD
 
 namespace std {
 
-class ios_base;
-class ios;
-class ostream;
-class istream;
-class ostringstream;
-class istringstream;
-class ofstream;
-class ifstream;
+// [stream.types], [fpos]: an offset in a stream and a position in one. A position is an offset from the start
+// here - there is no conversion state to carry - so both are one signed 64-bit count, as cl's streamoff is.
+typedef long long streamoff;
+typedef streamoff streampos;
+typedef streamoff wstreampos;
+typedef streamoff u16streampos;
+typedef streamoff u32streampos;
 
-template <class C> class basic_string;
+template <class C> struct char_traits;
+template <class T> class allocator;
+
+class ios_base;
+template <class C, class Tr = char_traits<C> > class basic_ios;
+template <class C, class Tr = char_traits<C> > class basic_streambuf;
+template <class C, class Tr = char_traits<C> > class basic_istream;
+template <class C, class Tr = char_traits<C> > class basic_ostream;
+template <class C, class Tr = char_traits<C> > class basic_iostream;
+template <class C, class Tr = char_traits<C>, class A = allocator<C> > class basic_stringbuf;
+template <class C, class Tr = char_traits<C>, class A = allocator<C> > class basic_istringstream;
+template <class C, class Tr = char_traits<C>, class A = allocator<C> > class basic_ostringstream;
+template <class C, class Tr = char_traits<C>, class A = allocator<C> > class basic_stringstream;
+template <class C, class Tr = char_traits<C> > class basic_filebuf;
+template <class C, class Tr = char_traits<C> > class basic_ifstream;
+template <class C, class Tr = char_traits<C> > class basic_ofstream;
+template <class C, class Tr = char_traits<C> > class basic_fstream;
+template <class C, class Tr = char_traits<C> > class istreambuf_iterator;
+template <class C, class Tr = char_traits<C> > class ostreambuf_iterator;
+
+typedef basic_ios<char> ios;
+typedef basic_ios<wchar_t> wios;
+typedef basic_streambuf<char> streambuf;
+typedef basic_istream<char> istream;
+typedef basic_ostream<char> ostream;
+typedef basic_iostream<char> iostream;
+typedef basic_stringbuf<char> stringbuf;
+typedef basic_istringstream<char> istringstream;
+typedef basic_ostringstream<char> ostringstream;
+typedef basic_stringstream<char> stringstream;
+typedef basic_filebuf<char> filebuf;
+typedef basic_ifstream<char> ifstream;
+typedef basic_ofstream<char> ofstream;
+typedef basic_fstream<char> fstream;
+typedef basic_streambuf<wchar_t> wstreambuf;
+typedef basic_istream<wchar_t> wistream;
+typedef basic_ostream<wchar_t> wostream;
+typedef basic_iostream<wchar_t> wiostream;
+typedef basic_stringbuf<wchar_t> wstringbuf;
+typedef basic_istringstream<wchar_t> wistringstream;
+typedef basic_ostringstream<wchar_t> wostringstream;
+typedef basic_stringstream<wchar_t> wstringstream;
+typedef basic_filebuf<wchar_t> wfilebuf;
+typedef basic_ifstream<wchar_t> wifstream;
+typedef basic_ofstream<wchar_t> wofstream;
+typedef basic_fstream<wchar_t> wfstream;
+
+template <class C, class Tr = char_traits<C>, class A = allocator<C> > class basic_string;
 typedef basic_string<char> string;
 typedef basic_string<wchar_t> wstring;
+typedef basic_string<char16_t> u16string;
+typedef basic_string<char32_t> u32string;
 
 }  // namespace std
 

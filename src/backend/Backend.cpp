@@ -102,7 +102,10 @@ std::vector<std::pair<std::string, std::string> > predefinedMacros(const Backend
     // The language this compiler reads is C++11, and a program is entitled to
     // ask. 201103L is the value the standard fixes for it.
     add("__cplusplus", "201103L");
-    add("__STDC_HOSTED__", "1");
+    add("__STDC_HOSTED__", b.hosted() ? "1" : "0");
+    // [cpp.predefined]/2: 1 if and only if a program can have more than one thread of execution - the hosted
+    // targets, where <thread> starts one; not the C6747, which runs one (IMPLEMENTATION-DEFINED.md). Since 1.68.
+    if (b.hosted()) add("__STDCPP_THREADS__", "1");
     addTranslationTime(out);
     add("__CHAR_BIT__", "8");
     add("__SIZEOF_SHORT__", width(Kind::Short));

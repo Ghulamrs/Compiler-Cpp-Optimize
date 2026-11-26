@@ -1,0 +1,15 @@
+VALUE 42 a "b" 'c'
+42 7
+6
+5 five
+7
+if ok
+arith ok
+pp unsigned ok
+ops ok
+undef ok
+1
+44
+100 renamed.cpp
+__LINE__
+10

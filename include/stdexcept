@@ -93,9 +93,10 @@ public:
     explicit underflow_error(const char *what_arg) : runtime_error(what_arg) {}
 };
 
-// What `string::at` calls - declared in <string>, above the class that
-// `out_of_range` needs complete.
+// What `string::at` and a string grown past max_size() call - declared in <string>, above the class
+// that `out_of_range` and `length_error` need complete.
 inline void __throw_out_of_range(const char *what) { throw out_of_range(what); }
+inline void __throw_length_error(const char *what) { throw length_error(what); }
 
 }  // namespace std
 

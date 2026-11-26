@@ -1,0 +1,5 @@
+#include <cstdio>
+template <class T> struct K { static const int v = 0; }; template <class T> struct K<T *> { static const int v = 1; }; template <class T> struct K<const T> { static const int v = 2; }; template <class T, int N> struct K<T[N]> { static const int v = 10 + N; }; template <class R, class A> struct K<R (*)(A)> { static const int v = 4; }; template <class T> struct K<T &> { static const int v = 5; }; template <class R, class... As> struct K<R(As...)> { static const int v = 6 + sizeof...(As); }; template <class C, class M> struct K<M C::*> { static const int v = 8; };
+template <class T, class U> struct Two { static const int v = 0; }; template <class T> struct Two<T, T> { static const int v = 1; }; template <class T> struct Two<T, int> { static const int v = 2; };
+struct S { int m; };
+int main() { std::printf("%d %d %d %d %d %d %d %d %d %d %d\n", K<int>::v, K<int *>::v, K<const int>::v, K<int[3]>::v, K<int (*)(char)>::v, K<int &>::v, K<int(char, char)>::v, K<int S::*>::v, Two<char, char>::v, Two<char, int>::v, Two<char, long>::v); return 0; }

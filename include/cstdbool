@@ -1,0 +1,7 @@
+// <cstdbool> - [support.runtime]/8: bool, true and false are keywords in C++, so only the macro that says so.
+#ifndef _CXX1_CSTDBOOL
+#define _CXX1_CSTDBOOL
+
+#define __bool_true_false_are_defined 1
+
+#endif

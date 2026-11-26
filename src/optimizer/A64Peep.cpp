@@ -12,11 +12,7 @@ namespace {
 
 struct Line {
     std::string text;
-    bool dead;
-
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    Line(std::string text = std::string(), bool dead = false)
-        : text(std::move(text)), dead(dead) {}
+    bool dead = false;
 };
 
 std::string trim(const std::string &s) {
@@ -128,11 +124,7 @@ void directLocalLoads(std::vector<Line> &ls) {
 // ----- a register model: what each instruction reads and writes, and whether a value is dead after a line
 
 // A register as the model sees it: g for x/w, f for d/s, and its number; -1 for anything else.
-struct R {
-    char cls; int n;
-    // C++11 has no aggregate with a member initialiser, so the braces call this.
-    R(char cls = 0, int n = -1) : cls(cls), n(n) {}
-    bool ok() const { return n >= 0; } bool operator==(const R &o) const { return cls == o.cls && n == o.n; } };
+struct R { char cls = 0; int n = -1; bool ok() const { return n >= 0; } bool operator==(const R &o) const { return cls == o.cls && n == o.n; } };
 
 R regOf(const std::string &tok) {
     if (tok.size() < 2 || tok.size() > 3) return R{};

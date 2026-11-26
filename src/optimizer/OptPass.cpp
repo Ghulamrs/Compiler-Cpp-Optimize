@@ -4,6 +4,7 @@
 #include "Mir.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <set>
@@ -53,9 +54,24 @@ void PassManager::after(const Pass &pass, Function &fn, bool changed) {
     }
 }
 
+// **CPP11_PASS_TIMES set (and not 0): one stderr line per pass run** - its function, name and
+// milliseconds - for finding what grows with the input; nothing emitted depends on it.
+static bool passTimes() {
+    static const bool on = [] {
+        const char *v = std::getenv(program::env("PASS_TIMES").c_str());
+        return v != nullptr && *v != '\0' && std::string(v) != "0";
+    }();
+    return on;
+}
+
 bool PassManager::runLeaf(Pass &pass, Function &fn) {
     before(pass, fn);
+    const std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
     const bool changed = pass.execute(fn);
+    if (passTimes())
+        std::cerr << ";; time " << fn.name << " " << pass.info().name << " "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - began).count() << " ms\n";
     after(pass, fn, changed);
     return changed;
 }
@@ -147,7 +163,7 @@ void dumpStream(std::ostream &o, Function &fn) {
             if (e.ins.operands >= 2) o << ", " << operandText(e.ins.b);
             break;
         case Entry::Label: o << e.label << ":" << (e.state ? "  ; state" : ""); break;
-        case Entry::Event: o << "<event>"; break;
+        case Entry::Event: o << (e.debug ? "<debug>" : "<event>"); break;
         }
         o << "\n";
     }

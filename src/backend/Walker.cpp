@@ -6,6 +6,85 @@
 
 #include "../Source.h"
 
+namespace {
+// An lvalue of volatile type - a variable, a dereference, a member - read or written here.
+class VolatileScan final : public Visitor {
+public:
+    bool seen = false;
+    bool alloca = false;     // an `_alloca` (Call::isAlloca)
+    bool catches = false;    // a `try` with a handler: Microsoft's catch, or an Itanium row with types
+    void note(const Expr &n) { if (n.type() != nullptr && n.type()->isVolatile()) seen = true; }
+    void visit(const Num &) override {}
+    void visit(const Var &n) override { note(n); }
+    void visit(const StrLit &) override {}
+    void visit(const Goto &) override {}
+    void visit(const Break &) override {}
+    void visit(const Continue &) override {}
+    void visit(const FuncletLeave &) override {}
+    void visit(const Call &n) override {
+        if (n.isAlloca()) alloca = true;
+        if (n.callee() != nullptr) n.callee()->accept(*this);
+        for (const ExprPtr &a : n.args()) a->accept(*this);
+    }
+    void visit(const VaStart &n) override { n.list().accept(*this); }
+    void visit(const VaArg &n) override { n.list().accept(*this); }
+    void visit(const Assign &n) override { n.target().accept(*this); n.value().accept(*this); }
+    void visit(const Unary &n) override { note(n); n.operand().accept(*this); }
+    void visit(const Binary &n) override { n.lhs().accept(*this); n.rhs().accept(*this); }
+    void visit(const Postfix &n) override { n.target().accept(*this); }
+    void visit(const Cast &n) override { n.value().accept(*this); }
+    void visit(const Comma &n) override { n.left().accept(*this); n.right().accept(*this); }
+    void visit(const Conditional &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this); n.elseArm().accept(*this);
+    }
+    void visit(const MemberAccess &n) override { note(n); n.object().accept(*this); }
+    void visit(const ExprStmt &n) override { n.expr().accept(*this); }
+    void visit(const Return &n) override { if (n.hasValue()) n.value().accept(*this); }
+    void visit(const Block &n) override { for (const StmtPtr &s : n.body()) s->accept(*this); }
+    void visit(const If &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this);
+        if (n.elseArm() != nullptr) n.elseArm()->accept(*this);
+    }
+    void visit(const While &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const DoWhile &n) override { n.body().accept(*this); n.cond().accept(*this); }
+    void visit(const For &n) override {
+        if (n.init() != nullptr) n.init()->accept(*this);
+        if (n.cond() != nullptr) n.cond()->accept(*this);
+        if (n.step() != nullptr) n.step()->accept(*this);
+        n.body().accept(*this);
+    }
+    void visit(const Switch &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const Case &n) override { n.body().accept(*this); }
+    void visit(const Label &n) override { n.body().accept(*this); }
+    void visit(const Try &n) override {
+        if (!n.handlers().empty() || !n.typeIndices().empty()) catches = true;
+        for (const StmtPtr &s : n.body()) s->accept(*this);
+        if (n.hasPad()) n.pad().accept(*this);
+        if (n.cleanup() != nullptr) n.cleanup()->accept(*this);
+        for (const MsHandler &h : n.handlers())
+            if (h.body != nullptr) h.body->accept(*this);
+    }
+};
+}
+
+bool touchesVolatile(const Node &n) {
+    VolatileScan scan;
+    n.accept(scan);
+    return scan.seen;
+}
+
+bool callsAlloca(const Node &n) {
+    VolatileScan scan;
+    n.accept(scan);
+    return scan.alloca;
+}
+
+bool catchesHere(const Node &n) {
+    VolatileScan scan;
+    n.accept(scan);
+    return scan.catches;
+}
+
 void Walker::markLine(const Stmt &n) { markLine(n.pos()); }
 
 void Walker::markLine(std::size_t pos) {
@@ -51,7 +130,8 @@ void Walker::openBlock(int scope) {
     if (static_cast<std::size_t>(scope) >= blocks_.size()) return;
     std::size_t before = emittedSize();
     blocks_[scope].begin = label("blk.b", scope);
-    defineLabel(blocks_[scope].begin);
+    blocks_[scope].funclet = funcletNo_;
+    defineBlockLabel(blocks_[scope].begin);
     notCode_ += emittedSize() - before;
     Mark m;
     m.size = emittedSize();
@@ -69,7 +149,7 @@ void Walker::closeBlock(int scope) {
 
     std::size_t before = emittedSize();
     blocks_[scope].end = label("blk.e", scope);
-    defineLabel(blocks_[scope].end);
+    defineBlockLabel(blocks_[scope].end);
     notCode_ += emittedSize() - before;
 
     if (!code) {
@@ -109,7 +189,7 @@ void Walker::visit(const Block &n) {
     if (msCurState_ != msStateAtEntry) {
         const std::string l = label("stateend", nextLabel());
         defineStateLabel(l);
-        msIpRows_.push_back(MsIpRow{ l, msStateAtEntry });
+        msIpRows_.push_back(MsIpRow{ l, msStateAtEntry, funcletNo_ });
         msCurState_ = msStateAtEntry;
     }
     closeBlock(n.scope());
@@ -336,9 +416,10 @@ static int firstUnwindHelp(const Stmt &s) {
 // **-2 goes into the scratch word on entry, as cl's prologue writes it**: a call that throws before
 // the first region began - a local's constructor - found whatever the stack held there, and the
 // runtime took it for a state and destroyed an object that was never built.
-void Walker::storeUnwindHelpAtEntry(const Stmt &body) {
+void Walker::storeUnwindHelpAtEntry(const Stmt &body, int frame) {
     if (!usesFunclets()) return;
     msUnwindHelpSlot_ = firstUnwindHelp(body);
+    if (msUnwindHelpSlot_ == 0) msUnwindHelpSlot_ = frame;
     if (msUnwindHelpSlot_ != 0) storeUnwindHelp(msUnwindHelpSlot_);
 }
 
@@ -397,9 +478,10 @@ void Walker::msTryStatement(const Try &n) {
     const std::string begin = label("try", id);
     const std::string end = label("tryend", id);
     const std::string resume = label("caught", id);
-    // The FuncInfo names one scratch word per frame: the first region's, for all of them.
+    // The FuncInfo names one scratch word per frame: the first region's, for all of them. Not inside a
+    // handler, whose catch the runtime is in the middle of: it writes -2 there itself when the catch ends.
     if (msUnwindHelpSlot_ == 0) msUnwindHelpSlot_ = n.unwindHelpSlot();
-    storeUnwindHelp(msUnwindHelpSlot_);
+    if (!inFuncletBody()) storeUnwindHelp(msUnwindHelpSlot_);
 
     // This region's state, inside whatever encloses it; the body's own states
     // follow it in number, which is what tryLow..tryHigh relies on.
@@ -409,7 +491,7 @@ void Walker::msTryStatement(const Try &n) {
     s.toState = parent;
     msStates_.push_back(s);
     defineStateLabel(begin);
-    msIpRows_.push_back(MsIpRow{ begin, state });
+    msIpRows_.push_back(MsIpRow{ begin, state, funcletNo_ });
     msCurState_ = state;
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineStateLabel(end);
@@ -421,19 +503,22 @@ void Walker::msTryStatement(const Try &n) {
     // **A cleanup's objects outlive its range** - the next stretch of the same
     // block chains to it, and the block's end is what reverts the state.
     if (n.cleanup() != nullptr) {
-        const std::string funclet = beginFunclet();
+        const std::string funclet = openFunclet(n.cleanup()->pos(), true);
         n.cleanup()->accept(*this);
         endCleanupFunclet();
+        leaveFunclet();
         msStates_[state].action = funclet;
         msCurState_ = state;
         return;
     }
     msCurState_ = parent;
-    msIpRows_.push_back(MsIpRow{ end, parent });
+    msIpRows_.push_back(MsIpRow{ end, parent, funcletNo_ });
 
-    // The funclets come after the range they belong to is closed, so nothing
-    // they emit lands between `begin` and `end` - those bound the addresses the
-    // runtime matches a thrown object against, and a handler must not be inside.
+    // The funclets come after their range closes, so none lands between
+    // `begin` and `end`; **its row is taken where its body ends**, as cl
+    // orders them (an inner `try` before, a handler's `try` after).
+    const std::size_t tbAt = msTryBlocks_.size();
+    msTryBlocks_.push_back(MsTryBlock());
     MsTryBlock tb;
     tb.tryLow = state;
     tb.tryHigh = static_cast<int>(msStates_.size()) - 1;
@@ -450,16 +535,37 @@ void Walker::msTryStatement(const Try &n) {
         row.objectSlot = h.objectSlot;
         row.byReference = h.byReference;
         row.constPointer = h.constPointer;
-        row.funclet = beginFunclet();
+        // Entered on the `catch` line, as cl's funclet is.
+        row.funclet = openFunclet(h.pos, false);
+        const int number = funcletNo_;
         msCurState_ = hstate;
         h.body->accept(*this);
         msCurState_ = parent;
         endFunclet(resume);
-        msFuncletRows_.push_back(MsIpRow{ row.funclet, hstate });
+        leaveFunclet();
+        msFuncletRows_.push_back(MsIpRow{ row.funclet, hstate, number, true });
         tb.handlers.push_back(row);
+        if (!h.orNullptr.empty()) {
+            row.descriptor = h.orNullptr;
+            row.constPointer = false;
+            tb.handlers.push_back(row);
+        }
     }
     tb.catchHigh = static_cast<int>(msStates_.size()) - 1;
-    msTryBlocks_.push_back(tb);
+    msTryBlocks_[tbAt] = tb;
+}
+
+std::vector<Walker::MsIpRow> Walker::msIpTable() const {
+    std::vector<MsIpRow> rows;
+    for (const MsIpRow &r : msIpRows_)
+        if (r.funclet == 0) rows.push_back(r);
+    for (int f : funcletsLifted_) {
+        for (const MsIpRow &r : msFuncletRows_)
+            if (r.funclet == f) rows.push_back(r);
+        for (const MsIpRow &r : msIpRows_)
+            if (r.funclet == f) rows.push_back(r);
+    }
+    return rows;
 }
 
 void Walker::visit(const Continue &n) {
@@ -579,14 +685,15 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
         if (c.terminate) {
             if (types.size() < static_cast<std::size_t>(catchAll)) types.resize(static_cast<std::size_t>(catchAll));
             types[static_cast<std::size_t>(catchAll) - 1] = std::string();
-            o += "  .byte " + std::to_string(catchAll) + "\n";
+            o += "  .sleb128 " + std::to_string(catchAll) + "\n";
             o += "  .byte 0\n";
             continue;
         }
+        // The filter is a signed LEB128: one byte to 63, two past it (a try with 256 handlers), and the
+        // specification's negative index likewise; the displacement to the next record stays one byte.
         for (std::size_t k = 0; k < c.types.size(); k++) {
             if (c.types[k].compare(0, 5, "$spec") == 0) {
-                // One byte, as long as the specification table stays under 64.
-                o += "  .byte " + std::to_string(128 + filterOf(c.types[k])) + "\n";
+                o += "  .sleb128 " + std::to_string(filterOf(c.types[k])) + "\n";
                 const bool more = k + 1 < c.types.size() || c.cleanup;
                 o += "  .byte " + std::string(more ? "1" : "0") + "\n";
                 continue;
@@ -596,7 +703,7 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
                                        : types.size() + 1;
             if (types.size() < at) types.resize(at);
             types[at - 1] = c.types[k];
-            o += "  .byte " + std::to_string(at) + "\n";
+            o += "  .sleb128 " + std::to_string(at) + "\n";
             const bool more = k + 1 < c.types.size() || c.cleanup;
             o += "  .byte " + std::string(more ? "1" : "0") + "\n";
         }

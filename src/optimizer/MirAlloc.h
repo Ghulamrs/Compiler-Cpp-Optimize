@@ -75,6 +75,10 @@ private:
     std::vector<bool> freshFor_;            // may take a preserved register nobody has yet
     std::vector<std::vector<int>> copiesOf_;
     std::vector<std::vector<Copy>> physCopies_;   // per node: its copies to or from a physical register
+    // Past a few rounds select goes on after a failure and every node it could not colour is
+    // demoted at once - one round per node was quadratic in a long block's rounds.
+    bool batch_ = false;
+    std::vector<int> failedAll_;
 
     void findUses();
     void solveLiveness();

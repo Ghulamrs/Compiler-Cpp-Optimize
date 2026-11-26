@@ -1,0 +1,6 @@
+| local
+move | param
+copy move | member
+copy | cond
+copy | ref
+move | explicit

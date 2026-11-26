@@ -1,0 +1,14 @@
+1
+2 0 1
+weak 2 0
+1 1
+~Derived 1
+~Base 1
+weak 0 1 1
+caught bad_weak_ptr
+6 5
+Tell deletes 5
+Tell deletes 6
+9
+alias 4 1
+0 1 0

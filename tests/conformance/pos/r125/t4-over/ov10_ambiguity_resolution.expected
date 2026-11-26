@@ -1,0 +1,6 @@
+non-const const
+int* const int*
+int& const int& const int&
+int int long
+char int int
+const char* const void*

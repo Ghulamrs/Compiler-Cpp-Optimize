@@ -9,17 +9,34 @@
 // **Whether the operand ahead mentions a parameter of the pattern being read**, scanning to the
 // first `,` `>` `>>` (with `angle`) or unbalanced `)` at depth 0: clang's "instantiation-dependent".
 bool Parser::dependentAhead(bool angle) const {
+    // A template-id's own `<...>` is inside the operand: `is_base_of<C, T>::value` is one argument, not two.
+    int ids = 0;
     for (std::size_t k = 0, depth = 0; peekAt(k).kind != TokenKind::End; k++) {
         const Token &t = peekAt(k);
+        if (t.is("<") && k > 0 && peekAt(k - 1).kind == TokenKind::Ident && isTemplateName(peekAt(k - 1).text)) {
+            ids++;
+            continue;
+        }
+        if (ids > 0 && (t.is(">") || t.is(">>"))) {
+            ids -= t.is(">>") ? 2 : 1;
+            if (ids < 0) { if (angle && depth == 0) return false; ids = 0; }
+            continue;
+        }
         if (t.is("(") || t.is("[") || t.is("{")) depth++;
         else if (t.is(")") || t.is("]") || t.is("}")) {
             if (depth == 0) return false;
             depth--;
-        } else if (depth == 0 && (t.is(";") || (angle && (t.is(",") || t.is(">") || t.is(">>")))))
+        } else if (depth == 0 && ids == 0 && (t.is(";") || (angle && (t.is(",") || t.is(">") || t.is(">>")))))
             return false;
         else if (t.kind == TokenKind::Ident) {
             if (k > 0 && (peekAt(k - 1).is(".") || peekAt(k - 1).is("->"))) continue;
-            if (nonTypePatternParams_.count(t.text) != 0 || packs_.count(t.text) != 0) return true;
+            if (nonTypePatternParams_.count(t.text) != 0) return true;
+            // A pack bound to its members in an instantiation depends on nothing; one in a pattern does.
+            const auto pk = packs_.find(t.text);
+            if (pk != packs_.end()) {
+                for (const Type *m : pk->second.types)
+                    if (dependentType(m)) return true;
+            }
             if (boundTypeParams_.count(t.text) != 0) {
                 const Type *bound = findTypedef(t.text);
                 if (bound != nullptr && dependentType(bound)) return true;
@@ -123,8 +140,22 @@ const DepExpr *Parser::depUnary(bool angle) {
         }
     if (peek().is("sizeof")) {
         at_++;
-        if (peek().is("...")) depRefuse(pos, "'sizeof...'");
         DepExpr n;
+        // `sizeof...(I)` of a template parameter pack: `Table<int, sizeof...(I)> squares(Seq<I...>)` (1.82: refused).
+        if (peek().is("...")) {
+            at_++;
+            const bool paren = consume("(");
+            const auto pk = peek().kind == TokenKind::Ident ? packs_.find(peek().text) : packs_.end();
+            if (pk == packs_.end() || pk->second.functionParameter || pk->second.types.size() != 1 ||
+                pk->second.types[0] == nullptr || pk->second.types[0]->kind() != Kind::TemplateParam)
+                depRefuse(pos, "'sizeof...' of anything but a template parameter pack");
+            n.op = DepExpr::SizeofPack;
+            n.index = static_cast<int>(pk->second.types[0]->length());
+            n.type = types_.get(target_.sizeType());
+            at_++;
+            if (paren) expect(")");
+            return depNode(n);
+        }
         if (peek().is("(") && parenHoldsTypeId()) {
             at_++;
             StorageClass sc;
@@ -188,6 +219,13 @@ const DepExpr *Parser::depPostfix(bool angle) {
             n.kids = { e };
             while (!consume(")")) {
                 n.kids.push_back(dependentExpression(false, false));
+                // `std::forward<A>(a)...`, [temp.variadic]/4: the argument repeated for each member.
+                if (consume("...")) {
+                    DepExpr x;
+                    x.op = DepExpr::PackExpansion;
+                    x.kids = { n.kids.back() };
+                    n.kids.back() = depNode(x);
+                }
                 if (!peek().is(")")) expect(",");
             }
             e = depNode(n);
@@ -290,7 +328,142 @@ const DepExpr *Parser::depPrimary(bool angle) {
     }
     if (tok.kind == TokenKind::Ident) {
         const std::string &name = tok.text;
-        if (packs_.count(name) != 0) depRefuse(pos, "a parameter pack");
+        // **`std::is_integral<T>::value`, `Mine<T>::value`** - a static member of a class template's
+        // specialization over the parameters: the dependent member the type reader makes, read as a value.
+        {
+            std::size_t k = 0;
+            std::string written = peekAt(0).text;
+            while (peekAt(k + 1).is("::") && peekAt(k + 2).kind == TokenKind::Ident) {
+                k += 2;
+                written += "::" + peekAt(k).text;
+            }
+            if (peekAt(k + 1).is("<") && isClassTemplate(written)) {
+                std::size_t j = k + 1;
+                for (int depth = 0; peekAt(j).kind != TokenKind::End; j++) {
+                    if (depth > 0 && (peekAt(j).is("(") || peekAt(j).is("["))) { j = groupCloseAt(at_ + j) - at_; continue; }
+                    if (peekAt(j).is("<")) depth++;
+                    else if (peekAt(j).is(">")) { if (--depth == 0) break; }
+                    else if (peekAt(j).is(">>")) { depth -= 2; if (depth <= 0) break; }
+                }
+                if (peekAt(j + 1).is("::") && peekAt(j + 2).kind == TokenKind::Ident && !peekAt(j + 3).is("(") &&
+                    !peekAt(j + 3).is("<") && !peekAt(j + 3).is("::")) {
+                    // Arguments naming only parameters already bound to types - `R<T>::value` in a member
+                    // template of complex<double> - make a real class, whose member is a constant.
+                    bool concrete = true;
+                    for (std::size_t m = k + 2; m < j && concrete; m++) {
+                        const Token &a = peekAt(m);
+                        if (a.kind != TokenKind::Ident) continue;
+                        if (nonTypePatternParams_.count(a.text) != 0 || packs_.count(a.text) != 0) concrete = false;
+                        else if (const Type *bt = findTypedef(a.text)) concrete = !dependentType(bt);
+                    }
+                    if (concrete) {
+                        struct Pattern {
+                            bool &f; bool was;
+                            ~Pattern() { f = was; }
+                        } pattern{ patternOnly_, patternOnly_ };
+                        patternOnly_ = false;
+                        Discarded held(this);
+                        Unevaluated unevaluated(this);
+                        ExprPtr v = primary(current_);
+                        long long value = 0;
+                        if (v->type() == nullptr || !v->type()->isInteger() || !fold(*v, &value, pos))
+                            depRefuse(pos, "the member '" + peekAt(0).text + "' of a class template's specialization");
+                        n.op = DepExpr::Literal;
+                        n.type = v->type()->unqualified();
+                        n.value = value;
+                        return depNode(n);
+                    }
+                    const bool wasPattern = patternOnly_;
+                    patternOnly_ = true;
+                    StorageClass sc;
+                    const Type *t = specifiers(&sc);
+                    patternOnly_ = wasPattern;
+                    if (t->kind() == Kind::DependentMember) {
+                        n.op = DepExpr::ScopedMember;
+                        n.type = t;
+                        return depNode(n);
+                    }
+                    depRefuse(pos, "the member '" + peekAt(0).text + "' of a class template's specialization");
+                }
+            }
+        }
+        if (isTypeTraitName(name) && peekAt(1).is("(")) {
+            n.op = DepExpr::TypeTrait;
+            n.name = name;
+            at_ += 2;
+            while (!consume(")")) {
+                // `Args...`: the pack standing for itself, `DpT0_`.
+                auto pk = peek().kind == TokenKind::Ident && peekAt(1).is("...") ? packs_.find(peek().text)
+                                                                                  : packs_.end();
+                const Type *t = nullptr;
+                if (pk != packs_.end() && pk->second.standsForItself()) {
+                    t = types_.packExpansion(pk->second.types[0]);
+                    at_ += 2;
+                } else {
+                    StorageClass sc;
+                    t = declarator(specifiers(&sc), true).type;
+                    if (consume("...")) t = types_.packExpansion(t);
+                }
+                n.targs.push_back(t);
+                if (!peek().is(")")) expect(",");
+            }
+            return depNode(n);
+        }
+        // A function parameter pack in the pattern is its parameter, `fp0_`; a pack of an instantiation read
+        // before may still be listed under the same name.
+        const Local *asParam = findLocal(name);
+        if (packs_.count(name) != 0 && (asParam == nullptr || asParam->trailingParam < 0))
+            depRefuse(pos, "a parameter pack");
+        // **`N::K::get(t)`, `std::declval<T>()`: a function named qualified**, whose name depends on nothing.
+        // The one function it names is spelled by its symbol; an overload set or a template by its name.
+        std::size_t chain = 1;
+        while (peekAt(chain).is("::") && peekAt(chain + 1).kind == TokenKind::Ident) chain += 2;
+        if (chain > 1 && boundTypeParams_.count(name) == 0 && qualifiedTypeEnd() != chain) {
+            std::vector<std::string> scope;
+            for (std::size_t k = 0; k + 1 < chain; k += 2) scope.push_back(peekAt(k).text);
+            const std::string leaf = peekAt(chain - 1).text;
+            std::string full;
+            for (const std::string &s : scope) full += s + "::";
+            full += leaf;
+            at_ += chain;
+            std::vector<const Type *> targs;
+            if (peek().is("<")) {
+                at_++;
+                const bool wasArgs = inTemplateArgs_;
+                inTemplateArgs_ = true;
+                while (!peek().is(">") && !peek().is(">>")) {
+                    // A pack named inside the pattern of an expansion is its member, `T0_`; `A...` all of them.
+                    const auto pk = peek().kind == TokenKind::Ident ? packs_.find(peek().text) : packs_.end();
+                    if (pk != packs_.end() && pk->second.standsForItself() &&
+                        (peekAt(1).is(",") || peekAt(1).is(">") || peekAt(1).is(">>") || peekAt(1).is("..."))) {
+                        at_++;
+                        targs.push_back(consume("...") ? types_.packExpansion(pk->second.types[0])
+                                                       : pk->second.types[0]);
+                        if (!consume(",")) break;
+                        continue;
+                    }
+                    StorageClass sc;
+                    targs.push_back(declarator(specifiers(&sc), true).type);
+                    if (!consume(",")) break;
+                }
+                inTemplateArgs_ = wasArgs;
+                takeClosingAngle();
+            }
+            const std::vector<std::size_t> *set = overloadsOf(qualifyForLookup(full, &Parser::hasFunctionNamed));
+            const bool templ = !targs.empty() || fnTemplates_.count(leaf) != 0;
+            if (!templ && set != nullptr && set->size() == 1 && !functions_[(*set)[0]].fromTemplate) {
+                n.op = DepExpr::ExternalName;
+                n.name = functions_[(*set)[0]].symbol;
+            } else if (templ || set != nullptr) {
+                n.op = DepExpr::QualifiedName;
+                n.scope = scope;
+                n.name = leaf;
+                n.targs = targs;
+            } else {
+                depRefuse(pos, "the qualified name '" + full + "', which names no function,");
+            }
+            return depNode(n);
+        }
         // A type parameter: `T(x)` is a cast, `T::count` the unresolved `sr T_ 5count`.
         if (boundTypeParams_.count(name) != 0) {
             const Type *t = findTypedef(name);

@@ -1,0 +1,4 @@
+E1 E2(copy) in(2) ~E2 ~E1 | caught int
+E3 E4(copy) in(4) ~E4 ~E3 | end
+E5 E6(copy) in(6) ~E6 ~E5 | return
+E7 E8(copy) in(8) ~E8 | caught E7 ~E7 

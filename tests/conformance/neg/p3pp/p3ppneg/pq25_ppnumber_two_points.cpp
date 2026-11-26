@@ -1,0 +1,1 @@
+int main() { double d = 1.2.3; return (int)d; }

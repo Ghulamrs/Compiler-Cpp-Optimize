@@ -1,0 +1,439 @@
+// <future> - [futures]: future_error and its category, promise, future, shared_future, packaged_task and
+// async.
+//
+// One shared state per asynchronous result: a value or an exception, a ready flag under a mutex and a
+// condition variable, and - for async(launch::deferred) - the call that makes the value the first time it is
+// waited for. Its owners hold it by shared_ptr. launch::async runs the call on a std::thread that is joined
+// when the last future of it lets go, [futures.async]/5's "as if" the thread were joined there.
+#ifndef _CXX1_FUTURE
+#define _CXX1_FUTURE
+
+#include <chrono>
+#include <condition_variable>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <system_error>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <__invoke>
+
+namespace std {
+
+// [futures.errors]
+enum class future_errc { future_already_retrieved = 1, promise_already_satisfied = 2, no_state = 3, broken_promise = 4 };
+template <> struct is_error_code_enum<future_errc> : true_type {};
+class __cxx1_future_category : public error_category {
+public:
+    virtual const char *name() const noexcept { return "future"; }
+    virtual string message(int ev) const {
+        switch (ev) {
+        case 1: return "future already retrieved";
+        case 2: return "promise already satisfied";
+        case 3: return "no state";
+        case 4: return "broken promise";
+        }
+        return "unknown future error";
+    }
+};
+inline const error_category &future_category() noexcept {
+    static const __cxx1_future_category c;
+    return c;
+}
+inline error_code make_error_code(future_errc e) noexcept { return error_code(static_cast<int>(e), future_category()); }
+inline error_condition make_error_condition(future_errc e) noexcept { return error_condition(static_cast<int>(e), future_category()); }
+
+class future_error : public logic_error {
+    error_code code_;
+
+public:
+    explicit future_error(const error_code &ec) : logic_error(ec.message()), code_(ec) {}
+    const error_code &code() const noexcept { return code_; }
+};
+inline void __cxx1_future_throw(future_errc e) { throw future_error(make_error_code(e)); }
+
+enum class launch { async = 1, deferred = 2 };
+inline constexpr launch operator&(launch a, launch b) { return static_cast<launch>(static_cast<int>(a) & static_cast<int>(b)); }
+inline constexpr launch operator|(launch a, launch b) { return static_cast<launch>(static_cast<int>(a) | static_cast<int>(b)); }
+inline constexpr launch operator^(launch a, launch b) { return static_cast<launch>(static_cast<int>(a) ^ static_cast<int>(b)); }
+inline constexpr launch operator~(launch a) { return static_cast<launch>(~static_cast<int>(a) & 3); }
+inline launch &operator&=(launch &a, launch b) { return a = a & b; }
+inline launch &operator|=(launch &a, launch b) { return a = a | b; }
+inline launch &operator^=(launch &a, launch b) { return a = a ^ b; }
+
+enum class future_status { ready, timeout, deferred };
+
+// The shared state. A reference result is held as a pointer, void as nothing.
+template <class R> struct __cxx1_slot {
+    typedef R stored;
+    typedef const R &shared_type;
+    static R &&out(stored &v) { return std::move(v); }
+    static const R &peek(stored &v) { return v; }
+};
+template <class R> struct __cxx1_slot<R &> {
+    typedef R *stored;
+    typedef R &shared_type;
+    static R &out(stored &v) { return *v; }
+    static R &peek(stored &v) { return *v; }
+};
+template <> struct __cxx1_slot<void> {
+    typedef bool stored;
+    typedef void shared_type;
+    static void out(stored &) {}
+    static void peek(stored &) {}
+};
+
+template <class R> class __cxx1_state {
+public:
+    typedef typename __cxx1_slot<R>::stored stored;
+    mutex m;
+    condition_variable cv;
+    bool ready = false;
+    bool retrieved = false;
+    bool hasValue = false;
+    bool holdReady = false;      // a result stored now and made ready at the thread's exit
+    exception_ptr error;
+    // Raw storage, so R need not be default-constructible.
+    typename aligned_storage<sizeof(stored), alignment_of<stored>::value>::type value;
+    function<void()> deferred;   // run once by the first wait, launch::deferred
+    thread worker;               // joined by the last owner, launch::async
+
+    __cxx1_state() {}
+    ~__cxx1_state() {
+        if (worker.joinable()) worker.join();
+        if (hasValue) reinterpret_cast<stored *>(&value)->~stored();
+    }
+    stored &slot() { return *reinterpret_cast<stored *>(&value); }
+
+    // With m held.
+    void markReady() {
+        if (holdReady) return;
+        ready = true;
+        cv.notify_all();
+    }
+    bool satisfied() const { return ready || hasValue || error != nullptr; }
+    template <class V> void setValue(V &&v) {
+        lock_guard<mutex> lk(m);
+        if (satisfied()) __cxx1_future_throw(future_errc::promise_already_satisfied);
+        ::new (static_cast<void *>(&value)) stored(std::forward<V>(v));
+        hasValue = true;
+        markReady();
+    }
+    void setError(exception_ptr e) {
+        lock_guard<mutex> lk(m);
+        if (satisfied()) __cxx1_future_throw(future_errc::promise_already_satisfied);
+        error = e;
+        markReady();
+    }
+    // The thread's exit makes a held result ready; the state is kept alive until then.
+    static void readyAtExit(void *p) {
+        shared_ptr<__cxx1_state> *keep = static_cast<shared_ptr<__cxx1_state> *>(p);
+        {
+            lock_guard<mutex> lk((*keep)->m);
+            (*keep)->holdReady = false;
+            (*keep)->markReady();
+        }
+        delete keep;
+    }
+    static void holdUntilExit(const shared_ptr<__cxx1_state> &s) {
+        __cxx1_thread_exit_list().calls.push_back(&__cxx1_state::readyAtExit);
+        __cxx1_thread_exit_list().args.push_back(new shared_ptr<__cxx1_state>(s));
+    }
+    void runDeferred(unique_lock<mutex> &lk) {
+        if (!deferred) return;
+        function<void()> f;
+        f.swap(deferred);
+        lk.unlock();
+        f();
+        lk.lock();
+    }
+    void wait() {
+        unique_lock<mutex> lk(m);
+        runDeferred(lk);
+        while (!ready) cv.wait(lk);
+    }
+    template <class Clock, class Duration> future_status waitUntil(const chrono::time_point<Clock, Duration> &t) {
+        unique_lock<mutex> lk(m);
+        if (deferred) return future_status::deferred;
+        while (!ready)
+            if (cv.wait_until(lk, t) == cv_status::timeout) return ready ? future_status::ready : future_status::timeout;
+        return future_status::ready;
+    }
+    // After wait(): the value, or the exception rethrown.
+    void check() {
+        if (error) rethrow_exception(error);
+    }
+};
+
+// What a promise or packaged_task sets: a value made by calling something, or the exception it threw.
+template <class R> struct __cxx1_setter {
+    template <class F> static void call(__cxx1_state<R> &s, F &f) { s.setValue(f()); }
+};
+template <class R> struct __cxx1_setter<R &> {
+    template <class F> static void call(__cxx1_state<R &> &s, F &f) { s.setValue(&f()); }
+};
+template <> struct __cxx1_setter<void> {
+    template <class F> static void call(__cxx1_state<void> &s, F &f) { f(); s.setValue(true); }
+};
+
+template <class R> class shared_future;
+
+// [futures.unique_future]
+template <class R> class __cxx1_future_base {
+protected:
+    shared_ptr<__cxx1_state<R> > s_;
+    void need() const { if (!s_) __cxx1_future_throw(future_errc::no_state); }
+
+public:
+    bool valid() const noexcept { return s_ != nullptr; }
+    void wait() const { need(); s_->wait(); }
+    template <class Rep, class Period> future_status wait_for(const chrono::duration<Rep, Period> &d) const {
+        need();
+        return s_->waitUntil(chrono::steady_clock::now() + d);
+    }
+    template <class Clock, class Duration> future_status wait_until(const chrono::time_point<Clock, Duration> &t) const {
+        need();
+        return s_->waitUntil(t);
+    }
+    shared_ptr<__cxx1_state<R> > &__cxx1_state_ref() { return s_; }
+};
+
+template <class R> class future : public __cxx1_future_base<R> {
+public:
+    future() noexcept {}
+    explicit future(const shared_ptr<__cxx1_state<R> > &s) { this->s_ = s; }
+    future(future &&f) noexcept { this->s_.swap(f.s_); }
+    future(const future &) = delete;
+    ~future() {}
+    future &operator=(const future &) = delete;
+    future &operator=(future &&f) noexcept { this->s_.reset(); this->s_.swap(f.s_); return *this; }
+    shared_future<R> share();
+    R get() {
+        this->need();
+        shared_ptr<__cxx1_state<R> > s;
+        s.swap(this->s_);
+        s->wait();
+        s->check();
+        return __cxx1_slot<R>::out(s->slot());
+    }
+};
+
+template <class R> class shared_future : public __cxx1_future_base<R> {
+public:
+    shared_future() noexcept {}
+    shared_future(const shared_future &f) { this->s_ = f.s_; }
+    shared_future(future<R> &&f) noexcept { this->s_.swap(f.__cxx1_state_ref()); }
+    shared_future(shared_future &&f) noexcept { this->s_.swap(f.s_); }
+    ~shared_future() {}
+    shared_future &operator=(const shared_future &f) { this->s_ = f.s_; return *this; }
+    shared_future &operator=(shared_future &&f) noexcept { this->s_.reset(); this->s_.swap(f.s_); return *this; }
+    typename __cxx1_slot<R>::shared_type get() const {
+        this->need();
+        this->s_->wait();
+        this->s_->check();
+        return __cxx1_slot<R>::peek(this->s_->slot());
+    }
+};
+
+template <class R> shared_future<R> future<R>::share() { return shared_future<R>(std::move(*this)); }
+
+// [futures.promise]
+template <class R> class __cxx1_promise_base {
+protected:
+    shared_ptr<__cxx1_state<R> > s_;
+    void need() const { if (!s_) __cxx1_future_throw(future_errc::no_state); }
+
+public:
+    __cxx1_promise_base() : s_(make_shared<__cxx1_state<R> >()) {}
+    __cxx1_promise_base(__cxx1_promise_base &&p) noexcept { s_.swap(p.s_); }
+    __cxx1_promise_base(const __cxx1_promise_base &) = delete;
+    ~__cxx1_promise_base() {
+        if (s_ && !s_->satisfied() && s_.use_count() > 1)
+            s_->setError(make_exception_ptr(future_error(make_error_code(future_errc::broken_promise))));
+    }
+    future<R> get_future() {
+        need();
+        lock_guard<mutex> g(s_->m);
+        if (s_->retrieved) __cxx1_future_throw(future_errc::future_already_retrieved);
+        s_->retrieved = true;
+        return future<R>(s_);
+    }
+    void set_exception(exception_ptr p) { need(); s_->setError(p); }
+    void set_exception_at_thread_exit(exception_ptr p) {
+        need();
+        s_->holdReady = true;
+        try { s_->setError(p); } catch (...) { s_->holdReady = false; throw; }
+        __cxx1_state<R>::holdUntilExit(s_);
+    }
+    template <class V> void storeAtExit(V &&v) {
+        need();
+        s_->holdReady = true;
+        try { s_->setValue(std::forward<V>(v)); } catch (...) { s_->holdReady = false; throw; }
+        __cxx1_state<R>::holdUntilExit(s_);
+    }
+};
+
+template <class R> class promise : public __cxx1_promise_base<R> {
+public:
+    promise() {}
+    template <class Alloc> promise(allocator_arg_t, const Alloc &) {}
+    promise(promise &&p) noexcept : __cxx1_promise_base<R>(std::move(p)) {}
+    promise(const promise &) = delete;
+    ~promise() {}
+    promise &operator=(promise &&p) noexcept { promise(std::move(p)).swap(*this); return *this; }
+    promise &operator=(const promise &) = delete;
+    void swap(promise &p) noexcept { this->s_.swap(p.s_); }
+    void set_value(const R &v) { this->need(); this->s_->setValue(v); }
+    void set_value(R &&v) { this->need(); this->s_->setValue(std::move(v)); }
+    void set_value_at_thread_exit(const R &v) { this->storeAtExit(v); }
+    void set_value_at_thread_exit(R &&v) { this->storeAtExit(std::move(v)); }
+};
+template <class R> class promise<R &> : public __cxx1_promise_base<R &> {
+public:
+    promise() {}
+    template <class Alloc> promise(allocator_arg_t, const Alloc &) {}
+    promise(promise &&p) noexcept : __cxx1_promise_base<R &>(std::move(p)) {}
+    promise(const promise &) = delete;
+    ~promise() {}
+    promise &operator=(promise &&p) noexcept { promise(std::move(p)).swap(*this); return *this; }
+    promise &operator=(const promise &) = delete;
+    void swap(promise &p) noexcept { this->s_.swap(p.s_); }
+    void set_value(R &v) { this->need(); this->s_->setValue(&v); }
+    void set_value_at_thread_exit(R &v) { this->storeAtExit(&v); }
+};
+template <> class promise<void> : public __cxx1_promise_base<void> {
+public:
+    promise() {}
+    template <class Alloc> promise(allocator_arg_t, const Alloc &) {}
+    promise(promise &&p) noexcept : __cxx1_promise_base<void>(std::move(p)) {}
+    promise(const promise &) = delete;
+    ~promise() {}
+    promise &operator=(promise &&p) noexcept { promise(std::move(p)).swap(*this); return *this; }
+    promise &operator=(const promise &) = delete;
+    void swap(promise &p) noexcept { this->s_.swap(p.s_); }
+    void set_value() { this->need(); this->s_->setValue(true); }
+    void set_value_at_thread_exit() { this->storeAtExit(true); }
+};
+template <class R> void swap(promise<R> &x, promise<R> &y) noexcept { x.swap(y); }
+template <class R, class Alloc> struct uses_allocator<promise<R>, Alloc> : true_type {};
+
+// [futures.task]
+template <class> class packaged_task;
+template <class R, class... Args> class packaged_task<R(Args...)> {
+    function<R(Args...)> f_;
+    shared_ptr<__cxx1_state<R> > s_;
+
+    void need() const { if (!s_) __cxx1_future_throw(future_errc::no_state); }
+    // The call bound to its arguments, for __cxx1_setter.
+    template <class... A> struct bound {
+        function<R(Args...)> &f;
+        tuple<A &&...> held;
+        template <size_t... I> R go(__cxx1_indices<I...>) { return f(std::forward<A>(std::get<I>(held))...); }
+        R operator()() { return go(typename __cxx1_make_indices<sizeof...(A)>::type()); }
+    };
+
+public:
+    typedef R result_type;
+    packaged_task() noexcept {}
+    // Only a callable of Args: [futures.task.members]/2 requires one, and an unconstrained constructor would be
+    // instantiated for every type a tuple holding a packaged_task asks about.
+    template <class F, class = typename enable_if<!is_same<typename decay<F>::type, packaged_task>::value &&
+                                                  __cxx1_callable<typename decay<F>::type &, Args...>::value>::type>
+    explicit packaged_task(F &&f) : f_(std::forward<F>(f)), s_(make_shared<__cxx1_state<R> >()) {}
+    template <class F, class Alloc> packaged_task(allocator_arg_t, const Alloc &, F &&f)
+        : f_(std::forward<F>(f)), s_(make_shared<__cxx1_state<R> >()) {}
+    ~packaged_task() {
+        if (s_ && !s_->satisfied() && s_.use_count() > 1)
+            s_->setError(make_exception_ptr(future_error(make_error_code(future_errc::broken_promise))));
+    }
+    packaged_task(const packaged_task &) = delete;
+    packaged_task &operator=(const packaged_task &) = delete;
+    packaged_task(packaged_task &&p) noexcept { f_.swap(p.f_); s_.swap(p.s_); }
+    packaged_task &operator=(packaged_task &&p) noexcept { packaged_task(std::move(p)).swap(*this); return *this; }
+    void swap(packaged_task &p) noexcept { f_.swap(p.f_); s_.swap(p.s_); }
+    bool valid() const noexcept { return s_ != nullptr; }
+
+    future<R> get_future() {
+        need();
+        lock_guard<mutex> g(s_->m);
+        if (s_->retrieved) __cxx1_future_throw(future_errc::future_already_retrieved);
+        s_->retrieved = true;
+        return future<R>(s_);
+    }
+    void operator()(Args... args) {
+        need();
+        { lock_guard<mutex> g(s_->m); if (s_->satisfied()) __cxx1_future_throw(future_errc::promise_already_satisfied); }
+        bound<Args...> b = { f_, tuple<Args &&...>(std::forward<Args>(args)...) };
+        try {
+            __cxx1_setter<R>::call(*s_, b);
+        } catch (...) {
+            s_->setError(current_exception());
+        }
+    }
+    void make_ready_at_thread_exit(Args... args) {
+        need();
+        { lock_guard<mutex> g(s_->m); if (s_->satisfied()) __cxx1_future_throw(future_errc::promise_already_satisfied); }
+        s_->holdReady = true;
+        (*this)(std::forward<Args>(args)...);
+        __cxx1_state<R>::holdUntilExit(s_);
+    }
+    void reset() {
+        need();
+        s_ = make_shared<__cxx1_state<R> >();
+    }
+};
+template <class R, class... Args> void swap(packaged_task<R(Args...)> &x, packaged_task<R(Args...)> &y) noexcept { x.swap(y); }
+template <class R, class Alloc> struct uses_allocator<packaged_task<R>, Alloc> : true_type {};
+
+// [futures.async]
+template <class R, class F, class... A> struct __cxx1_async_call {
+    __cxx1_state<R> *s;
+    tuple<__cxx1_call_slot<F>, __cxx1_call_slot<A>...> call;
+    template <class G, class... B> __cxx1_async_call(__cxx1_state<R> *st, G &&g, B &&... b)
+        : s(st), call(std::forward<G>(g), std::forward<B>(b)...) {}
+    template <size_t... I> R go(__cxx1_indices<I...>) { return __cxx1_invoke(std::move(std::get<I>(call).v)...); }
+    R operator()() { return go(typename __cxx1_make_indices<1 + sizeof...(A)>::type()); }
+    void run() {
+        try {
+            __cxx1_setter<R>::call(*s, *this);
+        } catch (...) {
+            s->setError(current_exception());
+        }
+    }
+};
+
+template <class C> void __cxx1_async_run(const shared_ptr<C> &c) { c->run(); }
+
+template <class F, class... Args>
+future<typename __cxx1_invoke_result<typename decay<F>::type, typename decay<Args>::type...>::type>
+async(launch policy, F &&f, Args &&... args) {
+    typedef typename __cxx1_invoke_result<typename decay<F>::type, typename decay<Args>::type...>::type R;
+    typedef __cxx1_async_call<R, typename decay<F>::type, typename decay<Args>::type...> call_type;
+    shared_ptr<__cxx1_state<R> > s = make_shared<__cxx1_state<R> >();
+    shared_ptr<call_type> c(new call_type(s.get(), std::forward<F>(f), std::forward<Args>(args)...));
+    s->retrieved = true;
+    if ((policy & launch::async) == launch::async) {
+        try {
+            s->worker = thread(&__cxx1_async_run<call_type>, c);
+            c.reset();
+            return future<R>(s);
+        } catch (const system_error &) {
+            if ((policy & launch::deferred) != launch::deferred) throw;
+        }
+    }
+    s->deferred = [c]() { c->run(); };
+    return future<R>(s);
+}
+template <class F, class... Args, class = typename enable_if<!is_same<typename decay<F>::type, launch>::value>::type>
+future<typename __cxx1_invoke_result<typename decay<F>::type, typename decay<Args>::type...>::type>
+async(F &&f, Args &&... args) {
+    return async(launch::async | launch::deferred, std::forward<F>(f), std::forward<Args>(args)...);
+}
+
+}  // namespace std
+
+#endif

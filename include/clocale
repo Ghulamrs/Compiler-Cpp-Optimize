@@ -1,0 +1,13 @@
+// <clocale> - [c.locales]: lconv, setlocale and localeconv under std::; the LC_ names are macros.
+#ifndef _CXX1_CLOCALE
+#define _CXX1_CLOCALE
+
+#include <locale.h>
+
+namespace std {
+using ::lconv;
+using ::setlocale;
+using ::localeconv;
+}  // namespace std
+
+#endif

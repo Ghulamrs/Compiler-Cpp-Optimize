@@ -85,6 +85,24 @@ void Parser::refuseScopedOperand(const Type *a, const Type *b, const char *op, s
                    "type, and a cast reaches the integer");
 }
 
+// Whether `to` is a base of `from` along non-virtual derivations only.
+static bool nonVirtualBasePath(const Type *from, const Type *to) {
+    for (const Type::BaseSpec &b : from->unqualified()->bases()) {
+        if (b.isVirtual) continue;
+        if (b.type->unqualified() == to || nonVirtualBasePath(b.type, to)) return true;
+    }
+    return false;
+}
+
+// Every virtual base of `cls`, its own and its bases'.
+static void virtualBasesOf(const Type *cls, std::vector<const Type *> *out) {
+    for (const Type::BaseSpec &b : cls->unqualified()->bases()) {
+        const Type *t = b.type->unqualified();
+        if (b.isVirtual && std::find(out->begin(), out->end(), t) == out->end()) out->push_back(t);
+        virtualBasesOf(t, out);
+    }
+}
+
 ExprPtr Parser::baseSubobject(ExprPtr e, const Type *base) const {
     const Type *from = e->type();
     const Type *want = from->isConst() ? types_.withConst(base->unqualified()) : base->unqualified();
@@ -126,10 +144,23 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         e->type()->unqualified() != to->unqualified() &&
         anyBaseOffset(e->type()->unqualified(), to->unqualified()) < 0) {
         Parser *self = const_cast<Parser *>(this);
-        if (const Signature *how = self->conversionFunction(e->type(), to, allowExplicit)) {
+        const Signature *found = self->conversionFunction(e->type(), to, allowExplicit);
+        std::string how = found != nullptr ? found->name : std::string();
+        // [over.match.copy]/1: in a copy-initialisation the target's constructor from this class is a
+        // candidate beside the conversion function - `const A &r = b;`, an aggregate's member from a b. Where
+        // the two were compared and the constructor stays, it is the one below (1.80: the function was taken
+        // unasked, and two equally good were not refused here as they are for an argument).
+        if (found != nullptr && !allowExplicit)
+            if (const Signature *ctor = self->convertingConstructor(to, *e, 0, false)) {
+                bool compared = false;
+                if (self->conversionOverConstructor(to->unqualified(), *e, *ctor, peek().pos, &compared) == nullptr &&
+                    compared)
+                    how.clear();
+            }
+        if (!how.empty()) {
             const Type *object = e->type();
             std::vector<ExprPtr> none;
-            return self->memberCallWith(std::move(e), object, how->name,
+            return self->memberCallWith(std::move(e), object, how,
                                         0, std::move(none));
         }
     }
@@ -145,6 +176,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
             self->markUsed(ctor);
             std::vector<ExprPtr> one;
             one.push_back(std::move(e));
+            self->applyDefaults(*ctor, one, 0);
             return self->constructTemporary(to->unqualified(), *ctor, std::move(one), false, 0);
         }
     }
@@ -187,9 +219,9 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         both->setType(baseType);
         return both;
     }
-    // **A null data member pointer is -1 on both ABIs** (offset 0 is a member), {0, -1} in Microsoft's virtual
-    // model; zero made a member at 0 null and a null from clang or cl not. `nullptr` or 0 gives a member function
-    // pointer the pair with a null code word, [conv.mem]/1 (1.27, 2026-10-21, review of 1.25, item 3).
+    // **A null data member pointer is -1 on both ABIs** (0 is a real member;
+    // Microsoft's virtual model writes {0, -1}). nullptr or 0 as a member
+    // function pointer: the pair with a null code word, [conv.mem]/1.
     const bool nullConstant = e->type()->isNullPtr() || (e->type()->isInteger() && isNullConstant(*e));
     if (nullConstant && to->unqualified()->isMemberFunctionPointer())
         return const_cast<Parser *>(this)->nullMemberFunctionPointer(to->unqualified());
@@ -220,6 +252,21 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     // not caution: a null pointer converts to one, and `(char *)0 + 4` is not null.
     if (to->isPointer() && e->type()->isPointer() &&
         to->pointee()->isStructOrUnion() && e->type()->pointee()->isStructOrUnion()) {
+        // **A base of a virtual base** - ios_base in an ostringstream - is reached through that virtual base, whose
+        // place the object's table gives: a class derived from the one naming the virtual base lays it out elsewhere,
+        // and the offset the base's own layout gives points into the derived class's members.
+        {
+            const Type *s = e->type()->pointee()->unqualified(), *d = to->pointee()->unqualified();
+            std::vector<const Type *> vbases;
+            if (s != d && !nonVirtualBasePath(s, d)) virtualBasesOf(s, &vbases);
+            if (std::find(vbases.begin(), vbases.end(), d) == vbases.end())
+                for (const Type *v : vbases)
+                    if (anyBaseOffset(v, d) >= 0) {
+                        const Type *via = e->type()->pointee()->isConst() ? types_.withConst(v) : v;
+                        ExprPtr mid = convert(std::move(e), types_.pointerTo(via), allowExplicit);
+                        return convert(std::move(mid), to, allowExplicit);
+                    }
+        }
         const int off = anyBaseOffset(e->type()->pointee(), to->pointee());
         // **A virtual base is not at a constant offset from the derived
         // pointer**, so the walk forward is a number read out of the vtable
@@ -327,6 +374,16 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         }
     }
 
+    // [conv.bool]: a member pointer's null is not the number 0 (a data member pointer's is -1), which the
+    // comparison knows.
+    if (to->isBool() && (e->type()->isMemberPointer() || e->type()->isMemberFunctionPointer())) {
+        ExprPtr none(new Num(static_cast<long long>(0)));
+        none->setType(types_.intType());
+        ExprPtr test = const_cast<Parser *>(this)->comparison(BinOp::Ne, std::move(e), std::move(none), peek().pos);
+        test->setType(to);
+        return test;
+    }
+
     // A conversion to bool is not a narrowing: [conv.bool] makes every non-zero
     // value true, so (bool)256 is true where (char)256 is 0. Lowered here to a
     // comparison against zero rather than taught to three backends as a cast.
@@ -355,6 +412,15 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
 void Parser::refuseUnrelatedClassCast(const Expr &v, const Type *to,
                                       std::size_t pos, const char *what) {
     const Type *from = v.type();
+    // **[expr.static.cast]/4 and [expr.cast]/4: a class reaches a scalar by its conversion function alone** -
+    // `static_cast<long>(q)` for a q with none is ill-formed, and the Cast would read its bytes.
+    if (from != nullptr && from->unqualified()->isStructOrUnion() && !to->isReference() && !to->isVoid() &&
+        !to->unqualified()->isStructOrUnion()) {
+        if (conversionFunction(from, to->unqualified(), true) != nullptr) return;
+        src_.fail(pos, std::string(what) + " from '" + from->describe() + "' to '" + to->describe() + "' - '" +
+                       from->unqualified()->describe() + "' has no conversion function to '" +
+                       to->unqualified()->describe() + "' or to a type that converts to it");
+    }
     if (from == nullptr || !to->unqualified()->isStructOrUnion()) return;
     // **A scalar cast to a class has one road, a converting constructor** - without one the Cast
     // that follows would reinterpret the bytes, which `(W)2.5` once did.
@@ -430,8 +496,32 @@ int publicBaseOffset(const Type *derived, const Type *base) {
     return -1;
 }
 
-// Every base, whatever its access: where a conversion lands once it has been allowed -
-// access is asked where it is checked, and a cast ignores it, [expr.cast]/4.
+// **How many `base` subobjects a `derived` holds**, whatever their access (a
+// cast ignores it, [expr.cast]/4) - [class.mi]/4: one per non-virtual path,
+// one for all virtual ones together; a virtual base reached twice counts once.
+static void countBaseSubobjects(const Type *d, const Type *base, int *plain, bool *shared,
+                                std::set<const Type *> *walkedVirtual) {
+    for (const Type::BaseSpec &s : d->unqualified()->bases()) {
+        if (!s.direct) continue;
+        const Type *bt = s.type->unqualified();
+        if (s.isVirtual && !walkedVirtual->insert(bt).second) continue;
+        if (bt == base) {
+            if (s.isVirtual) *shared = true;
+            else (*plain)++;
+            continue;
+        }
+        countBaseSubobjects(bt, base, plain, shared, walkedVirtual);
+    }
+}
+
+static int baseSubobjects(const Type *derived, const Type *base) {
+    int plain = 0;
+    bool shared = false;
+    std::set<const Type *> walked;
+    countBaseSubobjects(derived, base->unqualified(), &plain, &shared, &walked);
+    return plain + (shared ? 1 : 0);
+}
+
 static int anyBaseOffset(const Type *derived, const Type *base) {
     if (derived == nullptr || base == nullptr) return -1;
     const Type *d = derived->unqualified();
@@ -575,6 +665,20 @@ static const Type *cvOwner(const Type *t) {
     return t;
 }
 
+// [class.copy]/8 and /11: the implicit copy and move constructors take `const X &` and `X &&`, and neither
+// binds a volatile object - so a volatile class object is copied only by a constructor written for it.
+void Parser::refuseVolatileClassCopy(const Type *from, const Type *to, const std::string &what,
+                                     std::size_t pos) const {
+    if (from == nullptr || !from->isVolatile() || from->isMemberFunctionPointer()) return;
+    const Type *cls = to->unqualified();
+    if (!from->unqualified()->isStructOrUnion() || !cls->isStructOrUnion() || cls->isMemberFunctionPointer()) return;
+    if (const_cast<Parser *>(this)->copyConstructorOf(cls) != nullptr ||
+        const_cast<Parser *>(this)->moveConstructorOf(cls) != nullptr) return;
+    src_.fail(pos, what + " is '" + to->describe() + "' and this is '" + from->describe() + "' - the copy "
+                   "constructor the compiler writes takes a 'const " + cls->describe() + " &', which does not "
+                   "bind a volatile object; a constructor taking 'const volatile " + cls->describe() +
+                   " &' would");
+}
 static bool qualificationConvertible(const Type *from, const Type *to) {
     bool prefixConst = true;
     for (;;) {
@@ -588,9 +692,12 @@ static bool qualificationConvertible(const Type *from, const Type *to) {
         if (!from->isPointer() || !to->isPointer()) return false;
         from = from->pointee();
         to = to->pointee();
-        const bool fromConst = cvOwner(from)->isConst(), toConst = cvOwner(to)->isConst();
-        if (fromConst && !toConst) return false;
-        if (!fromConst && toConst && !prefixConst) return false;
+        // Neither qualifier may be lost, and a level that gains either has const at every level above it.
+        const Type *f = cvOwner(from), *t = cvOwner(to);
+        const bool fromConst = f->isConst(), toConst = t->isConst();
+        const bool fromVolatile = f->isVolatile(), toVolatile = t->isVolatile();
+        if ((fromConst && !toConst) || (fromVolatile && !toVolatile)) return false;
+        if (((!fromConst && toConst) || (!fromVolatile && toVolatile)) && !prefixConst) return false;
         prefixConst = prefixConst && toConst;
     }
 }
@@ -613,6 +720,9 @@ static bool isPromotion(const Type *from, const Type *to) {
         const Kind k = from->kind();
         const bool small = k == Kind::Bool || k == Kind::Char || k == Kind::SChar ||
                            k == Kind::UChar || k == Kind::Short || k == Kind::UShort;
+        // [conv.prom]/4: one whose underlying type is fixed promotes to that type too - `enum E : short` to
+        // short (1.80: that was a conversion, so `f(short)` and `f(long)` were ambiguous for it).
+        if (from->hasFixedUnderlying() && to->kind() == k) return true;
         return to->kind() == (small ? Kind::Int : k);
     }
     if (to->kind() == Kind::Int) {
@@ -638,11 +748,32 @@ const Type *Parser::functionDesignated(const Expr &e) const {
 
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
+    // [temp.inst]/1: a conversion to or from a class needs the class defined. A member class of a class
+    // template's specialization is defined when first reached, and until 1.80 being a parameter's type did not
+    // reach it: `int f(Where at);` in `Str<char>` took no `const char *` for its `Where(const char *)`.
+    {
+        const Type *to = param->isReference() ? param->pointee() : param;
+        if (to->unqualified()->isStructOrUnion() && !to->unqualified()->isComplete()) realizeMemberClass(to);
+        if (given != nullptr) {
+            const Type *from = given->isReference() ? given->pointee() : given;
+            if (from->unqualified()->isStructOrUnion() && !from->unqualified()->isComplete()) realizeMemberClass(from);
+        }
+    }
 
     // A reference parameter binds or it does not; there is no conversion to
     // rank.
     if (param->isReference()) {
         const Type *want = param->pointee();
+        // The reference may add const and volatile and never take either away; and [dcl.init.ref]/5 binds
+        // a temporary to an lvalue reference to non-volatile const - `const volatile int &` takes no 3.
+        auto dropsCv = [](const Type *w, const Type *g) {
+            return (!w->isConst() && g->isConst()) || (!w->isVolatile() && g->isVolatile());
+        };
+        auto addsCv = [](const Type *w, const Type *g) {
+            return (w->isConst() && !g->isConst()) || (w->isVolatile() && !g->isVolatile());
+        };
+        // An rvalue reference takes one too: `f(std::string &&)` is viable for `f("lit")`.
+        const bool takesTemporary = param->isRValueReference() || (want->isConst() && !want->isVolatile());
 
         // **A reference to a function binds a function lvalue of its type** - [dcl.init.ref]/5,
         // an exact match; a name arrives as its address, `&f`, and that is the same function.
@@ -658,9 +789,11 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
             const Type *we = want->innermostElement();
             const Type *ge = given->innermostElement();
             if (we->unqualified() == ge->unqualified()) {
-                if (!we->isConst() && ge->isConst()) return Rank::None;
-                return we->isConst() && !ge->isConst() ? Rank::Qualification
-                                                       : Rank::Identity;
+                if (dropsCv(we, ge)) return Rank::None;
+                // Which reference takes it is the argument's category, as for any other type below:
+                // `forward<const char (&)[4]>` has a `T &` and a `T &&` overload, and an lvalue takes the first.
+                if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
+                return addsCv(we, ge) ? Rank::Qualification : Rank::Identity;
             }
         }
 
@@ -669,8 +802,15 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // one to a derived class temporary too, `f(D(3))` for `f(const B &)`.
         if (want->unqualified() != given->unqualified() &&
             accessibleBaseOffset(given, want) > -1 && !param->isRValueReference() &&
-            (isLvalue(arg) || (want->isConst() && given->unqualified()->isStructOrUnion()))) {
-            if (!want->isConst() && given->isConst()) return Rank::None;
+            (isLvalue(arg) || (takesTemporary && given->unqualified()->isStructOrUnion()))) {
+            if (dropsCv(want, given)) return Rank::None;
+            return Rank::Conversion;
+        }
+        // `B &&` is reference-related to a derived D, so [dcl.init.ref]/5 refuses a D lvalue outright - no copy
+        // constructor of B makes a temporary for it - and binds a D xvalue or prvalue to its base.
+        if (want->unqualified() != given->unqualified() && param->isRValueReference() &&
+            accessibleBaseOffset(given, want) > -1) {
+            if (isLvalue(arg) || dropsCv(want, given)) return Rank::None;
             return Rank::Conversion;
         }
 
@@ -678,7 +818,7 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
             // **A `const T &` takes a temporary, so it takes a conversion.**
             // [over.ics.user] with [dcl.init.ref]: the converting constructor
             // makes an object and the reference binds to it.
-            if (want->isConst() && rankingConversion_ == 0) {
+            if (takesTemporary && rankingConversion_ == 0) {
                 rankingConversion_++;
                 // A class target is reached by its converting constructor or by
                 // the argument's conversion function, [over.ics.user]; the second
@@ -693,27 +833,31 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
                 rankingConversion_--;
                 if (usable) return userDefinedRank(given, want);
             }
+            // [dcl.init.ref]/5, [over.ics.ref]/1: an lvalue reference binds what a class's conversion function to an
+            // lvalue of the type returns - `bump(std::ref(n))` for `bump(int &)` - a user-defined conversion (1.75).
+            if (!param->isRValueReference() && referenceConversion(given, want) != nullptr) return Rank::UserDefined;
             // **And a standard conversion makes that temporary too.**
-            if (want->isConst()) {
+            if (takesTemporary) {
                 const Rank direct = rankArgument(arg, want->unqualified());
                 if (direct != Rank::None) return direct;
             }
             return Rank::None;
         }
-        if (!want->isConst() && given->isConst()) return Rank::None;
+        if (dropsCv(want, given)) return Rank::None;
 
-        // **Which reference takes this argument is about the argument**: no rvalue reference for an lvalue.
+        // **Which reference will take this argument is a question about the
+        // argument, not about a conversion.** An rvalue reference is not viable
+        // for an object that has an address, and the better match where both are.
         if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
         // `const T &&` for a `T` rvalue adds a qualifier, as `const T &` does below - [over.ics.rank]/3.2.6,
         // so that `fwd(std::move(x))` picks fwd<int> over the fwd<const int> an earlier call made (1.27).
         if (param->isRValueReference())
-            return want->isConst() && !given->isConst() ? Rank::Qualification : Rank::Identity;
+            return addsCv(want, given) ? Rank::Qualification : Rank::Identity;
 
         // **A value has no lvalue to bind, so `T &` is not viable for one**.
-        if (!isLvalue(arg)) return want->isConst() ? Rank::Qualification : Rank::None;
+        if (!isLvalue(arg)) return takesTemporary ? Rank::Qualification : Rank::None;
 
-        return want->isConst() && !given->isConst() ? Rank::Qualification
-                                                    : Rank::Identity;
+        return addsCv(want, given) ? Rank::Qualification : Rank::Identity;
     }
 
     const Type *from = decayedType(given);
@@ -754,9 +898,17 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // **`nullptr` converts to any pointer and to any pointer to member**, both
     // pointer conversions - so `f(void *)` and `f(char *)` are ambiguous for it, as
     // clang reports. **And not to bool here**: that conversion is direct-init only.
-    if (from->isNullPtr() && (to->isPointer() || to->isMemberPointer()))
+    if (from->isNullPtr() && (to->isPointer() || to->isMemberPointer() || to->isMemberFunctionPointer()))
         return Rank::Conversion;
-    if (memberPointerToDerived(from, to) > 0) return Rank::Conversion;
+    // [conv.mem]/1: the constant 0 is a null pointer to member too, a member function's included.
+    if ((to->isMemberPointer() || to->isMemberFunctionPointer()) && from->isInteger())
+        return isNullConstant(arg) ? Rank::Conversion : Rank::None;
+    if (memberPointerToDerived(from, to) >= 0 &&
+        from->unqualified()->enclosing()->unqualified() != to->unqualified()->enclosing()->unqualified())
+        return Rank::Conversion;
+    // [conv.bool]: a boolean conversion, and [over.ics.rank]/4 puts it behind every other of its rank.
+    if (to->unqualified()->isBool() && (from->isPointer() || from->isMemberPointer() || from->isMemberFunctionPointer()))
+        return Rank::BooleanConversion;
 
     // And the literal 0 converts *to* std::nullptr_t, at the same rank - which
     // is why `f(0)` against `f(decltype(nullptr))` and `f(char *)` is
@@ -788,9 +940,9 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     return Rank::None;
 }
 
-// [over.ics.rank]/3.3: user-defined sequences through one conversion function are told apart by their second
-// standard conversion: `lng(long)` beats `lng(int)` for `operator long()`. One scalar conversion function reaches
-// every scalar target, sub-rank its distance from the result; a class target keeps the plain rank (1.27, item 3).
+// [over.ics.rank]/3.3: sequences through one conversion function differ by the
+// conversion after it - the target's distance from its result is the sub-rank
+// (`lng(long)` beats `lng(int)`); a class target keeps the plain rank.
 Parser::Rank Parser::userDefinedRank(const Type *from, const Type *to) {
     const Type *want = to->unqualified();
     if (want->isStructOrUnion()) return Rank::UserDefined;
@@ -798,8 +950,11 @@ Parser::Rank Parser::userDefinedRank(const Type *from, const Type *to) {
     if (via == nullptr) return Rank::UserDefined;
     const Type *gives = via->returns->unqualified();
     if (gives == want) return Rank::UserDefined;
+    // [over.ics.rank]/3: through the one conversion function, the second standard conversion tells two
+    // parameters apart - `f(int *)` before `f(const int *)` for a class that gives an `int *`. A pointer never
+    // promotes, so the rank between is free for the qualification.
     if (gives->isPointer() && want->isPointer() && qualificationConvertible(gives, want))
-        return Rank::UserDefined;
+        return Rank::UserDefinedPromotion;
     if (gives->isArithmetic() && want->isArithmetic() && isPromotion(gives, want))
         return Rank::UserDefinedPromotion;
     return Rank::UserDefinedConversion;
@@ -814,6 +969,7 @@ std::string Parser::describeSignature(const Signature &f) {
     if (f.variadic) out += f.params.empty() ? "..." : ", ...";
     out += ")";
     if (f.constThis) out += " const";
+    if (f.volatileThis) out += " volatile";
     return out + (f.refThis == RefQual::LValue ? " &" : f.refThis == RefQual::RValue ? " &&" : "");
 }
 
@@ -855,11 +1011,20 @@ bool Parser::sameMatchEitherWay(const Type *pa, const Type *pb) {
     return va == vb;
 }
 
-// **Two parameters that took one argument at the same rank** (1.27, review item 3), per [over.ics.rank]: /3.2.3 an
-// rvalue reference binding an rvalue beats an lvalue one; /3.2.6, /4.3 the less cv-qualified reference or pointer
-// target; /4.4 the nearer base (`H *` over `G *` for an `I *`), class over `void *`. /4 needs the argument.
+// **Two parameters that took one argument at one rank**, [over.ics.rank]: the
+// rvalue ref for an rvalue (/3.2.3), less cv (/3.2.6, /4.3), the nearer base or
+// a class over void * (/4.4, needs the argument); user-defined ranks are not.
 int Parser::closerTarget(const Type *pa, const Type *pb, const Type *given) const {
     if (pa == nullptr || pb == nullptr || given == nullptr) return 0;
+    // [over.ics.rank]/4 as CWG 1601 has it: an enumeration whose underlying type is fixed promotes better to
+    // that type than to what the type promotes to - `f(short)` before `f(int)` for `enum E : short`.
+    if (given->unqualified()->hasFixedUnderlying() && !pa->isReference() && !pb->isReference() &&
+        pa->unqualified()->isArithmetic() && pb->unqualified()->isArithmetic() &&
+        !pa->unqualified()->isEnumeration() && !pb->unqualified()->isEnumeration()) {
+        const Kind k = given->unqualified()->kind();
+        const bool a = pa->unqualified()->kind() == k, b = pb->unqualified()->kind() == k;
+        if (a != b) return a ? 1 : -1;
+    }
     struct Nearer {
         static int derived(const Parser &p, const Type *a, const Type *b, const Type *from) {
             if (from == nullptr || !from->isStructOrUnion()) return 0;
@@ -869,10 +1034,19 @@ int Parser::closerTarget(const Type *pa, const Type *pb, const Type *given) cons
             return 0;
         }
     };
+    // [over.ics.rank]/3.2.5-6: of two targets that differ only in cv-qualification, the one whose qualifiers are a
+    // proper subset of the other's is the better - `const T *` over `const volatile T *`.
+    struct Cv {
+        static int closer(const Type *a, const Type *b) {
+            const bool aInB = (!a->isConst() || b->isConst()) && (!a->isVolatile() || b->isVolatile());
+            const bool bInA = (!b->isConst() || a->isConst()) && (!b->isVolatile() || a->isVolatile());
+            return aInB && !bInA ? 1 : bInA && !aInB ? -1 : 0;
+        }
+    };
     if (pa->isReference() && pb->isReference()) {
         const Type *ta = pa->pointee(), *tb = pb->pointee();
         if (ta->unqualified() == tb->unqualified()) {
-            if (ta->isConst() != tb->isConst()) return ta->isConst() ? -1 : 1;
+            if (const int cv = Cv::closer(ta, tb)) return cv;
             if (pa->isRValueReference() != pb->isRValueReference())
                 return pa->isRValueReference() ? 1 : -1;
             return 0;
@@ -883,7 +1057,7 @@ int Parser::closerTarget(const Type *pa, const Type *pb, const Type *given) cons
         const Type *ta = pa->pointee(), *tb = pb->pointee();
         const Type *object = given->pointee()->unqualified();   // an array decays to its element's
         if (ta->unqualified() == tb->unqualified())
-            return ta->isConst() == tb->isConst() ? 0 : ta->isConst() ? -1 : 1;
+            return Cv::closer(ta, tb);
         if (tb->isVoid() && ta->unqualified()->isStructOrUnion() && object->isStructOrUnion()) return 1;
         if (ta->isVoid() && tb->unqualified()->isStructOrUnion() && object->isStructOrUnion()) return -1;
         return Nearer::derived(*this, ta->unqualified(), tb->unqualified(), object);
@@ -901,8 +1075,27 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     for (std::size_t i = 0; i < a.size() && i < b.size(); i++) {
         const Type *pa = rankedParameter(fa, i, ranksObjectA);
         const Type *pb = rankedParameter(fb, i, ranksObjectB);
+        // [over.ics.rank]/3.2.6: two members binding the object with added qualifiers - the one adding fewer
+        // is better: `load() const` over `load() const volatile` for a plain object.
+        const bool objectInBase = a[0] == Rank::Conversion && b[0] == Rank::Conversion && fa.owner == fb.owner &&
+                                  (fa.constThis != fb.constThis || fa.volatileThis != fb.volatileThis);
+        if (i == 0 && ranksObjectA && ranksObjectB &&
+            ((a[0] == Rank::Qualification && b[0] == Rank::Qualification) || objectInBase)) {
+            const bool aWithinB = (!fa.constThis || fb.constThis) && (!fa.volatileThis || fb.volatileThis);
+            const bool bWithinA = (!fb.constThis || fa.constThis) && (!fb.volatileThis || fa.volatileThis);
+            if (aWithinB && !bWithinA) better = true;
+            if (bWithinA && !aWithinB) worse = true;
+            continue;
+        }
         if (a[i] == b[i]) {
-            if (a[i] > Rank::Conversion) continue;
+            // [over.ics.rank]/3.3: user-defined sequences into one type meet at
+            // one conversion, the reference binding after it decides: f("lit")
+            // takes f(std::string &&), the converted value an rvalue (/3.2.3).
+            const bool oneTarget = pa != nullptr && pb != nullptr && pa->isReference() && pb->isReference() &&
+                                   pa->pointee()->unqualified() == pb->pointee()->unqualified();
+            if (a[i] > Rank::Conversion &&
+                !(oneTarget && a[i] >= Rank::UserDefined && a[i] <= Rank::UserDefinedConversion))
+                continue;
             const int closer =
                 closerTarget(pa, pb, i < rankingGiven_.size() ? rankingGiven_[i] : nullptr);
             if (closer > 0) better = true;
@@ -937,24 +1130,61 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     if (fa.fromTemplate && fb.fromTemplate && fa.pattern != nullptr &&
         fb.pattern != nullptr)
         return moreSpecializedFunction(fa, fb);
-    return !fa.fromTemplate && fb.fromTemplate;
+    // [over.match.best]/1: an ordinary function before a template's specialization, a member template's too.
+    const bool ta = fa.fromTemplate || fa.fromMemberTemplate, tb = fb.fromTemplate || fb.fromMemberTemplate;
+    return !ta && tb;
 }
 
 bool Parser::moreSpecializedFunction(const Signature &a, const Signature &b) const {
     struct Order {
         static bool atLeast(const Parser &p, const Type *a, const Type *b) {
             const std::vector<const Type *> &pa = a->params(), &pb = b->params();
-            if (pa.size() != pb.size()) return false;
+            // [temp.deduct.partial]/8: b's trailing function parameter pack takes each of a's parameters left
+            // over, a's own pack included as its pattern; a pack of a's against a parameter of b's that is
+            // none fails - `(integral_constant<int, 1>, allocator_arg_t, const A &)` before `(U &&, V &&...)`.
+            const bool packB = !pb.empty() && pb.back()->kind() == Kind::PackExpansion;
+            const std::size_t fixedB = packB ? pb.size() - 1 : pb.size();
+            if (packB ? pa.size() < fixedB : pa.size() != pb.size()) return false;
             // b's parameters bound afresh; a's stand as the opaque types they are.
-            std::vector<const Type *> binding(pb.size() + pa.size());
+            std::vector<const Type *> binding(pb.size() + pa.size() + 64);
             std::string why;
-            for (std::size_t i = 0; i < pa.size(); i++)
-                if (!p.matchPattern(pb[i], pa[i], &binding, &why)) return false;
+            for (std::size_t i = 0; i < pa.size(); i++) {
+                const Type *P = i < fixedB ? pb[i] : pb.back()->pointee(), *A = pa[i];
+                if (A->kind() == Kind::PackExpansion) {
+                    if (i < fixedB) return false;
+                    A = A->pointee();
+                }
+                // [temp.deduct.partial]/5-7: a reference beside a value, or beside a reference of the other
+                // kind, is compared by what it refers to, top-level cv dropped - `f(const F &)` against
+                // `f(T *)`. Two references of one kind keep their cv, /9's tie-break.
+                if (P->isReference() != A->isReference() ||
+                    (P->isReference() && P->isRValueReference() != A->isRValueReference())) {
+                    if (P->isReference()) P = P->referent();
+                    if (A->isReference()) A = A->referent();
+                    P = P->unqualified();
+                    A = A->unqualified();
+                }
+                // Each element a pack takes is deduced on its own.
+                std::vector<const Type *> fresh(binding.size());
+                if (!p.matchPattern(P, A, i < fixedB ? &binding : &fresh, &why)) return false;
+            }
             return true;
         }
     };
-    return Order::atLeast(*this, a.pattern, b.pattern) &&
-           !Order::atLeast(*this, b.pattern, a.pattern);
+    const bool ab = Order::atLeast(*this, a.pattern, b.pattern);
+    const bool ba = Order::atLeast(*this, b.pattern, a.pattern);
+    if (ab != ba) return ab;
+    if (!ab) return false;
+    // [temp.deduct.partial]/9: each as specialized as the other, and an lvalue reference is more so than
+    // an rvalue one - `k(const T &)` before `k(T &&)` for a const lvalue.
+    const std::vector<const Type *> &pa = a.pattern->params(), &pb = b.pattern->params();
+    bool more = false;
+    for (std::size_t i = 0; i < pa.size() && i < pb.size(); i++) {
+        if (!pa[i]->isReference() || !pb[i]->isReference()) continue;
+        if (pa[i]->isRValueReference() && !pb[i]->isRValueReference()) return false;
+        if (!pa[i]->isRValueReference() && pb[i]->isRValueReference()) more = true;
+    }
+    return more;
 }
 
 // [over.match.oper]: one candidate set with both halves in it - a member's implicit
@@ -973,51 +1203,121 @@ std::vector<std::string> Parser::lookupKeys(const std::string &name,
     add(name);
     add(qualifyForLookup(name, &Parser::hasFunctionNamed));
 
-    const Type *operands[2] = { left, right };
-    for (std::size_t i = 0; i < 2; i++) {
-        const Type *t = operands[i];
-        while (t != nullptr && (t->isPointer() || t->isReference()))
-            t = t->pointee();
-        if (t == nullptr) continue;
-        t = t->unqualified();
-        // [basic.lookup.argdep]/2: a class's namespace; and an enumeration's, the innermost namespace
-        // around it - a class-scoped one's is its class's - so that `N::A | N::B` reaches N's
-        // operator| and not the built-in (1.27, review item 3; the enumeration case was missing).
-        std::string prefix;
-        if (t->isStructOrUnion() && t->inNamespace()) {
-            const std::size_t cut = t->tag().rfind("::");
-            if (cut == std::string::npos) continue;
-            prefix = t->tag().substr(0, cut);
-        } else if (t->isEnumeration()) {
-            prefix = t->tag();
-            for (;;) {
-                const std::size_t cut = prefix.rfind("::");
-                if (cut == std::string::npos) { prefix.clear(); break; }
-                prefix = prefix.substr(0, cut);
-                if (namespaces_.count(prefix) != 0) break;
-            }
-            if (prefix.empty()) continue;   // a global enumeration's namespace is the bare name's
-        } else continue;
-        add(prefix + "::" + name);
-        // [basic.lookup.argdep]/2: an inline namespace's class has the enclosing one too.
-        const std::vector<std::string> alts = inlineAliasPrefixes(prefix + "::");
+    // [basic.lookup.argdep]/2: every namespace the operands are associated with - a class's, its bases'
+    // and its template arguments', a specialization's template's (`N::K<false>` keeps N beside its tag),
+    // and an enumeration's innermost one - so that `k * k` reaches N's operator* through a conversion.
+    std::vector<std::string> spaces;
+    associatedNamespaces(left, &spaces, 0);
+    if (right != nullptr) associatedNamespaces(right, &spaces, 0);
+    for (std::size_t i = 0; i < spaces.size(); i++) {
+        if (spaces[i].empty()) continue;   // the global namespace's is the bare name's
+        add(spaces[i] + "::" + name);
+        // An inline namespace's class has the enclosing one too.
+        const std::vector<std::string> alts = inlineAliasPrefixes(spaces[i] + "::");
         for (std::size_t a = 0; a < alts.size(); a++) add(alts[a] + name);
     }
     return keys;
+}
+
+bool Parser::hasVisibleFunctionNamed(const std::string &key) const {
+    if (const std::vector<std::size_t> *s = overloadsOf(key))
+        for (std::size_t i : *s)
+            if (visibleBefore(functions_[i], visibleAt_)) return true;
+    return false;
+}
+
+void Parser::associatedNamespaces(const Type *t, std::vector<std::string> *out, int depth) const {
+    if (t == nullptr || depth > 16) return;
+    while (t->isPointer() || t->isReference() || t->isArray()) t = t->pointee();
+    t = t->unqualified();
+    if (t->isFunction()) {
+        associatedNamespaces(t->returns(), out, depth + 1);
+        for (const Type *p : t->params()) associatedNamespaces(p, out, depth + 1);
+        return;
+    }
+    const bool cls = t->isStructOrUnion() && !t->isMemberFunctionPointer();
+    if ((!cls && !t->isEnumeration()) || t->tag().empty() || !t->localOwner().empty()) return;
+    // The innermost namespace around it: the longest `::`-prefix of the tag outside any `<...>` that names one.
+    const std::string &tag = t->tag();
+    std::vector<std::size_t> cuts;
+    for (std::size_t i = 0, angle = 0; i + 1 < tag.size(); i++) {
+        if (tag[i] == '<') angle++;
+        else if (tag[i] == '>' && angle > 0) angle--;
+        else if (angle == 0 && tag[i] == ':' && tag[i + 1] == ':') cuts.push_back(i++);
+    }
+    std::string ns;
+    for (std::size_t k = cuts.size(); k-- > 0; )
+        if (namespaces_.count(tag.substr(0, cuts[k])) != 0) { ns = tag.substr(0, cuts[k]); break; }
+    // A specialization keeps its template's namespace apart from its tag - `basic_string<char>` is std's.
+    if (ns.empty() && t->isSpecialization() && t->templateNamespace().size() > 2 && cuts.empty())
+        ns = t->templateNamespace().substr(0, t->templateNamespace().size() - 2);
+    // A member class's: the class it is a member of is associated too, with that class's namespace.
+    if (ns.empty() && cls && t->enclosing() != nullptr) associatedNamespaces(t->enclosing(), out, depth + 1);
+    if (std::find(out->begin(), out->end(), ns) == out->end()) out->push_back(ns);
+    if (!cls) return;
+    for (const Type::BaseSpec &b : t->bases()) associatedNamespaces(b.type, out, depth + 1);
+    for (const TemplateArg &a : t->templateArgs())
+        if (a.isType && !a.isPack && !a.isTemplate) associatedNamespaces(a.type, out, depth + 1);
+}
+
+bool Parser::inDependentBase(const Type *cls, const Type *owner) const {
+    std::map<const Type *, std::vector<const Type *> >::const_iterator it = dependentBases_.find(cls->unqualified());
+    if (it == dependentBases_.end()) return false;
+    struct Walk {
+        static bool reaches(const Type *from, const Type *to, int depth) {
+            if (from->unqualified() == to->unqualified()) return true;
+            if (depth > 32) return false;
+            for (const Type::BaseSpec &s : from->unqualified()->bases())
+                if (reaches(s.type, to, depth + 1)) return true;
+            return false;
+        }
+    };
+    for (const Type *b : it->second)
+        if (Walk::reaches(b, owner, 0)) return true;
+    return false;
 }
 
 Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr &left,
                                                const Expr *right,
                                                std::size_t pos) {
-    // **A non-member operator may be a function template.** Deduce and
-    // instantiate every one that applies before ranking, so `a + b` for a
-    // class template reaches `template <int N> V<N> operator+(V<N>, V<N>)`.
+    // **Non-member operator templates**: deduce and instantiate each that
+    // applies before ranking (`a + b` on a class template); only those lookup
+    // reaches, [over.match.oper]/3, and only specializations deduced here.
+    std::set<std::string> deduced;
     {
         std::vector<const Type *> argTypes;
         argTypes.push_back(deductionArgType(left));
         if (right != nullptr) argTypes.push_back(deductionArgType(*right));
-        instantiateViableTemplates(name, argTypes, pos);
+        const auto all = fnTemplates_.find(name);
+        if (all != fnTemplates_.end()) {
+            std::vector<std::string> spaces;
+            associatedNamespaces(left.type(), &spaces, 0);
+            if (right != nullptr) associatedNamespaces(right->type(), &spaces, 0);
+            const std::string here = namespacePrefix();
+            auto reached = [&](const std::string &ns) {
+                if (ns.empty() || here.compare(0, ns.size(), ns) == 0) return true;
+                for (const std::string &u : usingNamespaces_)
+                    if (ns == u + "::") return true;
+                for (const std::string &a : spaces)
+                    if (!a.empty() && ns == a + "::") return true;
+                return false;
+            };
+            std::vector<TemplateDecl> visible;
+            for (const TemplateDecl &d : all->second) {
+                bool ok = reached(d.ns);
+                // An inline namespace's members are its enclosing namespace's too.
+                for (std::string ns = d.ns; !ok && ns.size() > 2; ) {
+                    const std::string path = ns.substr(0, ns.size() - 2);
+                    if (inlineNamespaces_.count(path) == 0) break;
+                    const std::string::size_type cut = path.rfind("::");
+                    ns = cut == std::string::npos ? std::string() : path.substr(0, cut + 2);
+                    ok = reached(ns);
+                }
+                if (ok) visible.push_back(d);
+            }
+            instantiateViableTemplates(visible, argTypes, pos, &deduced);
+        }
     }
 
     // **A member operator may be a template too**, `H * x` where operator* is
@@ -1053,10 +1353,15 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                     // where the constness agrees, a qualification conversion for a
                     // const member on a non-const object, no match the other way.
                     if (lt->isConst() && !f.constThis) continue;
+                    if (lt->isVolatile() && !f.volatileThis) continue;
                     if (!refQualifierViable(f.refThis, f.constThis, objectIsLvalue(left))) continue;
+                    // A member of a base binds the derived object by a derived-to-base Conversion,
+                    // [over.match.funcs]/5 and [over.ics.ref]/1 - as the non-member's reference does.
                     std::vector<Rank> r;
-                    r.push_back(lt->isConst() == f.constThis ? Rank::Identity
-                                                             : Rank::Qualification);
+                    r.push_back(owner->tag() != plain->tag()
+                                    ? Rank::Conversion
+                                    : lt->isConst() == f.constThis && lt->isVolatile() == f.volatileThis
+                                    ? Rank::Identity : Rank::Qualification);
                     if (right != nullptr) {
                         Rank second = rankArgument(*right, f.params[0]);
                         if (second == Rank::None) continue;
@@ -1078,6 +1383,7 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
             if (std::find(which.begin(), which.end(), (*set)[k]) != which.end()) continue;
             const Signature &f = functions_[(*set)[k]];
             if (f.params.size() != written + 1) continue;
+            if (f.fromTemplate && deduced.count(f.symbol) == 0) continue;
             Rank a = rankArgument(left, f.params[0]);
             if (a == Rank::None) continue;
             std::vector<Rank> r;
@@ -1116,7 +1422,70 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
             src_.fail(pos, why);
         }
     }
+    // **[over.match.oper]/3: the built-in operator is a candidate too** ([over.built]/12, for every pair of
+    // promoted arithmetic types), and it is viable where each class operand has a conversion function to a
+    // number. It takes a number as it stands, where the class's own operator may need a conversion for it:
+    // with `Conv(int)`, `operator double() const` and `Conv operator+(const Conv &) const`, `c + 3` is the
+    // member through `Conv(3)` or `double + int` through the conversion function - each the better for one
+    // operand, so the call is ambiguous, as cl and clang have it (1.80: the member was taken).
+    if (right != nullptr) {
+        static const char *const kIntegerOnly[] = { "operator%", "operator&", "operator|", "operator^",
+                                                    "operator<<", "operator>>" };
+        static const char *const kAnyNumber[] = { "operator+", "operator-", "operator*", "operator/", "operator<",
+                                                  "operator>", "operator<=", "operator>=", "operator==",
+                                                  "operator!=" };
+        bool integerOnly = false, arithmetic = false;
+        for (const char *n : kIntegerOnly) if (name == n) integerOnly = arithmetic = true;
+        for (const char *n : kAnyNumber) if (name == n) arithmetic = true;
+        const Type *given[2] = { lt, right->type() };
+        bool viable = arithmetic, worse = false, better = false;
+        for (int i = 0; i < 2 && viable; i++) {
+            const Type *g = given[i]->unqualified();
+            auto number = [&](const Type *t) {
+                return (t->isEnumeration() && !t->isScopedEnumeration()) ||
+                       (integerOnly ? t->isInteger() : t->isArithmetic());
+            };
+            if (g->isStructOrUnion() && !g->isMemberFunctionPointer()) {
+                bool converts = false;
+                for (const Type *c = g; c != nullptr && !converts; c = c->base())
+                    for (std::size_t k = 0; k < functions_.size() && !converts; k++) {
+                        const Signature &f = functions_[k];
+                        if (f.owner != c->tag() || !isConversionName(f.name) || !f.params.empty() || f.isExplicit)
+                            continue;
+                        if ((given[i]->isConst() && !f.constThis) || (given[i]->isVolatile() && !f.volatileThis))
+                            continue;
+                        const Type *gives = f.returns->isReference() ? f.returns->referent() : f.returns;
+                        converts = number(gives->unqualified());
+                    }
+                if (!converts) viable = false;
+                else if (static_cast<int>(ranks[best][i]) < static_cast<int>(Rank::UserDefined)) better = true;
+            } else if (!number(g)) {
+                viable = false;
+            } else {
+                const Rank builtIn = g->isEnumeration() || promote(g) != g ? Rank::Promotion : Rank::Identity;
+                if (static_cast<int>(ranks[best][i]) > static_cast<int>(builtIn)) worse = true;
+            }
+        }
+        if (viable && worse && better)
+            src_.fail(pos, "this use of '" + name + "' is ambiguous\n    candidate: " +
+                           (member[best] ? "member " : "") + describeSignature(functions_[which[best]]) +
+                           "\n    candidate: the built-in operator, each class operand through its conversion "
+                           "function to a number");
+        if (viable && worse) return OperatorChoice::None;
+    }
+    if (!member[best]) operatorChosen_ = which[best];
     return member[best] ? OperatorChoice::Member : OperatorChoice::NonMember;
+}
+
+Parser::Signature Parser::resolveChosenOperator(const std::string &name, std::vector<ExprPtr> &args,
+                                                std::size_t pos) {
+    struct Erase {
+        Parser *p;
+        std::string key;
+        ~Erase() { p->functionIndex_.erase(key); }
+    } own{ this, ownKey("$operator:" + name) };
+    functionIndex_[own.key] = std::vector<std::size_t>(1, operatorChosen_);
+    return resolveOverloadBraced(own.key, args, pos);
 }
 
 // The fewest arguments a call may give: every parameter that has no default.
@@ -1164,13 +1533,26 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     if (!f.owner.empty()) {
         if (const Type *owner = findTypedef(f.owner)) currentClass_ = owner;
     }
+    Bound held(this);
+    std::vector<Shadow> &unbound = held.undo;
+    std::map<std::string, DefaultBinding>::const_iterator bound = defaultArgBindings_.find(f.symbol);
+    if (bound != defaultArgBindings_.end())
+        bindTemplateParameters(bound->second.params, bound->second.binding, bound->second.values,
+                               bound->second.packs, &unbound);
     for (std::size_t i = args.size(); i < f.params.size(); i++) {
         if (i >= it->second.size() || it->second[i] == 0)
             src_.fail(pos, "'" + f.name + "' has no default for parameter " +
                            std::to_string(i + 1));
         at_ = it->second[i];
-        args.push_back(assign());
+        // `P p = {1, 2}`: copy-list-initialisation of the parameter, [dcl.fct.default]/1 with [dcl.init.list].
+        if (peek().is("{")) {
+            Init in = parseInitialiser();
+            args.push_back(bracedArgumentFor(f.params[i], in, pos));
+        } else {
+            args.push_back(assign());
+        }
     }
+    held.release();
     at_ = resume;
     locals_.swap(hidden);
     scopeStarts_.swap(starts);
@@ -1180,10 +1562,36 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     currentClass_ = outerClass;
 }
 
+// [temp.inst]/3: an unevaluated operand needs the declaration, and the body is asked for by a use.
+void Parser::refuseFailedBody(const Signature &chosen) const {
+    if (unevaluated_ != 0) return;
+    const auto f = failedBodies_.find(chosen.symbol);
+    if (f != failedBodies_.end()) src_.fail(f->second.first, f->second.second);
+}
+
+// [basic.lookup.argdep]/4: the function templates of the associated namespaces are candidates too, made where they
+// deduce from these arguments (1.82).
+void Parser::instantiateAdlTemplates(const std::string &written, const std::vector<std::string> &spaces,
+                                     const std::vector<ExprPtr> &args, std::size_t pos) {
+    if (written.compare(0, 1, "$") == 0) return;
+    const auto tpl = fnTemplates_.find(written);
+    if (tpl == fnTemplates_.end()) return;
+    std::vector<TemplateDecl> more;
+    for (const std::string &ns : spaces)
+        for (const TemplateDecl &d : tpl->second)
+            if (!ns.empty() && d.ns == ns + "::") more.push_back(d);
+    if (more.empty()) return;
+    std::vector<const Type *> argTypes;
+    for (const ExprPtr &a : args) argTypes.push_back(deductionArgType(*a));
+    instantiateViableTemplates(more, argTypes, pos, nullptr);
+}
+
 Parser::Signature Parser::resolveOverload(const std::string &written,
                                           const std::vector<ExprPtr> &args,
                                           std::size_t pos,
                                           const Type *object, bool objectLvalue) {
+    const bool convertingOnly = convertingOnly_;
+    convertingOnly_ = false;
     refuseOverloadArguments(args, written);
     // An unqualified name inside a namespace names that namespace's function
     // if it has one - the enclosing scopes are tried from the innermost out,
@@ -1200,14 +1608,155 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
                        args.size() > 1 ? args[1]->type() : nullptr);
         if (!keys.empty()) name = keys.back();
     }
+    // **[temp.res]/10 and [temp.dep.candidate]: an unqualified call sees the functions declared before
+    // it.** A template's body is read where it is instantiated, so one declared since must not join the
+    // set ordinary lookup makes; argument-dependent lookup adds its namespaces' functions from anywhere.
+    std::vector<std::size_t> visible;
+    const bool unqualified = object == nullptr && written.find("::") == std::string::npos &&
+                             written.compare(0, 8, "operator") != 0;
+    bool later = false;
+    if (unqualified)
+        if (const std::vector<std::size_t> *s = overloadsOf(name))
+            for (std::size_t i : *s)
+                if (!visibleBefore(functions_[i], pos)) later = true;
+    // **A set a template call put together** (`$adl:swap`: ordinary lookup's, the specializations this call
+    // deduced, and what argument-dependent lookup added) is kept as it is, less what ordinary lookup alone
+    // would have found too late - 1.77: it was looked up again under its own made-up name, which no
+    // namespace has, so `n::swap(E &, E &)` declared after <utility> never reached std::swap's callers.
+    if (later && written.compare(0, 1, "$") == 0) {
+        std::string bare = written.substr(written.rfind(':') + 1);      // `$adl:swap`, `$adl:swap#4`
+        if (bare.find('#') != std::string::npos) bare.erase(bare.find('#'));
+        std::vector<std::string> spaces;
+        for (const ExprPtr &a : args) associatedNamespaces(a->type(), &spaces, 0);
+        std::set<std::size_t> byArguments;
+        for (const std::string &ns : spaces) {
+            std::vector<std::string> keys(1, ns.empty() ? bare : ns + "::" + bare);
+            if (ns.empty()) keys.push_back("::" + bare);
+            else for (const std::string &a : inlineAliasPrefixes(ns + "::")) keys.push_back(a + bare);
+            for (const std::string &k : keys)
+                if (const std::vector<std::size_t> *s = overloadsOf(k)) byArguments.insert(s->begin(), s->end());
+        }
+        for (std::size_t i : *overloadsOf(name))
+            if (visibleBefore(functions_[i], pos) || byArguments.count(i) != 0) visible.push_back(i);
+        if (visible.empty())
+            src_.fail(pos, "'" + bare + "' is not declared before this use, and argument-dependent "
+                           "lookup finds none - [temp.res]/10 binds a name in a template where the template "
+                           "is written, not where it is instantiated");
+    } else if (later) {
+        visibleAt_ = pos;
+        const std::string seen = qualifyForLookup(written, &Parser::hasVisibleFunctionNamed);
+        visibleAt_ = 0;
+        if (const std::vector<std::size_t> *s = overloadsOf(seen))
+            for (std::size_t i : *s)
+                if (visibleBefore(functions_[i], pos)) visible.push_back(i);
+        std::vector<std::string> spaces;
+        for (const ExprPtr &a : args) associatedNamespaces(a->type(), &spaces, 0);
+        // The associated namespaces' function templates from anywhere, as below: `using std::cos; cos(x.re())`
+        // in ad::sin<T> reaches ad::cos<T>, declared after it, for an ad::Dual (1.82).
+        instantiateAdlTemplates(written, spaces, args, pos);
+        for (const std::string &ns : spaces)
+            if (const std::vector<std::size_t> *s = overloadsOf(ns.empty() ? written : ns + "::" + written))
+                for (std::size_t i : *s)
+                    if (std::find(visible.begin(), visible.end(), i) == visible.end()) visible.push_back(i);
+        if (visible.empty())
+            src_.fail(pos, "'" + written + "' is not declared before this use, and argument-dependent "
+                           "lookup finds none - [temp.res]/10 binds a name in a template where the template "
+                           "is written, not where it is instantiated");
+        name = seen;
+    }
     // **A constructor template is a candidate too**: every one under this key that
     // deduces from the arguments is instantiated before the set is read.
-    if (memberTemplates_.count(name) != 0) {
+    bool inherits = false;
+    for (const auto &from : inheritFrom_) inherits = inherits || constructorKey(from.first) == name;
+    if (memberTemplates_.count(name) != 0 || inherits) {
         std::vector<const Type *> argTypes;
         for (std::size_t i = 0; i < args.size(); i++) argTypes.push_back(deductionArgType(*args[i]));
         instantiateViableMemberTemplatesUnder(name, argTypes, pos);
     }
-    const std::vector<std::size_t> *set = overloadsOf(name);
+    const std::vector<std::size_t> *set = later ? &visible : overloadsOf(name);
+
+    // **[namespace.udir]/2: a using-directive's names join the global namespace's, they do not hide them** -
+    // `using namespace s;` at file scope and `twice(3.0)` sees `::twice(double)` beside `s::twice(const E &)`
+    // (1.82: only s's were candidates). Where lookup reached the name through a directive.
+    // A directive written in a namespace and naming a namespace of the global one puts its names in the global
+    // namespace too, the nearest that encloses both: there they meet the global function (no namespace around the
+    // call declared the name, or lookup would have stopped there).
+    std::vector<std::size_t> withGlobal;
+    if (unqualified && !later && set != nullptr && name != written) {
+        bool viaDirective = false;
+        for (const std::string &u : usingNamespaces_)
+            viaDirective = viaDirective || (u.find("::") == std::string::npos &&
+                                            followUsingDeclaration(u + "::" + written) == name);
+        if (viaDirective) {
+            withGlobal = *set;
+            const std::size_t before = withGlobal.size();
+            if (const std::vector<std::size_t> *g = overloadsOf(written))
+                for (std::size_t i : *g)
+                    if (!functions_[i].fromTemplate && functions_[i].owner.empty() &&
+                        std::find(withGlobal.begin(), withGlobal.end(), i) == withGlobal.end())
+                        withGlobal.push_back(i);
+            if (const std::vector<std::size_t> *g = overloadsOf("::" + written))
+                for (std::size_t i : *g)
+                    if (std::find(withGlobal.begin(), withGlobal.end(), i) == withGlobal.end()) withGlobal.push_back(i);
+            if (withGlobal.size() > before) set = &withGlobal;
+        }
+    }
+
+    // **[basic.lookup.argdep]/2: the associated namespaces join ordinary lookup's set** - every argument's
+    // class, its bases and its template arguments' classes - so `who(w)` for a `B::W<A::X>` finds A's `who`.
+    // Not where ordinary lookup found a class member (/3). The global namespace is ordinary lookup's own
+    // only where that lookup reached it: a name found in a namespace nearer the call hides the global one,
+    // and a global class's own function is then found here (1.77: it was not, and `swp(c, c)` written in a
+    // namespace that has a `swp` of its own never reached `::swp(C &, C &)`).
+    std::vector<std::size_t> withAdl;
+    // `using std::cos; cos(x)` in a block arrives spelled as the using-declaration's key, `ad::cos`: still an
+    // unqualified call, whose arguments' namespaces are searched by its bare name (1.82: ad::cos<T> for an
+    // ad::Dual was never reached from ad::sin<T>).
+    std::string adlWritten = written;
+    bool viaBlockUsing = false;
+    if (object == nullptr && !unqualified && written.find("::") != std::string::npos) {
+        const std::string bare = written.substr(written.rfind("::") + 2);
+        if (blockUsingFunctions_.count(bare) != 0 && written == namespacePrefix() + bare) {
+            viaBlockUsing = true;
+            adlWritten = bare;
+        }
+    }
+    if ((unqualified || viaBlockUsing) && !later && !args.empty()) {
+        bool member = false;
+        if (set != nullptr)
+            for (std::size_t i : *set) member = member || !functions_[i].owner.empty();
+        if (!member) {
+            std::vector<std::string> spaces;
+            for (const ExprPtr &a : args) associatedNamespaces(a->type(), &spaces, 0);
+            // **Their function templates too** ([basic.lookup.argdep]/4), where ordinary lookup found an ordinary
+            // function: `using lib::twice; twice(d)` reaches `ad::twice<T>` for an `ad::D<double>` (1.82: only
+            // the specializations some other call had made were seen, and none had).
+            if (set != nullptr) instantiateAdlTemplates(adlWritten, spaces, args, pos);
+            if (set != nullptr) withAdl = *set;
+            const std::size_t before = withAdl.size();
+            for (const std::string &ns : spaces) {
+                if (ns.empty()) {
+                    if (name == adlWritten || name.compare(0, 1, "$") == 0) continue;
+                    if (const std::vector<std::size_t> *s = overloadsOf(adlWritten))
+                        for (std::size_t i : *s)
+                            if (!functions_[i].fromTemplate && functions_[i].owner.empty() &&
+                                visibleBefore(functions_[i], pos) &&
+                                std::find(withAdl.begin(), withAdl.end(), i) == withAdl.end())
+                                withAdl.push_back(i);
+                    continue;
+                }
+                std::vector<std::string> keys(1, ns + "::" + adlWritten);
+                const std::vector<std::string> alts = inlineAliasPrefixes(ns + "::");
+                for (const std::string &a : alts) keys.push_back(a + adlWritten);
+                for (const std::string &k : keys)
+                    if (k != name)
+                        if (const std::vector<std::size_t> *s = overloadsOf(k))
+                            for (std::size_t i : *s)
+                                if (std::find(withAdl.begin(), withAdl.end(), i) == withAdl.end()) withAdl.push_back(i);
+            }
+            if (withAdl.size() > before) set = &withAdl;
+        }
+    }
 
     // **For an operator the candidate set is the union, not the first scope
     // that answers.**
@@ -1226,6 +1775,29 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
                     if (!seen) merged.push_back((*s)[k]);
                 }
         if (!merged.empty()) set = &merged;
+    }
+
+    // [namespace.memdef]/3: a function only a friend declaration has declared is found by argument-dependent
+    // lookup alone, and arguments of nothing but fundamental types, pointers and arrays of them lead it nowhere.
+    std::vector<std::size_t> declared;
+    if (set != nullptr && !set->empty() && object == nullptr) {
+        bool fundamental = true;
+        for (std::size_t a = 0; a < args.size() && fundamental; a++) {
+            const Type *t = args[a]->type();
+            if (t != nullptr && t->isReference()) t = t->referent();
+            while (t != nullptr && (t->isPointer() || t->isArray())) t = t->pointee();
+            if (t == nullptr || !(t->unqualified()->isVoid() || (t->isArithmetic() && !t->isEnumeration())))
+                fundamental = false;
+        }
+        if (fundamental) {
+            for (std::size_t i : *set)
+                if (!functions_[i].hiddenFriend) declared.push_back(i);
+            if (declared.empty())
+                src_.fail(pos, "'" + written + "' is declared only by a friend declaration, and no lookup but "
+                               "the argument-dependent one finds it there - [namespace.memdef]/3; these arguments "
+                               "have no class to lead to it, so declare it outside the class too");
+            if (declared.size() != set->size()) set = &declared;
+        }
     }
 
     if (set == nullptr) {
@@ -1248,44 +1820,59 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     std::vector<std::size_t> viable;
     std::vector<std::vector<Rank> > ranks;
     // Set when only the object's constness stopped a candidate, for the message.
-    bool droppedForConst = false;
+    bool droppedForConst = false, droppedForVolatile = false;
     bool droppedForRef = false;
 
-    for (std::size_t k = 0; k < set->size(); k++) {
-        const Signature &f = functions_[(*set)[k]];
-        // A default makes the parameter optional, so the count a call may
-        // give is a range rather than one number.
-        if (f.variadic ? args.size() < leastArguments(f)
-                       : (args.size() > f.params.size() ||
-                          args.size() < leastArguments(f))) continue;
+    bool skippedExplicit = false;
+    for (int pass = 0; pass < 2; pass++) {
+        for (std::size_t k = 0; k < set->size(); k++) {
+            const Signature &f = functions_[(*set)[k]];
+            // The explicit constructors wait for a second pass, taken where nothing else is viable: the
+            // caller then names the explicit one it would have been.
+            if (convertingOnly && pass == 0 && f.isExplicit) { skippedExplicit = true; continue; }
+            // A default makes the parameter optional, so the count a call may
+            // give is a range rather than one number.
+            if (f.variadic ? args.size() < leastArguments(f)
+                           : (args.size() > f.params.size() ||
+                              args.size() < leastArguments(f))) continue;
 
-        // **The implicit object parameter goes first**, and ranking it is what
-        // separates `get()` from `get() const`: exact where the constness agrees,
-        // a qualification conversion where a const member takes a non-const object.
-        std::vector<Rank> r;
-        if (object != nullptr) {
-            if (object->isConst() && !f.constThis) { droppedForConst = true; continue; }
-            if (!refQualifierViable(f.refThis, f.constThis, objectLvalue)) { droppedForRef = true; continue; }
-            r.push_back(object->isConst() == f.constThis ? Rank::Identity
-                                                         : Rank::Qualification);
-        }
+            // **The implicit object parameter goes first**, and ranking it is what
+            // separates `get()` from `get() const`: exact where the constness agrees,
+            // a qualification conversion where a const member takes a non-const object.
+            std::vector<Rank> r;
+            // [over.match.funcs]/4: a static member's implicit object parameter matches any object.
+            if (object != nullptr && !needsThis(f)) {
+                r.push_back(Rank::Identity);
+            } else if (object != nullptr) {
+                if (object->isConst() && !f.constThis) { droppedForConst = true; continue; }
+                if (object->isVolatile() && !f.volatileThis) { droppedForVolatile = true; continue; }
+                if (!refQualifierViable(f.refThis, f.constThis, objectLvalue)) { droppedForRef = true; continue; }
+                r.push_back(object->isConst() == f.constThis && object->isVolatile() == f.volatileThis
+                                ? Rank::Identity : Rank::Qualification);
+            }
 
-        const std::size_t first = r.size();
-        r.resize(first + args.size(), Rank::Ellipsis);
-        // Only the arguments written are ranked; the defaults are the same
-        // expression for every candidate that has them and cannot separate
-        // two of them.
-        bool ok = true;
-        for (std::size_t i = 0; i < args.size() && ok; i++) {
-            if (i >= f.params.size()) continue;      // reached by the ellipsis
-            r[first + i] = rankArgument(*args[i], f.params[i]);
-            if (r[first + i] == Rank::None) ok = false;
+            const std::size_t first = r.size();
+            r.resize(first + args.size(), Rank::Ellipsis);
+            // Only the arguments written are ranked; the defaults are the same
+            // expression for every candidate that has them and cannot separate
+            // two of them.
+            bool ok = true;
+            for (std::size_t i = 0; i < args.size() && ok; i++) {
+                if (i >= f.params.size()) continue;      // reached by the ellipsis
+                r[first + i] = rankArgument(*args[i], f.params[i]);
+                if (r[first + i] == Rank::None) ok = false;
+            }
+            if (!ok) continue;
+            viable.push_back((*set)[k]);
+            ranks.push_back(r);
         }
-        if (!ok) continue;
-        viable.push_back((*set)[k]);
-        ranks.push_back(r);
+        if (!viable.empty() || !skippedExplicit) break;
     }
 
+    if (viable.empty() && droppedForVolatile)
+        src_.fail(pos, "'" + name + "' is not a volatile member function, and this object is "
+                       "volatile - [over.match.funcs]/4 binds a volatile object's 'this' to a "
+                       "volatile member function alone");
     if (viable.empty() && droppedForConst)
         src_.fail(pos, "'" + name + "' is not a const member function, and this "
                        "object is const - calling it could change what the "
@@ -1303,6 +1890,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
         refuseDeleted(functions_[viable[0]], pos);
         functions_[viable[0]].used = true;
         if (!functions_[viable[0]].isNoexcept) mayThrow_++;
+        refuseFailedBody(functions_[viable[0]]);
         return functions_[viable[0]];
     }
 
@@ -1333,6 +1921,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     // otherwise**, and this is the one place a call finds out which function it
     // reached. `noexcept(e)` reads the count this leaves behind.
     if (!functions_[viable[best]].isNoexcept) mayThrow_++;
+    refuseFailedBody(functions_[viable[best]]);
     return functions_[viable[best]];
 }
 
@@ -1340,9 +1929,31 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
                              const std::string &what) const {
     const Type *ft = from.type();
 
-    if (ft == to) return;
+    // **[except.spec]/5: a pointer to function declared with an exception specification takes only
+    // a function at least as restrictive** - `void (*p)() noexcept = g;` with g free to throw, or
+    // `throw(int)` from a function with no specification. Asked of the declaration just read, once.
+    if (fnPointerSpec_ != 0 && to->isPointer() && to->pointee()->isFunction()) {
+        const int want = fnPointerSpec_;
+        fnPointerSpec_ = 0;
+        const Expr *e = &from;
+        while (const Cast *c = dynamic_cast<const Cast *>(e)) e = &c->value();
+        if (const Unary *u = dynamic_cast<const Unary *>(e))
+            if (u->op() == '&') e = &u->operand();
+        if (const Var *v = dynamic_cast<const Var *>(e))
+            for (const Signature &f : functions_)
+                if (f.symbol == v->symbol()) {
+                    if ((want == 1 && !f.isNoexcept) || (want == 2 && !f.isNoexcept && !f.spec.written))
+                        src_.fail(pos, what + " promises " +
+                                       std::string(want == 1 ? "to throw nothing" : "a list of exceptions") +
+                                       ", and '" + f.name + "' makes no such promise - [except.spec]/5 "
+                                       "lets a pointer take only a function at least as restrictive");
+                    break;
+                }
+    }
 
-    // Copying ignores the const at the top.
+    // Copying ignores the cv at the top - but for a class, which copies through a constructor.
+    if (ft->unqualified() == to->unqualified()) refuseVolatileClassCopy(ft, to, what, pos);
+    if (ft == to) return;
     if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->unqualified()->isScopedEnumeration()) refuseScopedConversion(ft, to, pos);
@@ -1386,6 +1997,21 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
                        "captures nothing - call the closure directly, or give "
                        "the function a template parameter for it");
 
+    // **[conv.ptr]/3, [class.member.lookup]: a base the derived class holds twice is ambiguous**, and
+    // naming it converts to neither copy - `A *a = &d;` with `D : B, C`, both from A, took the first
+    // (review of 1.30, A3).
+    {
+        const Type *fromCls = ft->isPointer() && to->isPointer() ? ft->pointee() : ft;
+        const Type *toCls = ft->isPointer() && to->isPointer() ? to->pointee() : to;
+        if (fromCls->unqualified()->isStructOrUnion() && toCls->unqualified()->isStructOrUnion() &&
+            fromCls->unqualified() != toCls->unqualified() &&
+            baseSubobjects(fromCls, toCls) > 1)
+            src_.fail(pos, what + " is '" + to->describe() + "', and '" + toCls->unqualified()->describe() +
+                           "' is an ambiguous base of '" + fromCls->unqualified()->describe() +
+                           "' - it holds more than one, and this names none of them in particular; "
+                           "convert to the intermediate base first ([conv.ptr]/3)");
+    }
+    refuseVolatileClassCopy(ft, to, what, pos);
     // Slicing, [class.copy]/12: a derived object copies to an accessible base that has no copy
     // constructor of its own as its base subobject's bytes; convert() takes the subobject.
     if (ft->unqualified()->isStructOrUnion() && to->unqualified()->isStructOrUnion() &&
@@ -1410,13 +2036,17 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         // value is unchanged and only the type moves.
         if (ft->pointee()->unqualified() != to->pointee()->unqualified() &&
             accessibleBaseOffset(ft->pointee(), to->pointee()) >= 0 &&
-            (to->pointee()->isConst() || !ft->pointee()->isConst()))
+            (to->pointee()->isConst() || !ft->pointee()->isConst()) &&
+            (to->pointee()->isVolatile() || !ft->pointee()->isVolatile()))
             return;
-        // [conv.ptr]/2: an object pointer converts to void * implicitly, keeping its const;
+        // [conv.ptr]/2: an object pointer converts to void * implicitly, keeping its cv;
         // void * converts back only by a cast, which is where C++ parts from C.
         if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
             ft->pointee()->isConst())
             refuse(" - 'void *' would drop the const; 'const void *' keeps it");
+        if (to->pointee()->isVoid() && !to->pointee()->isVolatile() &&
+            ft->pointee()->isVolatile())
+            refuse(" - 'void *' would drop the volatile; 'volatile void *' keeps it");
         if (to->pointee()->isVoid()) return;
         if (ft->pointee()->isVoid())
             refuse(" - 'void *' converts to another pointer only with a cast in C++, where C allows it");
@@ -1426,6 +2056,10 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (isStringLiteral(from))
             refuse(" - a string literal is an array of const char in C++11, "
                    "and does not convert to a writable pointer");
+        if (ft->pointee()->unqualified() == to->pointee()->unqualified() &&
+            ft->pointee()->isVolatile() && !to->pointee()->isVolatile())
+            refuse(" - the volatile would be dropped, and an access through it would no longer "
+                   "be one the program asked for ([dcl.type.cv]/6)");
         if (ft->pointee()->unqualified() == to->pointee()->unqualified())
             refuse(" - the const would be dropped, and then the thing it "
                    "protects could be written through");
@@ -1438,9 +2072,9 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (isNullConstant(from)) return;
         refuse(" - only the constant 0 becomes a pointer on its own");
     }
-    // `nullptr` converts to any pointer and any pointer to member, and nothing is emitted: the value is already
-    // a pointer-sized zero, the type only carrying the front end's knowledge that it is not the number 0. A member
-    // function pointer is a pointer to a member too, [conv.mem]/1, and the constant 0 reaches both (1.27, item 3).
+    // `nullptr` (and the constant 0, [conv.mem]/1) converts to any pointer or
+    // pointer to member, function members too, and emits nothing: the value is
+    // already a pointer-sized zero the front end knows is not the number 0.
     if (ft->isNullPtr() &&
         (to->isPointer() || to->isMemberPointer() || to->isMemberFunctionPointer())) return;
     if ((to->isMemberPointer() || to->isMemberFunctionPointer()) && ft->isInteger() &&
@@ -1450,6 +2084,9 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         refuse(" - the only values of that type are 'nullptr' and the "
                "constant 0");
     }
+    // [conv.bool]: a pointer or pointer to member converts to bool implicitly, null false and anything else true -
+    // `bool b = p;` was refused (R4); to any other number only by a cast.
+    if (to->unqualified()->isBool() && (ft->isPointer() || ft->isMemberPointer() || ft->isMemberFunctionPointer())) return;
     if (to->isArithmetic() && ft->isPointer())
         refuse(" - a pointer is not a number here, though a cast makes it one");
 

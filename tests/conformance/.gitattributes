@@ -1,0 +1,2 @@
+# The suite is compared byte for byte: sources (raw strings, line splices) and expected outputs keep their line ends.
+* -text
